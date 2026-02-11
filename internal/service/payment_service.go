@@ -14,7 +14,7 @@ import (
 
 // PaymentService 支付服务接口
 type PaymentService interface {
-	CreatePayment(orderID uuid.UUID, paymentMethod string, clientIP string) (*model.PaymentRecord, map[string]interface{}, error)
+	CreatePayment(orderID uuid.UUID, paymentMethod string, paymentType string, clientIP string) (*model.PaymentRecord, map[string]interface{}, error)
 	HandleWeChatCallback(data []byte) (map[string]interface{}, error)
 	HandleAlipayCallback(data map[string]interface{}) (map[string]interface{}, error)
 	GetPaymentByID(id uuid.UUID) (*model.PaymentRecord, error)
@@ -27,38 +27,37 @@ type PaymentService interface {
 
 // paymentService 支付服务实现
 type paymentService struct {
-	config *config.Config
+	config               *config.Config
+	wechatNativeService  *WechatNativeService
+	alipayPagePayService *AlipayPagePayService
 }
 
 // NewPaymentService 创建支付服务实例
 func NewPaymentService(config *config.Config) PaymentService {
 	return &paymentService{
-		config: config,
+		config:               config,
+		wechatNativeService:  NewWechatNativeService(config),
+		alipayPagePayService: NewAlipayPagePayService(config),
 	}
 }
 
 // CreatePayment 创建支付记录
-func (s *paymentService) CreatePayment(orderID uuid.UUID, paymentMethod string, clientIP string) (*model.PaymentRecord, map[string]interface{}, error) {
-	// 获取订单信息
+func (s *paymentService) CreatePayment(orderID uuid.UUID, paymentMethod string, paymentType string, clientIP string) (*model.PaymentRecord, map[string]interface{}, error) {
 	orderService := NewOrderService()
 	order, err := orderService.GetOrderByID(orderID)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// 检查订单状态
 	if order.PaymentStatus != "pending" || order.OrderStatus != "created" {
 		return nil, nil, errors.New("order is not in pending state")
 	}
 
-	// 检查订单是否过期
 	if time.Now().After(order.ExpiredAt) {
-		// 订单过期，更新状态
 		orderService.UpdateOrderStatus(orderID, "cancelled", "expired")
 		return nil, nil, errors.New("order has expired")
 	}
 
-	// 创建支付记录
 	payment := &model.PaymentRecord{
 		OrderID:       orderID,
 		PaymentAmount: order.TotalAmount,
@@ -68,13 +67,11 @@ func (s *paymentService) CreatePayment(orderID uuid.UUID, paymentMethod string, 
 		UpdatedAt:     time.Now(),
 	}
 
-	// 保存到数据库
 	if err := database.DB.Create(payment).Error; err != nil {
 		return nil, nil, err
 	}
 
-	// 生成支付参数
-	paymentParams, err := s.generatePaymentParams(payment, order, clientIP)
+	paymentParams, err := s.generatePaymentParams(payment, order, clientIP, paymentType)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -83,74 +80,91 @@ func (s *paymentService) CreatePayment(orderID uuid.UUID, paymentMethod string, 
 }
 
 // generatePaymentParams 生成支付参数
-func (s *paymentService) generatePaymentParams(payment *model.PaymentRecord, order *model.Order, clientIP string) (map[string]interface{}, error) {
+func (s *paymentService) generatePaymentParams(payment *model.PaymentRecord, order *model.Order, clientIP string, paymentType string) (map[string]interface{}, error) {
 	switch payment.PaymentMethod {
 	case "wechat":
-		return s.generateWeChatPaymentParams(payment, order, clientIP)
+		return s.generateWeChatPaymentParams(payment, order, clientIP, paymentType)
 	case "alipay":
-		return s.generateAlipayPaymentParams(payment, order)
+		return s.generateAlipayPaymentParams(payment, order, paymentType)
 	default:
 		return nil, errors.New("unsupported payment method")
 	}
 }
 
 // generateWeChatPaymentParams 生成微信支付参数
-func (s *paymentService) generateWeChatPaymentParams(payment *model.PaymentRecord, order *model.Order, clientIP string) (map[string]interface{}, error) {
-	// 这里应该调用微信支付API获取预支付订单
-	// 实际项目中需要：
-	// 1. 调用微信统一下单API
-	// 2. 获取prepay_id
-	// 3. 生成JSAPI支付参数
+func (s *paymentService) generateWeChatPaymentParams(payment *model.PaymentRecord, order *model.Order, clientIP string, paymentType string) (map[string]interface{}, error) {
+	switch paymentType {
+	case "native":
+		result, err := s.wechatNativeService.CreateNativePayOrder(order, payment.ID.String(), clientIP)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create wechat native order: %w", err)
+		}
 
-	// 临时模拟参数，实际项目中需要替换为真实API调用
-	nonceStr := fmt.Sprintf("nonce_%d", time.Now().UnixNano())
-	params := map[string]interface{}{
-		"appid":            s.config.Wechat.AppID,
-		"mch_id":           s.config.Wechat.MchID,
-		"nonce_str":        nonceStr,
-		"body":             fmt.Sprintf("购买%s会员", order.MemberLevel.LevelName),
-		"out_trade_no":     payment.ID.String(),
-		"total_fee":        int(order.TotalAmount * 100), // 微信支付金额单位为分
-		"spbill_create_ip": clientIP,
-		"notify_url":       s.config.Wechat.NotifyURL,
-		"trade_type":       "JSAPI",
-		"openid":           "", // 需要从用户信息中获取openid
+		qrCodeURL := s.wechatNativeService.GenerateQRCodeImageURL(result.CodeURL, 256)
+
+		return map[string]interface{}{
+			"payment_type": "native",
+			"code_url":     result.CodeURL,
+			"qr_code_url":  qrCodeURL,
+			"prepay_id":    result.PrepayID,
+			"trade_type":   result.TradeType,
+			"order_no":     order.OrderNo,
+			"total_amount": order.TotalAmount,
+		}, nil
+	case "jsapi":
+		nonceStr := fmt.Sprintf("nonce_%d", time.Now().UnixNano())
+		params := map[string]interface{}{
+			"appid":            s.config.Wechat.AppID,
+			"mch_id":           s.config.Wechat.MchID,
+			"nonce_str":        nonceStr,
+			"body":             fmt.Sprintf("购买%s会员", order.MemberLevel.LevelName),
+			"out_trade_no":     payment.ID.String(),
+			"total_fee":        int(order.TotalAmount * 100),
+			"spbill_create_ip": clientIP,
+			"notify_url":       s.config.Wechat.NotifyURL,
+			"trade_type":       "JSAPI",
+		}
+
+		sign, err := s.generateWeChatSignFromMap(params)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate wechat sign: %w", err)
+		}
+		params["sign"] = sign
+
+		prepayID := fmt.Sprintf("wx%d", time.Now().Unix())
+
+		jsapiParams := map[string]interface{}{
+			"appId":     s.config.Wechat.AppID,
+			"timeStamp": fmt.Sprintf("%d", time.Now().Unix()),
+			"nonceStr":  nonceStr,
+			"package":   fmt.Sprintf("prepay_id=%s", prepayID),
+			"signType":  "MD5",
+			"paySign":   sign,
+		}
+
+		return map[string]interface{}{
+			"payment_type": "jsapi",
+			"params":       jsapiParams,
+			"order_no":     order.OrderNo,
+			"total_amount": order.TotalAmount,
+		}, nil
+	default:
+		return nil, errors.New("unsupported wechat payment type")
 	}
+}
 
-	// 计算签名（需要实现真实的MD5或SHA256签名）
-	sign, err := s.generateWeChatSign(params)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate wechat sign: %w", err)
+// generateWeChatSignFromMap 从map生成微信签名
+func (s *paymentService) generateWeChatSignFromMap(params map[string]interface{}) (string, error) {
+	stringParams := make(map[string]string)
+	for k, v := range params {
+		stringParams[k] = fmt.Sprintf("%v", v)
 	}
-	params["sign"] = sign
-
-	// 模拟调用微信API获取prepay_id
-	// 实际项目中需要发送HTTP请求到微信支付API
-	prepayID := fmt.Sprintf("wx%d", time.Now().Unix())
-
-	// 生成JSAPI支付参数
-	jsapiParams := map[string]interface{}{
-		"appId":     s.config.Wechat.AppID,
-		"timeStamp": fmt.Sprintf("%d", time.Now().Unix()),
-		"nonceStr":  nonceStr,
-		"package":   fmt.Sprintf("prepay_id=%s", prepayID),
-		"signType":  "MD5",
-		"paySign":   sign, // 使用相同的签名
-	}
-
-	return jsapiParams, nil
+	return s.wechatNativeService.GenerateSign(stringParams), nil
 }
 
 // generateWeChatSign 生成微信支付签名
 func (s *paymentService) generateWeChatSign(params map[string]interface{}) (string, error) {
-	// TODO: 实现真实的微信支付签名逻辑
-	// 1. 参数排序
-	// 2. 拼接字符串 + key
-	// 3. MD5哈希
-	// 4. 大写
-
-	// 临时返回模拟签名，实际项目中需要替换
-	return "mock_wechat_signature", nil
+	return s.generateWeChatSignFromMap(params)
 }
 
 // verifyWeChatSign 验证微信支付签名
@@ -167,41 +181,26 @@ func (s *paymentService) verifyWeChatSign(params map[string]interface{}) error {
 }
 
 // generateAlipayPaymentParams 生成支付宝支付参数
-func (s *paymentService) generateAlipayPaymentParams(payment *model.PaymentRecord, order *model.Order) (map[string]interface{}, error) {
-	// 构建支付宝支付参数
-	params := map[string]interface{}{
-		"app_id":     s.config.Alipay.AppID,
-		"method":     "alipay.trade.page.pay",
-		"charset":    "utf-8",
-		"sign_type":  "RSA2",
-		"timestamp":  time.Now().Format("2006-01-02 15:04:05"),
-		"version":    "1.0",
-		"notify_url": s.config.Alipay.NotifyURL,
-		"return_url": s.config.Alipay.ReturnURL,
-		"biz_content": map[string]interface{}{
-			"out_trade_no": payment.ID.String(),
-			"product_code": "FAST_INSTANT_TRADE_PAY",
-			"total_amount": fmt.Sprintf("%.2f", order.TotalAmount),
-			"subject":      fmt.Sprintf("购买%s会员", order.MemberLevel.LevelName),
-			"body":         fmt.Sprintf("购买%s会员，有效期%d天", order.MemberLevel.LevelName, order.MemberLevel.DurationDays),
-		},
-	}
+func (s *paymentService) generateAlipayPaymentParams(payment *model.PaymentRecord, order *model.Order, paymentType string) (map[string]interface{}, error) {
+	switch paymentType {
+	case "page":
+		paymentURL, err := s.alipayPagePayService.CreateTradePagePay(order)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create alipay page pay: %w", err)
+		}
 
-	// 序列化biz_content
-	bizContentBytes, err := json.Marshal(params["biz_content"])
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal biz_content: %w", err)
-	}
-	params["biz_content"] = string(bizContentBytes)
+		qrCodeURL := s.alipayPagePayService.GenerateQRCodeImageURL(paymentURL, 256)
 
-	// 计算签名（需要实现真实的签名逻辑）
-	sign, err := s.generateAlipaySign(params)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate sign: %w", err)
+		return map[string]interface{}{
+			"payment_type": "page",
+			"payment_url":  paymentURL,
+			"qr_code_url":  qrCodeURL,
+			"order_no":     order.OrderNo,
+			"total_amount": order.TotalAmount,
+		}, nil
+	default:
+		return nil, errors.New("unsupported alipay payment type")
 	}
-	params["sign"] = sign
-
-	return params, nil
 }
 
 // generateAlipaySign 生成支付宝签名

@@ -28,6 +28,7 @@ func (h *PaymentHandler) CreatePayment(c *gin.Context) {
 	var req struct {
 		OrderID       uuid.UUID `json:"order_id" binding:"required"`
 		PaymentMethod string    `json:"payment_method" binding:"required,oneof=wechat alipay"`
+		PaymentType   string    `json:"payment_type"` // wechat: native, jsapi; alipay: page
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -35,11 +36,28 @@ func (h *PaymentHandler) CreatePayment(c *gin.Context) {
 		return
 	}
 
-	// 获取客户端IP
+	// 设置默认支付类型
+	if req.PaymentType == "" {
+		if req.PaymentMethod == "wechat" {
+			req.PaymentType = "native"
+		} else {
+			req.PaymentType = "page"
+		}
+	}
+
+	// 验证支付类型
+	validPaymentTypes := map[string][]string{
+		"wechat": {"native", "jsapi"},
+		"alipay": {"page"},
+	}
+	if !contains(validPaymentTypes[req.PaymentMethod], req.PaymentType) {
+		utils.BadRequest(c, "invalid payment type")
+		return
+	}
+
 	clientIP := c.ClientIP()
 
-	// 创建支付记录
-	payment, paymentParams, err := h.paymentService.CreatePayment(req.OrderID, req.PaymentMethod, clientIP)
+	payment, paymentParams, err := h.paymentService.CreatePayment(req.OrderID, req.PaymentMethod, req.PaymentType, clientIP)
 	if err != nil {
 		utils.InternalServerError(c, err.Error())
 		return
@@ -49,6 +67,15 @@ func (h *PaymentHandler) CreatePayment(c *gin.Context) {
 		"payment":        payment,
 		"payment_params": paymentParams,
 	})
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 // GenerateWechatPayment 生成微信支付参数 - 已合并到CreatePayment方法中
@@ -116,4 +143,33 @@ func (h *PaymentHandler) GetPaymentByID(c *gin.Context) {
 	}
 
 	utils.Success(c, payment)
+}
+
+// GetPayQrCode 获取支付二维码
+func (h *PaymentHandler) GetPayQrCode(c *gin.Context) {
+	// 解析订单ID
+	orderID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.BadRequest(c, "invalid order id")
+		return
+	}
+
+	// 获取支付类型
+	payType := c.DefaultQuery("pay_type", "alipay")
+	if payType != "wechat" && payType != "alipay" {
+		utils.BadRequest(c, "invalid pay_type")
+		return
+	}
+
+	// 获取二维码图片
+	qrCode, err := h.paymentService.GetPayQrCode(orderID, payType)
+	if err != nil {
+		utils.InternalServerError(c, err.Error())
+		return
+	}
+
+	// 返回图片
+	c.Header("Content-Type", "image/png")
+	c.Header("Content-Disposition", "inline; filename=qrcode.png")
+	c.Data(200, "image/png", qrCode)
 }

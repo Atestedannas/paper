@@ -28,21 +28,23 @@ func main() {
 
 	// 检查端口是否被占用，如果被占用则尝试关闭占用进程
 	if isPortInUse(cfg.Server.Port) {
-		log.Printf("Port %d is in use, attempting to kill the process...", cfg.Server.Port)
-		if err := killProcessUsingPort(cfg.Server.Port); err != nil {
-			log.Printf("Warning: Failed to kill process using port %d: %v", cfg.Server.Port, err)
-		} else {
-			log.Printf("Successfully killed process using port %d", cfg.Server.Port)
-		}
+		killProcessUsingPort(cfg.Server.Port)
 	}
 
 	// 初始化数据库（演示环境下允许失败）
-	if err := database.InitDatabase(cfg); err != nil {
-		log.Printf("Warning: Failed to initialize database (demo mode): %v", err)
+	database.InitDatabase(cfg)
+
+	// 修复 orders 表 member_level_id 字段的外键约束
+	if err := database.ResetOrdersMemberLevel(); err != nil {
+		log.Printf("Warning: Failed to reset member_level_id: %v", err)
+	} else {
+		log.Println("Successfully reset member_level_id constraint")
 	}
 
-	// 执行数据库迁移
-	database.AutoMigrate()
+	// 执行数据库迁移和初始化（在启动时显式调用）
+	//if err := database.PerformMigration(); err != nil {
+	//	log.Printf("Warning: Failed to perform database migration: %v", err)
+	//}
 
 	// 创建Gin路由
 	router := gin.Default()
@@ -72,18 +74,23 @@ func main() {
 	adminUniversityHandler := handler.NewAdminUniversityHandler()
 	rbacHandler := handler.NewRBACHandler()
 	configHandler := handler.NewConfigHandler()
+	billingHandler := handler.NewBillingHandler()
 
 	// 新增处理器
 	adminOrderHandler := handler.NewAdminOrderHandler()
 	paperHistoryHandler := handler.NewPaperHistoryHandler()
 	batchHandler := handler.NewBatchHandler()
 	paymentCheckHandler := handler.NewPaymentCheckHandler()
+	sandboxHandler := handler.NewSandboxHandler(cfg)
 
 	// API路由 - 保留原有路由结构，同时添加v1版本支持
 	api := router.Group("/api")
 	{
 		// 公开路由（不需要认证）
 		api.GET("/config/public/paper-check", configHandler.GetPaperCheckConfigPublic) // 公开获取论文格式检查配置
+		api.GET("/config/public/contact", configHandler.GetContactInfo)                // 公开获取联系信息
+		api.GET("/config/public/billing", billingHandler.GetServiceConfig)             // 公开获取计费配置
+		api.GET("/config/public/billing/check", billingHandler.CheckServicePricing)    // 公开检查服务定价
 
 		// 认证路由
 		auth := api.Group("/auth")
@@ -160,6 +167,19 @@ func main() {
 			payment.POST("/alipay/callback", paymentHandler.HandleAlipayCallback)
 		}
 
+		// 沙箱测试路由 (管理员专用)
+		sandbox := api.Group("/sandbox", middleware.AuthMiddleware(cfg), middleware.AdminMiddleware())
+		{
+			sandbox.GET("/status", sandboxHandler.GetSandboxStatus)
+			sandbox.GET("/config", sandboxHandler.GetSandboxConfig)
+			sandbox.GET("/guide", sandboxHandler.GetSandboxTestGuide)
+			sandbox.POST("/payment", sandboxHandler.CreateSandboxPayment)
+			sandbox.POST("/query", sandboxHandler.QuerySandboxPayment)
+			sandbox.POST("/simulate/wechat", sandboxHandler.SimulateWechatPayment)
+			sandbox.POST("/simulate/alipay", sandboxHandler.SimulateAlipayPayment)
+			sandbox.POST("/refund", sandboxHandler.CreateSandboxRefund)
+		}
+
 		// 论文路由
 		paper := api.Group("/paper", middleware.AuthMiddleware(cfg))
 		{
@@ -226,10 +246,13 @@ func main() {
 			admin.GET("/stats", adminHandler.GetSystemStats)   // 获取系统统计数据
 
 			// 用户管理
-			admin.GET("/users", adminHandler.GetUsers)                    // 获取用户列表
-			admin.PUT("/users/:id/role", adminHandler.UpdateUserRole)     // 更新用户角色
-			admin.PUT("/users/:id/status", adminHandler.UpdateUserStatus) // 更新用户状态
-			admin.DELETE("/users/:id", adminHandler.DeleteUser)           // 删除用户
+			admin.GET("/users", adminHandler.GetUsers)                              // 获取用户列表
+			admin.GET("/users/:id/roles", rbacHandler.GetUserRolesByID)             // 获取用户角色列表
+			admin.GET("/users/:id/permissions", rbacHandler.GetUserPermissionsByID) // 获取用户权限列表
+			admin.PUT("/users/:id/role", adminHandler.UpdateUserRole)               // 更新用户角色
+			admin.PUT("/users/:id/status", adminHandler.UpdateUserStatus)           // 更新用户状态
+			admin.DELETE("/users/:id", adminHandler.DeleteUser)                     // 删除用户
+			admin.POST("/users/set-super-admin", adminHandler.SetUserAsSuperAdmin)  // 设置用户为超级管理员
 
 			// 论文管理
 			admin.GET("/papers", adminHandler.GetPapers) // 获取论文列表
@@ -258,6 +281,7 @@ func main() {
 	{
 		// 公开路由（不需要认证）
 		apiV1.GET("/config/public/paper-check", configHandler.GetPaperCheckConfigPublic) // 公开获取论文格式检查配置
+		apiV1.GET("/config/public/contact", configHandler.GetContactInfo)                // 公开获取联系信息
 
 		// 认证路由
 		auth := apiV1.Group("/auth")
@@ -336,6 +360,19 @@ func main() {
 			payment.POST("/alipay/callback", paymentHandler.HandleAlipayCallback)
 		}
 
+		// 沙箱测试路由 (管理员专用)
+		sandboxV1 := apiV1.Group("/sandbox", middleware.AuthMiddleware(cfg), middleware.AdminMiddleware())
+		{
+			sandboxV1.GET("/status", sandboxHandler.GetSandboxStatus)
+			sandboxV1.GET("/config", sandboxHandler.GetSandboxConfig)
+			sandboxV1.GET("/guide", sandboxHandler.GetSandboxTestGuide)
+			sandboxV1.POST("/payment", sandboxHandler.CreateSandboxPayment)
+			sandboxV1.POST("/query", sandboxHandler.QuerySandboxPayment)
+			sandboxV1.POST("/simulate/wechat", sandboxHandler.SimulateWechatPayment)
+			sandboxV1.POST("/simulate/alipay", sandboxHandler.SimulateAlipayPayment)
+			sandboxV1.POST("/refund", sandboxHandler.CreateSandboxRefund)
+		}
+
 		// 论文路由
 		paper := apiV1.Group("/paper", middleware.AuthMiddleware(cfg))
 		{
@@ -379,6 +416,8 @@ func main() {
 			papers.GET("/:id", paperHandler.GetPaper)
 			papers.DELETE("/:id", paperHandler.DeletePaper)
 			papers.GET("/:id/check-result", paperHandler.GetPaperCheckResults)
+			papers.GET("/:id/compare/:check_result_id", paperHandler.ComparePaperFormats)
+			papers.GET("/:id/file", middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetPaperFile)
 			papers.GET("/:id/corrected-file", middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetCorrectedPaperFile)
 			papers.POST("/:id/fix/by-template", paperHandler.FixByTemplate)
 		}
@@ -410,14 +449,45 @@ func main() {
 			admin.GET("/dashboard", adminHandler.GetDashboard)
 			admin.GET("/stats", adminHandler.GetSystemStats)
 			admin.GET("/users", adminHandler.GetUsers)
+			admin.GET("/users/:id/roles", rbacHandler.GetUserRolesByID)             // 获取用户角色列表
+			admin.GET("/users/:id/permissions", rbacHandler.GetUserPermissionsByID) // 获取用户权限列表
 			admin.PUT("/users/:id/role", adminHandler.UpdateUserRole)
 			admin.PUT("/users/:id/status", adminHandler.UpdateUserStatus)
 			admin.DELETE("/users/:id", adminHandler.DeleteUser)
+			admin.POST("/users/set-super-admin", adminHandler.SetUserAsSuperAdmin) // 设置用户为超级管理员
 			admin.GET("/papers", adminHandler.GetPapers)
+
+			// 联系方式管理
+			admin.GET("/support/contact", configHandler.GetContactInfo) // 获取联系信息
 
 			// 支付策略配置
 			admin.GET("/settings/payment-config", adminSystemHandler.GetPaymentConfig)
 			admin.PUT("/settings/payment-config", adminSystemHandler.UpdatePaymentConfig)
+			// 支付渠道参数配置
+			admin.GET("/settings/payment/:provider", adminSystemHandler.GetPaymentProviderSettings)
+			admin.PUT("/settings/payment/:provider", adminSystemHandler.UpdatePaymentProviderSettings)
+			admin.POST("/settings/payment/:provider/test", adminSystemHandler.TestPaymentProviderSettings)
+			// 图片上传
+			admin.POST("/upload/image", adminSystemHandler.UploadImage)
+
+			// 计费配置管理
+			billing := admin.Group("/billing")
+			{
+				// 服务定价管理
+				billing.GET("/services", billingHandler.GetServicePricings)
+				billing.GET("/services/:type", billingHandler.GetServicePricing)
+				billing.POST("/services", billingHandler.CreateServicePricing)
+				billing.PUT("/services/:id", billingHandler.UpdateServicePricing)
+				billing.DELETE("/services/:id", billingHandler.DeleteServicePricing)
+				billing.PUT("/services/:id/toggle", billingHandler.ToggleServicePricing)
+				billing.PUT("/services/:id/free", billingHandler.SetServiceFree)
+
+				// 套餐管理
+				billing.GET("/plans", billingHandler.GetPlans)
+				billing.POST("/plans", billingHandler.CreatePlan)
+				billing.PUT("/plans/:id", billingHandler.UpdatePlan)
+				billing.DELETE("/plans/:id", billingHandler.DeletePlan)
+			}
 
 			// 系统安全设置
 			security := admin.Group("/settings/security")
@@ -460,6 +530,7 @@ func main() {
 			adminUniversities.GET("", adminUniversityHandler.GetUniversities)
 			adminUniversities.GET("/:id", adminUniversityHandler.GetUniversity)
 			adminUniversities.POST("", adminUniversityHandler.CreateUniversity)
+			adminUniversities.POST("/parse-template", adminUniversityHandler.ParseTemplate) // 解析模板
 			adminUniversities.PUT("/:id", adminUniversityHandler.UpdateUniversity)
 			adminUniversities.DELETE("/:id", adminUniversityHandler.DeleteUniversity)
 			adminUniversities.PUT("", adminUniversityHandler.BatchUpdateUniversities) // 批量更新

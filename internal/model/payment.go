@@ -46,7 +46,7 @@ type Member struct {
 type Order struct {
 	ID            uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
 	UserID        uuid.UUID `gorm:"type:uuid;index;not null" json:"user_id"`
-	MemberLevelID uuid.UUID `gorm:"type:uuid;index;not null" json:"member_level_id"`
+	MemberLevelID uuid.UUID `gorm:"type:uuid;index" json:"member_level_id"`          // 可以为空，用于论文检查订单
 	OrderNo       string    `gorm:"size:50;uniqueIndex;not null" json:"order_no"`    // 订单号
 	TotalAmount   float64   `gorm:"type:decimal(10,2);not null" json:"total_amount"` // 订单金额
 	PaymentMethod string    `gorm:"size:20;not null" json:"payment_method"`          // wechat, alipay
@@ -58,7 +58,7 @@ type Order struct {
 
 	// 关联
 	User          User           `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	MemberLevel   MemberLevel    `gorm:"foreignKey:MemberLevelID" json:"member_level,omitempty"`
+	MemberLevel   *MemberLevel   `gorm:"foreignKey:MemberLevelID" json:"member_level,omitempty"` // 使用指针允许为空
 	PaymentRecord *PaymentRecord `gorm:"foreignKey:OrderID" json:"payment_record,omitempty"`
 }
 

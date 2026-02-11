@@ -15,6 +15,7 @@ import (
 // OrderService 订单服务接口
 type OrderService interface {
 	CreateOrder(userID, memberLevelID uuid.UUID, paymentMethod string) (*model.Order, error)
+	CreatePaperCheckOrder(userID uuid.UUID, serviceType string, amount float64, paperID, templateID, paymentMethod string) (*model.Order, error)
 	GetOrderByID(orderID uuid.UUID) (*model.Order, error)
 	GetOrderByOrderNo(orderNo string) (*model.Order, error)
 	GetOrdersByUserID(userID uuid.UUID, page, pageSize int) ([]model.Order, int64, error)
@@ -78,6 +79,38 @@ func (s *orderService) CreateOrder(userID, memberLevelID uuid.UUID, paymentMetho
 
 	// 加载关联数据
 	if err := database.DB.Preload("MemberLevel").First(order, order.ID).Error; err != nil {
+		return nil, err
+	}
+
+	return order, nil
+}
+
+// CreatePaperCheckOrder 创建论文检查订单
+func (s *orderService) CreatePaperCheckOrder(userID uuid.UUID, serviceType string, amount float64, paperID, templateID, paymentMethod string) (*model.Order, error) {
+	// 生成订单号
+	orderNo := generateOrderNo()
+
+	// 计算订单过期时间
+	startDate := time.Now()
+
+	// 创建订单（论文检查订单不需要会员等级，设置一个默认的空 UUID）
+	memberLevelID := uuid.Nil
+
+	order := &model.Order{
+		UserID:        userID,
+		MemberLevelID: memberLevelID,
+		OrderNo:       orderNo,
+		TotalAmount:   amount,
+		PaymentMethod: paymentMethod,
+		PaymentStatus: "pending",
+		OrderStatus:   "created",
+		ExpiredAt:     startDate.Add(30 * time.Minute), // 订单30分钟后过期
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+
+	// 保存到数据库
+	if err := database.DB.Create(order).Error; err != nil {
 		return nil, err
 	}
 

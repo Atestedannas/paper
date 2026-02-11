@@ -3,6 +3,9 @@ package formatchecker
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/paper-format-checker/backend/pkg/fileprocessor"
 )
@@ -201,7 +204,7 @@ func NewCheckerFactory() *CheckerFactory {
 func (f *CheckerFactory) CreateChecker(docType string, processor fileprocessor.FileProcessor, standard FormatStandard) (FormatChecker, error) {
 	switch docType {
 	case "docx":
-		// DOCX检查器已实现
+		// 使用Go实现的DOCX检查器
 		checker := NewDOCXChecker()
 		checker.SetStandard(standard)
 		return checker, nil
@@ -215,9 +218,54 @@ func (f *CheckerFactory) CreateChecker(docType string, processor fileprocessor.F
 
 // ParseRequirementsToStandard 将解析的格式要求转换为FormatStandard结构
 func ParseRequirementsToStandard(parsedRequirements map[string]interface{}) FormatStandard {
+
 	standard := FormatStandard{
 		Name:        "解析格式标准",
 		Description: "从用户上传的格式要求解析生成的格式标准",
+	}
+
+	// 检查是否有顶层页面设置（中文键）
+	if _, ok := parsedRequirements["页面设置"].(map[string]interface{}); ok {
+		// 如果直接有页面设置，说明是直接格式要求（中文键）
+		standard.PageSetup = parsePageSetup(parsedRequirements)
+		standard.HeadingStyles = parseHeadingStyles(parsedRequirements)
+		standard.ParagraphStyles = parseParagraphStyles(parsedRequirements)
+		standard.TableStyle = parseTableStyle(parsedRequirements)
+		standard.FigureStyle = parseFigureStyle(parsedRequirements)
+		standard.ReferenceStyle = parseReferenceStyle(parsedRequirements)
+		standard.AbstractStyles = parseAbstractStyles(parsedRequirements)
+	} else if formatReqs, ok := parsedRequirements["format_requirements"].(map[string]interface{}); ok {
+		// 否则使用嵌套的format_requirements结构
+		standard.PageSetup = parsePageSetup(formatReqs)
+		standard.HeadingStyles = parseHeadingStyles(formatReqs)
+		standard.ParagraphStyles = parseParagraphStyles(formatReqs)
+		standard.TableStyle = parseTableStyle(formatReqs)
+		standard.FigureStyle = parseFigureStyle(formatReqs)
+		standard.ReferenceStyle = parseReferenceStyle(formatReqs)
+		standard.AbstractStyles = parseAbstractStyles(formatReqs)
+	} else if basicRequirements, ok := parsedRequirements["基本要求"].(map[string]interface{}); ok {
+		// 尝试从基本要求中提取格式信息（中文键）
+		standard.PageSetup = parsePageSetup(basicRequirements)
+		standard.HeadingStyles = parseHeadingStyles(basicRequirements)
+		standard.ParagraphStyles = parseParagraphStyles(basicRequirements)
+	} else if _, ok := parsedRequirements["page_setup"].(map[string]interface{}); ok {
+		// 检查是否有顶层页面设置（英文键）
+		standard.PageSetup = parsePageSetupEnglish(parsedRequirements)
+		standard.HeadingStyles = parseHeadingStylesEnglish(parsedRequirements)
+		standard.ParagraphStyles = parseParagraphStylesEnglish(parsedRequirements)
+		standard.ReferenceStyle = parseReferenceStyleEnglish(parsedRequirements)
+		standard.TableStyle = parseTableStyleEnglish(parsedRequirements)
+		standard.FigureStyle = parseFigureStyleEnglish(parsedRequirements)
+	} else {
+		// 新增：处理直接结构，即您数据库中存储的格式
+		// 直接从顶层解析各种样式
+		standard.PageSetup = parsePageSetupFromDirectStructure(parsedRequirements)
+		standard.HeadingStyles = parseHeadingStylesFromDirectStructure(parsedRequirements)
+		standard.ParagraphStyles = parseParagraphStylesFromDirectStructure(parsedRequirements)
+		standard.TableStyle = parseTableStyleFromDirectStructure(parsedRequirements)
+		standard.FigureStyle = parseFigureStyleFromDirectStructure(parsedRequirements)
+		standard.ReferenceStyle = parseReferenceStyleFromDirectStructure(parsedRequirements)
+		standard.AbstractStyles = parseAbstractStylesFromDirectStructure(parsedRequirements)
 	}
 
 	// 优先使用直接在parsedRequirements中的格式要求
@@ -764,6 +812,12 @@ func getFloat64(m map[string]interface{}, key string, defaultValue float64) floa
 	if v, ok := m[key].(float64); ok {
 		return v
 	}
+	// 尝试转换字符串数值
+	if v, ok := m[key].(string); ok {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
 	return defaultValue
 }
 
@@ -772,6 +826,389 @@ func getBool(m map[string]interface{}, key string, defaultValue bool) bool {
 		return v
 	}
 	return defaultValue
+}
+
+// parsePageSetupFromDirectStructure 从直接结构解析页面设置
+func parsePageSetupFromDirectStructure(settings map[string]interface{}) PageSetup {
+	result := PageSetup{
+		PaperSize:      "A4",
+		MarginTop:      2.5,
+		MarginBottom:   2.5,
+		MarginLeft:     2.5,
+		MarginRight:    2.5,
+		HeaderDistance: 1.6,
+		FooterDistance: 2.1,
+	}
+
+	if pageSetup, ok := settings["page_setup"].(map[string]interface{}); ok {
+		// 解析纸张大小
+		if paperSize, ok := pageSetup["paper_size"].(string); ok {
+			result.PaperSize = paperSize
+		}
+
+		// 解析页边距
+		if margins, ok := pageSetup["margins"].(map[string]interface{}); ok {
+			if top, ok := margins["top"].(float64); ok {
+				result.MarginTop = top
+			}
+			if bottom, ok := margins["bottom"].(float64); ok {
+				result.MarginBottom = bottom
+			}
+			if left, ok := margins["left"].(float64); ok {
+				result.MarginLeft = left
+			}
+			if right, ok := margins["right"].(float64); ok {
+				result.MarginRight = right
+			}
+		}
+
+		// 解析页眉页脚
+		if header, ok := pageSetup["header"].(map[string]interface{}); ok {
+			if distance, ok := header["distance"].(float64); ok {
+				result.HeaderDistance = distance
+			}
+		}
+		if footer, ok := pageSetup["footer"].(map[string]interface{}); ok {
+			if distance, ok := footer["distance"].(float64); ok {
+				result.FooterDistance = distance
+			}
+		}
+
+		// 解析方向和纸张大小
+		if orientation, ok := pageSetup["orientation"].(string); ok {
+			result.PaperSize = orientation
+		}
+	}
+
+	return result
+}
+
+// parseHeadingStylesFromDirectStructure 从直接结构解析标题样式
+func parseHeadingStylesFromDirectStructure(settings map[string]interface{}) []HeadingStyle {
+	var styles []HeadingStyle
+
+	if headings, ok := settings["headings"].(map[string]interface{}); ok {
+		// 解析各级标题
+		for levelName, levelData := range headings {
+			if levelMap, ok := levelData.(map[string]interface{}); ok {
+				// 确定标题级别
+				level := 0
+				switch levelName {
+				case "level1":
+					level = 1
+				case "level2":
+					level = 2
+				case "level3":
+					level = 3
+				default:
+					continue
+				}
+
+				// 提取样式属性
+				style := HeadingStyle{
+					Level:     level,
+					Name:      fmt.Sprintf("%s级标题", getChineseNumber(level)),
+					FontName:  getString(levelMap, "font_name", "黑体"),
+					Bold:      getBool(levelMap, "bold", true),
+					Alignment: getString(levelMap, "alignment", "left"),
+				}
+
+				// 解析字体大小
+				if fontSize, ok := levelMap["font_size"].(string); ok {
+					style.FontSize = parseFontSize(fontSize)
+				} else if fontSize, ok := levelMap["font_size"].(float64); ok {
+					style.FontSize = fontSize
+				}
+
+				// 解析行间距
+				if lineSpace, ok := levelMap["line_space"].(string); ok {
+					if lineSpace == "single" {
+						style.LineSpacing = 12 // 单倍行距约等于12磅
+					}
+				}
+
+				// 解析编号格式
+				if numbering, ok := levelMap["numbering"].(string); ok {
+					style.Name = numbering
+				}
+
+				styles = append(styles, style)
+			}
+		}
+	}
+
+	// 如果没有解析到任何标题样式，添加默认样式
+	if len(styles) == 0 {
+		styles = append(styles, HeadingStyle{
+			Level:     1,
+			Name:      "一级标题",
+			FontName:  "黑体",
+			FontSize:  16, // 三号
+			Bold:      true,
+			Alignment: "center",
+		})
+		styles = append(styles, HeadingStyle{
+			Level:     2,
+			Name:      "二级标题",
+			FontName:  "黑体",
+			FontSize:  14, // 四号
+			Bold:      true,
+			Alignment: "left",
+		})
+		styles = append(styles, HeadingStyle{
+			Level:     3,
+			Name:      "三级标题",
+			FontName:  "黑体",
+			FontSize:  12, // 小四号
+			Bold:      true,
+			Alignment: "left",
+		})
+	}
+
+	return styles
+}
+
+// parseParagraphStylesFromDirectStructure 从直接结构解析段落样式
+func parseParagraphStylesFromDirectStructure(settings map[string]interface{}) []ParagraphStyle {
+	var styles []ParagraphStyle
+
+	if body, ok := settings["body"].(map[string]interface{}); ok {
+		style := ParagraphStyle{
+			Name:      "正文",
+			FontName:  getString(body, "font_name", "宋体"),
+			Alignment: getString(body, "alignment", "justify"),
+		}
+
+		// 解析字体大小
+		if fontSize, ok := body["font_size"].(string); ok {
+			style.FontSize = parseFontSize(fontSize)
+		} else if fontSize, ok := body["font_size"].(float64); ok {
+			style.FontSize = fontSize
+		}
+
+		// 解析行间距
+		if lineSpace, ok := body["line_space"].(string); ok {
+			if lineSpace == "1.5" {
+				style.LineSpacing = 24 // 1.5倍行距约等于24磅
+			}
+		} else if lineSpace, ok := body["line_space"].(float64); ok {
+			style.LineSpacing = lineSpace * 16 // 假设基于1倍行距16磅计算
+		}
+
+		// 解析首行缩进
+		if indent, ok := body["first_line_indent"].(string); ok {
+			if indent == "2字符" {
+				style.FirstLineIndent = 2
+			}
+		} else if indent, ok := body["first_line_indent"].(float64); ok {
+			style.FirstLineIndent = indent
+		}
+
+		styles = append(styles, style)
+	}
+
+	// 如果没有解析到正文样式，添加默认样式
+	if len(styles) == 0 {
+		styles = append(styles, ParagraphStyle{
+			Name:            "正文",
+			FontName:        "宋体",
+			FontSize:        12, // 小四号
+			Alignment:       "justify",
+			LineSpacing:     24, // 1.5倍行距
+			FirstLineIndent: 2,  // 2字符
+		})
+	}
+
+	return styles
+}
+
+// parseTableStyleFromDirectStructure 从直接结构解析表格样式
+func parseTableStyleFromDirectStructure(settings map[string]interface{}) TableStyle {
+	result := TableStyle{
+		CaptionPrefix:   "表格",
+		FontName:        "宋体",
+		FontSize:        10.5,
+		CaptionPosition: "top",
+		BorderStyle:     "all_borders",
+	}
+
+	if table, ok := settings["table"].(map[string]interface{}); ok {
+		// 解析表格相关设置
+		if caption, ok := table["caption"].(map[string]interface{}); ok {
+			result.CaptionPrefix = getString(caption, "prefix", "表格")
+			result.FontName = getString(caption, "font_name", "宋体")
+			if fontSize, ok := caption["font_size"].(float64); ok {
+				result.FontSize = fontSize
+			}
+		}
+	}
+
+	return result
+}
+
+// parseFigureStyleFromDirectStructure 从直接结构解析图表样式
+func parseFigureStyleFromDirectStructure(settings map[string]interface{}) FigureStyle {
+	result := FigureStyle{
+		CaptionPrefix:   "图",
+		FontName:        "宋体",
+		FontSize:        10.5,
+		CaptionPosition: "bottom",
+	}
+
+	if figure, ok := settings["figure"].(map[string]interface{}); ok {
+		// 解析图表相关设置
+		if caption, ok := figure["caption"].(map[string]interface{}); ok {
+			result.CaptionPrefix = getString(caption, "prefix", "图")
+			result.FontName = getString(caption, "font_name", "宋体")
+			if fontSize, ok := caption["font_size"].(float64); ok {
+				result.FontSize = fontSize
+			}
+		}
+	}
+
+	return result
+}
+
+// parseReferenceStyleFromDirectStructure 从直接结构解析参考文献样式
+func parseReferenceStyleFromDirectStructure(settings map[string]interface{}) ReferenceStyle {
+	result := ReferenceStyle{
+		Style:        "GB/T 7714",
+		FontName:     "宋体",
+		FontSize:     10.5,
+		LineSpacing:  20,
+		IndentFormat: "hanging_indent",
+	}
+
+	if references, ok := settings["references"].(map[string]interface{}); ok {
+		// 解析参考文献相关设置
+		if content, ok := references["content"].(map[string]interface{}); ok {
+			result.FontName = getString(content, "font_name", "宋体")
+			if fontSize, ok := content["font_size"].(float64); ok {
+				result.FontSize = fontSize
+			}
+			if lineSpace, ok := content["line_space"].(string); ok {
+				if lineSpace == "single" {
+					result.LineSpacing = 16
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// parseAbstractStylesFromDirectStructure 从直接结构解析摘要样式
+func parseAbstractStylesFromDirectStructure(settings map[string]interface{}) []AbstractStyle {
+	var styles []AbstractStyle
+
+	// 解析中文摘要
+	if abstract, ok := settings["abstract"].(map[string]interface{}); ok {
+		if content, ok := abstract["content"].(map[string]interface{}); ok {
+			styles = append(styles, AbstractStyle{
+				Type:        "chinese",
+				Heading:     getString(abstract, "label", "摘要：")[:len(getString(abstract, "label", "摘要："))-3], // 去掉冒号
+				FontName:    getString(content, "font_name", "宋体"),
+				Bold:        getBool(content, "bold", false),
+				Alignment:   getString(content, "alignment", "center"),
+				LineSpacing: 20,
+			})
+		}
+	}
+
+	// 解析英文摘要
+	if engAbstract, ok := settings["english_abstract"].(map[string]interface{}); ok {
+		if content, ok := engAbstract["content"].(map[string]interface{}); ok {
+			styles = append(styles, AbstractStyle{
+				Type:        "english",
+				Heading:     "Abstract",
+				FontName:    getString(content, "font_name", "Times New Roman"),
+				FontSize:    12,
+				Bold:        getBool(content, "bold", false),
+				Alignment:   getString(content, "alignment", "left"),
+				LineSpacing: 20,
+			})
+		}
+	}
+
+	// 如果没有解析到任何摘要样式，添加默认样式
+	if len(styles) == 0 {
+		styles = append(styles, AbstractStyle{
+			Type:           "chinese",
+			Heading:        "摘要",
+			FontName:       "宋体",
+			FontSize:       12,
+			Bold:           true,
+			Alignment:      "center",
+			LineSpacing:    20,
+			KeywordsPrefix: "关键词：",
+		})
+		styles = append(styles, AbstractStyle{
+			Type:           "english",
+			Heading:        "Abstract",
+			FontName:       "Times New Roman",
+			FontSize:       12,
+			Bold:           true,
+			Alignment:      "center",
+			LineSpacing:    20,
+			KeywordsPrefix: "Keywords:",
+		})
+	}
+
+	return styles
+}
+
+// 辅助函数：将数字转换为中文
+func getChineseNumber(num int) string {
+	switch num {
+	case 1:
+		return "一"
+	case 2:
+		return "二"
+	case 3:
+		return "三"
+	case 4:
+		return "四"
+	case 5:
+		return "五"
+	default:
+		return fmt.Sprintf("%d", num)
+	}
+}
+
+// 辅助函数：解析字体大小字符串
+func parseFontSize(sizeStr string) float64 {
+	switch sizeStr {
+	case "小四号":
+		return 12
+	case "四号":
+		return 14
+	case "小三号":
+		return 15
+	case "三号":
+		return 16
+	case "小二号":
+		return 18
+	case "二号":
+		return 22
+	case "小一号":
+		return 24
+	case "一号":
+		return 26
+	case "小初号":
+		return 36
+	case "初号":
+		return 42
+	case "五号":
+		return 10.5
+	case "六号":
+		return 7.5
+	case "七号":
+		return 5.5
+	case "八号":
+		return 5
+	default:
+		return 12 // 默认小四号
+	}
 }
 
 // parsePageSetupEnglish 解析英文键名的页面设置
@@ -964,3 +1401,297 @@ const (
 	CorrectionTypeTable        CorrectionType = "table"         // 表格修正
 	CorrectionTypeFigure       CorrectionType = "figure"        // 图表修正
 )
+
+// ParseFormatText 智能解析格式要求文本
+// 将用户粘贴的格式说明文本解析为结构化的格式要求
+func ParseFormatText(text string) map[string]interface{} {
+	result := make(map[string]interface{})
+
+	// 1. 解析页面设置
+	result["页面设置"] = parsePageSetupFromText(text)
+
+	// 2. 解析正文字体
+	result["body"] = parseBodyFormatFromText(text)
+
+	// 3. 解析标题字体
+	result["headings"] = parseHeadingsFromText(text)
+
+	// 4. 解析摘要格式
+	result["abstract"] = parseAbstractFromText(text)
+
+	// 5. 解析关键词格式
+	result["keywords"] = parseKeywordsFromText(text)
+
+	// 6. 解析参考文献格式
+	result["references"] = parseReferencesFromText(text)
+
+	return result
+}
+
+// parsePageSetupFromText 从文本中解析页面设置
+func parsePageSetupFromText(text string) map[string]interface{} {
+	setup := make(map[string]interface{})
+
+	// 解析页边距
+	marginPatterns := []struct {
+		pattern string
+		key     string
+	}{
+		{`上[、，,\s]+下[、，,\s]+左[、，,\s]+右[均为]*(\d+\.?\d*)\s*厘米`, "margin_all"},
+		{`上[、，,\s]+(\d+\.?\d*)\s*厘米`, "margin_top"},
+		{`下[、，,\s]+(\d+\.?\d*)\s*厘米`, "margin_bottom"},
+		{`左[、，,\s]+(\d+\.?\d*)\s*厘米`, "margin_left"},
+		{`右[、，,\s]+(\d+\.?\d*)\s*厘米`, "margin_right"},
+	}
+
+	for _, p := range marginPatterns {
+		re := regexp.MustCompile(p.pattern)
+		matches := re.FindStringSubmatch(text)
+		if len(matches) > 1 {
+			val, _ := strconv.ParseFloat(matches[1], 64)
+			if p.key == "margin_all" {
+				setup["margin_top"] = val
+				setup["margin_bottom"] = val
+				setup["margin_left"] = val
+				setup["margin_right"] = val
+			} else {
+				setup[p.key] = val
+			}
+		}
+	}
+
+	// 如果没有找到明确的边距，尝试通用模式
+	if len(setup) == 0 {
+		// 匹配 "2.5厘米" 这种模式
+		marginRegex := regexp.MustCompile(`(\d+\.?\d*)\s*厘米`)
+		if marginRegex.MatchString(text) {
+			// 默认所有边距为2.5cm（如果文本中提到的话）
+			if strings.Contains(text, "2.5") {
+				setup["margin_top"] = 2.5
+				setup["margin_bottom"] = 2.5
+				setup["margin_left"] = 2.5
+				setup["margin_right"] = 2.5
+			}
+		}
+	}
+
+	// 解析页眉页脚距离
+	headerRegex := regexp.MustCompile(`页眉[：:\s]+(\d+\.?\d*)\s*厘米`)
+	if match := headerRegex.FindStringSubmatch(text); len(match) > 1 {
+		if val, _ := strconv.ParseFloat(match[1], 64); val > 0 {
+			setup["header_distance"] = val
+		}
+	}
+
+	footerRegex := regexp.MustCompile(`页脚[：:\s]+(\d+\.?\d*)\s*厘米`)
+	if match := footerRegex.FindStringSubmatch(text); len(match) > 1 {
+		if val, _ := strconv.ParseFloat(match[1], 64); val > 0 {
+			setup["footer_distance"] = val
+		}
+	}
+
+	return setup
+}
+
+// parseBodyFormatFromText 从文本中解析正文字体格式
+func parseBodyFormatFromText(text string) map[string]interface{} {
+	format := make(map[string]interface{})
+
+	// 解析正文字体
+	bodyFontPatterns := []string{
+		`正文[字样]*[：:\s]+([^，。,；\n]+?)[\s\n]`,
+		`正文[为用是]+([^，。,；\n]+?)字体`,
+	}
+
+	fontName := ""
+	for _, pattern := range bodyFontPatterns {
+		re := regexp.MustCompile(pattern)
+		match := re.FindStringSubmatch(text)
+		if len(match) > 1 {
+			fontText := strings.TrimSpace(match[1])
+			// 提取字体名称
+			fonts := []string{"宋体", "黑体", "仿宋", "楷体", "Times New Roman", "Arial"}
+			for _, f := range fonts {
+				if strings.Contains(fontText, f) {
+					fontName = f
+					break
+				}
+			}
+			break
+		}
+	}
+
+	if fontName == "" {
+		// 尝试从整段文本中查找
+		if strings.Contains(text, "小四号宋体") || strings.Contains(text, "小四宋体") {
+			fontName = "宋体"
+		}
+	}
+	format["font_name"] = fontName
+
+	// 解析字号
+	size := 12.0 // 默认小四号
+	if strings.Contains(text, "小四号") || strings.Contains(text, "小四") {
+		size = 12.0
+	} else if strings.Contains(text, "五号") {
+		size = 10.5
+	} else if strings.Contains(text, "四号") {
+		size = 14.0
+	} else if strings.Contains(text, "三号") {
+		size = 16.0
+	}
+	format["font_size"] = fmt.Sprintf("%.1f", size)
+
+	// 解析行间距
+	lineSpace := "1.5"
+	if strings.Contains(text, "固定值20磅") || strings.Contains(text, "固定值 20 磅") {
+		lineSpace = "fixed_20_pt"
+	} else if strings.Contains(text, "单倍行距") {
+		lineSpace = "single"
+	} else if strings.Contains(text, "1.5倍行距") {
+		lineSpace = "1.5"
+	} else if strings.Contains(text, "2倍行距") || strings.Contains(text, "双倍行距") {
+		lineSpace = "2"
+	}
+	format["line_space"] = lineSpace
+
+	// 解析对齐方式
+	alignment := "justify" // 默认两端对齐
+	if strings.Contains(text, "居中") && !strings.Contains(text, "居中对齐") {
+		alignment = "center"
+	} else if strings.Contains(text, "左对齐") {
+		alignment = "left"
+	} else if strings.Contains(text, "右对齐") {
+		alignment = "right"
+	}
+	format["alignment"] = alignment
+
+	// 解析首行缩进
+	indent := "2字符"
+	if strings.Contains(text, "首行缩进") || strings.Contains(text, "首行缩") {
+		if strings.Contains(text, "2字符") || strings.Contains(text, "2字") {
+			indent = "2字符"
+		}
+	}
+	format["first_line_indent"] = indent
+
+	return format
+}
+
+// parseHeadingsFromText 从文本中解析标题格式
+func parseHeadingsFromText(text string) map[string]interface{} {
+	headings := make(map[string]interface{})
+
+	// 一级标题
+	level1 := make(map[string]interface{})
+	if strings.Contains(text, "一级标题") || strings.Contains(text, "章标题") {
+		// 解析一级标题字体
+		if strings.Contains(text, "一级标题") && strings.Contains(text, "黑体") {
+			level1["font_name"] = "黑体"
+		}
+		if strings.Contains(text, "一级标题") && strings.Contains(text, "三号") {
+			level1["font_size"] = "三号"
+		}
+		if strings.Contains(text, "一级标题") && strings.Contains(text, "居中") {
+			level1["alignment"] = "center"
+		}
+		// 行间距
+		if strings.Contains(text, "一级标题") && strings.Contains(text, "固定值20磅") {
+			level1["line_space"] = "fixed_20_pt"
+		}
+	}
+	// 检查是否有一级标题（章）的完整描述
+	if strings.Contains(text, "一级标题（章）") || strings.Contains(text, "章）：") {
+		level1["font_name"] = "黑体"
+		level1["font_size"] = "三号"
+		level1["alignment"] = "center"
+		level1["line_space"] = "fixed_20_pt"
+		level1["bold"] = true
+	}
+	headings["level1"] = level1
+
+	// 二级标题
+	level2 := make(map[string]interface{})
+	if strings.Contains(text, "二级标题（节）") || strings.Contains(text, "节）：") {
+		level2["font_name"] = "黑体"
+		level2["font_size"] = "小三号"
+		level2["alignment"] = "left"
+		level2["line_space"] = "fixed_20_pt"
+		level2["bold"] = true
+	}
+	headings["level2"] = level2
+
+	// 三级标题
+	level3 := make(map[string]interface{})
+	if strings.Contains(text, "三级标题（条）") || strings.Contains(text, "条）：") {
+		level3["font_name"] = "黑体"
+		level3["font_size"] = "四号"
+		level3["alignment"] = "left"
+		level3["line_space"] = "fixed_20_pt"
+		level3["bold"] = true
+	}
+	headings["level3"] = level3
+
+	return headings
+}
+
+// parseAbstractFromText 从文本中解析摘要格式
+func parseAbstractFromText(text string) map[string]interface{} {
+	abstract := make(map[string]interface{})
+	content := make(map[string]interface{})
+
+	// 摘要通常使用与正文相同的格式，但字号可能不同
+	content["font_name"] = "宋体"
+	content["font_size"] = "小四号"
+	content["alignment"] = "justify"
+
+	abstract["content"] = content
+	abstract["title"] = map[string]interface{}{
+		"font_name": "黑体",
+		"font_size": "三号",
+		"alignment": "center",
+	}
+
+	return abstract
+}
+
+// parseKeywordsFromText 从文本中解析关键词格式
+func parseKeywordsFromText(text string) map[string]interface{} {
+	keywords := make(map[string]interface{})
+	content := make(map[string]interface{})
+
+	content["font_name"] = "宋体"
+	content["font_size"] = "小四号"
+	content["alignment"] = "left" // 关键词左对齐
+
+	keywords["content"] = content
+	keywords["separator"] = "分号"
+
+	return keywords
+}
+
+// parseReferencesFromText 从文本中解析参考文献格式
+func parseReferencesFromText(text string) map[string]interface{} {
+	refs := make(map[string]interface{})
+	content := make(map[string]interface{})
+
+	// 参考文献通常使用五号宋体
+	content["font_name"] = "宋体"
+	content["font_size"] = "五号"
+	content["alignment"] = "left"
+
+	// 行距
+	if strings.Contains(text, "参考文献") && strings.Contains(text, "行距") {
+		if strings.Contains(text, "固定值") {
+			content["line_space"] = "fixed_20_pt"
+		}
+	}
+
+	// 悬挂缩进
+	if strings.Contains(text, "参考文献") && strings.Contains(text, "悬挂") {
+		content["first_line_indent"] = "2字符"
+	}
+
+	refs["content"] = content
+	return refs
+}

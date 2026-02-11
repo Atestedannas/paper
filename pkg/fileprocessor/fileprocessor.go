@@ -1,6 +1,8 @@
 package fileprocessor
 
-import "context"
+import (
+	"context"
+)
 
 // FileProcessor 文件处理器接口
 type FileProcessor interface {
@@ -15,6 +17,9 @@ type FileProcessor interface {
 
 	// ExtractParagraphs 提取段落
 	ExtractParagraphs(ctx context.Context, docPath string) ([]map[string]interface{}, error)
+
+	// ApplyCorrections 应用修正到文档
+	ApplyCorrections(ctx context.Context, docPath string, corrections []map[string]interface{}) (string, error)
 }
 
 // FileInfo 文档基本信息
@@ -30,45 +35,44 @@ type FileInfo struct {
 }
 
 // BasicFileProcessor 基本文件处理器实现
-type BasicFileProcessor struct{}
+type BasicFileProcessor struct {
+	processor FileProcessor // 使用内部处理器实现
+}
 
 // NewBasicFileProcessor 创建基本文件处理器
 func NewBasicFileProcessor() FileProcessor {
-	return &BasicFileProcessor{}
+	// 优先使用四阶段处理器
+	return &BasicFileProcessor{
+		processor: NewFourStageProcessor(),
+	}
 }
 
 // ExtractDocumentInfo 提取文档信息（简化实现）
 func (p *BasicFileProcessor) ExtractDocumentInfo(filePath string) (FileInfo, error) {
-	// 这里是简化实现，实际应该根据文件类型调用相应的解析器
-	info := FileInfo{
-		Format:       "pdf", // 简化处理
-		Pages:        10,
-		WordCount:    5000,
-		CharCount:    25000,
-		Title:        "示例论文",
-		Author:       "作者",
-		CreatedDate:  "2024-01-01",
-		ModifiedDate: "2024-01-01",
-	}
-
-	return info, nil
+	// 委托给内部处理器实现
+	return p.processor.ExtractDocumentInfo(filePath)
 }
 
 // ExtractDocInfo 提取文档信息
 func (p *BasicFileProcessor) ExtractDocInfo(ctx context.Context, docPath string) (map[string]interface{}, error) {
-	return map[string]interface{}{
-		"title":  "",
-		"author": "",
-		"pages":  0,
-	}, nil
+	// 委托给内部处理器实现
+	return p.processor.ExtractDocInfo(ctx, docPath)
 }
 
 // ExtractHeadings 提取标题
 func (p *BasicFileProcessor) ExtractHeadings(ctx context.Context, docPath string) ([]map[string]interface{}, error) {
-	return []map[string]interface{}{}, nil
+	// 委托给内部处理器实现
+	return p.processor.ExtractHeadings(ctx, docPath)
 }
 
 // ExtractParagraphs 提取段落
 func (p *BasicFileProcessor) ExtractParagraphs(ctx context.Context, docPath string) ([]map[string]interface{}, error) {
-	return []map[string]interface{}{}, nil
+	// 委托给内部处理器实现
+	return p.processor.ExtractParagraphs(ctx, docPath)
+}
+
+// ApplyCorrections 应用修正到文档
+func (p *BasicFileProcessor) ApplyCorrections(ctx context.Context, docPath string, corrections []map[string]interface{}) (string, error) {
+	// 委托给内部处理器实现
+	return p.processor.ApplyCorrections(ctx, docPath, corrections)
 }

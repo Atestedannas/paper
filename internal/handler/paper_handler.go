@@ -17,7 +17,6 @@ import (
 	"rsc.io/pdf"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gin-gonic/gin/binding"
 	"github.com/google/uuid"
 	"github.com/nguyenthenguyen/docx"
 	"github.com/paper-format-checker/backend/internal/config"
@@ -55,6 +54,9 @@ type UploadPaperRequest struct {
 	Title              string                 `form:"title" json:"title" binding:"omitempty,min=1,max=255"`
 	Description        string                 `form:"description" json:"description" binding:"omitempty"`
 	FormatStandardID   uuid.UUID              `form:"format_standard_id" json:"format_standard_id" binding:"omitempty"`
+	TemplateID         int64                  `form:"template_id" json:"template_id" binding:"omitempty"`     // 前端传递的高校ID
+	DocumentType       string                 `form:"document_type" json:"document_type" binding:"omitempty"` // 文档类型：本科论文、硕士论文
+	Subject            string                 `form:"subject" json:"subject" binding:"omitempty"`             // 学科类别：文科、理科
 	ParsedRequirements map[string]interface{} `form:"parsed_requirements" json:"parsed_requirements" binding:"omitempty"`
 	Requirements       string                 `form:"requirements" json:"requirements" binding:"omitempty"`
 }
@@ -76,6 +78,7 @@ type FormatFixRequest struct {
 // UploadPaper 上传论文
 func (h *PaperHandler) UploadPaper(c *gin.Context) {
 	// 获取支付配置
+
 	paymentConfig, err := h.settingService.GetPaymentConfig()
 	if err != nil {
 		utils.InternalServerError(c, fmt.Sprintf("获取支付配置失败: %v", err))
@@ -120,53 +123,14 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 		return
 	}
 
-	// 执行后续处理（格式检查等）
+	// 执行后续处理（格式检查、修正等）
 	response, err := h.handlePostUploadProcessing(c, userID, paper, req)
 	if err != nil {
 		// 错误已经在handlePostUploadProcessing中处理
 		return
 	}
 
-	// 根据用户上传的文件路径和论文规范要求生成检查修改好的论文
-	// 文件格式在源文件名上+修改
-
-	var correctedFilePath string
-
-	if req.ParsedRequirements != nil && len(req.ParsedRequirements) > 0 {
-		// 使用解析后的格式要求生成修正版论文
-		_, err := h.paperService.FixPaperFormatByParsedRequirements(userID.(uuid.UUID), paper.ID, req.ParsedRequirements)
-		if err != nil {
-			// 记录错误但不影响主流程
-			fmt.Printf("Failed to apply format corrections by parsed requirements: %v\n", err)
-		}
-	} else if checkResult, ok := response["check_result"]; ok {
-		// 使用默认格式标准生成修正版论文
-		if result, ok := checkResult.(*model.CheckResult); ok {
-			// 自动生成并应用所有修正
-			_, err := h.paperService.FixPaperFormat(userID.(uuid.UUID), paper.ID, result.ID)
-			if err != nil {
-				// 记录错误但不影响主流程
-				fmt.Printf("Failed to apply format corrections: %v\n", err)
-			}
-		}
-	}
-
-	if correctedFilePath != "" {
-		response["corrected_file_path"] = correctedFilePath
-		response["download_url"] = fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String())
-	}
-
-	// 如果生成了修正文件，直接返回文件下载
-	if correctedFilePath != "" {
-		// 设置文件下载头
-		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filepath.Base(correctedFilePath)))
-		c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-		// 直接返回文件
-		c.File(correctedFilePath)
-		return
-	}
-
-	// 没有生成修正文件时返回正常响应
+	// 返回统一的响应
 	utils.Created(c, response)
 }
 
@@ -174,13 +138,6 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 func (h *PaperHandler) validateUploadRequest(c *gin.Context) (interface{}, UploadPaperRequest, *multipart.FileHeader, string, error) {
 	// 从上下文获取用户ID
 	userID, _ := c.Get("user_id")
-
-	// 解析请求参数 - 使用form绑定方式处理multipart/form-data
-	var req UploadPaperRequest
-	if err := c.ShouldBindWith(&req, binding.Form); err != nil {
-		utils.BadRequest(c, err.Error())
-		return nil, UploadPaperRequest{}, nil, "", err
-	}
 
 	// 获取上传文件
 	file, err := c.FormFile("file")
@@ -194,7 +151,6 @@ func (h *PaperHandler) validateUploadRequest(c *gin.Context) (interface{}, Uploa
 	fileType := ""
 	switch fileExt {
 	case ".pdf":
-
 		fileType = "pdf"
 	case ".docx":
 		fileType = "docx"
@@ -209,7 +165,50 @@ func (h *PaperHandler) validateUploadRequest(c *gin.Context) (interface{}, Uploa
 		return nil, UploadPaperRequest{}, nil, "", fmt.Errorf("file size exceeds limit")
 	}
 
+	// 手动解析表单字段
+	req := UploadPaperRequest{
+		Title:        c.PostForm("title"),
+		Description:  c.PostForm("description"),
+		TemplateID:   parseInt64OrZero(c.PostForm("template_id")),
+		DocumentType: c.PostForm("document_type"),
+		Subject:      c.PostForm("subject"),
+		Requirements: c.PostForm("requirements"),
+	}
+
+	// 如果提供了template_id，查找对应的格式标准ID
+	if req.TemplateID != 0 {
+		var template model.FormatTemplate
+		if err := database.DB.Where("university_id = ? AND is_active = ? AND document_type = ?",
+			req.TemplateID, true,
+			func(dt string) string {
+				if dt == "" {
+					return "本科论文"
+				}
+				return dt
+			}(req.DocumentType)).First(&template).Error; err == nil {
+			req.FormatStandardID = template.ID
+		}
+	} else {
+		// 尝试解析format_standard_id
+		if formatStandardIDStr := c.PostForm("format_standard_id"); formatStandardIDStr != "" {
+			if formatStandardID, err := uuid.Parse(formatStandardIDStr); err == nil {
+				req.FormatStandardID = formatStandardID
+			}
+		}
+	}
+
 	return userID, req, file, fileType, nil
+}
+
+// 辅助函数：安全地解析int64
+func parseInt64OrZero(s string) int64 {
+	if s == "" {
+		return 0
+	}
+	if val, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return val
+	}
+	return 0
 }
 
 // performFileUpload 执行文件上传操作
@@ -234,25 +233,134 @@ func (h *PaperHandler) performFileUpload(c *gin.Context, userID interface{}, req
 
 // handlePostUploadProcessing 处理上传后的后续操作
 func (h *PaperHandler) handlePostUploadProcessing(c *gin.Context, userID interface{}, paper *model.Paper, req UploadPaperRequest) (gin.H, error) {
-	// 自动触发格式检查
 
-	checkResult, err := h.paperService.CheckPaperFormat(userID.(uuid.UUID), paper.ID, req.FormatStandardID)
-	if err != nil {
-		// 格式检查失败，但仍返回上传成功的响应
+	var checkResult *model.CheckResult
+	var err error
+
+	// 优先使用用户提供的FormatStandardID，如果没有则根据TemplateID查找
+	if req.TemplateID != 0 {
+		// 如果前端传递了高校ID但没有FormatStandardID，尝试根据高校ID查找对应的模板
+		var template model.FormatTemplate
+
+		query := database.DB.Where("university_id = ? AND is_active = ?", req.TemplateID, true)
+
+		// 如果指定了文档类型，增加过滤条件
+		if req.DocumentType != "" {
+			query = query.Where("document_type = ?", req.DocumentType)
+		} else {
+			// 默认查找本科论文
+			query = query.Where("document_type = ?", "本科论文")
+		}
+
+		// 如果指定了学科类别，增加过滤条件
+		if req.Subject != "" {
+			query = query.Where("subject = ?", req.Subject)
+		}
+
+		// 查找该高校下的符合条件的模板
+		if err := query.First(&template).Error; err == nil {
+			req.FormatStandardID = template.ID
+			// 更新paper记录中的SelectedTemplateID
+			paper.SelectedTemplateID = &template.ID
+			database.DB.Model(paper).Update("selected_template_id", template.ID)
+		} else {
+			// 如果带具体条件的没找到，尝试只按高校ID找一个兜底
+			if err := database.DB.Where("university_id = ? AND is_active = ?", req.TemplateID, true).First(&template).Error; err == nil {
+				req.FormatStandardID = template.ID
+				paper.SelectedTemplateID = &template.ID
+				database.DB.Model(paper).Update("selected_template_id", template.ID)
+			} else {
+				fmt.Printf("Warning: Could not find active template for university ID %d: %v\n", req.TemplateID, err)
+			}
+		}
+	}
+
+	// 根据是否有格式要求决定是否执行格式检查
+	if req.FormatStandardID != uuid.Nil {
+
+		// 使用标准模板进行格式检查
+		checkResult, err = h.paperService.CheckPaperFormat(userID.(uuid.UUID), paper.ID, req.FormatStandardID)
+		if err != nil {
+			// 格式检查失败，但仍返回上传成功的响应
+			response := gin.H{
+				"paper":   paper,
+				"message": "paper uploaded successfully, but format check failed",
+				"error":   fmt.Sprintf("failed to perform automatic format check: %v", err),
+			}
+			return response, nil
+		}
+	} else if req.ParsedRequirements != nil && len(req.ParsedRequirements) > 0 {
+		// 如果没有FormatStandardID但有ParsedRequirements，则使用解析的格式要求
+		fixResult, err := h.paperService.FixPaperFormatByParsedRequirements(userID.(uuid.UUID), paper.ID, req.ParsedRequirements)
+		if err != nil {
+			fmt.Printf("Fix by parsed requirements failed: %v\n", err)
+		}
+		// 返回修正结果，但不执行格式检查
 		response := gin.H{
 			"paper":   paper,
-			"message": "paper uploaded successfully, but format check failed",
-			"error":   fmt.Sprintf("failed to perform automatic format check: %v", err),
+			"message": "paper uploaded and format fix completed successfully",
+		}
+		if result, ok := fixResult.(map[string]interface{}); ok {
+			if path, exists := result["corrected_file_path"]; exists {
+				response["corrected_file_path"] = path
+				response["download_url"] = fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String())
+			}
 		}
 		return response, nil
 	}
 
 	// 构建包含上传信息和格式检查结果的综合响应
 	response := gin.H{
-		"paper":          paper,
-		"check_result":   checkResult,
-		"message":        "paper uploaded and format check completed successfully",
-		"comparison_url": fmt.Sprintf("/api/v1/papers/%s/comparison/%s", paper.ID.String(), checkResult.ID.String()),
+		"paper":        paper,
+		"check_result": checkResult,
+		"message":      "paper uploaded and format check completed successfully",
+	}
+
+	if checkResult != nil {
+		response["comparison_url"] = fmt.Sprintf("/api/v1/papers/%s/comparison/%s", paper.ID.String(), checkResult.ID.String())
+	} else {
+		response["comparison_url"] = ""
+	}
+
+	// 自动修正并生成下载链接（只有在有检查结果且尚未修复时才进行修正）
+	if checkResult != nil {
+		// 检查论文是否已经被格式修复（状态为 "corrected" 表示已在上传时完成修复）
+		if paper.Status != "corrected" {
+			// 执行自动修正
+			fixResult, err := h.paperService.FixPaperFormat(userID.(uuid.UUID), paper.ID, checkResult.ID)
+			if err == nil {
+				// 如果修正成功，添加修正结果和下载链接
+				response["fix_result"] = fixResult
+				response["download_url"] = fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String())
+
+				// 尝试获取修正后的文件路径
+				if result, ok := fixResult.(*service.CorrectionResult); ok && result != nil {
+					response["corrected_file_path"] = result.CorrectedFilePath
+				} else if resultMap, ok := fixResult.(map[string]interface{}); ok {
+					if path, exists := resultMap["corrected_file_path"]; exists {
+						response["corrected_file_path"] = path
+					}
+				}
+			} else {
+				// 记录修正错误
+				fmt.Printf("Auto fix failed: %v\n", err)
+				response["fix_error"] = err.Error()
+			}
+
+			// 生成格式差异报告
+			diffReport, err := h.formatComparisonService.GenerateFormatDifferences(checkResult.ID)
+			if err == nil {
+				response["format_comparison"] = diffReport
+			}
+		} else {
+			// 论文状态已经是 "corrected"，说明已在上传时完成修复，跳过重复修复
+			fmt.Printf("Paper %s already corrected during upload, skipping duplicate fix\n", paper.ID.String())
+			// 仍然生成格式差异报告
+			diffReport, err := h.formatComparisonService.GenerateFormatDifferences(checkResult.ID)
+			if err == nil {
+				response["format_comparison"] = diffReport
+			}
+		}
 	}
 
 	return response, nil
@@ -423,7 +531,7 @@ func (h *PaperHandler) GetPaperCheckResults(c *gin.Context) {
 	}
 
 	// 获取检查结果列表
-	results, err := h.paperService.GetPaperCheckResults(paperID, userID.(uuid.UUID))
+	results, err := h.paperService.GetPaperCheckResults(userID.(uuid.UUID), paperID)
 	if err != nil {
 		utils.InternalServerError(c, err.Error())
 		return
@@ -446,7 +554,7 @@ func (h *PaperHandler) GetPaperFile(c *gin.Context) {
 	}
 
 	// 获取论文信息
-	paper, err := h.paperService.GetPaperByID(paperID, userID.(uuid.UUID))
+	paper, err := h.paperService.GetPaperByID(userID.(uuid.UUID), paperID)
 	if err != nil {
 		utils.InternalServerError(c, err.Error())
 		return
@@ -455,8 +563,20 @@ func (h *PaperHandler) GetPaperFile(c *gin.Context) {
 	// 设置下载响应头
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filepath.Base(paper.FilePath)))
 
+	// 规范化路径，处理 \ 和 / 的问题
+	cleanPath := filepath.Clean(paper.FilePath)
+	// 获取绝对路径日志，方便排查
+	absPath, _ := filepath.Abs(cleanPath)
+	fmt.Printf("Download Paper: ID=%s, Path=%s, AbsPath=%s\n", paperID, cleanPath, absPath)
+
+	// 检查文件是否存在
+	if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
+		utils.ErrorResponse(c, http.StatusNotFound, "文件在服务器上不存在", fmt.Sprintf("Path: %s, Error: %v", cleanPath, err))
+		return
+	}
+
 	// 根据文件类型设置正确的Content-Type
-	fileExt := strings.ToLower(filepath.Ext(paper.FilePath))
+	fileExt := strings.ToLower(filepath.Ext(cleanPath))
 	switch fileExt {
 	case ".docx":
 		c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
@@ -467,7 +587,7 @@ func (h *PaperHandler) GetPaperFile(c *gin.Context) {
 	}
 
 	// 返回文件
-	c.File(paper.FilePath)
+	c.File(cleanPath)
 }
 
 // GetCorrectedPaperFile 获取修正后的论文文件
@@ -489,11 +609,21 @@ func (h *PaperHandler) GetCorrectedPaperFile(c *gin.Context) {
 		return
 	}
 
+	// 检查文件是否存在
+	cleanPath := filepath.Clean(filePath)
+	absPath, _ := filepath.Abs(cleanPath)
+	fmt.Printf("Download Corrected Paper: ID=%s, Path=%s, AbsPath=%s\n", paperID, cleanPath, absPath)
+
+	if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
+		utils.ErrorResponse(c, http.StatusNotFound, "修正后的文件在服务器上不存在", fmt.Sprintf("Path: %s, Error: %v", cleanPath, err))
+		return
+	}
+
 	// 设置下载响应头
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filepath.Base(filePath)))
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filepath.Base(cleanPath)))
 
 	// 根据文件类型设置正确的Content-Type
-	fileExt := strings.ToLower(filepath.Ext(filePath))
+	fileExt := strings.ToLower(filepath.Ext(cleanPath))
 	switch fileExt {
 	case ".docx":
 		c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
@@ -504,21 +634,11 @@ func (h *PaperHandler) GetCorrectedPaperFile(c *gin.Context) {
 	}
 
 	// 返回文件
-	c.File(filePath)
+	c.File(cleanPath)
 }
 
 // ComparePaperFormats 对比论文格式
 func (h *PaperHandler) ComparePaperFormats(c *gin.Context) {
-	// 从上下文获取用户ID
-	userID, _ := c.Get("user_id")
-
-	// 获取论文ID
-	paperID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		utils.BadRequest(c, "invalid paper id")
-		return
-	}
-
 	// 获取检查结果ID
 	checkResultID, err := uuid.Parse(c.Param("check_result_id"))
 	if err != nil {
@@ -527,7 +647,7 @@ func (h *PaperHandler) ComparePaperFormats(c *gin.Context) {
 	}
 
 	// 对比论文格式
-	comparison, err := h.paperService.ComparePaperFormats(userID.(uuid.UUID), paperID, checkResultID)
+	comparison, err := h.formatComparisonService.GenerateFormatDifferences(checkResultID)
 	if err != nil {
 		utils.InternalServerError(c, err.Error())
 		return
@@ -679,8 +799,16 @@ func (h *PaperHandler) ParseFormatRequirements(c *gin.Context) {
 	}
 
 	// 创建格式模板记录
+	// 确保TemplateID是唯一的
+	// 注意：错误提示 invalid input syntax for type uuid 表明某个期望 UUID 的字段接收到了非 UUID 格式的字符串
+	// 检查 ParseFormatRequirements 函数中 TemplateID 的生成方式
+	// 可能是 CreateFormatStandard 中的 TemplateID 或者是 ParseFormatRequirements 中的 TemplateID
+	// 这里是 ParseFormatRequirements 函数
+
+	newTemplateID := uuid.New().String()
+
 	formatTemplate := model.FormatTemplate{
-		TemplateID:   fmt.Sprintf("parsed_%s", uuid.New().String()[:8]),
+		TemplateID:   newTemplateID, // 使用标准UUID字符串，不带前缀
 		Name:         fmt.Sprintf("%s格式标准", parsedFormat.Institution),
 		DocumentType: "本科论文",
 		Source:       "auto_parsed",
@@ -1803,16 +1931,18 @@ func (h *PaperHandler) HandleCQCECFormat(c *gin.Context) {
 
 	// 创建临时论文记录到数据库
 	paper := &model.Paper{
-		ID:          tempPaperID,
-		UserID:      userID.(uuid.UUID),
-		Title:       "重庆工程学院格式检查 - " + req.File.Filename,
-		Description: "重庆工程学院本科毕业设计（论文）格式检查",
-		FileName:    req.File.Filename,
-		FileType:    "docx",
-		FilePath:    filePath,
-		Status:      "uploaded",
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:                    tempPaperID,
+		UserID:                userID.(uuid.UUID),
+		Title:                 "重庆工程学院格式检查 - " + req.File.Filename,
+		Description:           "重庆工程学院本科毕业设计（论文）格式检查",
+		FileName:              req.File.Filename,
+		FileType:              "docx",
+		FilePath:              filePath,
+		Status:                "uploaded",
+		ParsedInfo:            "{}",
+		AutoDetectedTemplates: "[]",
+		CreatedAt:             time.Now(),
+		UpdatedAt:             time.Now(),
 	}
 
 	// 保存论文记录到数据库
@@ -1965,6 +2095,7 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 	// 获取表单参数
 	universityName := c.PostForm("university_name")
 	documentType := c.PostForm("document_type")
+	subject := c.PostForm("subject")
 	description := c.PostForm("description")
 
 	// 如果没有提供高校名称，尝试从文本中提取
@@ -1986,11 +2117,23 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 	if documentType == "" {
 		documentType = "本科论文"
 	}
+
+	if subject == "" {
+		subject = "综合"
+	}
+
 	// 解析格式规范
 	formatRules, err := h.formatParserService.ParseFormatFromText(formatText)
 
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "解析格式失败", err.Error())
+		return
+	}
+
+	// 将 formatRules 转换为 JSON 字符串
+	formatRulesJSON, err := json.Marshal(formatRules)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "序列化格式规则失败", err.Error())
 		return
 	}
 
@@ -2000,34 +2143,66 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 	if result.Error != nil {
 		// 如果高校不存在，创建新的高校记录
 		university = model.University{
-			Name:               universityName,
-			Abbr:               universityName,
-			Description:        description,
-			Subject:            "综合",
-			Tags:               "[]",
-			FormatRequirements: formatRules,
-			FilePath:           tempFilePath, // 保存上传文件路径
+			Name:        universityName,
+			Abbr:        universityName,
+			Description: description,
+			Tags:        "[]",
 		}
 		if err := database.DB.Create(&university).Error; err != nil {
 			utils.ErrorResponse(c, http.StatusInternalServerError, "创建高校记录失败", err.Error())
 			return
 		}
 	} else {
-		// 如果高校已存在，更新文件路径和格式要求
-		updates := make(map[string]interface{})
-		updates["file_path"] = tempFilePath
-		updates["format_requirements"] = formatRules
-		updates["updated_at"] = time.Now()
+		// 如果高校已存在，更新描述
 		if description != "" {
-			updates["description"] = description
+			database.DB.Model(&university).Update("description", description)
 		}
-		if err := database.DB.Model(&university).Updates(updates).Error; err != nil {
-			utils.ErrorResponse(c, http.StatusInternalServerError, "更新高校记录失败", err.Error())
+	}
+
+	// 查找是否存在相同的模板（高校+文档类型+学科）
+	var existingTemplate model.FormatTemplate
+	err = database.DB.Where("university_id = ? AND document_type = ? AND subject = ?", university.ID, documentType, subject).First(&existingTemplate).Error
+
+	if err == nil {
+		// 更新现有模板
+		existingTemplate.FormatRules = string(formatRulesJSON)
+		existingTemplate.FilePath = tempFilePath
+		existingTemplate.UpdatedAt = time.Now()
+		if description != "" {
+			existingTemplate.Description = description
+		}
+
+		if err := database.DB.Save(&existingTemplate).Error; err != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式模板失败", err.Error())
+			return
+		}
+	} else {
+		// 创建格式模板记录
+		// 确保TemplateID是唯一的，避免UUID解析错误
+
+		newTemplateID := uuid.New().String()
+
+		newTemplate := model.FormatTemplate{
+			TemplateID:   newTemplateID, // 使用纯UUID字符串
+			Name:         fmt.Sprintf("%s%s格式标准", universityName, documentType),
+			UniversityID: &university.ID,
+			DocumentType: documentType,
+			Subject:      subject,
+			FilePath:     tempFilePath,
+			Source:       "university_upload",
+			IsActive:     true,
+			IsPublic:     true,
+			FormatRules:  string(formatRulesJSON),
+			Description:  description,
+		}
+
+		if err := database.DB.Create(&newTemplate).Error; err != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())
 			return
 		}
 	}
-	// 确保高校ID存在（防止外键约束错误）
-	utils.Success(c, "上传成功")
+
+	utils.Success(c, "上传并解析成功")
 }
 
 // extractTextFromTXT 从TXT文件提取文本
@@ -2278,7 +2453,108 @@ func min(a, b int) int {
 
 // FixByTemplate 根据模板修复论文
 func (h *PaperHandler) FixByTemplate(c *gin.Context) {
-	utils.SuccessResponse(c, "功能开发中", nil)
+	// 从上下文获取用户ID
+	userID, _ := c.Get("user_id")
+
+	// 获取论文ID
+	paperID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.BadRequest(c, "invalid paper id")
+		return
+	}
+
+	// 获取请求参数
+	var req struct {
+		TemplateID       int64  `form:"template_id" json:"template_id"`               // 高校ID
+		FormatConfigJSON string `form:"format_config_json" json:"format_config_json"` // 格式配置JSON
+	}
+	// 使用 ShouldBind 支持 multipart/form-data 和 json
+	if err := c.ShouldBind(&req); err != nil {
+		utils.BadRequest(c, err.Error())
+		return
+	}
+
+	// 获取论文信息
+	paper, err := h.paperService.GetPaperByID(userID.(uuid.UUID), paperID)
+	if err != nil {
+		utils.InternalServerError(c, "论文不存在或无权限访问: "+err.Error())
+		return
+	}
+
+	var checkResult *model.CheckResult
+	var fixResult interface{}
+
+	// 如果有TemplateID，使用模板进行修正
+	if req.TemplateID != 0 {
+		// 查找该高校下的第一个激活模板
+		var template model.FormatTemplate
+		if err := database.DB.Where("university_id = ? AND is_active = ?", req.TemplateID, true).First(&template).Error; err != nil {
+			utils.BadRequest(c, "未找到该高校的格式模板: "+err.Error())
+			return
+		}
+
+		// 执行格式检查
+		checkResult, err = h.paperService.CheckPaperFormat(userID.(uuid.UUID), paper.ID, template.ID)
+		if err != nil {
+			utils.InternalServerError(c, "格式检查失败: "+err.Error())
+			return
+		}
+
+		// 执行自动修正
+		fixResult, err = h.paperService.FixPaperFormat(userID.(uuid.UUID), paper.ID, checkResult.ID)
+		if err != nil {
+			utils.InternalServerError(c, "格式修正失败: "+err.Error())
+			return
+		}
+
+		// 更新论文状态
+		database.DB.Model(&paper).Update("selected_template_id", template.ID)
+	} else if req.FormatConfigJSON != "" {
+		// 如果没有TemplateID但有格式配置，使用配置进行修正
+		var requirements map[string]interface{}
+		if err := json.Unmarshal([]byte(req.FormatConfigJSON), &requirements); err != nil {
+			utils.BadRequest(c, "格式配置JSON解析失败: "+err.Error())
+			return
+		}
+
+		// 使用配置进行修正
+		fixResult, err = h.paperService.FixPaperFormatByParsedRequirements(userID.(uuid.UUID), paper.ID, requirements)
+		if err != nil {
+			utils.InternalServerError(c, "格式修正失败: "+err.Error())
+			return
+		}
+	} else {
+		utils.BadRequest(c, "必须提供template_id或format_config_json")
+		return
+	}
+
+	// 构建响应
+	response := gin.H{
+		"message":      "格式修复完成",
+		"fix_result":   fixResult,
+		"download_url": fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String()),
+	}
+
+	if checkResult != nil {
+		response["check_result"] = checkResult
+
+		// 生成格式差异报告
+		diffReport, err := h.formatComparisonService.GenerateFormatDifferences(checkResult.ID)
+		if err == nil {
+			response["format_comparison"] = diffReport
+		}
+	}
+
+	// 尝试获取修正后的文件路径
+	if result, ok := fixResult.(*service.CorrectionResult); ok && result != nil {
+		response["corrected_file_path"] = result.CorrectedFilePath
+	} else if resultMap, ok := fixResult.(map[string]interface{}); ok {
+		if path, exists := resultMap["corrected_file_path"]; exists {
+			response["corrected_file_path"] = path
+		}
+	}
+
+	utils.Success(c, response)
 }
 
 // CreateFormatStandard 创建格式标准
@@ -2295,8 +2571,10 @@ func (h *PaperHandler) CreateFormatStandard(c *gin.Context) {
 		return
 	}
 
+	newTemplateID := uuid.New().String()
+
 	template := &model.FormatTemplate{
-		TemplateID:   fmt.Sprintf("std_%s", uuid.New().String()[:8]),
+		TemplateID:   newTemplateID, // 使用纯UUID
 		Name:         req.Name,
 		UniversityID: req.UniversityID,
 		DocumentType: req.DocumentType,
@@ -2759,17 +3037,27 @@ func (h *PaperHandler) alignmentToChinese(alignment string) string {
 // lineSpaceToChinese 将行距转换为中文描述
 func (h *PaperHandler) lineSpaceToChinese(lineSpace string) string {
 	switch lineSpace {
-	case "1.0":
+	case "1.0", "single":
 		return "单倍行距"
 	case "1.5":
 		return "1.5倍行距"
-	case "2.0":
-		return "2倍行距"
-	case "single":
-		return "单倍行距"
-	case "double":
+	case "2.0", "double":
 		return "双倍行距"
+	case "multiple":
+		return "多倍行距"
 	default:
+		// 处理其他格式，如固定值格式 "fixed_20_pt"
+		if strings.HasPrefix(lineSpace, "fixed_") {
+			ptStr := strings.TrimPrefix(lineSpace, "fixed_")
+			ptStr = strings.TrimSuffix(ptStr, "_pt")
+			if _, err := strconv.ParseFloat(ptStr, 64); err == nil {
+				return ptStr + "磅固定值"
+			}
+		}
+		// 处理 "30" 这样的数值（可能是多倍行距倍数）
+		if _, err := strconv.ParseFloat(lineSpace, 64); err == nil {
+			return lineSpace + "倍行距"
+		}
 		return lineSpace
 	}
 }

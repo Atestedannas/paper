@@ -11,15 +11,16 @@ import (
 
 // Config 应用配置结构体
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Database DatabaseConfig `mapstructure:"database"`
-	JWT      JWTConfig      `mapstructure:"jwt"`
-	File     FileConfig     `mapstructure:"file"`
-	Log      LogConfig      `mapstructure:"log"`
-	Wechat   WechatConfig   `mapstructure:"wechat"`
-	Alipay   AlipayConfig   `mapstructure:"alipay"`
-	Payment  PaymentConfig  `mapstructure:"payment"`
-	Security SecurityConfig `mapstructure:"security"`
+	Server        ServerConfig        `mapstructure:"server"`
+	Database      DatabaseConfig      `mapstructure:"database"`
+	JWT           JWTConfig           `mapstructure:"jwt"`
+	File          FileConfig          `mapstructure:"file"`
+	Log           LogConfig           `mapstructure:"log"`
+	Wechat        WechatConfig        `mapstructure:"wechat"`
+	WechatSandbox WechatSandboxConfig `mapstructure:"wechat_sandbox"`
+	Alipay        AlipayConfig        `mapstructure:"alipay"`
+	Payment       PaymentConfig       `mapstructure:"payment"`
+	Security      SecurityConfig      `mapstructure:"security"`
 }
 
 // SecurityConfig 安全配置
@@ -89,15 +90,25 @@ type WechatConfig struct {
 
 // AlipayConfig 支付宝配置
 type AlipayConfig struct {
-	AppID           string `mapstructure:"app_id"`
-	AppPrivateKey   string `mapstructure:"app_private_key"`
-	AlipayPublicKey string `mapstructure:"alipay_public_key"`
-	NotifyURL       string `mapstructure:"notify_url"`
-	ReturnURL       string `mapstructure:"return_url"`
-	RedirectURL     string `mapstructure:"redirect_url"`
-	Scope           string `mapstructure:"scope"`
-	AuthorizeURL    string `mapstructure:"authorize_url"`
-	GatewayURL      string `mapstructure:"gateway_url"`
+	AppID             string `mapstructure:"app_id"`
+	AppPrivateKey     string `mapstructure:"app_private_key"`
+	AlipayPublicKey   string `mapstructure:"alipay_public_key"`
+	NotifyURL         string `mapstructure:"notify_url"`
+	ReturnURL         string `mapstructure:"return_url"`
+	RedirectURL       string `mapstructure:"redirect_url"`
+	Scope             string `mapstructure:"scope"`
+	AuthorizeURL      string `mapstructure:"authorize_url"`
+	GatewayURL        string `mapstructure:"gateway_url"`
+	SandboxEnabled    bool   `mapstructure:"sandbox_enabled"`     // 是否启用沙箱环境
+	SandboxGatewayURL string `mapstructure:"sandbox_gateway_url"` // 沙箱环境网关地址
+}
+
+// WechatSandboxConfig 微信沙箱配置
+type WechatSandboxConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`          // 是否启用沙箱
+	ApiKey3        string `mapstructure:"api_key_3"`        // 沙箱API密钥3
+	ApiKey3Secret  string `mapstructure:"api_key_3_secret"` // 沙箱API密钥3密钥
+	SandboxSignKey string `mapstructure:"sandbox_sign_key"` // 沙箱签名密钥
 }
 
 // LoadConfig 从环境变量和配置文件加载配置
@@ -143,15 +154,23 @@ func LoadConfig(configPath string) (*Config, error) {
 			AppSecret:      "",
 		},
 		Alipay: AlipayConfig{
-			AppID:           "",
-			AppPrivateKey:   "",
-			AlipayPublicKey: "",
-			NotifyURL:       "",
-			ReturnURL:       "",
-			RedirectURL:     "",
-			Scope:           "auth_user",
-			AuthorizeURL:    "https://open.auth.alipay.com/oauth2/publicAppAuthorize.htm",
-			GatewayURL:      "https://openapi.alipay.com/gateway.do",
+			AppID:             "",
+			AppPrivateKey:     "",
+			AlipayPublicKey:   "",
+			NotifyURL:         "",
+			ReturnURL:         "",
+			RedirectURL:       "",
+			Scope:             "auth_user",
+			AuthorizeURL:      "https://open.auth.alipay.com/oauth2/publicAppAuthorize.htm",
+			GatewayURL:        "https://openapi.alipay.com/gateway.do",
+			SandboxEnabled:    false,
+			SandboxGatewayURL: "https://openapi.alipaydev.com/gateway.do",
+		},
+		WechatSandbox: WechatSandboxConfig{
+			Enabled:        false,
+			ApiKey3:        "",
+			ApiKey3Secret:  "",
+			SandboxSignKey: "",
 		},
 		Payment: PaymentConfig{
 			PaperDownload:  0,    // 默认免费
@@ -333,6 +352,32 @@ func LoadConfig(configPath string) (*Config, error) {
 	// 从环境变量加载安全配置
 	if encryptionKey := os.Getenv("SECURITY_ENCRYPTION_KEY"); encryptionKey != "" {
 		config.Security.EncryptionKey = encryptionKey
+	}
+
+	// 从环境变量加载支付宝沙箱配置
+	if alipaySandboxEnabled := os.Getenv("ALIPAY_SANDBOX_ENABLED"); alipaySandboxEnabled != "" {
+		if v, err := strconv.ParseBool(alipaySandboxEnabled); err == nil {
+			config.Alipay.SandboxEnabled = v
+		}
+	}
+	if alipaySandboxGatewayURL := os.Getenv("ALIPAY_SANDBOX_GATEWAY_URL"); alipaySandboxGatewayURL != "" {
+		config.Alipay.SandboxGatewayURL = alipaySandboxGatewayURL
+	}
+
+	// 从环境变量加载微信沙箱配置
+	if wechatSandboxEnabled := os.Getenv("WECHAT_SANDBOX_ENABLED"); wechatSandboxEnabled != "" {
+		if v, err := strconv.ParseBool(wechatSandboxEnabled); err == nil {
+			config.WechatSandbox.Enabled = v
+		}
+	}
+	if wechatApiKey3 := os.Getenv("WECHAT_API_KEY_3"); wechatApiKey3 != "" {
+		config.WechatSandbox.ApiKey3 = wechatApiKey3
+	}
+	if wechatApiKey3Secret := os.Getenv("WECHAT_API_KEY_3_SECRET"); wechatApiKey3Secret != "" {
+		config.WechatSandbox.ApiKey3Secret = wechatApiKey3Secret
+	}
+	if wechatSandboxSignKey := os.Getenv("WECHAT_SANDBOX_SIGN_KEY"); wechatSandboxSignKey != "" {
+		config.WechatSandbox.SandboxSignKey = wechatSandboxSignKey
 	}
 
 	return config, nil

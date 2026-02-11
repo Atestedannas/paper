@@ -260,9 +260,9 @@ func AdminMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// 检查用户角色
+		// 检查用户角色 - 允许 admin 或 super_admin 访问
 		role, exists := c.Get("role")
-		if !exists || role != "admin" {
+		if !exists || (role != "admin" && role != "super_admin") {
 			c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
 			c.Abort()
 			return

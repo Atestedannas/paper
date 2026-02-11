@@ -146,7 +146,7 @@ func (h *AdminHandler) GetPapers(c *gin.Context) {
 
 	database.DB.Model(&model.Paper{}).Count(&total)
 	offset := (page - 1) * pageSize
-	if err := database.DB.Offset(offset).Limit(pageSize).Order("created_at DESC").Find(&papers).Error; err != nil {
+	if err := database.DB.Preload("User").Preload("SelectedTemplate").Offset(offset).Limit(pageSize).Order("created_at DESC").Find(&papers).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "获取论文列表失败", err.Error())
 		return
 	}
@@ -181,5 +181,60 @@ func (h *AdminHandler) GetOrders(c *gin.Context) {
 		"page":        page,
 		"page_size":   pageSize,
 		"total_pages": (total + int64(pageSize) - 1) / int64(pageSize),
+	})
+}
+
+// SetUserAsSuperAdmin 将指定邮箱的用户设置为超级管理员
+func (h *AdminHandler) SetUserAsSuperAdmin(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的邮箱地址", err.Error())
+		return
+	}
+
+	// 查找用户
+	var user model.User
+	if err := database.DB.Where("email = ?", req.Email).First(&user).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusNotFound, "用户不存在", err.Error())
+		return
+	}
+
+	// 查找超级管理员角色
+	var superAdminRole model.Role
+	if err := database.DB.Where("code = ?", "super_admin").First(&superAdminRole).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusNotFound, "超级管理员角色不存在", err.Error())
+		return
+	}
+
+	// 检查用户是否已经是超级管理员
+	var userRole model.UserRole
+	if err := database.DB.Where("user_id = ? AND role_id = ?", user.ID, superAdminRole.ID).First(&userRole).Error; err == nil {
+		utils.SuccessResponse(c, "用户已是超级管理员", gin.H{
+			"user_id":   user.ID,
+			"email":     user.Email,
+			"role_id":   superAdminRole.ID,
+			"role_name": superAdminRole.Name,
+		})
+		return
+	}
+
+	// 分配超级管理员角色
+	userRole = model.UserRole{
+		UserID: user.ID,
+		RoleID: superAdminRole.ID,
+	}
+	if err := database.DB.Create(&userRole).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "分配角色失败", err.Error())
+		return
+	}
+
+	utils.SuccessResponse(c, "设置成功", gin.H{
+		"user_id":   user.ID,
+		"email":     user.Email,
+		"role_id":   superAdminRole.ID,
+		"role_name": superAdminRole.Name,
 	})
 }

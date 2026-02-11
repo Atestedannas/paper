@@ -26,8 +26,11 @@ func NewOrderHandler() *OrderHandler {
 func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	// 解析请求数据
 	var req struct {
-		MemberLevelID uuid.UUID `json:"member_level_id" binding:"required"`
-		PaymentMethod string    `json:"payment_method" binding:"required,oneof=wechat alipay"`
+		ServiceType   string  `json:"service_type"`
+		Amount        float64 `json:"amount"`
+		PaperID       string  `json:"paper_id"`
+		TemplateID    string  `json:"template_id"`
+		PaymentMethod string  `json:"payment_method" binding:"required,oneof=wechat alipay"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -38,8 +41,8 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	// 从上下文获取用户ID
 	userID, _ := c.Get("user_id")
 
-	// 创建订单
-	order, err := h.orderService.CreateOrder(userID.(uuid.UUID), req.MemberLevelID, req.PaymentMethod)
+	// 创建论文检查订单（不使用会员等级）
+	order, err := h.orderService.CreatePaperCheckOrder(userID.(uuid.UUID), req.ServiceType, req.Amount, req.PaperID, req.TemplateID, req.PaymentMethod)
 	if err != nil {
 		utils.InternalServerError(c, err.Error())
 		return

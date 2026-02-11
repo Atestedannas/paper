@@ -37,7 +37,7 @@ type RegisterRequest struct {
 
 // LoginRequest 登录请求结构体
 type LoginRequest struct {
-	Email    string `json:"email" binding:"required,email"`
+	Account  string `json:"email" binding:"required"` // 支持邮箱或用户名登录
 	Password string `json:"password" binding:"required"`
 }
 
@@ -121,7 +121,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	// 登录验证
-	user, err := h.userService.Login(req.Email, req.Password)
+	user, err := h.userService.Login(req.Account, req.Password)
 	if err != nil {
 		utils.Unauthorized(c, err.Error())
 		return

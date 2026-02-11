@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,7 +15,7 @@ import (
 // UserService 用户服务接口
 type UserService interface {
 	Register(username, email, password string) (*model.User, error)
-	Login(email, password string) (*model.User, error)
+	Login(account, password string) (*model.User, error)
 	GetUserByID(id uuid.UUID) (*model.User, error)
 	GetUserByEmail(email string) (*model.User, error)
 	GetUserByWechatOpenID(openID string) (*model.User, error)
@@ -85,16 +86,27 @@ func (s *userService) Register(username, email, password string) (*model.User, e
 }
 
 // Login 用户登录
-func (s *userService) Login(email, password string) (*model.User, error) {
-	// 根据邮箱查找用户
+func (s *userService) Login(account, password string) (*model.User, error) {
 	var user model.User
-	if err := database.DB.Where("email = ?", email).First(&user).Error; err != nil {
-		return nil, errors.New("invalid email or password")
+	var err error
+
+	// 判断是邮箱还是用户名登录
+	if strings.Contains(account, "@") {
+		// 邮箱登录
+		err = database.DB.Where("email = ?", account).First(&user).Error
+	} else {
+		// 用户名登录
+		err = database.DB.Where("username = ?", account).First(&user).Error
 	}
 
+	if err != nil {
+		fmt.Printf("Login failed: User not found or DB error for account '%s': %v\n", account, err)
+		return nil, errors.New("invalid account or password")
+	}
 	// 验证密码
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		return nil, errors.New("invalid email or password")
+		fmt.Printf("Login failed: Password mismatch for account '%s'\n", account)
+		return nil, errors.New("invalid account or password")
 	}
 
 	// 检查用户状态

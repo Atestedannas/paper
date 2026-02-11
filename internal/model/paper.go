@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // Paper 论文模型（支持模板解析和选择）
@@ -37,12 +38,24 @@ type Paper struct {
 	CheckResults     []CheckResult   `gorm:"foreignKey:PaperID" json:"check_results,omitempty"`
 }
 
+// BeforeCreate GORM hook to set default JSON values
+func (p *Paper) BeforeCreate(tx *gorm.DB) (err error) {
+	if p.ParsedInfo == "" {
+		p.ParsedInfo = "{}"
+	}
+	if p.AutoDetectedTemplates == "" {
+		p.AutoDetectedTemplates = "[]"
+	}
+	return
+}
+
 // CheckResult 格式检查结果模型（支持差异对比）
 type CheckResult struct {
-	ID         uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	PaperID    uuid.UUID `gorm:"type:uuid;index;not null" json:"paper_id"`
-	UserID     uuid.UUID `gorm:"type:uuid;index;not null" json:"user_id"`
-	TemplateID uuid.UUID `gorm:"type:uuid;index;not null" json:"template_id"` // 使用的模板ID
+	ID               uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	PaperID          uuid.UUID `gorm:"type:uuid;index;not null" json:"paper_id"`
+	UserID           uuid.UUID `gorm:"type:uuid;index;not null" json:"user_id"`
+	TemplateID       uuid.UUID `gorm:"type:uuid;index;not null;column:template_id" json:"template_id"`               // 使用的模板ID
+	FormatTemplateID uuid.UUID `gorm:"type:uuid;index;not null;column:format_template_id" json:"format_template_id"` // 冗余字段，解决数据库双重列约束问题
 
 	// 检查结果统计
 	TotalIssues  int `gorm:"not null;default:0" json:"total_issues"`
