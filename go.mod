@@ -2,10 +2,12 @@ module github.com/paper-format-checker/backend
 
 go 1.24.0
 
+toolchain go1.24.10
+
 require (
 	gitee.com/greatmusicians/unioffice v0.0.0-20220106081949-b29f935136a3
-	github.com/casbin/casbin/v3 v3.8.1
-	github.com/casbin/gorm-adapter/v3 v3.40.0
+	github.com/casbin/casbin/v3 v3.10.0
+	github.com/casbin/gorm-adapter/v3 v3.41.0
 	github.com/gin-contrib/cors v1.7.6
 	github.com/gin-gonic/gin v1.11.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
@@ -13,6 +15,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/leanovate/gopter v0.2.11
 	github.com/nguyenthenguyen/docx v0.0.0-20230621112118-9c8e795a11db
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/crypto v0.46.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.1
@@ -40,7 +43,6 @@ require (
 	github.com/goccy/go-yaml v1.18.0 // indirect
 	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9 // indirect
 	github.com/golang-sql/sqlexp v0.1.0 // indirect
-	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.8.0 // indirect

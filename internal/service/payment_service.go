@@ -95,7 +95,7 @@ func (s *paymentService) generatePaymentParams(payment *model.PaymentRecord, ord
 func (s *paymentService) generateWeChatPaymentParams(payment *model.PaymentRecord, order *model.Order, clientIP string, paymentType string) (map[string]interface{}, error) {
 	switch paymentType {
 	case "native":
-		result, err := s.wechatNativeService.CreateNativePayOrder(order, payment.ID.String(), clientIP)
+		result, err := s.wechatNativeService.CreateNativePayOrder(order, payment.ID.String(), clientIP, order.TotalAmount)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create wechat native order: %w", err)
 		}
@@ -184,7 +184,7 @@ func (s *paymentService) verifyWeChatSign(params map[string]interface{}) error {
 func (s *paymentService) generateAlipayPaymentParams(payment *model.PaymentRecord, order *model.Order, paymentType string) (map[string]interface{}, error) {
 	switch paymentType {
 	case "page":
-		paymentURL, err := s.alipayPagePayService.CreateTradePagePay(order)
+		paymentURL, err := s.alipayPagePayService.CreateTradePagePay(order, order.TotalAmount)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create alipay page pay: %w", err)
 		}

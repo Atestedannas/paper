@@ -411,12 +411,12 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 				}
 			}
 			if rulesMap != nil {
-				// 使用Python服务进行格式修正（更可靠）
+				// 使用增强处理器进行格式修正
 				log.Println("========================================")
-				log.Println("🐍 使用Python服务进行格式修正")
+				log.Println("🚀 使用增强处理器进行格式修正")
 				log.Println("========================================")
 
-				fp := fileprocessor.NewPythonProcessor()
+				fp := fileprocessor.NewEnhancedProcessor()
 				newFilePath, err := fp.ApplyCorrections(context.Background(), paper.FilePath, []map[string]interface{}{
 					{"format_rules": rulesMap},
 				})

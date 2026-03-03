@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # 1. Go 主控服务
+  go-app:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=paper_db
+      - REDIS_ADDR=redis:6379
+      # Python 服务地址 (使用服务名)
+      - PYTHON_SERVICE_URL=http://python-service:5000
+    depends_on:
+      - postgres
+      - redis
+      - python-service
+    networks:
+      - backend-network
+
+  # 2. Python 辅助服务
+  python-service:
+    build: ./python_service
+    ports:
+      - "5000:5000"
+    expose:
+      - "5000"
+    networks:
+      - backend-network
+
+  # 3. PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: paper_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database_init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - backend-network
+
+  # 4. Redis 缓存
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    networks:
+      - backend-network
+
+networks:
+  backend-network:
+    driver: bridge
+
+volumes:
+  pgdata:

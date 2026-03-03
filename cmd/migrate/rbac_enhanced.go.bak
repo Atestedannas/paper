@@ -1,0 +1,104 @@
+package migrate
+
+import (
+	"log"
+
+	"github.com/paper-format-checker/backend/internal/database"
+	"github.com/paper-format-checker/backend/internal/model"
+)
+
+func RunRBACEnhancedMigration() {
+	// 连接数据库
+	if err := database.Connect(); err != nil {
+		log.Fatalf("数据库连接失败: %v", err)
+	}
+	defer database.Close()
+
+	log.Println("开始执行权限管理增强迁移...")
+
+	// 自动迁移新模型
+	err := database.DB.AutoMigrate(
+		&model.PermissionPackage{},
+		&model.PermissionPackagePermission{},
+		&model.DataPermissionRule{},
+		&model.DataPermission{},
+	)
+	if err != nil {
+		log.Fatalf("自动迁移失败: %v", err)
+	}
+
+	log.Println("自动迁移完成！")
+
+	// 检查是否需要添加缺失的列到现有表
+	checkAndAddColumns()
+
+	log.Println("权限管理增强迁移执行完成！")
+}
+
+func checkAndAddColumns() {
+	// 检查 user_roles 表是否有 data_scope 列
+	var count int64
+	database.DB.Table("user_roles").Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'user_roles' AND column_name = 'data_scope'").Count(&count)
+	if count == 0 {
+		if err := database.DB.Exec("ALTER TABLE user_roles ADD COLUMN IF NOT EXISTS data_scope VARCHAR(20) DEFAULT 'self'").Error; err != nil {
+		}
+	}
+
+	// 检查 user_roles 表是否有 data_permission_id 列
+	database.DB.Table("user_roles").Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'user_roles' AND column_name = 'data_permission_id'").Count(&count)
+	if count == 0 {
+		if err := database.DB.Exec("ALTER TABLE user_roles ADD COLUMN IF NOT EXISTS data_permission_id UUID").Error; err != nil {
+		}
+	}
+
+	// 为现有用户创建默认数据权限配置
+	createDefaultDataPermissions()
+}
+
+func createDefaultDataPermissions() {
+	// 获取所有用户
+	var users []model.User
+	if err := database.DB.Find(&users).Error; err != nil {
+		return
+	}
+
+	// 获取默认用户角色
+	var defaultRole model.Role
+	if err := database.DB.Where("code = ?", "user").First(&defaultRole).Error; err != nil {
+		return
+	}
+
+	for _, user := range users {
+		// 检查用户是否已有数据权限配置
+		var existingCount int64
+		database.DB.Model(&model.DataPermission{}).Where("user_id = ?", user.ID).Count(&existingCount)
+		if existingCount > 0 {
+			continue
+		}
+
+		// 获取用户角色
+		var userRoles []model.Role
+		if err := database.DB.Joins("JOIN user_roles ON roles.id = user_roles.role_id").
+			Where("user_roles.user_id = ?", user.ID).
+			Find(&userRoles).Error; err != nil {
+			continue
+		}
+
+		// 为每个角色创建数据权限配置
+		for _, role := range userRoles {
+			// 确定默认数据范围
+			dataScope := model.DataScopeSelf
+			if role.Code == "admin" || role.Code == "super_admin" {
+				dataScope = model.DataScopeAll
+			}
+
+			dataPermission := &model.DataPermission{
+				UserID:    user.ID,
+				RoleID:    role.ID,
+				DataScope: dataScope,
+			}
+
+			database.DB.Create(dataPermission)
+		}
+	}
+}

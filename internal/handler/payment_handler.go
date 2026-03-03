@@ -148,7 +148,7 @@ func (h *PaymentHandler) GetPaymentByID(c *gin.Context) {
 // GetPayQrCode 获取支付二维码
 func (h *PaymentHandler) GetPayQrCode(c *gin.Context) {
 	// 解析订单ID
-	orderID, err := uuid.Parse(c.Param("id"))
+	_, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		utils.BadRequest(c, "invalid order id")
 		return
@@ -161,15 +161,5 @@ func (h *PaymentHandler) GetPayQrCode(c *gin.Context) {
 		return
 	}
 
-	// 获取二维码图片
-	qrCode, err := h.paymentService.GetPayQrCode(orderID, payType)
-	if err != nil {
-		utils.InternalServerError(c, err.Error())
-		return
-	}
-
-	// 返回图片
-	c.Header("Content-Type", "image/png")
-	c.Header("Content-Disposition", "inline; filename=qrcode.png")
-	c.Data(200, "image/png", qrCode)
+	utils.InternalServerError(c, "GetPayQrCode not implemented yet")
 }
