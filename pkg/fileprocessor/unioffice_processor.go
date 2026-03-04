@@ -494,10 +494,91 @@ func (p *FourStageProcessor) modifyDocumentContent(doc *document.Document, rules
 
 	modifiedCount := 0
 
-	// 遍历所有段落进行格式修改
+	// 首先收集所有段落信息
+	type paraInfo struct {
+		para     document.Paragraph
+		text     string
+		paraType string
+		level    int
+	}
+
+	var paraInfos []paraInfo
 	for _, para := range doc.Paragraphs() {
-		if err := p.modifyParagraphContent(para, rules); err == nil {
-			modifiedCount++
+		text := p.extractParagraphText(para)
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		paraType, level := p.classifyParagraphTypeWithLevel(text)
+		paraInfos = append(paraInfos, paraInfo{
+			para:     para,
+			text:     text,
+			paraType: paraType,
+			level:    level,
+		})
+	}
+
+	// 检测被分割的标题
+	// 如果连续的短标题段落（少于20个字符）具有相同的级别，可能是同一个标题被分割了
+	isSplitPart := make([]bool, len(paraInfos))
+	for i := 0; i < len(paraInfos); i++ {
+		if isSplitPart[i] {
+			continue
+		}
+
+		current := paraInfos[i]
+
+		// 检查是否是可能被分割的短标题
+		if current.level > 0 && len([]rune(current.text)) < 20 {
+			// 向后查找连续的同级别短段落
+			j := i + 1
+			combinedText := current.text
+			for j < len(paraInfos) {
+				next := paraInfos[j]
+				// 检查是否是同级别的短段落
+				if next.level == current.level && len([]rune(next.text)) < 20 {
+					// 检查合并后的文本是否合理（不应该太长）
+					if len([]rune(combinedText+next.text)) <= 60 {
+						combinedText += next.text
+						isSplitPart[j] = true // 标记为被分割的部分
+						j++
+						continue
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// 根据检测结果修改段落
+	for i, info := range paraInfos {
+		paraType := info.paraType
+		// 如果被分割的部分，改为正文类型
+		if isSplitPart[i] {
+			paraType = "body"
+		}
+
+		// 根据段落类型应用相应规则
+		switch paraType {
+		case "body":
+			if err := p.applyBodyFormatting(info.para, rules); err == nil {
+				modifiedCount++
+			}
+		case "heading_1":
+			if err := p.applyHeadingFormatting(info.para, rules, 1); err == nil {
+				modifiedCount++
+			}
+		case "heading_2":
+			if err := p.applyHeadingFormatting(info.para, rules, 2); err == nil {
+				modifiedCount++
+			}
+		case "heading_3":
+			if err := p.applyHeadingFormatting(info.para, rules, 3); err == nil {
+				modifiedCount++
+			}
+		case "abstract_title":
+			if err := p.applyAbstractFormatting(info.para, rules); err == nil {
+				modifiedCount++
+			}
 		}
 	}
 
@@ -679,41 +760,50 @@ func (p *FourStageProcessor) extractParagraphText(para document.Paragraph) strin
 
 // classifyParagraphType 分类段落类型
 func (p *FourStageProcessor) classifyParagraphType(text string) string {
+	paraType, _ := p.classifyParagraphTypeWithLevel(text)
+	return paraType
+}
+
+// classifyParagraphTypeWithLevel 分类段落类型（返回类型和标题级别）
+func (p *FourStageProcessor) classifyParagraphTypeWithLevel(text string) (string, int) {
 	text = strings.TrimSpace(text)
 
 	// 特殊标识符
 	if strings.HasPrefix(text, "摘要") {
-		return "abstract_title"
+		return "abstract_title", 0
 	}
 	if strings.HasPrefix(text, "关键词") {
-		return "keywords"
+		return "keywords", 0
 	}
 	if strings.HasPrefix(text, "参考文献") {
-		return "references_title"
+		return "references_title", 0
 	}
 
 	// 参考文献条目
 	if strings.Contains(text, "[") && strings.Contains(text, "]") {
-		return "reference_item"
+		return "reference_item", 0
 	}
 
-	// 标题识别
+	// 标题识别（按级别从低到高检查）
+	// 三级标题
+	if matched, _ := regexp.MatchString(`^\d+\.\d+\.\d+\s*`, text); matched {
+		return "heading_3", 3
+	}
+	// 二级标题
+	if matched, _ := regexp.MatchString(`^\d+\.\d+\s*`, text); matched {
+		return "heading_2", 2
+	}
+	// 一级标题
 	if matched, _ := regexp.MatchString(`^第[一二三四五六七八九十0-9]+章`, text); matched {
-		return "heading_1"
-	}
-	if matched, _ := regexp.MatchString(`^\d+\.\d+\s+`, text); matched {
-		return "heading_2"
-	}
-	if matched, _ := regexp.MatchString(`^\d+\.\d+\.\d+\s+`, text); matched {
-		return "heading_3"
+		return "heading_1", 1
 	}
 
 	// 摘要内容
 	if matched, _ := regexp.MatchString(`^[^\n]{10,200}`, text); matched {
-		return "abstract_content"
+		return "abstract_content", 0
 	}
 
-	return "body"
+	return "body", 0
 }
 
 // extractAllText 提取所有文本

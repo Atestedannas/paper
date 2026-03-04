@@ -126,6 +126,7 @@ type PageSetup struct {
 	MarginRight    float64 `json:"margin_right"`    // 右边距 (cm)
 	HeaderDistance float64 `json:"header_distance"` // 页眉距离 (cm)
 	FooterDistance float64 `json:"footer_distance"` // 页脚距离 (cm)
+	Gutter         float64 `json:"gutter"`          // 装订线/装订边距 (cm)
 }
 
 // HeadingStyle 标题样式配置
@@ -1221,6 +1222,7 @@ func parsePageSetupEnglish(settings map[string]interface{}) PageSetup {
 		MarginRight:    2.5,
 		HeaderDistance: 1.6,
 		FooterDistance: 2.1,
+		Gutter:         0,
 	}
 
 	if pageSetup, ok := settings["pageSetup"].(map[string]interface{}); ok {
@@ -1231,6 +1233,7 @@ func parsePageSetupEnglish(settings map[string]interface{}) PageSetup {
 		result.MarginRight = getFloat64(pageSetup, "margin_right", 2.5)
 		result.HeaderDistance = getFloat64(pageSetup, "header_distance", 1.6)
 		result.FooterDistance = getFloat64(pageSetup, "footer_distance", 2.1)
+		result.Gutter = getFloat64(pageSetup, "gutter", 0)
 	} else if pageSetup, ok := settings["page_setup"].(map[string]interface{}); ok {
 		result.PaperSize = getString(pageSetup, "paper_size", "A4")
 		result.MarginTop = getFloat64(pageSetup, "margin_top", 2.5)
@@ -1239,6 +1242,7 @@ func parsePageSetupEnglish(settings map[string]interface{}) PageSetup {
 		result.MarginRight = getFloat64(pageSetup, "margin_right", 2.5)
 		result.HeaderDistance = getFloat64(pageSetup, "header_distance", 1.6)
 		result.FooterDistance = getFloat64(pageSetup, "footer_distance", 2.1)
+		result.Gutter = getFloat64(pageSetup, "gutter", 0)
 	}
 
 	return result

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -12,13 +13,15 @@ import (
 
 // OrderHandler 订单处理器
 type OrderHandler struct {
-	orderService service.OrderService
+	orderService   service.OrderService
+	settingService service.SystemSettingService
 }
 
 // NewOrderHandler 创建订单处理器实例
 func NewOrderHandler() *OrderHandler {
 	return &OrderHandler{
-		orderService: service.NewOrderService(),
+		orderService:   service.NewOrderService(),
+		settingService: service.GetSystemSettingService(),
 	}
 }
 
@@ -41,8 +44,81 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	// 从上下文获取用户ID
 	userID, _ := c.Get("user_id")
 
-	// 创建论文检查订单（不使用会员等级）
-	order, err := h.orderService.CreatePaperCheckOrder(userID.(uuid.UUID), req.ServiceType, req.Amount, req.PaperID, req.TemplateID, req.PaymentMethod)
+	// 获取支付配置，计算真实金额
+	config, err := h.settingService.GetPaymentConfig()
+	if err != nil {
+		utils.InternalServerError(c, "获取支付配置失败")
+		return
+	}
+
+	log.Printf("[CreateOrder] 支付配置: %+v, 类型: is_check_free=%T, format_check=%T, format_fix=%T",
+		config, config["is_check_free"], config["format_check"], config["format_fix"])
+
+	// 根据服务类型和配置计算金额
+	amount := 0.0
+	switch req.ServiceType {
+	case "format_check":
+		isCheckFree := false
+		if isCheckFreeVal, ok := config["is_check_free"].(bool); ok {
+			isCheckFree = isCheckFreeVal
+		} else if isCheckFreeVal, ok := config["is_check_free"].(float64); ok {
+			isCheckFree = isCheckFreeVal != 0
+		}
+
+		log.Printf("[CreateOrder] format_check - isCheckFree: %v", isCheckFree)
+
+		if isCheckFree {
+			amount = 0
+		} else {
+			formatCheckPrice := 0.0
+			if price, ok := config["format_check"].(float64); ok {
+				formatCheckPrice = price
+			}
+			amount = formatCheckPrice
+		}
+	case "format_fix":
+		formatFixPrice := 0.0
+		if price, ok := config["format_fix"].(float64); ok {
+			formatFixPrice = price
+		}
+		amount = formatFixPrice
+	case "check_and_fix":
+		isCheckFree := false
+		if isCheckFreeVal, ok := config["is_check_free"].(bool); ok {
+			isCheckFree = isCheckFreeVal
+		} else if isCheckFreeVal, ok := config["is_check_free"].(float64); ok {
+			isCheckFree = isCheckFreeVal != 0
+		}
+
+		log.Printf("[CreateOrder] check_and_fix - isCheckFree: %v", isCheckFree)
+
+		if isCheckFree {
+			// 检查免费，只收修正费
+			formatFixPrice := 0.0
+			if price, ok := config["format_fix"].(float64); ok {
+				formatFixPrice = price
+			}
+			amount = formatFixPrice
+		} else {
+			// 检查+修正都收费
+			formatCheckPrice := 0.0
+			if price, ok := config["format_check"].(float64); ok {
+				formatCheckPrice = price
+			}
+			amount += formatCheckPrice
+
+			formatFixPrice := 0.0
+			if price, ok := config["format_fix"].(float64); ok {
+				formatFixPrice = price
+			}
+			amount += formatFixPrice
+		}
+	}
+
+	log.Printf("[CreateOrder] 服务类型: %s, 最终金额: %.2f", req.ServiceType, amount)
+
+	// 创建论文检查订单（使用计算后的金额）
+	order, err := h.orderService.CreatePaperCheckOrder(userID.(uuid.UUID), req.ServiceType, amount, req.PaperID, req.TemplateID, req.PaymentMethod)
 	if err != nil {
 		utils.InternalServerError(c, err.Error())
 		return

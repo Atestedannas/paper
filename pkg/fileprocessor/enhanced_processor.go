@@ -257,13 +257,71 @@ func getMapKeys(m map[string]interface{}) []string {
 // classifyParagraphs 智能分类段落
 func (p *EnhancedProcessor) classifyParagraphs(paragraphs []document.Paragraph) map[string][]document.Paragraph {
 	classified := make(map[string][]document.Paragraph)
+
+	// 首先收集所有非空段落及其类型
+	type paraInfo struct {
+		para     document.Paragraph
+		text     string
+		paraType string
+		level    int // 标题级别，0表示非标题
+	}
+
+	var paraInfos []paraInfo
 	for _, para := range paragraphs {
 		text := p.extractParagraphText(para)
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
-		paraType := p.intelligentClassifyParagraph(text)
-		classified[paraType] = append(classified[paraType], para)
+		paraType, level := p.intelligentClassifyParagraphWithLevel(text)
+		paraInfos = append(paraInfos, paraInfo{
+			para:     para,
+			text:     text,
+			paraType: paraType,
+			level:    level,
+		})
+	}
+
+	// 检测被分割的标题
+	// 如果连续的短标题段落（少于20个字符）具有相同的级别，可能是同一个标题被分割了
+	// 在这种情况下，只保留第一个段落作为标题，其他段落改为正文类型
+	isSplitPart := make([]bool, len(paraInfos))
+	for i := 0; i < len(paraInfos); i++ {
+		if isSplitPart[i] {
+			continue
+		}
+
+		current := paraInfos[i]
+
+		// 检查是否是可能被分割的短标题
+		if current.level > 0 && len([]rune(current.text)) < 20 {
+			// 向后查找连续的同级别短段落
+			j := i + 1
+			combinedText := current.text
+			for j < len(paraInfos) {
+				next := paraInfos[j]
+				// 检查是否是同级别的短段落
+				if next.level == current.level && len([]rune(next.text)) < 20 {
+					// 检查合并后的文本是否合理（不应该太长）
+					if len([]rune(combinedText+next.text)) <= 60 {
+						combinedText += next.text
+						isSplitPart[j] = true // 标记为被分割的部分
+						j++
+						continue
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// 根据检测结果分类段落
+	for i, info := range paraInfos {
+		if isSplitPart[i] {
+			// 被分割的标题部分改为正文类型，避免应用标题的段前段后间距
+			classified["body"] = append(classified["body"], info.para)
+		} else {
+			classified[info.paraType] = append(classified[info.paraType], info.para)
+		}
 	}
 
 	return classified
@@ -271,54 +329,60 @@ func (p *EnhancedProcessor) classifyParagraphs(paragraphs []document.Paragraph) 
 
 // intelligentClassifyParagraph 智能段落分类
 func (p *EnhancedProcessor) intelligentClassifyParagraph(text string) string {
+	paraType, _ := p.intelligentClassifyParagraphWithLevel(text)
+	return paraType
+}
+
+// intelligentClassifyParagraphWithLevel 智能段落分类（返回类型和标题级别）
+func (p *EnhancedProcessor) intelligentClassifyParagraphWithLevel(text string) (string, int) {
 	text = strings.TrimSpace(text)
 	textLower := strings.ToLower(text)
 
 	// 封面识别（封面通常在文档开头，包含学校名称、毕业设计/论文等关键词）
 	if p.isCoverPage(text) {
-		return "cover"
+		return "cover", 0
 	}
 
 	// 各级标题识别（必须在论文标题识别之前，否则会误判）
 	// 例如 "6.1 软件测试评估的指标和方法" 会匹配 "设计" 被误判为论文标题
 	if level := p.detectHeadingLevel(text); level > 0 {
-		return fmt.Sprintf("heading_%d", level)
+		return fmt.Sprintf("heading_%d", level), level
 	}
 
 	// 标题识别（通常居中，字数较少，不以句号结尾）
 	// 只有在不是章节标题的情况下才判断是否为论文主标题
 	if p.isTitleParagraph(text) {
-		return "title"
+		return "title", 0
 	}
 
 	// 摘要识别
 	if strings.Contains(textLower, "摘要") || strings.Contains(textLower, "abstract") {
 		if len(text) < 20 { // 摘要标题
-			return "abstract_title"
+			return "abstract_title", 0
 		}
-		return "abstract"
+		return "abstract", 0
 	}
 
 	// 关键词识别
 	if strings.Contains(textLower, "关键词") || strings.Contains(textLower, "keywords") {
-		return "keywords"
+		return "keywords", 0
 	}
 
 	// 参考文献识别
 	if strings.Contains(textLower, "参考文献") || strings.Contains(textLower, "references") {
 		if len(text) < 20 {
-			return "references_title"
+			return "references_title", 0
 		}
-		return "references"
+		return "references", 0
 	}
 
 	// 参考文献条目识别（以 [数字] 或 数字. 开头的参考文献条目）
 	if p.isReferenceItem(text) {
-		return "references"
+		return "references", 0
 	}
 
 	// 默认为正文
-	return "body"
+	return "body", 0
 }
 
 // isReferenceItem 判断是否为参考文献条目
@@ -520,9 +584,14 @@ func (p *EnhancedProcessor) applyPageSetup(doc *document.Document, rules map[str
 
 	section := doc.BodySection()
 
-	// 解析页边距
+	// 解析页边距，默认按重庆工程学院等通用规范 2.5cm
 	var marginTop, marginBottom, marginLeft, marginRight float64 = 2.5, 2.5, 2.5, 2.5
 	var headerDistance, footerDistance float64 = 1.6, 2.1
+	var gutter float64 = 0
+
+	// 兼容两种结构：
+	// 1) { "page_setup": { "margins": { "top": 2.5, "bottom": 2.5, ... } } }
+	// 2) { "page_setup": { "margin_top": 2.5, "margin_bottom": 2.5, ... } }  // CQIEC 模板
 
 	if margins, ok := pageSetupRules["margins"].(map[string]interface{}); ok {
 		if top, ok := margins["top"].(float64); ok {
@@ -537,6 +606,20 @@ func (p *EnhancedProcessor) applyPageSetup(doc *document.Document, rules map[str
 		if right, ok := margins["right"].(float64); ok {
 			marginRight = right
 		}
+	} else {
+		// 扁平结构：margin_top / margin_bottom / margin_left / margin_right
+		if top, ok := pageSetupRules["margin_top"].(float64); ok {
+			marginTop = top
+		}
+		if bottom, ok := pageSetupRules["margin_bottom"].(float64); ok {
+			marginBottom = bottom
+		}
+		if left, ok := pageSetupRules["margin_left"].(float64); ok {
+			marginLeft = left
+		}
+		if right, ok := pageSetupRules["margin_right"].(float64); ok {
+			marginRight = right
+		}
 	}
 
 	// 解析页眉页脚距离
@@ -544,10 +627,33 @@ func (p *EnhancedProcessor) applyPageSetup(doc *document.Document, rules map[str
 		if distance, ok := header["distance"].(float64); ok {
 			headerDistance = distance
 		}
+	} else if d, ok := pageSetupRules["header_distance"].(float64); ok {
+		headerDistance = d
 	}
 	if footer, ok := pageSetupRules["footer"].(map[string]interface{}); ok {
 		if distance, ok := footer["distance"].(float64); ok {
 			footerDistance = distance
+		}
+	} else if d, ok := pageSetupRules["footer_distance"].(float64); ok {
+		footerDistance = d
+	}
+
+	// 装订线/装订边距（gutter），单位 cm
+	if g, ok := pageSetupRules["gutter"].(float64); ok {
+		gutter = g
+	} else if gStr, ok := pageSetupRules["gutter"].(string); ok {
+		// 兼容 "0.8cm" / "8mm" / "10mm" 这种写法
+		gStr = strings.TrimSpace(gStr)
+		if strings.HasSuffix(gStr, "mm") {
+			if val, err := strconv.ParseFloat(strings.TrimSuffix(gStr, "mm"), 64); err == nil {
+				gutter = val / 10.0
+			}
+		} else if strings.HasSuffix(gStr, "cm") {
+			if val, err := strconv.ParseFloat(strings.TrimSuffix(gStr, "cm"), 64); err == nil {
+				gutter = val
+			}
+		} else if val, err := strconv.ParseFloat(gStr, 64); err == nil {
+			gutter = val
 		}
 	}
 
@@ -559,7 +665,7 @@ func (p *EnhancedProcessor) applyPageSetup(doc *document.Document, rules map[str
 		measurement.Distance(marginRight)*measurement.Centimeter,
 		measurement.Distance(headerDistance)*measurement.Centimeter,
 		measurement.Distance(footerDistance)*measurement.Centimeter,
-		measurement.Distance(0),
+		measurement.Distance(gutter)*measurement.Centimeter,
 	)
 
 	return nil
@@ -720,6 +826,37 @@ func (p *EnhancedProcessor) applyParagraphFormatting(para document.Paragraph, ru
 			return nil
 		}
 
+		// 如果 line_space 是 "fixed"，使用 line_space_value 字段
+		if lineSpace == "fixed" {
+			if lineSpaceValue, ok := rules["line_space_value"].(float64); ok && lineSpaceValue > 0 {
+				// 使用 line_space_value 作为固定行距值（单位为磅，需要转换为twips）
+				spacing := lineSpaceValue * 20 // 磅转twips
+
+				// 直接设置 XML 属性来正确处理行距
+				pPr := para.X().PPr
+				if pPr == nil {
+					pPr = wml.NewCT_PPr()
+					para.X().PPr = pPr
+				}
+				if pPr.Spacing == nil {
+					pPr.Spacing = wml.NewCT_Spacing()
+				}
+
+				// 设置行距值 (w:line)
+				twips := int64(spacing)
+				if pPr.Spacing.LineAttr == nil {
+					pPr.Spacing.LineAttr = &wml.ST_SignedTwipsMeasure{}
+				}
+				pPr.Spacing.LineAttr.Int64 = &twips
+
+				// 设置行距模式为固定值
+				pPr.Spacing.LineRuleAttr = wml.ST_LineSpacingRuleExact
+
+				// 继续处理其他格式
+				goto applyOtherFormatting
+			}
+		}
+
 		spacing := p.parseLineSpacing(lineSpace)
 
 		// 判断行距模式
@@ -763,15 +900,14 @@ func (p *EnhancedProcessor) applyParagraphFormatting(para document.Paragraph, ru
 		pPr.Spacing.LineRuleAttr = lineRule
 	}
 
+applyOtherFormatting:
 	// 应用首行缩进（使用实际字号）
 	if indent, ok := rules["first_line_indent"].(string); ok {
 		// 获取实际字号
 		fontSize := 12.0 // 默认小四号
 		if fontSizeStr, ok := rules["font_size"].(string); ok {
-
-			//版本1	fontSize = p.parseFontSize(fontSizeStr) / 2 // 转回points
-			fontSize = p.parseFontSize(fontSizeStr) / 2 // 转回points
-			//fontSize = p.parseFontSize(fontSizeStr) // 转回points
+			// 这里需要使用实际的 point 值，供缩进换算使用
+			fontSize = p.parseFontSize(fontSizeStr)
 		}
 		if indentVal := p.parseIndentWithFontSize(indent, fontSize); indentVal > 0 {
 			paraProps.SetFirstLineIndent(measurement.Distance(indentVal))
@@ -877,7 +1013,7 @@ func (p *EnhancedProcessor) parseLineSpacing(spacing string) float64 {
 		}
 	}
 
-	// 处理固定值行距（磅或pt后缀）
+	// 处理固定值行距（磅或pt后缀）- 转换为twips（1磅 = 20 twips）
 	if strings.HasSuffix(spacing, "磅") || strings.HasSuffix(spacing, "pt") {
 		suffix := "磅"
 		if strings.HasSuffix(spacing, "pt") {
@@ -885,16 +1021,16 @@ func (p *EnhancedProcessor) parseLineSpacing(spacing string) float64 {
 		}
 		numStr := strings.TrimSuffix(spacing, suffix)
 		if val, err := strconv.ParseFloat(numStr, 64); err == nil {
-			return val
+			return val * 20 // 磅转twips
 		}
 	}
 
-	// 处理 fixed_ 前缀格式
+	// 处理 fixed_ 前缀格式 - 转换为twips
 	if strings.HasPrefix(spacing, "fixed_") {
 		ptStr := strings.TrimPrefix(spacing, "fixed_")
 		ptStr = strings.TrimSuffix(ptStr, "_pt")
 		if val, err := strconv.ParseFloat(ptStr, 64); err == nil {
-			return val
+			return val * 20 // 磅转twips
 		}
 	}
 
@@ -987,12 +1123,13 @@ func (p *EnhancedProcessor) parseFontSize(size string) float64 {
 	}
 
 	if val, ok := sizeMap[size]; ok {
-		return val * 2 // points to half-points
+		// 返回 point 值，RunProperties.SetSize 内部会负责转换为 w:sz 的 half-points
+		return val
 	}
 
-	// 直接数字
+	// 直接数字，视为 point
 	if val, err := strconv.ParseFloat(size, 64); err == nil {
-		return val * 2 // points to half-points
+		return val
 	}
 
 	return 0

@@ -145,6 +145,13 @@ func insertDefaultUniversities() {
 			Color:       "#1890ff",
 		},
 		{
+			Name:        "重庆工商大学",
+			Abbr:        "CTBU",
+			Description: "重庆工商大学",
+			Tags:        `["本科院校", "财经类"]`,
+			Color:       "#52c41a",
+		},
+		{
 			Name:        "清华大学",
 			Abbr:        "THU",
 			Description: "清华大学",

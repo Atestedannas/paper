@@ -99,6 +99,7 @@ func (c *DOCXChecker) checkPageSetupDetailed(doc *document.Document, docPath str
 
 	// 获取当前页面设置
 	pgMar := section.X().PgMar
+	pgSz := section.X().PgSz
 
 	// 检查页边距
 	if pgMar != nil {
@@ -161,6 +162,83 @@ func (c *DOCXChecker) checkPageSetupDetailed(doc *document.Document, docPath str
 				})
 			}
 		}
+
+		// 检查页眉距离
+		if standard.PageSetup.HeaderDistance > 0 && pgMar.HeaderAttr.ST_UnsignedDecimalNumber != nil {
+			expectedHeader := measurement.Distance(standard.PageSetup.HeaderDistance) * measurement.Centimeter
+			actualHeader := measurement.Distance(*pgMar.HeaderAttr.ST_UnsignedDecimalNumber)
+			if abs(int(actualHeader)-int(expectedHeader)) > 10 {
+				result.Issues = append(result.Issues, FormatIssue{
+					ID:          generateIssueID("header_distance"),
+					Type:        IssueTypePageSetup,
+					Severity:    SeverityWarning,
+					Description: fmt.Sprintf("页眉距离不符合要求: 当前 %.2fcm, 期望 %.2fcm", float64(actualHeader)/measurement.Centimeter, standard.PageSetup.HeaderDistance),
+					Original:    float64(actualHeader) / measurement.Centimeter,
+					Suggestion:  standard.PageSetup.HeaderDistance,
+				})
+			}
+		}
+
+		// 检查页脚距离
+		if standard.PageSetup.FooterDistance > 0 && pgMar.FooterAttr.ST_UnsignedDecimalNumber != nil {
+			expectedFooter := measurement.Distance(standard.PageSetup.FooterDistance) * measurement.Centimeter
+			actualFooter := measurement.Distance(*pgMar.FooterAttr.ST_UnsignedDecimalNumber)
+			if abs(int(actualFooter)-int(expectedFooter)) > 10 {
+				result.Issues = append(result.Issues, FormatIssue{
+					ID:          generateIssueID("footer_distance"),
+					Type:        IssueTypePageSetup,
+					Severity:    SeverityWarning,
+					Description: fmt.Sprintf("页脚距离不符合要求: 当前 %.2fcm, 期望 %.2fcm", float64(actualFooter)/measurement.Centimeter, standard.PageSetup.FooterDistance),
+					Original:    float64(actualFooter) / measurement.Centimeter,
+					Suggestion:  standard.PageSetup.FooterDistance,
+				})
+			}
+		}
+	}
+
+	// 检查纸张大小
+	if pgSz != nil {
+		if standard.PageSetup.PaperSize != "" {
+			// 检查纸张大小
+			expectedW, expectedH := getPaperSize(standard.PageSetup.PaperSize)
+			if pgSz.WAttr != nil && pgSz.HAttr != nil {
+				actualW := measurement.Distance(*pgSz.WAttr.ST_UnsignedDecimalNumber)
+				actualH := measurement.Distance(*pgSz.HAttr.ST_UnsignedDecimalNumber)
+
+				if abs(int(actualW)-int(expectedW)) > 20 || abs(int(actualH)-int(expectedH)) > 20 {
+					result.Issues = append(result.Issues, FormatIssue{
+						ID:          generateIssueID("paper_size"),
+						Type:        IssueTypePageSetup,
+						Severity:    SeverityWarning,
+						Description: fmt.Sprintf("纸张大小不符合要求: 期望 %s", standard.PageSetup.PaperSize),
+						Original:    "其他尺寸",
+						Suggestion:  standard.PageSetup.PaperSize,
+					})
+				}
+			}
+		}
+
+		// 检查纸张方向
+		actualOrient := string(pgSz.OrientAttr)
+		expectedOrient := "portrait" // 默认纵向
+		if standard.PageSetup.PaperSize != "" {
+			// 根据纸张大小判断期望方向，默认为纵向
+		}
+
+		if actualOrient != expectedOrient && actualOrient != "" {
+			orientDesc := map[string]string{
+				"portrait":  "纵向",
+				"landscape": "横向",
+			}
+			result.Issues = append(result.Issues, FormatIssue{
+				ID:          generateIssueID("paper_orientation"),
+				Type:        IssueTypePageSetup,
+				Severity:    SeverityWarning,
+				Description: fmt.Sprintf("纸张方向不符合要求: 当前 %s, 期望 %s", orientDesc[actualOrient], orientDesc[expectedOrient]),
+				Original:    orientDesc[actualOrient],
+				Suggestion:  orientDesc[expectedOrient],
+			})
+		}
 	}
 }
 
@@ -206,29 +284,50 @@ func (c *DOCXChecker) checkHeadingsDetailed(ctx context.Context, doc *document.D
 
 // identifyHeadingLevel 识别标题级别
 func (c *DOCXChecker) identifyHeadingLevel(text string, para document.Paragraph) int {
-	// 一级标题模式
-	level1Patterns := []string{
-		`^[一二三四五六七八九十]+、`,
-		`^第[一二三四五六七八九十]+章`,
-		`^第\d+章`,
-		`^\d+\s+\D`,
-		`^\d+\.\s+\D`,
+	// 首先检查段落样式名称 - 这是最可靠的方式
+	styleName := para.Style()
+	if styleName != "" {
+		styleNameLower := strings.ToLower(styleName)
+
+		// 检查是否是标题样式
+		if strings.Contains(styleNameLower, "heading 1") || strings.Contains(styleNameLower, "标题 1") {
+			return 1
+		}
+		if strings.Contains(styleNameLower, "heading 2") || strings.Contains(styleNameLower, "标题 2") {
+			return 2
+		}
+		if strings.Contains(styleNameLower, "heading 3") || strings.Contains(styleNameLower, "标题 3") {
+			return 3
+		}
+		if strings.Contains(styleNameLower, "heading 4") || strings.Contains(styleNameLower, "标题 4") {
+			return 4
+		}
+		if strings.Contains(styleNameLower, "heading 5") || strings.Contains(styleNameLower, "标题 5") {
+			return 5
+		}
+		if strings.Contains(styleNameLower, "heading 6") || strings.Contains(styleNameLower, "标题 6") {
+			return 6
+		}
 	}
 
-	for _, pattern := range level1Patterns {
+	// 三级标题模式（必须先检查，避免被一级标题模式误判）
+	level3Patterns := []string{
+		`^\d+\.\d+\.\d+\s+`,
+		`^\d+\.\d+\.\d+$`,
+	}
+	for _, pattern := range level3Patterns {
 		if matched, _ := regexp.MatchString(pattern, text); matched {
-			if c.matchesHeading1Format(para) {
-				return 1
+			if c.matchesHeading3Format(para) {
+				return 3
 			}
 		}
 	}
 
-	// 二级标题模式
+	// 二级标题模式（必须在一级标题之前检查）
 	level2Patterns := []string{
 		`^\d+\.\d+\s+`,
 		`^\d+\.\d+$`,
 	}
-
 	for _, pattern := range level2Patterns {
 		if matched, _ := regexp.MatchString(pattern, text); matched {
 			if c.matchesHeading2Format(para) {
@@ -237,16 +336,18 @@ func (c *DOCXChecker) identifyHeadingLevel(text string, para document.Paragraph)
 		}
 	}
 
-	// 三级标题模式
-	level3Patterns := []string{
-		`^\d+\.\d+\.\d+\s+`,
-		`^\d+\.\d+\.\d+$`,
+	// 一级标题模式
+	level1Patterns := []string{
+		`^[一二三四五六七八九十]+、`,
+		`^第[一二三四五六七八九十]+章`,
+		`^第\d+章`,
+		`^\d+\s+\D`,
+		`^\d+\.\s+\D`,
 	}
-
-	for _, pattern := range level3Patterns {
+	for _, pattern := range level1Patterns {
 		if matched, _ := regexp.MatchString(pattern, text); matched {
-			if c.matchesHeading3Format(para) {
-				return 3
+			if c.matchesHeading1Format(para) {
+				return 1
 			}
 		}
 	}
@@ -630,8 +731,22 @@ func absFloat64(x float64) float64 {
 	return x
 }
 
+var issueCounter = 0
+
 func generateIssueID(prefix string) string {
-	return fmt.Sprintf("%s_%d", prefix, len(prefix)*1000)
+	issueCounter++
+	return fmt.Sprintf("%s_%d", prefix, issueCounter)
+}
+
+func getPaperSize(paperSize string) (measurement.Distance, measurement.Distance) {
+	switch strings.ToUpper(paperSize) {
+	case "A4":
+		return 11906, 16838 // A4纸张大小 (twips)
+	case "A3":
+		return 16838, 23811
+	default:
+		return 11906, 16838
+	}
 }
 
 func getRunFontName(run document.Run) string {
@@ -981,7 +1096,7 @@ func (c *DOCXChecker) FixDocumentDirectly(ctx context.Context, docPath string, s
 		measurement.Distance(standard.PageSetup.MarginRight)*measurement.Centimeter,
 		measurement.Distance(standard.PageSetup.HeaderDistance)*measurement.Centimeter,
 		measurement.Distance(standard.PageSetup.FooterDistance)*measurement.Centimeter,
-		measurement.Distance(0), // 装订线
+		measurement.Distance(standard.PageSetup.Gutter)*measurement.Centimeter, // 装订线/装订边距
 	)
 
 	// 修复段落格式（字体、字号、对齐、缩进、行间距）
@@ -1715,42 +1830,23 @@ func (c *DOCXChecker) applyHeadingFormat(para document.Paragraph, style *Heading
 		pPr.Jc.ValAttr = align
 	}
 
-	// 设置字体和字号
+	// 设置字体和字号 - 只使用高级API，避免直接取临时变量地址
 	for _, run := range para.Runs() {
-		if run.X() == nil {
-			continue
-		}
-
-		rPr := run.X().RPr
-		if rPr == nil {
-			rPr = wml.NewCT_RPr()
-			run.X().RPr = rPr
-		}
+		runProps := run.Properties()
 
 		// 设置字体
 		if style.FontName != "" {
-			if rPr.RFonts == nil {
-				rPr.RFonts = wml.NewCT_Fonts()
-			}
-			rPr.RFonts.EastAsiaAttr = &style.FontName
-			rPr.RFonts.AsciiAttr = &style.FontName
+			runProps.SetFontFamily(style.FontName)
 		}
 
 		// 设置字号
 		if style.FontSize > 0 {
-			if rPr.Sz == nil {
-				rPr.Sz = wml.NewCT_HpsMeasure()
-			}
-			halfPoints := uint64(style.FontSize * 2)
-			rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPoints
+			runProps.SetSize(measurement.Distance(style.FontSize))
 		}
 
 		// 设置加粗
 		if style.Bold {
-			if rPr.B == nil {
-				rPr.B = wml.NewCT_OnOff()
-			}
-			// 加粗属性存在即为true
+			runProps.SetBold(true)
 		}
 	}
 }
@@ -1804,34 +1900,18 @@ func (c *DOCXChecker) applyBodyFormat(para document.Paragraph, style *ParagraphS
 		pPr.Spacing.LineAttr.Int64 = &twips
 	}
 
-	// 设置字体和字号
+	// 设置字体和字号 - 只使用高级API，避免直接取临时变量地址
 	for _, run := range para.Runs() {
-		if run.X() == nil {
-			continue
-		}
-
-		rPr := run.X().RPr
-		if rPr == nil {
-			rPr = wml.NewCT_RPr()
-			run.X().RPr = rPr
-		}
+		runProps := run.Properties()
 
 		// 设置字体
 		if style.FontName != "" {
-			if rPr.RFonts == nil {
-				rPr.RFonts = wml.NewCT_Fonts()
-			}
-			rPr.RFonts.EastAsiaAttr = &style.FontName
-			rPr.RFonts.AsciiAttr = &style.FontName
+			runProps.SetFontFamily(style.FontName)
 		}
 
 		// 设置字号
 		if style.FontSize > 0 {
-			if rPr.Sz == nil {
-				rPr.Sz = wml.NewCT_HpsMeasure()
-			}
-			halfPoints := uint64(style.FontSize * 2)
-			rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPoints
+			runProps.SetSize(measurement.Distance(style.FontSize))
 		}
 	}
 }
@@ -1848,28 +1928,16 @@ func (c *DOCXChecker) fixTableFormats(doc *document.Document, standard *FormatSt
 			for _, cell := range row.Cells() {
 				for _, para := range cell.Paragraphs() {
 					for _, run := range para.Runs() {
-						rPr := run.X().RPr
-						if rPr == nil {
-							rPr = wml.NewCT_RPr()
-							run.X().RPr = rPr
-						}
+						runProps := run.Properties()
 
-						// 设置字体
+						// 设置字体 - 使用高级API
 						if standard.TableStyle.FontName != "" {
-							if rPr.RFonts == nil {
-								rPr.RFonts = wml.NewCT_Fonts()
-							}
-							rPr.RFonts.EastAsiaAttr = &standard.TableStyle.FontName
-							rPr.RFonts.AsciiAttr = &standard.TableStyle.FontName
+							runProps.SetFontFamily(standard.TableStyle.FontName)
 						}
 
-						// 设置字号
+						// 设置字号 - 使用高级API
 						if standard.TableStyle.FontSize > 0 {
-							if rPr.Sz == nil {
-								rPr.Sz = wml.NewCT_HpsMeasure()
-							}
-							halfPoints := uint64(standard.TableStyle.FontSize * 2)
-							rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPoints
+							runProps.SetSize(measurement.Distance(standard.TableStyle.FontSize))
 						}
 					}
 				}

@@ -108,6 +108,16 @@ func (c *UniOfficeFormatChecker) analyzeDocumentStructure() (map[string][]map[st
 	var inAbstract bool
 	var inReferences bool
 
+	// 首先收集所有段落信息
+	type paraInfo struct {
+		text     string
+		paraType string
+		level    int
+		position int
+		para     document.Paragraph
+	}
+
+	var paraInfos []paraInfo
 	for _, para := range c.doc.Paragraphs() {
 		paragraphCount++
 		text := c.extractParagraphText(para)
@@ -116,14 +126,62 @@ func (c *UniOfficeFormatChecker) analyzeDocumentStructure() (map[string][]map[st
 			continue
 		}
 
-		// 判断段落类型
-		paraType := c.classifyParagraphType(text)
+		// 判断段落类型和级别
+		paraType, level := c.classifyParagraphTypeWithLevel(text)
+		paraInfos = append(paraInfos, paraInfo{
+			text:     text,
+			paraType: paraType,
+			level:    level,
+			position: paragraphCount,
+			para:     para,
+		})
+	}
+
+	// 检测被分割的标题
+	// 如果连续的短标题段落（少于20个字符）具有相同的级别，可能是同一个标题被分割了
+	isSplitPart := make([]bool, len(paraInfos))
+	for i := 0; i < len(paraInfos); i++ {
+		if isSplitPart[i] {
+			continue
+		}
+
+		current := paraInfos[i]
+
+		// 检查是否是可能被分割的短标题
+		if current.level > 0 && len([]rune(current.text)) < 20 {
+			// 向后查找连续的同级别短段落
+			j := i + 1
+			combinedText := current.text
+			for j < len(paraInfos) {
+				next := paraInfos[j]
+				// 检查是否是同级别的短段落
+				if next.level == current.level && len([]rune(next.text)) < 20 {
+					// 检查合并后的文本是否合理（不应该太长）
+					if len([]rune(combinedText+next.text)) <= 60 {
+						combinedText += next.text
+						isSplitPart[j] = true // 标记为被分割的部分
+						j++
+						continue
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// 根据检测结果分类段落
+	for i, info := range paraInfos {
+		paraType := info.paraType
+		// 如果被分割的部分，改为正文类型
+		if isSplitPart[i] {
+			paraType = "body"
+		}
 
 		// 构建段落信息
 		paraInfo := map[string]interface{}{
-			"text":      text,
-			"position":  paragraphCount,
-			"paragraph": para,
+			"text":      info.text,
+			"position":  info.position,
+			"paragraph": info.para,
 		}
 
 		// 添加到相应类别
@@ -170,41 +228,50 @@ func (c *UniOfficeFormatChecker) analyzeDocumentStructure() (map[string][]map[st
 
 // classifyParagraphType 分类段落类型
 func (c *UniOfficeFormatChecker) classifyParagraphType(text string) string {
+	paraType, _ := c.classifyParagraphTypeWithLevel(text)
+	return paraType
+}
+
+// classifyParagraphTypeWithLevel 分类段落类型（返回类型和标题级别）
+func (c *UniOfficeFormatChecker) classifyParagraphTypeWithLevel(text string) (string, int) {
 	text = strings.TrimSpace(text)
 
 	// 特殊标识符
 	if strings.HasPrefix(text, "摘要") {
-		return "abstract_title"
+		return "abstract_title", 0
 	}
 	if strings.HasPrefix(text, "关键词") {
-		return "keywords"
+		return "keywords", 0
 	}
 	if strings.HasPrefix(text, "参考文献") {
-		return "references_title"
+		return "references_title", 0
 	}
 
 	// 参考文献条目
 	if strings.Contains(text, "[") && strings.Contains(text, "]") {
-		return "reference_item"
+		return "reference_item", 0
 	}
 
-	// 标题识别
+	// 标题识别（按级别从低到高检查）
+	// 三级标题
+	if matched, _ := regexp.MatchString(`^\d+\.\d+\.\d+\s*`, text); matched {
+		return "heading_3", 3
+	}
+	// 二级标题
+	if matched, _ := regexp.MatchString(`^\d+\.\d+\s*`, text); matched {
+		return "heading_2", 2
+	}
+	// 一级标题
 	if matched, _ := regexp.MatchString(`^第[一二三四五六七八九十0-9]+章`, text); matched {
-		return "heading_1"
-	}
-	if matched, _ := regexp.MatchString(`^\d+\.\d+\s+`, text); matched {
-		return "heading_2"
-	}
-	if matched, _ := regexp.MatchString(`^\d+\.\d+\.\d+\s+`, text); matched {
-		return "heading_3"
+		return "heading_1", 1
 	}
 
 	// 摘要内容
 	if matched, _ := regexp.MatchString(`^[^\n]{10,200}`, text); matched {
-		return "abstract_content"
+		return "abstract_content", 0
 	}
 
-	return "body"
+	return "body", 0
 }
 
 // extractParagraphText 提取段落文本

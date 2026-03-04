@@ -9,6 +9,12 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// WechatSandboxConfig 微信沙箱配置
+type WechatSandboxConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	SandboxSignKey string `mapstructure:"sandbox_sign_key"`
+}
+
 // Config 应用配置结构体
 type Config struct {
 	Server        ServerConfig        `mapstructure:"server"`
@@ -20,19 +26,12 @@ type Config struct {
 	WechatSandbox WechatSandboxConfig `mapstructure:"wechat_sandbox"`
 	Alipay        AlipayConfig        `mapstructure:"alipay"`
 	Payment       PaymentConfig       `mapstructure:"payment"`
-	Security      SecurityConfig      `mapstructure:"security"`
-}
-
-// SecurityConfig 安全配置
-type SecurityConfig struct {
-	EncryptionKey string `mapstructure:"encryption_key"` // 数据加密密钥 (AES-256)
 }
 
 // PaymentConfig 支付配置
 type PaymentConfig struct {
 	PaperDownload  float64 `mapstructure:"paper_download"`  // 论文下载（元/次）
 	FormatCheck    float64 `mapstructure:"format_check"`    // 格式检查（元/次）
-	IsCheckFree    bool    `mapstructure:"is_check_free"`   // 检查是否免费 (优先于 FormatCheck 价格)
 	FormatFix      float64 `mapstructure:"format_fix"`      // 格式修复（元/次）
 	ReportDownload float64 `mapstructure:"report_download"` // 报告下载（元/次）
 	Compare        float64 `mapstructure:"compare"`         // 比较功能（元/次）
@@ -99,16 +98,8 @@ type AlipayConfig struct {
 	Scope             string `mapstructure:"scope"`
 	AuthorizeURL      string `mapstructure:"authorize_url"`
 	GatewayURL        string `mapstructure:"gateway_url"`
-	SandboxEnabled    bool   `mapstructure:"sandbox_enabled"`     // 是否启用沙箱环境
-	SandboxGatewayURL string `mapstructure:"sandbox_gateway_url"` // 沙箱环境网关地址
-}
-
-// WechatSandboxConfig 微信沙箱配置
-type WechatSandboxConfig struct {
-	Enabled        bool   `mapstructure:"enabled"`          // 是否启用沙箱
-	ApiKey3        string `mapstructure:"api_key_3"`        // 沙箱API密钥3
-	ApiKey3Secret  string `mapstructure:"api_key_3_secret"` // 沙箱API密钥3密钥
-	SandboxSignKey string `mapstructure:"sandbox_sign_key"` // 沙箱签名密钥
+	SandboxEnabled    bool   `mapstructure:"sandbox_enabled"`
+	SandboxGatewayURL string `mapstructure:"sandbox_gateway_url"`
 }
 
 // LoadConfig 从环境变量和配置文件加载配置
@@ -153,6 +144,10 @@ func LoadConfig(configPath string) (*Config, error) {
 			UserInfoURL:    "https://api.weixin.qq.com/sns/userinfo",
 			AppSecret:      "",
 		},
+		WechatSandbox: WechatSandboxConfig{
+			Enabled:        false,
+			SandboxSignKey: "",
+		},
 		Alipay: AlipayConfig{
 			AppID:             "",
 			AppPrivateKey:     "",
@@ -166,22 +161,12 @@ func LoadConfig(configPath string) (*Config, error) {
 			SandboxEnabled:    false,
 			SandboxGatewayURL: "https://openapi.alipaydev.com/gateway.do",
 		},
-		WechatSandbox: WechatSandboxConfig{
-			Enabled:        false,
-			ApiKey3:        "",
-			ApiKey3Secret:  "",
-			SandboxSignKey: "",
-		},
 		Payment: PaymentConfig{
-			PaperDownload:  0,    // 默认免费
-			FormatCheck:    10,   // 默认10元/次
-			IsCheckFree:    true, // 默认检查免费 (推广期)
-			FormatFix:      15,   // 默认15元/次
-			ReportDownload: 5,    // 默认5元/次
-			Compare:        8,    // 默认8元/次
-		},
-		Security: SecurityConfig{
-			EncryptionKey: "this-is-a-default-32-byte-key-for-dev", // 默认开发密钥
+			PaperDownload:  0,  // 默认免费
+			FormatCheck:    10, // 默认10元/次
+			FormatFix:      15, // 默认15元/次
+			ReportDownload: 5,  // 默认5元/次
+			Compare:        8,  // 默认8元/次
 		},
 	}
 
@@ -316,6 +301,24 @@ func LoadConfig(configPath string) (*Config, error) {
 	if alipayGatewayURL := os.Getenv("ALIPAY_GATEWAY_URL"); alipayGatewayURL != "" {
 		config.Alipay.GatewayURL = alipayGatewayURL
 	}
+	if alipaySandboxEnabled := os.Getenv("ALIPAY_SANDBOX_ENABLED"); alipaySandboxEnabled != "" {
+		if enabled, err := strconv.ParseBool(alipaySandboxEnabled); err == nil {
+			config.Alipay.SandboxEnabled = enabled
+		}
+	}
+	if alipaySandboxGatewayURL := os.Getenv("ALIPAY_SANDBOX_GATEWAY_URL"); alipaySandboxGatewayURL != "" {
+		config.Alipay.SandboxGatewayURL = alipaySandboxGatewayURL
+	}
+
+	// 从环境变量加载微信沙箱配置
+	if wechatSandboxEnabled := os.Getenv("WECHAT_SANDBOX_ENABLED"); wechatSandboxEnabled != "" {
+		if enabled, err := strconv.ParseBool(wechatSandboxEnabled); err == nil {
+			config.WechatSandbox.Enabled = enabled
+		}
+	}
+	if wechatSandboxSignKey := os.Getenv("WECHAT_SANDBOX_SIGN_KEY"); wechatSandboxSignKey != "" {
+		config.WechatSandbox.SandboxSignKey = wechatSandboxSignKey
+	}
 
 	// 从环境变量加载支付配置
 	if paperDownload := os.Getenv("PAYMENT_PAPER_DOWNLOAD"); paperDownload != "" {
@@ -326,11 +329,6 @@ func LoadConfig(configPath string) (*Config, error) {
 	if formatCheck := os.Getenv("PAYMENT_FORMAT_CHECK"); formatCheck != "" {
 		if v, err := strconv.ParseFloat(formatCheck, 64); err == nil {
 			config.Payment.FormatCheck = v
-		}
-	}
-	if isCheckFree := os.Getenv("PAYMENT_IS_CHECK_FREE"); isCheckFree != "" {
-		if v, err := strconv.ParseBool(isCheckFree); err == nil {
-			config.Payment.IsCheckFree = v
 		}
 	}
 	if formatFix := os.Getenv("PAYMENT_FORMAT_FIX"); formatFix != "" {
@@ -347,37 +345,6 @@ func LoadConfig(configPath string) (*Config, error) {
 		if v, err := strconv.ParseFloat(compare, 64); err == nil {
 			config.Payment.Compare = v
 		}
-	}
-
-	// 从环境变量加载安全配置
-	if encryptionKey := os.Getenv("SECURITY_ENCRYPTION_KEY"); encryptionKey != "" {
-		config.Security.EncryptionKey = encryptionKey
-	}
-
-	// 从环境变量加载支付宝沙箱配置
-	if alipaySandboxEnabled := os.Getenv("ALIPAY_SANDBOX_ENABLED"); alipaySandboxEnabled != "" {
-		if v, err := strconv.ParseBool(alipaySandboxEnabled); err == nil {
-			config.Alipay.SandboxEnabled = v
-		}
-	}
-	if alipaySandboxGatewayURL := os.Getenv("ALIPAY_SANDBOX_GATEWAY_URL"); alipaySandboxGatewayURL != "" {
-		config.Alipay.SandboxGatewayURL = alipaySandboxGatewayURL
-	}
-
-	// 从环境变量加载微信沙箱配置
-	if wechatSandboxEnabled := os.Getenv("WECHAT_SANDBOX_ENABLED"); wechatSandboxEnabled != "" {
-		if v, err := strconv.ParseBool(wechatSandboxEnabled); err == nil {
-			config.WechatSandbox.Enabled = v
-		}
-	}
-	if wechatApiKey3 := os.Getenv("WECHAT_API_KEY_3"); wechatApiKey3 != "" {
-		config.WechatSandbox.ApiKey3 = wechatApiKey3
-	}
-	if wechatApiKey3Secret := os.Getenv("WECHAT_API_KEY_3_SECRET"); wechatApiKey3Secret != "" {
-		config.WechatSandbox.ApiKey3Secret = wechatApiKey3Secret
-	}
-	if wechatSandboxSignKey := os.Getenv("WECHAT_SANDBOX_SIGN_KEY"); wechatSandboxSignKey != "" {
-		config.WechatSandbox.SandboxSignKey = wechatSandboxSignKey
 	}
 
 	return config, nil
