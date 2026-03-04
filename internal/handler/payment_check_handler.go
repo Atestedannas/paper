@@ -44,6 +44,7 @@ func (h *PaymentCheckHandler) CheckPaperPaymentStatus(c *gin.Context) {
 	switch serviceType {
 	case "format_check":
 		if isCheckFree {
+			// 检查免费，价格为0
 			price = 0
 		} else if formatCheckPrice, ok := config["format_check"].(float64); ok {
 			price = formatCheckPrice
@@ -54,10 +55,8 @@ func (h *PaymentCheckHandler) CheckPaperPaymentStatus(c *gin.Context) {
 		}
 	case "check_and_fix":
 		if isCheckFree {
-			// 检查免费，只收修正费
-			if formatFixPrice, ok := config["format_fix"].(float64); ok {
-				price = formatFixPrice
-			}
+			// 检查免费，价格为0
+			price = 0
 		} else {
 			// 检查+修正都收费
 			if formatCheckPrice, ok := config["format_check"].(float64); ok {

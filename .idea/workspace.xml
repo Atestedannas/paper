@@ -4,72 +4,9 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="douban修改&#10;微信支付">
-      <change afterPath="$PROJECT_DIR$/.idea/backend.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/config/config.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/config/config.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/database/migrate.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/database/migrate.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/order_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/order_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/model/payment.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/model/payment.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/service/payment_service.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/payment_service.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main" beforeDir="false" afterPath="$PROJECT_DIR$/main" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/enhanced_processor.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/enhanced_processor.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/unioffice_processor.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/unioffice_processor.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pkg/formatchecker/checker.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/formatchecker/checker.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pkg/formatchecker/docx_checker.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/formatchecker/docx_checker.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pkg/formatchecker/unioffice_checker.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/formatchecker/unioffice_checker.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pkg/formatchecker/unioffice_fixer.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/formatchecker/unioffice_fixer.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/server" beforeDir="false" afterPath="$PROJECT_DIR$/server" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/test.exe" beforeDir="false" afterPath="$PROJECT_DIR$/test.exe" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/206f0ed0-076d-4791-83c9-55cbe31987f0.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/206f0ed0-076d-4791-83c9-55cbe31987f0_enhanced_corrected_1769862180.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/206f0ed0-076d-4791-83c9-55cbe31987f0_enhanced_corrected_1769862180_enhanced_corrected_1769862181.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/2d97e965-cb19-4f48-984a-449f69c5fdce.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/2d97e965-cb19-4f48-984a-449f69c5fdce_enhanced_corrected_1772508905.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/2d97e965-cb19-4f48-984a-449f69c5fdce_enhanced_corrected_1772508906.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/39577b84-0aef-4140-91f7-6381b6a2dcdc.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/39577b84-0aef-4140-91f7-6381b6a2dcdc_enhanced_corrected_1769867492.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/39577b84-0aef-4140-91f7-6381b6a2dcdc_enhanced_corrected_1769867492_enhanced_corrected_1769867492.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/436d459c-5f62-4b28-ac01-e67825154fc1.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/436d459c-5f62-4b28-ac01-e67825154fc1_enhanced_corrected_1772508993.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/436d459c-5f62-4b28-ac01-e67825154fc1_enhanced_corrected_1772508993_enhanced_corrected_1772508994.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/4fe23a3d-3fb5-475c-9219-e0b0045a3846.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/4fe23a3d-3fb5-475c-9219-e0b0045a3846_enhanced_corrected_1772508959.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/4fe23a3d-3fb5-475c-9219-e0b0045a3846_enhanced_corrected_1772508959_enhanced_corrected_1772508959.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/8927c3b3-6441-4b3c-aafe-cb7894d48a93.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/8927c3b3-6441-4b3c-aafe-cb7894d48a93_enhanced_corrected_1769862217.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/8927c3b3-6441-4b3c-aafe-cb7894d48a93_enhanced_corrected_1769862217_enhanced_corrected_1769862217.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/9355d157-6a5e-4a09-9568-cc7e2054bdd2.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/9355d157-6a5e-4a09-9568-cc7e2054bdd2_enhanced_corrected_1772514857.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/a9db7825-e4bd-4435-bcb4-dae5387ca7a7.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/af382aff-3a2c-4049-ba58-a8c4497786de.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/af382aff-3a2c-4049-ba58-a8c4497786de_enhanced_corrected_1769860261.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/af382aff-3a2c-4049-ba58-a8c4497786de_enhanced_corrected_1769860261_enhanced_corrected_1769860261.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/b0709f4a-9671-4f67-aeb5-42bf4790bead.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/b0709f4a-9671-4f67-aeb5-42bf4790bead_enhanced_corrected_1770773854.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/b0709f4a-9671-4f67-aeb5-42bf4790bead_enhanced_corrected_1770773854_enhanced_corrected_1770773855.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/b9805b71-81c4-4753-af76-e4ee94b1bc28.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/b9805b71-81c4-4753-af76-e4ee94b1bc28_enhanced_corrected_1772515040.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/b9805b71-81c4-4753-af76-e4ee94b1bc28_enhanced_corrected_1772515040_enhanced_corrected_1772515040.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/bcb75b02-bd2e-41d8-819c-5133a59c0977.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/bcb75b02-bd2e-41d8-819c-5133a59c0977_enhanced_corrected_1772449520.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/c98253c7-5516-4d21-8555-4de7b13a070f.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/c98253c7-5516-4d21-8555-4de7b13a070f_enhanced_corrected_1769859898.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/c98253c7-5516-4d21-8555-4de7b13a070f_enhanced_corrected_1769859898_enhanced_corrected_1769859899.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/d1a85a95-d14f-4774-82d2-b1fbfd4d2a82.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/d1a85a95-d14f-4774-82d2-b1fbfd4d2a82_enhanced_corrected_1769859586.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/d1a85a95-d14f-4774-82d2-b1fbfd4d2a82_enhanced_corrected_1769859586_enhanced_corrected_1769859587.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/d8c201ed-8eb2-4f7b-adb1-b0cd9060c059.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/d8c201ed-8eb2-4f7b-adb1-b0cd9060c059_enhanced_corrected_1771120493.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/d8c201ed-8eb2-4f7b-adb1-b0cd9060c059_enhanced_corrected_1771120493_enhanced_corrected_1771120494.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/ebec38c6-3b3f-48fd-a6c8-3db04af2f230.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/ebec38c6-3b3f-48fd-a6c8-3db04af2f230_enhanced_corrected_1770773927.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/ebec38c6-3b3f-48fd-a6c8-3db04af2f230_enhanced_corrected_1770773927_enhanced_corrected_1770773928.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/ecac7e39-49d0-48f0-b9d1-81515d45ac22.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/ecac7e39-49d0-48f0-b9d1-81515d45ac22_enhanced_corrected_1770773907.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/ecac7e39-49d0-48f0-b9d1-81515d45ac22_enhanced_corrected_1770773907_enhanced_corrected_1770773908.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/ff88d96d-6a31-4b1a-b5b1-ea023f7a3c27.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/ff912bf1-b851-40b2-af23-35caed0d1b41.docx" beforeDir="false" />
+    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="cursor 修复">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/handler/payment_check_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/payment_check_handler.go" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -171,7 +108,8 @@
     <MESSAGE value="NLP" />
     <MESSAGE value="rbac  权限验证" />
     <MESSAGE value="douban修改&#10;微信支付" />
-    <option name="LAST_COMMIT_MESSAGE" value="douban修改&#10;微信支付" />
+    <MESSAGE value="cursor 修复" />
+    <option name="LAST_COMMIT_MESSAGE" value="cursor 修复" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>
