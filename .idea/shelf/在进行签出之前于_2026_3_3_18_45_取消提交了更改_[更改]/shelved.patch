@@ -1,0 +1,352 @@
+Index: pkg/formatchecker/docx_checker.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package formatchecker\r\n\r\nimport (\r\n\t\"context\"\r\n\t\"fmt\"\r\n\t\"os\"\r\n\t\"path/filepath\"\r\n\t\"regexp\"\r\n\t\"strconv\"\r\n\t\"strings\"\r\n\r\n\t\"gitee.com/greatmusicians/unioffice/document\"\r\n\t\"gitee.com/greatmusicians/unioffice/measurement\"\r\n\t\"gitee.com/greatmusicians/unioffice/schema/soo/wml\"\r\n\r\n\t\"github.com/nguyenthenguyen/docx\"\r\n\t\"github.com/paper-format-checker/backend/pkg/fileprocessor\"\r\n)\r\n\r\n// DOCXChecker DOCX格式检查器\r\ntype DOCXChecker struct {\r\n\tprocessor fileprocessor.FileProcessor\r\n\tstandard  FormatStandard\r\n}\r\n\r\n// NewDOCXChecker 创建DOCX检查器实例\r\nfunc NewDOCXChecker() *DOCXChecker {\r\n\treturn &DOCXChecker{\r\n\t\tprocessor: fileprocessor.NewFourStageProcessor(), // 使用四阶段处理器，不再调用Python服务\r\n\t\tstandard:  FormatStandard{},\r\n\t}\r\n}\r\n\r\nfunc (c *DOCXChecker) GenerateCorrections(ctx context.Context, result *CheckResult) ([]Correction, error) {\r\n\tvar corrections []Correction\r\n\r\n\t// 遍历所有检查问题，生成修正建议\r\n\tfor _, issue := range result.Issues {\r\n\t\tcorrection := c.generateCorrectionForIssue(issue)\r\n\t\tif correction != nil {\r\n\t\t\tcorrections = append(corrections, *correction)\r\n\t\t}\r\n\t}\r\n\r\n\treturn corrections, nil\r\n}\r\n\r\n// SetStandard 设置格式标准\r\nfunc (c *DOCXChecker) SetStandard(standard FormatStandard) {\r\n\tc.standard = standard\r\n}\r\n\r\n// Check 检查DOCX文档格式\r\nfunc (c *DOCXChecker) Check(ctx context.Context, docPath string) (*CheckResult, error) {\r\n\t// 检查文件类型\r\n\r\n\tfileExt := strings.ToLower(filepath.Ext(docPath))\r\n\tif fileExt != \".docx\" {\r\n\t\treturn nil, fmt.Errorf(\"invalid file type, expected .docx, got %s\", fileExt)\r\n\t}\r\n\r\n\t// 初始化检查结果\r\n\tresult := &CheckResult{\r\n\t\tIssues:       []FormatIssue{},\r\n\t\tTotalIssues:  0,\r\n\t\tErrorCount:   0,\r\n\t\tWarningCount: 0,\r\n\t\tInfoCount:    0,\r\n\t}\r\n\r\n\t// 打开文档进行详细检查\r\n\tr, err := document.Open(docPath)\r\n\tif err != nil {\r\n\t\treturn nil, fmt.Errorf(\"failed to open document: %w\", err)\r\n\t}\r\n\tdefer r.Close()\r\n\r\n\t// 1. 检查页面设置\r\n\tc.checkPageSetupDetailed(r, docPath, result, &c.standard)\r\n\r\n\t// 2. 检查标题格式\r\n\tc.checkHeadingsDetailed(ctx, r, docPath, result, &c.standard)\r\n\r\n\t// 3. 检查段落格式\r\n\tc.checkParagraphsDetailed(ctx, r, docPath, result, &c.standard)\r\n\r\n\t// 4. 检查表格格式\r\n\tc.checkTablesDetailed(ctx, r, docPath, result, &c.standard)\r\n\r\n\t// 更新问题统计\r\n\tc.updateIssueStatistics(result)\r\n\r\n\treturn result, nil\r\n}\r\n\r\n// checkPageSetupDetailed 详细检查页面设置\r\nfunc (c *DOCXChecker) checkPageSetupDetailed(doc *document.Document, docPath string, result *CheckResult, standard *FormatStandard) {\r\n\tsection := doc.BodySection()\r\n\r\n\t// 获取当前页面设置\r\n\tpgMar := section.X().PgMar\r\n\r\n\t// 检查页边距\r\n\tif pgMar != nil {\r\n\t\tif standard.PageSetup.MarginTop > 0 && pgMar.TopAttr.Int64 != nil {\r\n\t\t\texpectedTop := measurement.Distance(standard.PageSetup.MarginTop) * measurement.Centimeter\r\n\t\t\tactualTop := measurement.Distance(*pgMar.TopAttr.Int64)\r\n\t\t\tif abs(int(actualTop)-int(expectedTop)) > 10 { // 允许10twips的误差\r\n\t\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\t\tID:          generateIssueID(\"margin_top\"),\r\n\t\t\t\t\tType:        IssueTypePageSetup,\r\n\t\t\t\t\tSeverity:    SeverityWarning,\r\n\t\t\t\t\tDescription: fmt.Sprintf(\"上边距不符合要求: 当前 %.2fcm, 期望 %.2fcm\", float64(actualTop)/measurement.Centimeter, standard.PageSetup.MarginTop),\r\n\t\t\t\t\tOriginal:    float64(actualTop) / measurement.Centimeter,\r\n\t\t\t\t\tSuggestion:  standard.PageSetup.MarginTop,\r\n\t\t\t\t})\r\n\t\t\t}\r\n\t\t}\r\n\r\n\t\tif standard.PageSetup.MarginBottom > 0 && pgMar.BottomAttr.Int64 != nil {\r\n\t\t\texpectedBottom := measurement.Distance(standard.PageSetup.MarginBottom) * measurement.Centimeter\r\n\t\t\tactualBottom := measurement.Distance(*pgMar.BottomAttr.Int64)\r\n\t\t\tif abs(int(actualBottom)-int(expectedBottom)) > 10 {\r\n\t\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\t\tID:          generateIssueID(\"margin_bottom\"),\r\n\t\t\t\t\tType:        IssueTypePageSetup,\r\n\t\t\t\t\tSeverity:    SeverityWarning,\r\n\t\t\t\t\tDescription: fmt.Sprintf(\"下边距不符合要求: 当前 %.2fcm, 期望 %.2fcm\", float64(actualBottom)/measurement.Centimeter, standard.PageSetup.MarginBottom),\r\n\t\t\t\t\tOriginal:    float64(actualBottom) / measurement.Centimeter,\r\n\t\t\t\t\tSuggestion:  standard.PageSetup.MarginBottom,\r\n\t\t\t\t})\r\n\t\t\t}\r\n\t\t}\r\n\r\n\t\tif standard.PageSetup.MarginLeft > 0 && pgMar.LeftAttr.ST_UnsignedDecimalNumber != nil {\r\n\t\t\texpectedLeft := measurement.Distance(standard.PageSetup.MarginLeft) * measurement.Centimeter\r\n\t\t\tactualLeft := measurement.Distance(*pgMar.LeftAttr.ST_UnsignedDecimalNumber)\r\n\t\t\tif abs(int(actualLeft)-int(expectedLeft)) > 10 {\r\n\t\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\t\tID:          generateIssueID(\"margin_left\"),\r\n\t\t\t\t\tType:        IssueTypePageSetup,\r\n\t\t\t\t\tSeverity:    SeverityWarning,\r\n\t\t\t\t\tDescription: fmt.Sprintf(\"左边距不符合要求: 当前 %.2fcm, 期望 %.2fcm\", float64(actualLeft)/measurement.Centimeter, standard.PageSetup.MarginLeft),\r\n\t\t\t\t\tOriginal:    float64(actualLeft) / measurement.Centimeter,\r\n\t\t\t\t\tSuggestion:  standard.PageSetup.MarginLeft,\r\n\t\t\t\t})\r\n\t\t\t}\r\n\t\t}\r\n\r\n\t\tif standard.PageSetup.MarginRight > 0 && pgMar.RightAttr.ST_UnsignedDecimalNumber != nil {\r\n\t\t\texpectedRight := measurement.Distance(standard.PageSetup.MarginRight) * measurement.Centimeter\r\n\t\t\tactualRight := measurement.Distance(*pgMar.RightAttr.ST_UnsignedDecimalNumber)\r\n\t\t\tif abs(int(actualRight)-int(expectedRight)) > 10 {\r\n\t\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\t\tID:          generateIssueID(\"margin_right\"),\r\n\t\t\t\t\tType:        IssueTypePageSetup,\r\n\t\t\t\t\tSeverity:    SeverityWarning,\r\n\t\t\t\t\tDescription: fmt.Sprintf(\"右边距不符合要求: 当前 %.2fcm, 期望 %.2fcm\", float64(actualRight)/measurement.Centimeter, standard.PageSetup.MarginRight),\r\n\t\t\t\t\tOriginal:    float64(actualRight) / measurement.Centimeter,\r\n\t\t\t\t\tSuggestion:  standard.PageSetup.MarginRight,\r\n\t\t\t\t})\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// checkHeadingsDetailed 详细检查标题格式\r\nfunc (c *DOCXChecker) checkHeadingsDetailed(ctx context.Context, doc *document.Document, docPath string, result *CheckResult, standard *FormatStandard) {\r\n\tif standard == nil {\r\n\t\treturn\r\n\t}\r\n\r\n\tparagraphs := doc.Paragraphs()\r\n\tfor i, p := range paragraphs {\r\n\t\t// 获取段落文本\r\n\t\tvar textBuilder strings.Builder\r\n\t\tfor _, run := range p.Runs() {\r\n\t\t\ttextBuilder.WriteString(run.Text())\r\n\t\t}\r\n\t\ttext := textBuilder.String()\r\n\t\ttrimmedText := strings.TrimSpace(text)\r\n\r\n\t\t// 跳过空文本\r\n\t\tif trimmedText == \"\" {\r\n\t\t\tcontinue\r\n\t\t}\r\n\r\n\t\t// 识别标题级别\r\n\t\theadingLevel := c.identifyHeadingLevel(trimmedText, p)\r\n\r\n\t\tif headingLevel == 0 {\r\n\t\t\tcontinue // 不是标题\r\n\t\t}\r\n\r\n\t\t// 根据标题级别检查格式\r\n\t\tswitch headingLevel {\r\n\t\tcase 1:\r\n\t\t\tc.checkHeading1Format(p, i, result, standard)\r\n\t\tcase 2:\r\n\t\t\tc.checkHeading2Format(p, i, result, standard)\r\n\t\tcase 3:\r\n\t\t\tc.checkHeading3Format(p, i, result, standard)\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// identifyHeadingLevel 识别标题级别\r\nfunc (c *DOCXChecker) identifyHeadingLevel(text string, para document.Paragraph) int {\r\n\t// 一级标题模式\r\n\tlevel1Patterns := []string{\r\n\t\t`^[一二三四五六七八九十]+、`,\r\n\t\t`^第[一二三四五六七八九十]+章`,\r\n\t\t`^第\\d+章`,\r\n\t\t`^\\d+\\s+\\D`,\r\n\t\t`^\\d+\\.\\s+\\D`,\r\n\t}\r\n\r\n\tfor _, pattern := range level1Patterns {\r\n\t\tif matched, _ := regexp.MatchString(pattern, text); matched {\r\n\t\t\tif c.matchesHeading1Format(para) {\r\n\t\t\t\treturn 1\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n\r\n\t// 二级标题模式\r\n\tlevel2Patterns := []string{\r\n\t\t`^\\d+\\.\\d+\\s+`,\r\n\t\t`^\\d+\\.\\d+$`,\r\n\t}\r\n\r\n\tfor _, pattern := range level2Patterns {\r\n\t\tif matched, _ := regexp.MatchString(pattern, text); matched {\r\n\t\t\tif c.matchesHeading2Format(para) {\r\n\t\t\t\treturn 2\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n\r\n\t// 三级标题模式\r\n\tlevel3Patterns := []string{\r\n\t\t`^\\d+\\.\\d+\\.\\d+\\s+`,\r\n\t\t`^\\d+\\.\\d+\\.\\d+$`,\r\n\t}\r\n\r\n\tfor _, pattern := range level3Patterns {\r\n\t\tif matched, _ := regexp.MatchString(pattern, text); matched {\r\n\t\t\tif c.matchesHeading3Format(para) {\r\n\t\t\t\treturn 3\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n\r\n\treturn 0\r\n}\r\n\r\n// matchesHeading1Format 检查是否符合一级标题格式特征\r\nfunc (c *DOCXChecker) matchesHeading1Format(para document.Paragraph) bool {\r\n\t// 获取第一个run的格式\r\n\truns := para.Runs()\r\n\tif len(runs) == 0 {\r\n\t\treturn false\r\n\t}\r\n\r\n\t// 检查字体大小\r\n\tfontSize := getRunFontSize(runs[0])\r\n\tif fontSize >= 15 { // >= 15pt\r\n\t\treturn true\r\n\t}\r\n\r\n\t// 检查对齐方式\r\n\tif getAlignment(para) == wml.ST_JcCenter {\r\n\t\treturn true\r\n\t}\r\n\r\n\t// 检查加粗\r\n\tif runs[0].Properties().Bold() {\r\n\t\treturn true\r\n\t}\r\n\r\n\treturn false\r\n}\r\n\r\n// matchesHeading2Format 检查是否符合二级标题格式特征\r\nfunc (c *DOCXChecker) matchesHeading2Format(para document.Paragraph) bool {\r\n\truns := para.Runs()\r\n\tif len(runs) == 0 {\r\n\t\treturn false\r\n\t}\r\n\r\n\tfontSize := getRunFontSize(runs[0])\r\n\tif fontSize >= 13 && fontSize <= 16 {\r\n\t\treturn true\r\n\t}\r\n\r\n\tif getAlignment(para) == wml.ST_JcLeft {\r\n\t\treturn true\r\n\t}\r\n\r\n\tif runs[0].Properties().Bold() {\r\n\t\treturn true\r\n\t}\r\n\r\n\treturn false\r\n}\r\n\r\n// matchesHeading3Format 检查是否符合三级标题格式特征\r\nfunc (c *DOCXChecker) matchesHeading3Format(para document.Paragraph) bool {\r\n\truns := para.Runs()\r\n\tif len(runs) == 0 {\r\n\t\treturn false\r\n\t}\r\n\r\n\tfontSize := getRunFontSize(runs[0])\r\n\tif fontSize >= 12 && fontSize <= 14 {\r\n\t\treturn true\r\n\t}\r\n\r\n\tif getAlignment(para) == wml.ST_JcLeft {\r\n\t\treturn true\r\n\t}\r\n\r\n\tif runs[0].Properties().Bold() {\r\n\t\treturn true\r\n\t}\r\n\r\n\treturn false\r\n}\r\n\r\n// checkHeading1Format 检查一级标题格式\r\nfunc (c *DOCXChecker) checkHeading1Format(para document.Paragraph, index int, result *CheckResult, standard *FormatStandard) {\r\n\truns := para.Runs()\r\n\tif len(runs) == 0 {\r\n\t\treturn\r\n\t}\r\n\r\n\t// 检查字体\r\n\tif len(standard.HeadingStyles) > 0 && standard.HeadingStyles[0].FontName != \"\" {\r\n\t\tactualFont := getRunFontName(runs[0])\r\n\t\tif !fontsMatch(actualFont, standard.HeadingStyles[0].FontName) {\r\n\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\tID:          generateIssueID(\"heading1_font\"),\r\n\t\t\t\tType:        IssueTypeHeading,\r\n\t\t\t\tSeverity:    SeverityError,\r\n\t\t\t\tDescription: fmt.Sprintf(\"一级标题字体不匹配: 期望 %s, 实际 %s\", standard.HeadingStyles[0].FontName, actualFont),\r\n\t\t\t\tOriginal:    actualFont,\r\n\t\t\t\tSuggestion:  standard.HeadingStyles[0].FontName,\r\n\t\t\t})\r\n\t\t}\r\n\t}\r\n\r\n\t// 检查字号\r\n\tif len(standard.HeadingStyles) > 0 && standard.HeadingStyles[0].FontSize > 0 {\r\n\t\tactualSize := getRunFontSize(runs[0])\r\n\t\texpectedSize := standard.HeadingStyles[0].FontSize\r\n\t\tif absFloat64(actualSize-expectedSize) > 0.5 {\r\n\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\tID:          generateIssueID(\"heading1_size\"),\r\n\t\t\t\tType:        IssueTypeHeading,\r\n\t\t\t\tSeverity:    SeverityError,\r\n\t\t\t\tDescription: fmt.Sprintf(\"一级标题字号不匹配: 期望 %.1fpt, 实际 %.1fpt\", expectedSize, actualSize),\r\n\t\t\t\tOriginal:    actualSize,\r\n\t\t\t\tSuggestion:  expectedSize,\r\n\t\t\t})\r\n\t\t}\r\n\t}\r\n\r\n\t// 检查对齐方式\r\n\tif len(standard.HeadingStyles) > 0 && standard.HeadingStyles[0].Alignment != \"\" {\r\n\t\tactualAlign := getAlignment(para)\r\n\t\texpectedAlign := parseAlignment(standard.HeadingStyles[0].Alignment)\r\n\t\tif actualAlign != expectedAlign {\r\n\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\tID:          generateIssueID(\"heading1_align\"),\r\n\t\t\t\tType:        IssueTypeHeading,\r\n\t\t\t\tSeverity:    SeverityWarning,\r\n\t\t\t\tDescription: fmt.Sprintf(\"一级标题对齐方式不匹配: 期望 %s, 实际 %s\", standard.HeadingStyles[0].Alignment, alignmentToString(actualAlign)),\r\n\t\t\t\tOriginal:    alignmentToString(actualAlign),\r\n\t\t\t\tSuggestion:  standard.HeadingStyles[0].Alignment,\r\n\t\t\t})\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// checkHeading2Format 检查二级标题格式\r\nfunc (c *DOCXChecker) checkHeading2Format(para document.Paragraph, index int, result *CheckResult, standard *FormatStandard) {\r\n\truns := para.Runs()\r\n\tif len(runs) == 0 {\r\n\t\treturn\r\n\t}\r\n\r\n\t// 检查字体\r\n\tif len(standard.HeadingStyles) > 1 && standard.HeadingStyles[1].FontName != \"\" {\r\n\t\tactualFont := getRunFontName(runs[0])\r\n\t\tif !fontsMatch(actualFont, standard.HeadingStyles[1].FontName) {\r\n\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\tID:          generateIssueID(\"heading2_font\"),\r\n\t\t\t\tType:        IssueTypeHeading,\r\n\t\t\t\tSeverity:    SeverityError,\r\n\t\t\t\tDescription: fmt.Sprintf(\"二级标题字体不匹配: 期望 %s, 实际 %s\", standard.HeadingStyles[1].FontName, actualFont),\r\n\t\t\t\tOriginal:    actualFont,\r\n\t\t\t\tSuggestion:  standard.HeadingStyles[1].FontName,\r\n\t\t\t})\r\n\t\t}\r\n\t}\r\n\r\n\t// 检查字号\r\n\tif len(standard.HeadingStyles) > 1 && standard.HeadingStyles[1].FontSize > 0 {\r\n\t\tactualSize := getRunFontSize(runs[0])\r\n\t\texpectedSize := standard.HeadingStyles[1].FontSize\r\n\t\tif absFloat64(actualSize-expectedSize) > 0.5 {\r\n\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\tID:          generateIssueID(\"heading2_size\"),\r\n\t\t\t\tType:        IssueTypeHeading,\r\n\t\t\t\tSeverity:    SeverityError,\r\n\t\t\t\tDescription: fmt.Sprintf(\"二级标题字号不匹配: 期望 %.1fpt, 实际 %.1fpt\", expectedSize, actualSize),\r\n\t\t\t\tOriginal:    actualSize,\r\n\t\t\t\tSuggestion:  expectedSize,\r\n\t\t\t})\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// checkHeading3Format 检查三级标题格式\r\nfunc (c *DOCXChecker) checkHeading3Format(para document.Paragraph, index int, result *CheckResult, standard *FormatStandard) {\r\n\truns := para.Runs()\r\n\tif len(runs) == 0 {\r\n\t\treturn\r\n\t}\r\n\r\n\t// 检查字体\r\n\tif len(standard.HeadingStyles) > 2 && standard.HeadingStyles[2].FontName != \"\" {\r\n\t\tactualFont := getRunFontName(runs[0])\r\n\t\tif !fontsMatch(actualFont, standard.HeadingStyles[2].FontName) {\r\n\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\tID:          generateIssueID(\"heading3_font\"),\r\n\t\t\t\tType:        IssueTypeHeading,\r\n\t\t\t\tSeverity:    SeverityError,\r\n\t\t\t\tDescription: fmt.Sprintf(\"三级标题字体不匹配: 期望 %s, 实际 %s\", standard.HeadingStyles[2].FontName, actualFont),\r\n\t\t\t\tOriginal:    actualFont,\r\n\t\t\t\tSuggestion:  standard.HeadingStyles[2].FontName,\r\n\t\t\t})\r\n\t\t}\r\n\t}\r\n\r\n\t// 检查字号\r\n\tif len(standard.HeadingStyles) > 2 && standard.HeadingStyles[2].FontSize > 0 {\r\n\t\tactualSize := getRunFontSize(runs[0])\r\n\t\texpectedSize := standard.HeadingStyles[2].FontSize\r\n\t\tif absFloat64(actualSize-expectedSize) > 0.5 {\r\n\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\tID:          generateIssueID(\"heading3_size\"),\r\n\t\t\t\tType:        IssueTypeHeading,\r\n\t\t\t\tSeverity:    SeverityError,\r\n\t\t\t\tDescription: fmt.Sprintf(\"三级标题字号不匹配: 期望 %.1fpt, 实际 %.1fpt\", expectedSize, actualSize),\r\n\t\t\t\tOriginal:    actualSize,\r\n\t\t\t\tSuggestion:  expectedSize,\r\n\t\t\t})\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// checkParagraphsDetailed 详细检查段落格式\r\nfunc (c *DOCXChecker) checkParagraphsDetailed(ctx context.Context, doc *document.Document, docPath string, result *CheckResult, standard *FormatStandard) {\r\n\tif standard == nil {\r\n\t\treturn\r\n\t}\r\n\r\n\tparagraphs := doc.Paragraphs()\r\n\tfor i, p := range paragraphs {\r\n\t\t// 获取段落文本\r\n\t\tvar textBuilder strings.Builder\r\n\t\tfor _, run := range p.Runs() {\r\n\t\t\ttextBuilder.WriteString(run.Text())\r\n\t\t}\r\n\t\ttext := textBuilder.String()\r\n\t\ttrimmedText := strings.TrimSpace(text)\r\n\r\n\t\t// 跳过空段落和标题\r\n\t\tif trimmedText == \"\" || c.identifyHeadingLevel(trimmedText, p) > 0 {\r\n\t\t\tcontinue\r\n\t\t}\r\n\r\n\t\t// 检查正文格式\r\n\t\tc.checkBodyParagraphFormat(p, i, result, standard)\r\n\t}\r\n}\r\n\r\n// checkBodyParagraphFormat 检查正文段落格式\r\nfunc (c *DOCXChecker) checkBodyParagraphFormat(para document.Paragraph, index int, result *CheckResult, standard *FormatStandard) {\r\n\truns := para.Runs()\r\n\tif len(runs) == 0 {\r\n\t\treturn\r\n\t}\r\n\r\n\t// 获取正文样式（使用第一个段落样式）\r\n\tvar bodyStyle ParagraphStyle\r\n\tif len(standard.ParagraphStyles) > 0 {\r\n\t\tbodyStyle = standard.ParagraphStyles[0]\r\n\t}\r\n\r\n\t// 检查段落中所有run的格式\r\n\tfor runIndex, run := range runs {\r\n\t\t// 检查字体\r\n\t\tif bodyStyle.FontName != \"\" {\r\n\t\t\tactualFont := getRunFontName(run)\r\n\t\t\tif !fontsMatch(actualFont, bodyStyle.FontName) {\r\n\t\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\t\tID:          generateIssueID(\"body_font\"),\r\n\t\t\t\t\tType:        IssueTypeFont,\r\n\t\t\t\t\tSeverity:    SeverityError,\r\n\t\t\t\t\tDescription: fmt.Sprintf(\"正文字体不匹配: 段落%d的第%d个文本块期望 %s, 实际 %s\", index+1, runIndex+1, bodyStyle.FontName, actualFont),\r\n\t\t\t\t\tOriginal:    actualFont,\r\n\t\t\t\t\tSuggestion:  bodyStyle.FontName,\r\n\t\t\t\t})\r\n\t\t\t}\r\n\t\t}\r\n\r\n\t\t// 检查字号\r\n\t\tif bodyStyle.FontSize > 0 {\r\n\t\t\tactualSize := getRunFontSize(run)\r\n\t\t\texpectedSize := bodyStyle.FontSize\r\n\t\t\tif absFloat64(actualSize-expectedSize) > 0.5 {\r\n\t\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\t\tID:          generateIssueID(\"body_size\"),\r\n\t\t\t\t\tType:        IssueTypeFont,\r\n\t\t\t\t\tSeverity:    SeverityError,\r\n\t\t\t\t\tDescription: fmt.Sprintf(\"正文字号不匹配: 段落%d的第%d个文本块期望 %.1fpt, 实际 %.1fpt\", index+1, runIndex+1, expectedSize, actualSize),\r\n\t\t\t\t\tOriginal:    actualSize,\r\n\t\t\t\t\tSuggestion:  expectedSize,\r\n\t\t\t\t})\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n\r\n\t// 检查首行缩进\r\n\tif bodyStyle.FirstLineIndent > 0 {\r\n\t\tactualIndent := getFirstLineIndent(para)\r\n\t\texpectedIndent := bodyStyle.FirstLineIndent * measurement.Centimeter\r\n\t\tif abs(int(actualIndent)-int(expectedIndent)) > 20 { // 允许20twips的误差\r\n\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\tID:          generateIssueID(\"body_indent\"),\r\n\t\t\t\tType:        IssueTypeSpacing,\r\n\t\t\t\tSeverity:    SeverityWarning,\r\n\t\t\t\tDescription: fmt.Sprintf(\"正文首行缩进不匹配: 期望 %.2fcm, 实际 %.2fcm\", bodyStyle.FirstLineIndent, actualIndent/measurement.Centimeter),\r\n\t\t\t\tOriginal:    actualIndent / measurement.Centimeter,\r\n\t\t\t\tSuggestion:  bodyStyle.FirstLineIndent,\r\n\t\t\t})\r\n\t\t}\r\n\t}\r\n\r\n\t// 检查行间距\r\n\tif bodyStyle.LineSpacing > 0 {\r\n\t\tactualSpacing := getLineSpacing(para)\r\n\t\texpectedSpacing := bodyStyle.LineSpacing\r\n\t\tif absFloat64(actualSpacing-expectedSpacing) > 2.0 { // 允许2pt的误差\r\n\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\tID:          generateIssueID(\"body_line_spacing\"),\r\n\t\t\t\tType:        IssueTypeSpacing,\r\n\t\t\t\tSeverity:    SeverityWarning,\r\n\t\t\t\tDescription: fmt.Sprintf(\"正文行间距不匹配: 期望 %.1fpt, 实际 %.1fpt\", expectedSpacing, actualSpacing),\r\n\t\t\t\tOriginal:    actualSpacing,\r\n\t\t\t\tSuggestion:  expectedSpacing,\r\n\t\t\t})\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// checkTablesDetailed 详细检查表格格式\r\nfunc (c *DOCXChecker) checkTablesDetailed(ctx context.Context, doc *document.Document, docPath string, result *CheckResult, standard *FormatStandard) {\r\n\tif standard == nil {\r\n\t\treturn\r\n\t}\r\n\r\n\ttables := doc.Tables()\r\n\tfor i, table := range tables {\r\n\t\t// 检查表格内文字格式\r\n\t\tfor _, row := range table.Rows() {\r\n\t\t\tfor _, cell := range row.Cells() {\r\n\t\t\t\tfor _, p := range cell.Paragraphs() {\r\n\t\t\t\t\tfor _, run := range p.Runs() {\r\n\t\t\t\t\t\t// 检查字体\r\n\t\t\t\t\t\tif standard.TableStyle.FontName != \"\" {\r\n\t\t\t\t\t\t\tactualFont := getRunFontName(run)\r\n\t\t\t\t\t\t\tif !fontsMatch(actualFont, standard.TableStyle.FontName) {\r\n\t\t\t\t\t\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\t\t\t\t\t\tID:          generateIssueID(\"table_font\"),\r\n\t\t\t\t\t\t\t\t\tType:        IssueTypeTable,\r\n\t\t\t\t\t\t\t\t\tSeverity:    SeverityWarning,\r\n\t\t\t\t\t\t\t\t\tDescription: fmt.Sprintf(\"表格 %d 字体不匹配: 期望 %s, 实际 %s\", i+1, standard.TableStyle.FontName, actualFont),\r\n\t\t\t\t\t\t\t\t\tOriginal:    actualFont,\r\n\t\t\t\t\t\t\t\t\tSuggestion:  standard.TableStyle.FontName,\r\n\t\t\t\t\t\t\t\t})\r\n\t\t\t\t\t\t\t}\r\n\t\t\t\t\t\t}\r\n\r\n\t\t\t\t\t\t// 检查字号\r\n\t\t\t\t\t\tif standard.TableStyle.FontSize > 0 {\r\n\t\t\t\t\t\t\tactualSize := getRunFontSize(run)\r\n\t\t\t\t\t\t\tif absFloat64(actualSize-standard.TableStyle.FontSize) > 0.5 {\r\n\t\t\t\t\t\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\t\t\t\t\t\tID:          generateIssueID(\"table_size\"),\r\n\t\t\t\t\t\t\t\t\tType:        IssueTypeTable,\r\n\t\t\t\t\t\t\t\t\tSeverity:    SeverityWarning,\r\n\t\t\t\t\t\t\t\t\tDescription: fmt.Sprintf(\"表格 %d 字号不匹配: 期望 %.1fpt, 实际 %.1fpt\", i+1, standard.TableStyle.FontSize, actualSize),\r\n\t\t\t\t\t\t\t\t\tOriginal:    actualSize,\r\n\t\t\t\t\t\t\t\t\tSuggestion:  standard.TableStyle.FontSize,\r\n\t\t\t\t\t\t\t\t})\r\n\t\t\t\t\t\t\t}\r\n\t\t\t\t\t\t}\r\n\t\t\t\t\t}\r\n\t\t\t\t}\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// 辅助函数\r\nfunc abs(x int) int {\r\n\tif x < 0 {\r\n\t\treturn -x\r\n\t}\r\n\treturn x\r\n}\r\n\r\nfunc absFloat64(x float64) float64 {\r\n\tif x < 0 {\r\n\t\treturn -x\r\n\t}\r\n\treturn x\r\n}\r\n\r\nfunc generateIssueID(prefix string) string {\r\n\treturn fmt.Sprintf(\"%s_%d\", prefix, len(prefix)*1000)\r\n}\r\n\r\nfunc getRunFontName(run document.Run) string {\r\n\trPr := run.X().RPr\r\n\tif rPr == nil {\r\n\t\treturn \"\"\r\n\t}\r\n\trFonts := rPr.RFonts\r\n\tif rFonts == nil {\r\n\t\treturn \"\"\r\n\t}\r\n\tif rFonts.EastAsiaAttr != nil {\r\n\t\treturn *rFonts.EastAsiaAttr\r\n\t}\r\n\tif rFonts.AsciiAttr != nil {\r\n\t\treturn *rFonts.AsciiAttr\r\n\t}\r\n\treturn \"\"\r\n}\r\n\r\nfunc getRunFontSize(run document.Run) float64 {\r\n\trPr := run.X().RPr\r\n\tif rPr == nil || rPr.Sz == nil || rPr.Sz.ValAttr.ST_UnsignedDecimalNumber == nil {\r\n\t\treturn 0\r\n\t}\r\n\treturn float64(*rPr.Sz.ValAttr.ST_UnsignedDecimalNumber) / 2.0\r\n}\r\n\r\nfunc getFirstLineIndent(para document.Paragraph) measurement.Distance {\r\n\tpPr := para.X().PPr\r\n\tif pPr == nil || pPr.Ind == nil {\r\n\t\treturn 0\r\n\t}\r\n\tif pPr.Ind.FirstLineAttr != nil && pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber != nil {\r\n\t\treturn measurement.Distance(*pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber)\r\n\t}\r\n\treturn 0\r\n}\r\n\r\nfunc getLineSpacing(para document.Paragraph) float64 {\r\n\tpPr := para.X().PPr\r\n\tif pPr == nil || pPr.Spacing == nil {\r\n\t\treturn 0\r\n\t}\r\n\tif pPr.Spacing.LineAttr != nil && pPr.Spacing.LineAttr.Int64 != nil {\r\n\t\treturn float64(*pPr.Spacing.LineAttr.Int64) / 20.0\r\n\t}\r\n\treturn 0\r\n}\r\n\r\nfunc getAlignment(para document.Paragraph) wml.ST_Jc {\r\n\tpPr := para.X().PPr\r\n\tif pPr == nil || pPr.Jc == nil {\r\n\t\treturn wml.ST_JcUnset\r\n\t}\r\n\treturn pPr.Jc.ValAttr\r\n}\r\n\r\nfunc fontsMatch(actual, expected string) bool {\r\n\tif actual == \"\" || expected == \"\" {\r\n\t\treturn true\r\n\t}\r\n\tactualLower := strings.ToLower(actual)\r\n\texpectedLower := strings.ToLower(expected)\r\n\treturn strings.Contains(actualLower, expectedLower) || strings.Contains(expectedLower, actualLower)\r\n}\r\n\r\nfunc parseAlignment(alignStr string) wml.ST_Jc {\r\n\tswitch strings.ToLower(alignStr) {\r\n\tcase \"center\", \"居中\":\r\n\t\treturn wml.ST_JcCenter\r\n\tcase \"right\", \"右对齐\":\r\n\t\treturn wml.ST_JcRight\r\n\tcase \"justify\", \"两端对齐\":\r\n\t\treturn wml.ST_JcBoth\r\n\tdefault:\r\n\t\treturn wml.ST_JcLeft\r\n\t}\r\n}\r\n\r\nfunc alignmentToString(align wml.ST_Jc) string {\r\n\tswitch align {\r\n\tcase wml.ST_JcCenter:\r\n\t\treturn \"center\"\r\n\tcase wml.ST_JcRight:\r\n\t\treturn \"right\"\r\n\tcase wml.ST_JcBoth:\r\n\t\treturn \"justify\"\r\n\tdefault:\r\n\t\treturn \"left\"\r\n\t}\r\n}\r\n\r\n// ApplyCorrections 应用修正建议到文档\r\nfunc (c *DOCXChecker) ApplyCorrections(ctx context.Context, docPath string, corrections []Correction) (string, error) {\r\n\t// 打开文档\r\n\tr, err := docx.ReadDocxFile(docPath)\r\n\tif err != nil {\r\n\t\treturn \"\", fmt.Errorf(\"failed to open document: %w\", err)\r\n\t}\r\n\tdefer r.Close()\r\n\r\n\t// 获取可编辑的文档对象\r\n\tdoc := r.Editable()\r\n\r\n\t// 应用每个修正\r\n\tfor _, correction := range corrections {\r\n\t\tif !correction.Applied {\r\n\t\t\terr := c.applySingleCorrection(doc, correction)\r\n\t\t\tif err != nil {\r\n\t\t\t\tfmt.Printf(\"应用修正失败: %s - %v\\n\", correction.IssueID, err)\r\n\t\t\t\tcontinue\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n\r\n\t// 生成输出文件路径\r\n\toutputPath := strings.TrimSuffix(docPath, filepath.Ext(docPath)) + \"_corrected.docx\"\r\n\r\n\t// 保存文档\r\n\tif err := doc.WriteToFile(outputPath); err != nil {\r\n\t\treturn \"\", fmt.Errorf(\"failed to save corrected document: %w\", err)\r\n\t}\r\n\r\n\treturn outputPath, nil\r\n}\r\n\r\n// applySingleCorrection 应用单个修正\r\nfunc (c *DOCXChecker) applySingleCorrection(doc *docx.Docx, correction Correction) error {\r\n\r\n\tswitch correction.Type {\r\n\tcase CorrectionTypePageSetup:\r\n\t\treturn c.applyPageSetupCorrection(doc, correction)\r\n\tcase CorrectionTypeFont:\r\n\t\treturn c.applyFontCorrection(doc, correction)\r\n\tcase CorrectionTypeSpacing:\r\n\t\treturn c.applySpacingCorrection(doc, correction)\r\n\tcase CorrectionTypeHeading:\r\n\t\treturn c.applyHeadingStyleCorrection(doc, correction)\r\n\tdefault:\r\n\t\treturn nil\r\n\t}\r\n}\r\n\r\n// applyPageSetupCorrection 应用页面设置修正\r\nfunc (c *DOCXChecker) applyPageSetupCorrection(doc *docx.Docx, correction Correction) error {\r\n\t// 简化的页面设置修正实现\r\n\t// 实际实现需要更复杂的逻辑\r\n\t// 这里可以根据correction.Parameters中的参数来修改页面设置\r\n\treturn nil\r\n}\r\n\r\n// applyFontCorrection 应用字体修正\r\nfunc (c *DOCXChecker) applyFontCorrection(doc *docx.Docx, correction Correction) error {\r\n\t// 简化的字体修正实现\r\n\t// 实际实现需要更复杂的逻辑\r\n\t// 这里可以根据correction.Parameters中的参数来修改字体设置\r\n\treturn nil\r\n}\r\n\r\n// applySpacingCorrection 应用间距修正\r\nfunc (c *DOCXChecker) applySpacingCorrection(doc *docx.Docx, correction Correction) error {\r\n\t// 简化的间距修正实现\r\n\t// 实际实现需要更复杂的逻辑\r\n\t// 这里可以根据correction.Parameters中的参数来修改间距设置\r\n\treturn nil\r\n}\r\n\r\n// applyHeadingStyleCorrection 应用标题样式修正\r\nfunc (c *DOCXChecker) applyHeadingStyleCorrection(doc *docx.Docx, correction Correction) error {\r\n\t// 简化的标题样式修正实现\r\n\t// 实际实现需要更复杂的逻辑\r\n\t// 这里可以根据correction.Parameters中的参数来修改标题样式\r\n\treturn nil\r\n}\r\n\r\n// generateCorrectionForIssue 为单个问题生成修正建议\r\nfunc (c *DOCXChecker) generateCorrectionForIssue(issue FormatIssue) *Correction {\r\n\t// 根据问题类型生成相应的修正建议\r\n\tswitch issue.Type {\r\n\tcase IssueTypePageSetup:\r\n\t\treturn c.generatePageSetupCorrection(issue)\r\n\tcase IssueTypeHeaderFooter:\r\n\t\treturn c.generateHeaderFooterCorrection(issue)\r\n\tcase IssueTypeFont:\r\n\t\treturn c.generateFontCorrection(issue)\r\n\tcase IssueTypeSpacing:\r\n\t\treturn c.generateSpacingCorrection(issue)\r\n\tcase IssueTypeHeading:\r\n\t\treturn c.generateHeadingCorrection(issue)\r\n\tcase IssueTypeTable:\r\n\t\treturn c.generateTableCorrection(issue)\r\n\tcase IssueTypeFigure:\r\n\t\treturn c.generateFigureCorrection(issue)\r\n\tdefault:\r\n\t\treturn nil\r\n\t}\r\n}\r\n\r\n// generatePageSetupCorrection 生成页面设置修正建议\r\nfunc (c *DOCXChecker) generatePageSetupCorrection(issue FormatIssue) *Correction {\r\n\t// 将Suggestion转换为map[string]interface{}\r\n\tparams, ok := issue.Suggestion.(map[string]interface{})\r\n\tif !ok {\r\n\t\tparams = make(map[string]interface{})\r\n\t}\r\n\r\n\treturn &Correction{\r\n\t\tIssueID:     issue.ID,\r\n\t\tType:        CorrectionTypePageSetup,\r\n\t\tDescription: issue.Description,\r\n\t\tAction:      \"修改页面设置\",\r\n\t\tParameters:  params,\r\n\t}\r\n}\r\n\r\n// generateHeaderFooterCorrection 生成页眉页脚修正建议\r\nfunc (c *DOCXChecker) generateHeaderFooterCorrection(issue FormatIssue) *Correction {\r\n\t// 将Suggestion转换为map[string]interface{}\r\n\tparams, ok := issue.Suggestion.(map[string]interface{})\r\n\tif !ok {\r\n\t\tparams = make(map[string]interface{})\r\n\t}\r\n\r\n\treturn &Correction{\r\n\t\tIssueID:     issue.ID,\r\n\t\tType:        CorrectionTypeHeaderFooter,\r\n\t\tDescription: issue.Description,\r\n\t\tAction:      \"修改页眉页脚\",\r\n\t\tParameters:  params,\r\n\t}\r\n}\r\n\r\n// generateFontCorrection 生成字体修正建议\r\nfunc (c *DOCXChecker) generateFontCorrection(issue FormatIssue) *Correction {\r\n\t// 将Suggestion转换为map[string]interface{}\r\n\tparams, ok := issue.Suggestion.(map[string]interface{})\r\n\tif !ok {\r\n\t\tparams = make(map[string]interface{})\r\n\t}\r\n\r\n\treturn &Correction{\r\n\t\tIssueID:     issue.ID,\r\n\t\tType:        CorrectionTypeFont,\r\n\t\tDescription: issue.Description,\r\n\t\tAction:      \"修改字体设置\",\r\n\t\tParameters:  params,\r\n\t}\r\n}\r\n\r\n// generateSpacingCorrection 生成间距修正建议\r\nfunc (c *DOCXChecker) generateSpacingCorrection(issue FormatIssue) *Correction {\r\n\t// 将Suggestion转换为map[string]interface{}\r\n\tparams, ok := issue.Suggestion.(map[string]interface{})\r\n\tif !ok {\r\n\t\tparams = make(map[string]interface{})\r\n\t}\r\n\r\n\treturn &Correction{\r\n\t\tIssueID:     issue.ID,\r\n\t\tType:        CorrectionTypeSpacing,\r\n\t\tDescription: issue.Description,\r\n\t\tAction:      \"修改间距设置\",\r\n\t\tParameters:  params,\r\n\t}\r\n}\r\n\r\n// generateHeadingCorrection 生成标题修正建议\r\nfunc (c *DOCXChecker) generateHeadingCorrection(issue FormatIssue) *Correction {\r\n\t// 将Suggestion转换为map[string]interface{}\r\n\tparams, ok := issue.Suggestion.(map[string]interface{})\r\n\tif !ok {\r\n\t\tparams = make(map[string]interface{})\r\n\t}\r\n\r\n\treturn &Correction{\r\n\t\tIssueID:     issue.ID,\r\n\t\tType:        CorrectionTypeHeading,\r\n\t\tDescription: issue.Description,\r\n\t\tAction:      \"修改标题格式\",\r\n\t\tParameters:  params,\r\n\t}\r\n}\r\n\r\n// generateTableCorrection 生成表格修正建议\r\nfunc (c *DOCXChecker) generateTableCorrection(issue FormatIssue) *Correction {\r\n\t// 将Suggestion转换为map[string]interface{}\r\n\tparams, ok := issue.Suggestion.(map[string]interface{})\r\n\tif !ok {\r\n\t\tparams = make(map[string]interface{})\r\n\t}\r\n\r\n\treturn &Correction{\r\n\t\tIssueID:     issue.ID,\r\n\t\tType:        CorrectionTypeTable,\r\n\t\tDescription: issue.Description,\r\n\t\tAction:      \"修改表格格式\",\r\n\t\tParameters:  params,\r\n\t}\r\n}\r\n\r\n// generateFigureCorrection 生成图表修正建议\r\nfunc (c *DOCXChecker) generateFigureCorrection(issue FormatIssue) *Correction {\r\n\t// 将Suggestion转换为map[string]interface{}\r\n\tparams, ok := issue.Suggestion.(map[string]interface{})\r\n\tif !ok {\r\n\t\tparams = make(map[string]interface{})\r\n\t}\r\n\r\n\treturn &Correction{\r\n\t\tIssueID:     issue.ID,\r\n\t\tType:        CorrectionTypeFigure,\r\n\t\tDescription: issue.Description,\r\n\t\tAction:      \"修改图表格式\",\r\n\t\tParameters:  params,\r\n\t}\r\n}\r\n\r\n// FixDocumentDirectly 直接修复文档\r\nfunc (c *DOCXChecker) FixDocumentDirectly(ctx context.Context, docPath string, standard FormatStandard) (string, error) {\r\n\r\n\t// 打开DOCX文档\r\n\tr, err := document.Open(docPath)\r\n\tif err != nil {\r\n\t\treturn \"\", fmt.Errorf(\"failed to open document: %w\", err)\r\n\t}\r\n\tdefer r.Close()\r\n\r\n\t// 使用standard中的页面设置来检查和修复\r\n\t// 获取文档主体部分\r\n\tsection := r.BodySection()\r\n\t// 使用standard中的页边距设置，将厘米转换为毫米（Distance类型表示毫米）\r\n\t// standard.PageSetup 单位是 cm, measurement.Distance 单位是 mm?\r\n\t// measurement.Distance 是 float64.\r\n\t// measurement.Millimeter * 10? No.\r\n\t// unioffice measurement:\r\n\t// type Distance float64 (points?) No, unioffice usually uses Measurement types.\r\n\t// But section.SetPageMargins takes `measurement.Distance`.\r\n\t// Let's assume standard.PageSetup values are in cm (based on struct definition comments).\r\n\t// 1 cm = 10 mm.\r\n\t// measurement.Centimeter * value.\r\n\r\n\tsection.SetPageMargins(\r\n\t\tmeasurement.Distance(standard.PageSetup.MarginTop)*measurement.Centimeter,\r\n\t\tmeasurement.Distance(standard.PageSetup.MarginBottom)*measurement.Centimeter,\r\n\t\tmeasurement.Distance(standard.PageSetup.MarginLeft)*measurement.Centimeter,\r\n\t\tmeasurement.Distance(standard.PageSetup.MarginRight)*measurement.Centimeter,\r\n\t\tmeasurement.Distance(standard.PageSetup.HeaderDistance)*measurement.Centimeter,\r\n\t\tmeasurement.Distance(standard.PageSetup.FooterDistance)*measurement.Centimeter,\r\n\t\tmeasurement.Distance(0), // 装订线\r\n\t)\r\n\r\n\t// 修复段落格式（字体、字号、对齐、缩进、行间距）\r\n\tc.fixParagraphFormats(r, &standard)\r\n\r\n\t// 修复表格格式\r\n\tc.fixTableFormats(r, &standard)\r\n\r\n\t// 保存修改后的文档\r\n\t// 获取文件名和扩展名\r\n\tfilename := filepath.Base(docPath)\r\n\tnameWithoutExt := strings.TrimSuffix(filename, filepath.Ext(filename))\r\n\text := filepath.Ext(filename)\r\n\r\n\t// 创建新文件名：源文件名_corrected.扩展名\r\n\tnewFilename := fmt.Sprintf(\"%s_corrected%s\", nameWithoutExt, ext)\r\n\r\n\t// 确保uploads目录存在\r\n\tuploadsDir := \"uploads\"\r\n\tif _, err := os.Stat(uploadsDir); os.IsNotExist(err) {\r\n\t\tos.MkdirAll(uploadsDir, 0755)\r\n\t}\r\n\r\n\t// 构造完整的保存路径\r\n\tsavePath := filepath.Join(uploadsDir, newFilename)\r\n\r\n\tif err := r.SaveToFile(savePath); err != nil {\r\n\t\treturn \"\", fmt.Errorf(\"failed to save corrected document: %w\", err)\r\n\t}\r\n\r\n\treturn savePath, nil\r\n}\r\n\r\n// checkPageSetup 检查页面设置 (占位符，避免Check方法报错)\r\nfunc (c *DOCXChecker) checkPageSetup(docPath string, standard *FormatStandard) {\r\n\t// TODO: 实现真正的检查逻辑，而不是修复\r\n}\r\n\r\n// checkHeadings 检查标题格式\r\nfunc (c *DOCXChecker) checkHeadings(ctx context.Context, docPath string, result *CheckResult, standard *FormatStandard) {\r\n\t// 如果没有设置格式标准，使用默认标准\r\n\tif standard == nil {\r\n\t\treturn\r\n\t}\r\n\r\n\t// 打开DOCX文档进行标题检查\r\n\tr, err := document.Open(docPath)\r\n\tif err != nil {\r\n\t\tfmt.Printf(\"Failed to open document for heading check: %v\\n\", err)\r\n\t\treturn\r\n\t}\r\n\tdefer r.Close()\r\n\r\n\t// 遍历所有段落，检查标题格式\r\n\tfor _, p := range r.Paragraphs() {\r\n\t\tvar textBuilder strings.Builder\r\n\t\tfor _, run := range p.Runs() {\r\n\t\t\ttextBuilder.WriteString(run.Text())\r\n\t\t}\r\n\t\ttrimmedText := strings.TrimSpace(textBuilder.String())\r\n\t\t// 跳过空文本\r\n\t\tif trimmedText == \"\" {\r\n\t\t\tcontinue\r\n\t\t}\r\n\r\n\t\t// 检查是否为标题\r\n\t\tfor range standard.HeadingStyles {\r\n\t\t\t// 这里实现标题检查逻辑\r\n\t\t\t// 例如：检查标题的字体、字号、对齐方式等是否符合标准\r\n\t\t\t// 如果不符合，添加到result.Issues\r\n\t\t\tbreak\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// checkParagraphs 检查段落格式\r\nfunc (c *DOCXChecker) checkParagraphs(ctx context.Context, docPath string, result *CheckResult, standard *FormatStandard) {\r\n\t// 如果没有设置格式标准，使用默认标准\r\n\tif standard == nil {\r\n\t\treturn\r\n\t}\r\n\r\n\t// 打开DOCX文档进行段落检查\r\n\tr, err := document.Open(docPath)\r\n\tif err != nil {\r\n\t\tfmt.Printf(\"Failed to open document for paragraph check: %v\\n\", err)\r\n\t\treturn\r\n\t}\r\n\tdefer r.Close()\r\n\r\n\t// 遍历所有段落，检查段落格式\r\n\tfor _, p := range r.Paragraphs() {\r\n\t\tvar textBuilder strings.Builder\r\n\t\tfor _, run := range p.Runs() {\r\n\t\t\ttextBuilder.WriteString(run.Text())\r\n\t\t}\r\n\t\ttext := textBuilder.String()\r\n\t\ttrimmedText := strings.TrimSpace(text)\r\n\r\n\t\t// 跳过空段落\r\n\t\tif trimmedText == \"\" {\r\n\t\t\tcontinue\r\n\t\t}\r\n\r\n\t\t// 检查是否为正文段落\r\n\t\t// 这里实现段落检查逻辑\r\n\t\t// 例如：检查段落的字体、行间距、首行缩进等是否符合标准\r\n\t\t// 如果不符合，添加到result.Issues\r\n\t}\r\n}\r\n\r\n// checkTables 检查表格格式\r\nfunc (c *DOCXChecker) checkTables(ctx context.Context, docPath string, result *CheckResult, standard *FormatStandard) {\r\n\tif standard == nil {\r\n\t\treturn\r\n\t}\r\n\r\n\t// 打开文档\r\n\tr, err := document.Open(docPath)\r\n\tif err != nil {\r\n\t\tfmt.Printf(\"Failed to open document for table check: %v\\n\", err)\r\n\t\treturn\r\n\t}\r\n\tdefer r.Close()\r\n\r\n\t// 遍历所有表格\r\n\tfor i, table := range r.Tables() {\r\n\t\t// 1. 检查表格内文字格式\r\n\t\tfor _, row := range table.Rows() {\r\n\t\t\tfor _, cell := range row.Cells() {\r\n\t\t\t\tfor _, p := range cell.Paragraphs() {\r\n\t\t\t\t\tfor _, run := range p.Runs() {\r\n\t\t\t\t\t\t// 检查字体\r\n\t\t\t\t\t\trPr := run.X().RPr\r\n\t\t\t\t\t\tfontName := \"\"\r\n\t\t\t\t\t\tif rPr != nil && rPr.RFonts != nil {\r\n\t\t\t\t\t\t\tif rPr.RFonts.EastAsiaAttr != nil {\r\n\t\t\t\t\t\t\t\tfontName = *rPr.RFonts.EastAsiaAttr\r\n\t\t\t\t\t\t\t} else if rPr.RFonts.AsciiAttr != nil {\r\n\t\t\t\t\t\t\t\tfontName = *rPr.RFonts.AsciiAttr\r\n\t\t\t\t\t\t\t}\r\n\t\t\t\t\t\t}\r\n\r\n\t\t\t\t\t\t// 如果标准指定了字体，且当前字体不匹配\r\n\t\t\t\t\t\tif standard.TableStyle.FontName != \"\" && fontName != standard.TableStyle.FontName {\r\n\t\t\t\t\t\t\t// 注意：这里简化了字体匹配逻辑，实际可能需要处理别名或fallback\r\n\t\t\t\t\t\t\t// 暂时只在非空时检查\r\n\t\t\t\t\t\t}\r\n\r\n\t\t\t\t\t\t// 检查字号（half-points）\r\n\t\t\t\t\t\tif rPr != nil && rPr.Sz != nil && rPr.Sz.ValAttr.ST_UnsignedDecimalNumber != nil {\r\n\t\t\t\t\t\t\tfontSize := float64(*rPr.Sz.ValAttr.ST_UnsignedDecimalNumber) / 2.0\r\n\t\t\t\t\t\t\tif standard.TableStyle.FontSize > 0 && absFloat64(fontSize-standard.TableStyle.FontSize) > 0.5 {\r\n\t\t\t\t\t\t\t\tresult.Issues = append(result.Issues, FormatIssue{\r\n\t\t\t\t\t\t\t\t\tID:          fmt.Sprintf(\"table_font_size_%d\", i),\r\n\t\t\t\t\t\t\t\t\tType:        IssueTypeTable,\r\n\t\t\t\t\t\t\t\t\tSeverity:    SeverityWarning,\r\n\t\t\t\t\t\t\t\t\tDescription: fmt.Sprintf(\"表格 %d 文字大小不符合要求: 当前 %.1f, 应为 %.1f\", i+1, fontSize, standard.TableStyle.FontSize),\r\n\t\t\t\t\t\t\t\t\tOriginal:    fontSize,\r\n\t\t\t\t\t\t\t\t\tSuggestion:  standard.TableStyle.FontSize,\r\n\t\t\t\t\t\t\t\t})\r\n\t\t\t\t\t\t\t}\r\n\t\t\t\t\t\t}\r\n\t\t\t\t\t}\r\n\t\t\t\t}\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// checkFigures 检查图表格式\r\nfunc (c *DOCXChecker) checkFigures(ctx context.Context, docPath string, result *CheckResult) {\r\n\t// 简化的图表格式检查实现\r\n\t// 实际实现需要更复杂的逻辑\r\n}\r\n\r\n// updateIssueStatistics 更新问题统计信息\r\nfunc (c *DOCXChecker) updateIssueStatistics(result *CheckResult) {\r\n\t// 更新问题统计\r\n\tresult.TotalIssues = len(result.Issues)\r\n\r\n\t// 统计不同严重程度的问题数量\r\n\tfor _, issue := range result.Issues {\r\n\t\tswitch issue.Severity {\r\n\t\tcase SeverityError:\r\n\t\t\tresult.ErrorCount++\r\n\t\tcase SeverityWarning:\r\n\t\t\tresult.WarningCount++\r\n\t\tcase SeverityInfo:\r\n\t\t\tresult.InfoCount++\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// fixParagraphFormats 修复段落格式（增强版 - 上下文感知）\r\nfunc (c *DOCXChecker) fixParagraphFormats(doc *document.Document, standard *FormatStandard) {\r\n\tparagraphs := doc.Paragraphs()\r\n\r\n\t// 分析文档结构，识别关键位置\r\n\tdocStructure := c.analyzeDocumentStructure(paragraphs)\r\n\r\n\t// 遍历所有段落\r\n\tfor i, para := range paragraphs {\r\n\t\tvar textBuilder strings.Builder\r\n\t\tfor _, run := range para.Runs() {\r\n\t\t\ttextBuilder.WriteString(run.Text())\r\n\t\t}\r\n\t\ttext := textBuilder.String()\r\n\t\ttrimmedText := strings.TrimSpace(text)\r\n\r\n\t\t// 跳过空段落\r\n\t\tif trimmedText == \"\" {\r\n\t\t\tcontinue\r\n\t\t}\r\n\r\n\t\t// 获取段落位置上下文\r\n\t\tpositionContext := c.getPositionContext(i, docStructure, paragraphs)\r\n\r\n\t\t// 识别段落类型（结合位置上下文）\r\n\t\trole := c.identifyParagraphRoleWithContext(trimmedText, para, positionContext)\r\n\r\n\t\t// 根据段落类型应用对应的格式\r\n\t\tswitch role {\r\n\t\tcase \"heading1\":\r\n\t\t\tif len(standard.HeadingStyles) > 0 {\r\n\t\t\t\tc.applyHeadingFormat(para, &standard.HeadingStyles[0])\r\n\t\t\t}\r\n\t\tcase \"heading2\":\r\n\t\t\tif len(standard.HeadingStyles) > 1 {\r\n\t\t\t\tc.applyHeadingFormat(para, &standard.HeadingStyles[1])\r\n\t\t\t}\r\n\t\tcase \"heading3\":\r\n\t\t\tif len(standard.HeadingStyles) > 2 {\r\n\t\t\t\tc.applyHeadingFormat(para, &standard.HeadingStyles[2])\r\n\t\t\t}\r\n\t\tcase \"heading4\", \"heading5\", \"heading6\":\r\n\t\t\t// 4-6级标题应用正文格式（根据重庆工程学院标准）\r\n\t\t\tif len(standard.ParagraphStyles) > 0 {\r\n\t\t\t\tc.applyBodyFormat(para, &standard.ParagraphStyles[0])\r\n\t\t\t}\r\n\t\tdefault:\r\n\t\t\t// 其他段落（正文）应用正文格式\r\n\t\t\tif len(standard.ParagraphStyles) > 0 {\r\n\t\t\t\tc.applyBodyFormat(para, &standard.ParagraphStyles[0])\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// PositionContext 段落位置上下文\r\ntype PositionContext struct {\r\n\tIsAfterAbstract    bool // 是否在摘要之后\r\n\tIsAfterKeywords    bool // 是否在关键词之后\r\n\tIsAfterTOC         bool // 是否在目录之后\r\n\tIsAfterHeading1    bool // 是否在一级标题之后\r\n\tIsAfterHeading2    bool // 是否在二级标题之后\r\n\tIsInFrontMatter    bool // 是否在前言部分\r\n\tIsInMainBody       bool // 是否在主体部分\r\n\tIsInBackMatter     bool // 是否在附录部分\r\n\tPreviousRole       string\r\n\tNextRole           string\r\n\tDocumentPercentage float64 // 文档进度百分比\r\n}\r\n\r\n// DocumentStructure 文档结构分析结果\r\ntype DocumentStructure struct {\r\n\tAbstractStart     int   // 摘要开始位置\r\n\tAbstractEnd       int   // 摘要结束位置\r\n\tKeywordsStart     int   // 关键词开始位置\r\n\tKeywordsEnd       int   // 关键词结束位置\r\n\tTOCStart          int   // 目录开始位置\r\n\tTOCEnd            int   // 目录结束位置\r\n\tHeading1Positions []int // 所有一级标题位置\r\n\tHeading2Positions []int // 所有二级标题位置\r\n\tHeading3Positions []int // 所有三级标题位置\r\n\tMainBodyStart     int   // 正文开始位置\r\n\tMainBodyEnd       int   // 正文结束位置\r\n\tReferencesStart   int   // 参考文献开始位置\r\n}\r\n\r\n// analyzeDocumentStructure 分析文档结构\r\nfunc (c *DOCXChecker) analyzeDocumentStructure(paragraphs []document.Paragraph) *DocumentStructure {\r\n\tstructure := &DocumentStructure{\r\n\t\tHeading1Positions: []int{},\r\n\t\tHeading2Positions: []int{},\r\n\t\tHeading3Positions: []int{},\r\n\t}\r\n\r\n\tfor i, para := range paragraphs {\r\n\t\ttext := getParagraphText(para)\r\n\t\ttrimmedText := strings.TrimSpace(text)\r\n\r\n\t\t// 识别摘要\r\n\t\tif strings.Contains(trimmedText, \"摘要\") && structure.AbstractStart == 0 {\r\n\t\t\tstructure.AbstractStart = i\r\n\t\t}\r\n\t\tif structure.AbstractStart > 0 && structure.AbstractEnd == 0 {\r\n\t\t\t// 摘要结束于遇到非摘要内容\r\n\t\t\tif len(trimmedText) > 20 && !strings.Contains(trimmedText, \"摘要\") &&\r\n\t\t\t\t!strings.Contains(trimmedText, \"关键词\") {\r\n\t\t\t\tstructure.AbstractEnd = i\r\n\t\t\t}\r\n\t\t}\r\n\r\n\t\t// 识别关键词\r\n\t\tif strings.Contains(trimmedText, \"关键词\") {\r\n\t\t\tstructure.KeywordsStart = i\r\n\t\t\tstructure.KeywordsEnd = i\r\n\t\t}\r\n\r\n\t\t// 识别目录\r\n\t\tif strings.Contains(trimmedText, \"目录\") || strings.Contains(trimmedText, \"Table of Contents\") {\r\n\t\t\tstructure.TOCStart = i\r\n\t\t}\r\n\t\tif structure.TOCStart > 0 && structure.TOCEnd == 0 {\r\n\t\t\tif strings.Contains(trimmedText, \"第一章\") ||\r\n\t\t\t\tstrings.Contains(trimmedText, \"1 \") ||\r\n\t\t\t\tstrings.HasPrefix(trimmedText, \"1.\") {\r\n\t\t\t\tstructure.TOCEnd = i\r\n\t\t\t}\r\n\t\t}\r\n\r\n\t\t// 识别标题位置\r\n\t\trole := c.identifyParagraphRole(trimmedText, para)\r\n\t\tswitch role {\r\n\t\tcase \"heading1\":\r\n\t\t\tstructure.Heading1Positions = append(structure.Heading1Positions, i)\r\n\t\tcase \"heading2\":\r\n\t\t\tstructure.Heading2Positions = append(structure.Heading2Positions, i)\r\n\t\tcase \"heading3\":\r\n\t\t\tstructure.Heading3Positions = append(structure.Heading3Positions, i)\r\n\t\t}\r\n\r\n\t\t// 识别参考文献\r\n\t\tif strings.Contains(trimmedText, \"参考文献\") ||\r\n\t\t\tstrings.Contains(trimmedText, \"References\") {\r\n\t\t\tstructure.ReferencesStart = i\r\n\t\t}\r\n\t}\r\n\r\n\t// 设置正文开始位置（通常在第一个一级标题之后）\r\n\tif len(structure.Heading1Positions) > 0 {\r\n\t\tstructure.MainBodyStart = structure.Heading1Positions[0] + 1\r\n\t}\r\n\r\n\treturn structure\r\n}\r\n\r\n// getPositionContext 获取段落位置上下文\r\nfunc (c *DOCXChecker) getPositionContext(index int, structure *DocumentStructure, paragraphs []document.Paragraph) *PositionContext {\r\n\tcontext := &PositionContext{\r\n\t\tDocumentPercentage: float64(index) / float64(len(paragraphs)) * 100,\r\n\t}\r\n\r\n\t// 检查是否在摘要之后\r\n\tif structure.AbstractEnd > 0 && index > structure.AbstractEnd {\r\n\t\tcontext.IsAfterAbstract = true\r\n\t}\r\n\r\n\t// 检查是否在关键词之后\r\n\tif structure.KeywordsEnd > 0 && index > structure.KeywordsEnd {\r\n\t\tcontext.IsAfterKeywords = true\r\n\t}\r\n\r\n\t// 检查是否在目录之后\r\n\tif structure.TOCEnd > 0 && index > structure.TOCEnd {\r\n\t\tcontext.IsAfterTOC = true\r\n\t}\r\n\r\n\t// 检查是否在某个一级标题之后\r\n\tfor _, pos := range structure.Heading1Positions {\r\n\t\tif index > pos {\r\n\t\t\tcontext.IsAfterHeading1 = true\r\n\t\t}\r\n\t}\r\n\r\n\t// 检查是否在某个二级标题之后\r\n\tfor _, pos := range structure.Heading2Positions {\r\n\t\tif index > pos {\r\n\t\t\tcontext.IsAfterHeading2 = true\r\n\t\t}\r\n\t}\r\n\r\n\t// 确定文档部分\r\n\tif structure.AbstractStart > 0 && index < structure.AbstractEnd {\r\n\t\tcontext.IsInFrontMatter = true\r\n\t} else if structure.ReferencesStart > 0 && index > structure.ReferencesStart {\r\n\t\tcontext.IsInBackMatter = true\r\n\t} else {\r\n\t\tcontext.IsInMainBody = true\r\n\t}\r\n\r\n\t// 获取前后段落角色\r\n\tif index > 0 {\r\n\t\tcontext.PreviousRole = c.identifyParagraphRole(getParagraphText(paragraphs[index-1]), paragraphs[index-1])\r\n\t}\r\n\tif index < len(paragraphs)-1 {\r\n\t\tcontext.NextRole = c.identifyParagraphRole(getParagraphText(paragraphs[index+1]), paragraphs[index+1])\r\n\t}\r\n\r\n\treturn context\r\n}\r\n\r\n// identifyParagraphRoleWithContext 结合上下文识别段落角色\r\nfunc (c *DOCXChecker) identifyParagraphRoleWithContext(text string, para document.Paragraph, context *PositionContext) string {\r\n\t// 1. 首先使用基础识别\r\n\tbaseRole := c.identifyParagraphRole(text, para)\r\n\r\n\t// 2. 特殊情况处理\r\n\r\n\t// 摘要、关键词、目录等本身不是标题\r\n\tif strings.Contains(text, \"摘要\") && len(text) < 20 {\r\n\t\treturn \"body\"\r\n\t}\r\n\tif strings.Contains(text, \"关键词\") && len(text) < 30 {\r\n\t\treturn \"body\"\r\n\t}\r\n\tif strings.Contains(text, \"目录\") && len(text) < 10 {\r\n\t\treturn \"body\"\r\n\t}\r\n\tif strings.Contains(text, \"参考文献\") && len(text) < 15 {\r\n\t\treturn \"body\"\r\n\t}\r\n\tif strings.Contains(text, \"致谢\") && len(text) < 10 {\r\n\t\treturn \"body\"\r\n\t}\r\n\tif strings.Contains(text, \"附录\") && len(text) < 10 {\r\n\t\treturn \"body\"\r\n\t}\r\n\r\n\t// 3. 特殊位置处理\r\n\r\n\t// 在摘要和目录之间的段落通常是关键词\r\n\tif context.IsAfterKeywords && !context.IsAfterTOC {\r\n\t\treturn \"body\"\r\n\t}\r\n\r\n\t// 参考文献部分的段落通常是引用，不是正文\r\n\tif context.IsInBackMatter {\r\n\t\treturn \"body\"\r\n\t}\r\n\r\n\t// 4. 如果基础识别是正文，但前后有标题，可能是正文的延续\r\n\tif baseRole == \"body\" {\r\n\t\t// 如果前一段是标题，且当前段落没有明显标题特征，保持正文\r\n\t\tif strings.HasPrefix(context.PreviousRole, \"heading\") {\r\n\t\t\t// 检查是否真的应该是更高级别的标题\r\n\t\t\tif c.shouldBeHeading(text, context) {\r\n\t\t\t\treturn c.determineHeadingLevel(text)\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n\r\n\treturn baseRole\r\n}\r\n\r\n// shouldBeHeading 判断是否应该升级为标题\r\nfunc (c *DOCXChecker) shouldBeHeading(text string, context *PositionContext) bool {\r\n\ttextLength := len(strings.TrimSpace(text))\r\n\r\n\t// 长度异常检查：太短或太长的不太像标题\r\n\tif textLength < 5 || textLength > 80 {\r\n\t\treturn false\r\n\t}\r\n\r\n\t// 如果前后段落都很长，当前行可能是标题\r\n\treturn false\r\n}\r\n\r\n// getParagraphText 获取段落文本\r\nfunc getParagraphText(para document.Paragraph) string {\r\n\tvar textBuilder strings.Builder\r\n\tfor _, run := range para.Runs() {\r\n\t\ttextBuilder.WriteString(run.Text())\r\n\t}\r\n\treturn textBuilder.String()\r\n}\r\n\r\n// identifyParagraphRole 识别段落角色（增强版 - 多维度特征判断）\r\nfunc (c *DOCXChecker) identifyParagraphRole(text string, para document.Paragraph) string {\r\n\t// 1. 检查样式名称（最可靠的特征）\r\n\tif role := checkStyleByName(para); role != \"\" {\r\n\t\treturn role\r\n\t}\r\n\r\n\t// 2. 基于文本内容识别（使用多种模式组合）\r\n\theadingScore := c.calculateHeadingScore(text, para)\r\n\r\n\t// 3. 如果标题分数很高，识别为标题\r\n\tif headingScore >= 3 {\r\n\t\treturn c.determineHeadingLevel(text)\r\n\t}\r\n\r\n\t// 4. 结合段落格式特征判断\r\n\tif c.isLikelyHeading(text, para, headingScore) {\r\n\t\treturn c.determineHeadingLevel(text)\r\n\t}\r\n\r\n\t// 5. 默认识别为正文\r\n\treturn \"body\"\r\n}\r\n\r\n// styleCheck 定义样式检查规则\r\ntype styleCheck struct {\r\n\tkeywords     []string\r\n\theadingLevel string\r\n}\r\n\r\n// checkStyleByName 通过样式名称检查段落类型\r\nfunc checkStyleByName(para document.Paragraph) string {\r\n\tstyleName := para.Style()\r\n\tstyleNameLower := strings.ToLower(styleName)\r\n\r\n\tstyleChecks := []styleCheck{\r\n\t\t{[]string{\"heading 1\", \"标题 1\"}, \"heading1\"},\r\n\t\t{[]string{\"heading 2\", \"标题 2\"}, \"heading2\"},\r\n\t\t{[]string{\"heading 3\", \"标题 3\"}, \"heading3\"},\r\n\t\t{[]string{\"heading 4\", \"标题 4\"}, \"heading4\"},\r\n\t\t{[]string{\"heading 5\", \"标题 5\"}, \"heading5\"},\r\n\t\t{[]string{\"heading 6\", \"标题 6\"}, \"heading6\"},\r\n\t\t{[]string{\"heading\", \"标题\"}, \"\"}, // 通用标题样式\r\n\t}\r\n\r\n\tfor _, check := range styleChecks {\r\n\t\tfor _, keyword := range check.keywords {\r\n\t\t\tif strings.Contains(styleNameLower, strings.ToLower(keyword)) {\r\n\t\t\t\tif check.headingLevel != \"\" {\r\n\t\t\t\t\treturn check.headingLevel\r\n\t\t\t\t}\r\n\t\t\t\t// 如果是通用标题样式，尝试提取级别\r\n\t\t\t\treturn extractHeadingLevelFromStyle(styleName)\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n\r\n\treturn \"\"\r\n}\r\n\r\n// extractHeadingLevelFromStyle 从样式名称提取标题级别\r\nfunc extractHeadingLevelFromStyle(styleName string) string {\r\n\t// 尝试匹配 \"Heading 1\" 或 \"标题 1\" 等格式\r\n\tpattern := regexp.MustCompile(`(?i)(?:heading|标题)\\s*(\\d+)`)\r\n\tmatches := pattern.FindStringSubmatch(styleName)\r\n\tif len(matches) >= 2 {\r\n\t\tlevel, err := strconv.Atoi(matches[1])\r\n\t\tif err == nil && level >= 1 && level <= 9 {\r\n\t\t\treturn fmt.Sprintf(\"heading%d\", level)\r\n\t\t}\r\n\t}\r\n\treturn \"heading1\"\r\n}\r\n\r\n// calculateHeadingScore 计算段落作为标题的综合分数\r\nfunc (c *DOCXChecker) calculateHeadingScore(text string, para document.Paragraph) int {\r\n\tscore := 0\r\n\ttextLength := len(strings.TrimSpace(text))\r\n\r\n\t// 模式匹配分数（一级标题）\r\n\tlevel1Patterns := []string{\r\n\t\t`^[一二三四五六七八九十]+、`,\r\n\t\t`^第[一二三四五六七八九十]+章`,\r\n\t\t`^第\\d+章`,\r\n\t\t`^\\d+\\s+\\D`,\r\n\t\t`^\\d+\\.\\s+\\D`,\r\n\t}\r\n\tfor _, pattern := range level1Patterns {\r\n\t\tif matched, _ := regexp.MatchString(pattern, text); matched {\r\n\t\t\tscore += 3\r\n\t\t\tbreak\r\n\t\t}\r\n\t}\r\n\r\n\t// 模式匹配分数（二级标题）\r\n\tlevel2Patterns := []string{\r\n\t\t`^\\d+\\.\\d+\\s+`,\r\n\t\t`^\\d+\\.\\d+$`,\r\n\t\t`^[（(]\\d+[）)]\\s*\\D`,\r\n\t\t`^\\d+[）)]\\s*\\D`,\r\n\t}\r\n\tfor _, pattern := range level2Patterns {\r\n\t\tif matched, _ := regexp.MatchString(pattern, text); matched {\r\n\t\t\tscore += 2\r\n\t\t\tbreak\r\n\t\t}\r\n\t}\r\n\r\n\t// 模式匹配分数（三级标题）\r\n\tlevel3Patterns := []string{\r\n\t\t`^\\d+\\.\\d+\\.\\d+\\s+`,\r\n\t\t`^\\d+\\.\\d+\\.\\d+$`,\r\n\t\t`^\\d+\\.\\d+\\.\\d+\\.\\d+\\s+`,\r\n\t}\r\n\tfor _, pattern := range level3Patterns {\r\n\t\tif matched, _ := regexp.MatchString(pattern, text); matched {\r\n\t\t\tscore += 1\r\n\t\t\tbreak\r\n\t\t}\r\n\t}\r\n\r\n\t// 长度特征：标题通常较短（10-50字符）\r\n\tif textLength >= 5 && textLength <= 50 {\r\n\t\tscore += 1\r\n\t}\r\n\r\n\t// 检查字体大小：标题字体通常较大\r\n\truns := para.Runs()\r\n\tif len(runs) > 0 {\r\n\t\tfontSize := getRunFontSize(runs[0])\r\n\t\tif fontSize >= 14 {\r\n\t\t\tscore += 1\r\n\t\t}\r\n\t}\r\n\r\n\t// 检查是否加粗：标题通常加粗\r\n\tif len(runs) > 0 && runs[0].Properties().Bold() {\r\n\t\tscore += 1\r\n\t}\r\n\r\n\t// 检查对齐方式：标题通常居中或左对齐\r\n\talign := getAlignment(para)\r\n\tif align == wml.ST_JcCenter || align == wml.ST_JcLeft {\r\n\t\tscore += 1\r\n\t}\r\n\r\n\treturn score\r\n}\r\n\r\n// isLikelyHeading 判断段落是否可能是标题\r\nfunc (c *DOCXChecker) isLikelyHeading(text string, para document.Paragraph, baseScore int) bool {\r\n\ttextLength := len(strings.TrimSpace(text))\r\n\r\n\t// 长度检查：标题一般不会太长也不会太短\r\n\tif textLength < 3 || textLength > 60 {\r\n\t\treturn false\r\n\t}\r\n\r\n\t// 如果基础分数已经很高，直接返回\r\n\tif baseScore >= 3 {\r\n\t\treturn true\r\n\t}\r\n\r\n\t// 检查是否有冒号结尾（可能是图表标题）\r\n\tif strings.HasSuffix(text, \"：\") || strings.HasSuffix(text, \":\") {\r\n\t\t// 但不是以数字开头\r\n\t\ttrimmed := strings.TrimSpace(text)\r\n\t\tif len(trimmed) > 0 && !unicodeIsDigit(rune(trimmed[0])) {\r\n\t\t\treturn true\r\n\t\t}\r\n\t}\r\n\r\n\treturn false\r\n}\r\n\r\n// determineHeadingLevel 根据文本模式确定标题级别\r\nfunc (c *DOCXChecker) determineHeadingLevel(text string) string {\r\n\t// 一级标题模式\r\n\tlevel1Patterns := []string{\r\n\t\t`^[一二三四五六七八九十]+、`,\r\n\t\t`^第[一二三四五六七八九十]+章`,\r\n\t\t`^第\\d+章`,\r\n\t}\r\n\tfor _, pattern := range level1Patterns {\r\n\t\tif matched, _ := regexp.MatchString(pattern, text); matched {\r\n\t\t\treturn \"heading1\"\r\n\t\t}\r\n\t}\r\n\r\n\t// 二级标题模式\r\n\tlevel2Patterns := []string{\r\n\t\t`^\\d+\\.\\d+\\s+`,\r\n\t\t`^\\d+\\.\\d+$`,\r\n\t\t`^[（(]\\d+[）)]\\s*\\D`,\r\n\t}\r\n\tfor _, pattern := range level2Patterns {\r\n\t\tif matched, _ := regexp.MatchString(pattern, text); matched {\r\n\t\t\treturn \"heading2\"\r\n\t\t}\r\n\t}\r\n\r\n\t// 三级标题模式\r\n\tlevel3Patterns := []string{\r\n\t\t`^\\d+\\.\\d+\\.\\d+\\s+`,\r\n\t\t`^\\d+\\.\\d+\\.\\d+$`,\r\n\t\t`^\\d+\\.\\d+\\.\\d+\\.\\d+\\s+`,\r\n\t}\r\n\tfor _, pattern := range level3Patterns {\r\n\t\tif matched, _ := regexp.MatchString(pattern, text); matched {\r\n\t\t\treturn \"heading3\"\r\n\t\t}\r\n\t}\r\n\r\n\t// 默认返回一级标题\r\n\treturn \"heading1\"\r\n}\r\n\r\n// unicodeIsDigit 检查字符是否是数字\r\nfunc unicodeIsDigit(r rune) bool {\r\n\treturn r >= '0' && r <= '9'\r\n}\r\n\r\n// applyHeadingFormat 应用标题格式\r\nfunc (c *DOCXChecker) applyHeadingFormat(para document.Paragraph, style *HeadingStyle) {\r\n\tif style == nil {\r\n\t\treturn\r\n\t}\r\n\r\n\t// 检查段落是否有效\r\n\tif para.X() == nil {\r\n\t\treturn\r\n\t}\r\n\r\n\t// 使用defer和recover来捕获任何panic，确保程序不会崩溃\r\n\tdefer func() {\r\n\t\tif r := recover(); r != nil {\r\n\t\t\t// 静默处理panic，继续执行\r\n\t\t\treturn\r\n\t\t}\r\n\t}()\r\n\r\n\t// 设置对齐方式\r\n\tif style.Alignment != \"\" {\r\n\t\talign := parseAlignment(style.Alignment)\r\n\t\tpPr := para.X().PPr\r\n\t\tif pPr == nil {\r\n\t\t\tpPr = wml.NewCT_PPr()\r\n\t\t\tpara.X().PPr = pPr\r\n\t\t}\r\n\t\tif pPr.Jc == nil {\r\n\t\t\tpPr.Jc = wml.NewCT_Jc()\r\n\t\t}\r\n\t\tpPr.Jc.ValAttr = align\r\n\t}\r\n\r\n\t// 设置字体和字号\r\n\tfor _, run := range para.Runs() {\r\n\t\tif run.X() == nil {\r\n\t\t\tcontinue\r\n\t\t}\r\n\r\n\t\trPr := run.X().RPr\r\n\t\tif rPr == nil {\r\n\t\t\trPr = wml.NewCT_RPr()\r\n\t\t\trun.X().RPr = rPr\r\n\t\t}\r\n\r\n\t\t// 设置字体\r\n\t\tif style.FontName != \"\" {\r\n\t\t\tif rPr.RFonts == nil {\r\n\t\t\t\trPr.RFonts = wml.NewCT_Fonts()\r\n\t\t\t}\r\n\t\t\trPr.RFonts.EastAsiaAttr = &style.FontName\r\n\t\t\trPr.RFonts.AsciiAttr = &style.FontName\r\n\t\t}\r\n\r\n\t\t// 设置字号\r\n\t\tif style.FontSize > 0 {\r\n\t\t\tif rPr.Sz == nil {\r\n\t\t\t\trPr.Sz = wml.NewCT_HpsMeasure()\r\n\t\t\t}\r\n\t\t\thalfPoints := uint64(style.FontSize * 2)\r\n\t\t\trPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPoints\r\n\t\t}\r\n\r\n\t\t// 设置加粗\r\n\t\tif style.Bold {\r\n\t\t\tif rPr.B == nil {\r\n\t\t\t\trPr.B = wml.NewCT_OnOff()\r\n\t\t\t}\r\n\t\t\t// 加粗属性存在即为true\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// applyBodyFormat 应用正文格式\r\nfunc (c *DOCXChecker) applyBodyFormat(para document.Paragraph, style *ParagraphStyle) {\r\n\tif style == nil {\r\n\t\treturn\r\n\t}\r\n\r\n\t// 检查段落是否有效\r\n\tif para.X() == nil {\r\n\t\treturn\r\n\t}\r\n\r\n\t// 使用defer和recover来捕获任何panic，确保程序不会崩溃\r\n\tdefer func() {\r\n\t\tif r := recover(); r != nil {\r\n\t\t\t// 静默处理panic，继续执行\r\n\t\t\treturn\r\n\t\t}\r\n\t}()\r\n\r\n\t// 设置首行缩进\r\n\tif style.FirstLineIndent > 0 {\r\n\t\tpPr := para.X().PPr\r\n\t\tif pPr == nil {\r\n\t\t\tpPr = wml.NewCT_PPr()\r\n\t\t\tpara.X().PPr = pPr\r\n\t\t}\r\n\t\tif pPr.Ind == nil {\r\n\t\t\tpPr.Ind = wml.NewCT_Ind()\r\n\t\t}\r\n\t\t// 将厘米转换为twips (1 cm = 567 twips)\r\n\t\ttwips := uint64(style.FirstLineIndent * 567)\r\n\t\tpPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber = &twips\r\n\t}\r\n\r\n\t// 设置行间距\r\n\tif style.LineSpacing > 0 {\r\n\t\tpPr := para.X().PPr\r\n\t\tif pPr == nil {\r\n\t\t\tpPr = wml.NewCT_PPr()\r\n\t\t\tpara.X().PPr = pPr\r\n\t\t}\r\n\t\tif pPr.Spacing == nil {\r\n\t\t\tpPr.Spacing = wml.NewCT_Spacing()\r\n\t\t}\r\n\t\t// 将磅转换为twips (1 pt = 20 twips)\r\n\t\ttwips := int64(style.LineSpacing * 20)\r\n\t\tpPr.Spacing.LineAttr.Int64 = &twips\r\n\t}\r\n\r\n\t// 设置字体和字号\r\n\tfor _, run := range para.Runs() {\r\n\t\tif run.X() == nil {\r\n\t\t\tcontinue\r\n\t\t}\r\n\r\n\t\trPr := run.X().RPr\r\n\t\tif rPr == nil {\r\n\t\t\trPr = wml.NewCT_RPr()\r\n\t\t\trun.X().RPr = rPr\r\n\t\t}\r\n\r\n\t\t// 设置字体\r\n\t\tif style.FontName != \"\" {\r\n\t\t\tif rPr.RFonts == nil {\r\n\t\t\t\trPr.RFonts = wml.NewCT_Fonts()\r\n\t\t\t}\r\n\t\t\trPr.RFonts.EastAsiaAttr = &style.FontName\r\n\t\t\trPr.RFonts.AsciiAttr = &style.FontName\r\n\t\t}\r\n\r\n\t\t// 设置字号\r\n\t\tif style.FontSize > 0 {\r\n\t\t\tif rPr.Sz == nil {\r\n\t\t\t\trPr.Sz = wml.NewCT_HpsMeasure()\r\n\t\t\t}\r\n\t\t\thalfPoints := uint64(style.FontSize * 2)\r\n\t\t\trPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPoints\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// fixTableFormats 修复表格格式\r\nfunc (c *DOCXChecker) fixTableFormats(doc *document.Document, standard *FormatStandard) {\r\n\tif standard.TableStyle.FontName == \"\" && standard.TableStyle.FontSize == 0 {\r\n\t\treturn\r\n\t}\r\n\r\n\t// 遍历所有表格\r\n\tfor _, table := range doc.Tables() {\r\n\t\tfor _, row := range table.Rows() {\r\n\t\t\tfor _, cell := range row.Cells() {\r\n\t\t\t\tfor _, para := range cell.Paragraphs() {\r\n\t\t\t\t\tfor _, run := range para.Runs() {\r\n\t\t\t\t\t\trPr := run.X().RPr\r\n\t\t\t\t\t\tif rPr == nil {\r\n\t\t\t\t\t\t\trPr = wml.NewCT_RPr()\r\n\t\t\t\t\t\t\trun.X().RPr = rPr\r\n\t\t\t\t\t\t}\r\n\r\n\t\t\t\t\t\t// 设置字体\r\n\t\t\t\t\t\tif standard.TableStyle.FontName != \"\" {\r\n\t\t\t\t\t\t\tif rPr.RFonts == nil {\r\n\t\t\t\t\t\t\t\trPr.RFonts = wml.NewCT_Fonts()\r\n\t\t\t\t\t\t\t}\r\n\t\t\t\t\t\t\trPr.RFonts.EastAsiaAttr = &standard.TableStyle.FontName\r\n\t\t\t\t\t\t\trPr.RFonts.AsciiAttr = &standard.TableStyle.FontName\r\n\t\t\t\t\t\t}\r\n\r\n\t\t\t\t\t\t// 设置字号\r\n\t\t\t\t\t\tif standard.TableStyle.FontSize > 0 {\r\n\t\t\t\t\t\t\tif rPr.Sz == nil {\r\n\t\t\t\t\t\t\t\trPr.Sz = wml.NewCT_HpsMeasure()\r\n\t\t\t\t\t\t\t}\r\n\t\t\t\t\t\t\thalfPoints := uint64(standard.TableStyle.FontSize * 2)\r\n\t\t\t\t\t\t\trPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPoints\r\n\t\t\t\t\t\t}\r\n\t\t\t\t\t}\r\n\t\t\t\t}\r\n\t\t\t}\r\n\t\t}\r\n\t}\r\n}\r\n\r\n// generateParagraphCorrection 生成段落修正建议\r\nfunc (c *DOCXChecker) generateParagraphCorrection(issue FormatIssue) {\r\n\r\n}\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/pkg/formatchecker/docx_checker.go b/pkg/formatchecker/docx_checker.go
+--- a/pkg/formatchecker/docx_checker.go	(revision bf43cb3c15c6b87b81705b8646f1fbb364a03bea)
++++ b/pkg/formatchecker/docx_checker.go	(date 1772534657775)
+@@ -99,6 +99,7 @@
+ 
+ 	// 获取当前页面设置
+ 	pgMar := section.X().PgMar
++	pgSz := section.X().PgSz
+ 
+ 	// 检查页边距
+ 	if pgMar != nil {
+@@ -161,6 +162,83 @@
+ 				})
+ 			}
+ 		}
++
++		// 检查页眉距离
++		if standard.PageSetup.HeaderDistance > 0 && pgMar.HeaderAttr.ST_UnsignedDecimalNumber != nil {
++			expectedHeader := measurement.Distance(standard.PageSetup.HeaderDistance) * measurement.Centimeter
++			actualHeader := measurement.Distance(*pgMar.HeaderAttr.ST_UnsignedDecimalNumber)
++			if abs(int(actualHeader)-int(expectedHeader)) > 10 {
++				result.Issues = append(result.Issues, FormatIssue{
++					ID:          generateIssueID("header_distance"),
++					Type:        IssueTypePageSetup,
++					Severity:    SeverityWarning,
++					Description: fmt.Sprintf("页眉距离不符合要求: 当前 %.2fcm, 期望 %.2fcm", float64(actualHeader)/measurement.Centimeter, standard.PageSetup.HeaderDistance),
++					Original:    float64(actualHeader) / measurement.Centimeter,
++					Suggestion:  standard.PageSetup.HeaderDistance,
++				})
++			}
++		}
++
++		// 检查页脚距离
++		if standard.PageSetup.FooterDistance > 0 && pgMar.FooterAttr.ST_UnsignedDecimalNumber != nil {
++			expectedFooter := measurement.Distance(standard.PageSetup.FooterDistance) * measurement.Centimeter
++			actualFooter := measurement.Distance(*pgMar.FooterAttr.ST_UnsignedDecimalNumber)
++			if abs(int(actualFooter)-int(expectedFooter)) > 10 {
++				result.Issues = append(result.Issues, FormatIssue{
++					ID:          generateIssueID("footer_distance"),
++					Type:        IssueTypePageSetup,
++					Severity:    SeverityWarning,
++					Description: fmt.Sprintf("页脚距离不符合要求: 当前 %.2fcm, 期望 %.2fcm", float64(actualFooter)/measurement.Centimeter, standard.PageSetup.FooterDistance),
++					Original:    float64(actualFooter) / measurement.Centimeter,
++					Suggestion:  standard.PageSetup.FooterDistance,
++				})
++			}
++		}
++	}
++
++	// 检查纸张大小
++	if pgSz != nil {
++		if standard.PageSetup.PaperSize != "" {
++			// 检查纸张大小
++			expectedW, expectedH := getPaperSize(standard.PageSetup.PaperSize)
++			if pgSz.WAttr != nil && pgSz.HAttr != nil {
++				actualW := measurement.Distance(*pgSz.WAttr.ST_UnsignedDecimalNumber)
++				actualH := measurement.Distance(*pgSz.HAttr.ST_UnsignedDecimalNumber)
++
++				if abs(int(actualW)-int(expectedW)) > 20 || abs(int(actualH)-int(expectedH)) > 20 {
++					result.Issues = append(result.Issues, FormatIssue{
++						ID:          generateIssueID("paper_size"),
++						Type:        IssueTypePageSetup,
++						Severity:    SeverityWarning,
++						Description: fmt.Sprintf("纸张大小不符合要求: 期望 %s", standard.PageSetup.PaperSize),
++						Original:    "其他尺寸",
++						Suggestion:  standard.PageSetup.PaperSize,
++					})
++				}
++			}
++		}
++
++		// 检查纸张方向
++		actualOrient := string(pgSz.OrientAttr)
++		expectedOrient := "portrait" // 默认纵向
++		if standard.PageSetup.PaperSize != "" {
++			// 根据纸张大小判断期望方向，默认为纵向
++		}
++
++		if actualOrient != expectedOrient && actualOrient != "" {
++			orientDesc := map[string]string{
++				"portrait":  "纵向",
++				"landscape": "横向",
++			}
++			result.Issues = append(result.Issues, FormatIssue{
++				ID:          generateIssueID("paper_orientation"),
++				Type:        IssueTypePageSetup,
++				Severity:    SeverityWarning,
++				Description: fmt.Sprintf("纸张方向不符合要求: 当前 %s, 期望 %s", orientDesc[actualOrient], orientDesc[expectedOrient]),
++				Original:    orientDesc[actualOrient],
++				Suggestion:  orientDesc[expectedOrient],
++			})
++		}
+ 	}
+ }
+ 
+@@ -206,6 +284,58 @@
+ 
+ // identifyHeadingLevel 识别标题级别
+ func (c *DOCXChecker) identifyHeadingLevel(text string, para document.Paragraph) int {
++	// 首先检查段落样式名称 - 这是最可靠的方式
++	styleName := para.Style()
++	if styleName != "" {
++		styleNameLower := strings.ToLower(styleName)
++
++		// 检查是否是标题样式
++		if strings.Contains(styleNameLower, "heading 1") || strings.Contains(styleNameLower, "标题 1") {
++			return 1
++		}
++		if strings.Contains(styleNameLower, "heading 2") || strings.Contains(styleNameLower, "标题 2") {
++			return 2
++		}
++		if strings.Contains(styleNameLower, "heading 3") || strings.Contains(styleNameLower, "标题 3") {
++			return 3
++		}
++		if strings.Contains(styleNameLower, "heading 4") || strings.Contains(styleNameLower, "标题 4") {
++			return 4
++		}
++		if strings.Contains(styleNameLower, "heading 5") || strings.Contains(styleNameLower, "标题 5") {
++			return 5
++		}
++		if strings.Contains(styleNameLower, "heading 6") || strings.Contains(styleNameLower, "标题 6") {
++			return 6
++		}
++	}
++
++	// 三级标题模式（必须先检查，避免被一级标题模式误判）
++	level3Patterns := []string{
++		`^\d+\.\d+\.\d+\s+`,
++		`^\d+\.\d+\.\d+$`,
++	}
++	for _, pattern := range level3Patterns {
++		if matched, _ := regexp.MatchString(pattern, text); matched {
++			if c.matchesHeading3Format(para) {
++				return 3
++			}
++		}
++	}
++
++	// 二级标题模式（必须在一级标题之前检查）
++	level2Patterns := []string{
++		`^\d+\.\d+\s+`,
++		`^\d+\.\d+$`,
++	}
++	for _, pattern := range level2Patterns {
++		if matched, _ := regexp.MatchString(pattern, text); matched {
++			if c.matchesHeading2Format(para) {
++				return 2
++			}
++		}
++	}
++
+ 	// 一级标题模式
+ 	level1Patterns := []string{
+ 		`^[一二三四五六七八九十]+、`,
+@@ -214,7 +344,6 @@
+ 		`^\d+\s+\D`,
+ 		`^\d+\.\s+\D`,
+ 	}
+-
+ 	for _, pattern := range level1Patterns {
+ 		if matched, _ := regexp.MatchString(pattern, text); matched {
+ 			if c.matchesHeading1Format(para) {
+@@ -223,34 +352,6 @@
+ 		}
+ 	}
+ 
+-	// 二级标题模式
+-	level2Patterns := []string{
+-		`^\d+\.\d+\s+`,
+-		`^\d+\.\d+$`,
+-	}
+-
+-	for _, pattern := range level2Patterns {
+-		if matched, _ := regexp.MatchString(pattern, text); matched {
+-			if c.matchesHeading2Format(para) {
+-				return 2
+-			}
+-		}
+-	}
+-
+-	// 三级标题模式
+-	level3Patterns := []string{
+-		`^\d+\.\d+\.\d+\s+`,
+-		`^\d+\.\d+\.\d+$`,
+-	}
+-
+-	for _, pattern := range level3Patterns {
+-		if matched, _ := regexp.MatchString(pattern, text); matched {
+-			if c.matchesHeading3Format(para) {
+-				return 3
+-			}
+-		}
+-	}
+-
+ 	return 0
+ }
+ 
+@@ -630,8 +731,22 @@
+ 	return x
+ }
+ 
++var issueCounter = 0
++
+ func generateIssueID(prefix string) string {
+-	return fmt.Sprintf("%s_%d", prefix, len(prefix)*1000)
++	issueCounter++
++	return fmt.Sprintf("%s_%d", prefix, issueCounter)
++}
++
++func getPaperSize(paperSize string) (measurement.Distance, measurement.Distance) {
++	switch strings.ToUpper(paperSize) {
++	case "A4":
++		return 11906, 16838 // A4纸张大小 (twips)
++	case "A3":
++		return 16838, 23811
++	default:
++		return 11906, 16838
++	}
+ }
+ 
+ func getRunFontName(run document.Run) string {
+@@ -1715,42 +1830,23 @@
+ 		pPr.Jc.ValAttr = align
+ 	}
+ 
+-	// 设置字体和字号
++	// 设置字体和字号 - 只使用高级API，避免直接取临时变量地址
+ 	for _, run := range para.Runs() {
+-		if run.X() == nil {
+-			continue
+-		}
+-
+-		rPr := run.X().RPr
+-		if rPr == nil {
+-			rPr = wml.NewCT_RPr()
+-			run.X().RPr = rPr
+-		}
++		runProps := run.Properties()
+ 
+ 		// 设置字体
+ 		if style.FontName != "" {
+-			if rPr.RFonts == nil {
+-				rPr.RFonts = wml.NewCT_Fonts()
+-			}
+-			rPr.RFonts.EastAsiaAttr = &style.FontName
+-			rPr.RFonts.AsciiAttr = &style.FontName
++			runProps.SetFontFamily(style.FontName)
+ 		}
+ 
+ 		// 设置字号
+ 		if style.FontSize > 0 {
+-			if rPr.Sz == nil {
+-				rPr.Sz = wml.NewCT_HpsMeasure()
+-			}
+-			halfPoints := uint64(style.FontSize * 2)
+-			rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPoints
++			runProps.SetSize(measurement.Distance(style.FontSize))
+ 		}
+ 
+ 		// 设置加粗
+ 		if style.Bold {
+-			if rPr.B == nil {
+-				rPr.B = wml.NewCT_OnOff()
+-			}
+-			// 加粗属性存在即为true
++			runProps.SetBold(true)
+ 		}
+ 	}
+ }
+@@ -1804,34 +1900,18 @@
+ 		pPr.Spacing.LineAttr.Int64 = &twips
+ 	}
+ 
+-	// 设置字体和字号
++	// 设置字体和字号 - 只使用高级API，避免直接取临时变量地址
+ 	for _, run := range para.Runs() {
+-		if run.X() == nil {
+-			continue
+-		}
+-
+-		rPr := run.X().RPr
+-		if rPr == nil {
+-			rPr = wml.NewCT_RPr()
+-			run.X().RPr = rPr
+-		}
++		runProps := run.Properties()
+ 
+ 		// 设置字体
+ 		if style.FontName != "" {
+-			if rPr.RFonts == nil {
+-				rPr.RFonts = wml.NewCT_Fonts()
+-			}
+-			rPr.RFonts.EastAsiaAttr = &style.FontName
+-			rPr.RFonts.AsciiAttr = &style.FontName
++			runProps.SetFontFamily(style.FontName)
+ 		}
+ 
+ 		// 设置字号
+ 		if style.FontSize > 0 {
+-			if rPr.Sz == nil {
+-				rPr.Sz = wml.NewCT_HpsMeasure()
+-			}
+-			halfPoints := uint64(style.FontSize * 2)
+-			rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPoints
++			runProps.SetSize(measurement.Distance(style.FontSize))
+ 		}
+ 	}
+ }
+@@ -1848,28 +1928,16 @@
+ 			for _, cell := range row.Cells() {
+ 				for _, para := range cell.Paragraphs() {
+ 					for _, run := range para.Runs() {
+-						rPr := run.X().RPr
+-						if rPr == nil {
+-							rPr = wml.NewCT_RPr()
+-							run.X().RPr = rPr
+-						}
++						runProps := run.Properties()
+ 
+-						// 设置字体
++						// 设置字体 - 使用高级API
+ 						if standard.TableStyle.FontName != "" {
+-							if rPr.RFonts == nil {
+-								rPr.RFonts = wml.NewCT_Fonts()
+-							}
+-							rPr.RFonts.EastAsiaAttr = &standard.TableStyle.FontName
+-							rPr.RFonts.AsciiAttr = &standard.TableStyle.FontName
++							runProps.SetFontFamily(standard.TableStyle.FontName)
+ 						}
+ 
+-						// 设置字号
++						// 设置字号 - 使用高级API
+ 						if standard.TableStyle.FontSize > 0 {
+-							if rPr.Sz == nil {
+-								rPr.Sz = wml.NewCT_HpsMeasure()
+-							}
+-							halfPoints := uint64(standard.TableStyle.FontSize * 2)
+-							rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPoints
++							runProps.SetSize(measurement.Distance(standard.TableStyle.FontSize))
+ 						}
+ 					}
+ 				}
+Index: test.exe
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
