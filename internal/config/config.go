@@ -56,8 +56,11 @@ type DatabaseConfig struct {
 
 // JWTConfig JWT配置
 type JWTConfig struct {
-	Secret     string        `mapstructure:"secret"`
-	Expiration time.Duration `mapstructure:"expiration"`
+	Secret             string        `mapstructure:"secret"`
+	Expiration         time.Duration `mapstructure:"expiration"`
+	AccessTokenExpiry  time.Duration `mapstructure:"access_token_expiry"`
+	RefreshTokenExpiry time.Duration `mapstructure:"refresh_token_expiry"`
+	MaxRefreshCount    int           `mapstructure:"max_refresh_count"`
 }
 
 // FileConfig 文件存储配置
@@ -120,8 +123,11 @@ func LoadConfig(configPath string) (*Config, error) {
 			SSLMode:  "disable",
 		},
 		JWT: JWTConfig{
-			Secret:     "your-secret-key",
-			Expiration: 24 * time.Hour,
+			Secret:             "your-secret-key",
+			Expiration:         24 * time.Hour,
+			AccessTokenExpiry:  1 * time.Hour,
+			RefreshTokenExpiry: 30 * 24 * time.Hour,
+			MaxRefreshCount:    5,
 		},
 		File: FileConfig{
 			UploadPath:   "./uploads",

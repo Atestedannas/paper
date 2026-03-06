@@ -13,7 +13,7 @@ type User struct {
 	Email        string    `gorm:"size:100;uniqueIndex;not null" json:"email"`
 	PasswordHash string    `gorm:"size:100;not null" json:"-"` // 密码哈希，不返回给前端
 	FullName     string    `gorm:"size:100" json:"full_name"`
-	Avatar       string    `gorm:"size:255" json:"avatar"`
+	Avatar       string    `gorm:"size:10000" json:"avatar"`
 	Status       string    `gorm:"size:20;default:active" json:"status"` // active, inactive, deleted
 	Role         string    `gorm:"size:20;default:user" json:"role"`     // user, admin
 

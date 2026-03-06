@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/config"
 	"github.com/paper-format-checker/backend/internal/service"
+	"gorm.io/gorm"
 )
 
 // JWTClaims JWT声明结构体
@@ -21,7 +22,9 @@ type JWTClaims struct {
 }
 
 // AuthMiddleware 认证中间件
-func AuthMiddleware(config *config.Config) gin.HandlerFunc {
+func AuthMiddleware(config *config.Config, db *gorm.DB) gin.HandlerFunc {
+	tokenBlacklistService := service.NewTokenBlacklistService(db)
+
 	return func(c *gin.Context) {
 		// 获取Authorization头
 		authHeader := c.GetHeader("Authorization")
@@ -42,7 +45,7 @@ func AuthMiddleware(config *config.Config) gin.HandlerFunc {
 		tokenString := parts[1]
 
 		// 检查令牌是否在黑名单中
-		if GlobalTokenBlacklist.IsTokenBlacklisted(tokenString) {
+		if tokenBlacklistService.IsTokenBlacklisted(tokenString) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "token has been invalidated"})
 			c.Abort()
 			return
@@ -99,12 +102,18 @@ func AuthMiddleware(config *config.Config) gin.HandlerFunc {
 
 // GenerateToken 生成JWT令牌
 func GenerateToken(config *config.Config, userID uuid.UUID, username string) (string, error) {
-	// 设置JWT声明 - 缩短有效期至1小时
+	// 使用配置中的access_token_expiry，如果没有则使用默认值1小时
+	expiry := config.JWT.AccessTokenExpiry
+	if expiry == 0 {
+		expiry = 1 * time.Hour
+	}
+
+	// 设置JWT声明
 	claims := JWTClaims{
 		UserID:   userID,
 		Username: username,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)), // 令牌有效期1小时
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiry)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Issuer:    "paper-format-checker",
 			NotBefore: jwt.NewNumericDate(time.Now()),
@@ -124,12 +133,20 @@ func GenerateToken(config *config.Config, userID uuid.UUID, username string) (st
 }
 
 // GenerateRefreshToken 生成刷新令牌
-func GenerateRefreshToken(config *config.Config, userID uuid.UUID) (string, error) {
-	// 刷新令牌有效期7天
+func GenerateRefreshToken(config *config.Config, userID uuid.UUID) (string, time.Time, error) {
+	// 使用配置中的refresh_token_expiry，如果没有则使用默认值30天
+	expiry := config.JWT.RefreshTokenExpiry
+	if expiry == 0 {
+		expiry = 30 * 24 * time.Hour
+	}
+
+	expiresAt := time.Now().Add(expiry)
+
+	// 刷新令牌有效期更长
 	claims := JWTClaims{
 		UserID: userID,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)), // 刷新令牌有效期7天
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Issuer:    "paper-format-checker-refresh",
 			NotBefore: jwt.NewNumericDate(time.Now()),
@@ -142,10 +159,10 @@ func GenerateRefreshToken(config *config.Config, userID uuid.UUID) (string, erro
 	// 签名令牌
 	tokenString, err := token.SignedString([]byte(config.JWT.Secret))
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 
-	return tokenString, nil
+	return tokenString, expiresAt, nil
 }
 
 // RequireMemberMiddleware 会员权限中间件
@@ -211,14 +228,14 @@ func RequireCheckPermissionMiddleware() gin.HandlerFunc {
 }
 
 // ConditionalAuthMiddleware 条件认证中间件 - 根据系统设置决定是否需要认证
-func ConditionalAuthMiddleware(config *config.Config, serviceType ServiceType) gin.HandlerFunc {
+func ConditionalAuthMiddleware(config *config.Config, db *gorm.DB, serviceType ServiceType) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 获取支付配置
 		settingService := service.GetSystemSettingService()
 		paymentConfig, err := settingService.GetPaymentConfig()
 		if err != nil {
 			// 配置获取失败，默认需要认证
-			AuthMiddleware(config)(c)
+			AuthMiddleware(config, db)(c)
 			return
 		}
 
@@ -245,7 +262,7 @@ func ConditionalAuthMiddleware(config *config.Config, serviceType ServiceType) g
 		}
 
 		// 如果不免费，执行正常的认证
-		AuthMiddleware(config)(c)
+		AuthMiddleware(config, db)(c)
 	}
 }
 

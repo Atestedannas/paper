@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -8,23 +10,30 @@ import (
 	"github.com/paper-format-checker/backend/internal/middleware"
 	"github.com/paper-format-checker/backend/internal/service"
 	"github.com/paper-format-checker/backend/internal/utils"
+	"gorm.io/gorm"
 )
 
 // AuthHandler 认证处理器
 type AuthHandler struct {
-	userService   service.UserService
-	wechatService *service.WechatService
-	alipayService *service.AlipayService
-	config        *config.Config
+	userService           service.UserService
+	wechatService         *service.WechatService
+	alipayService         *service.AlipayService
+	config                *config.Config
+	db                    *gorm.DB
+	tokenBlacklistService *service.TokenBlacklistService
+	refreshTokenService   *service.RefreshTokenService
 }
 
 // NewAuthHandler 创建认证处理器实例
-func NewAuthHandler(config *config.Config) *AuthHandler {
+func NewAuthHandler(config *config.Config, db *gorm.DB) *AuthHandler {
 	return &AuthHandler{
-		userService:   service.NewUserService(),
-		wechatService: service.NewWechatService(config),
-		alipayService: service.NewAlipayService(config),
-		config:        config,
+		userService:           service.NewUserService(),
+		wechatService:         service.NewWechatService(config),
+		alipayService:         service.NewAlipayService(config),
+		config:                config,
+		db:                    db,
+		tokenBlacklistService: service.NewTokenBlacklistService(db),
+		refreshTokenService:   service.NewRefreshTokenService(db),
 	}
 }
 
@@ -75,11 +84,13 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 			// 生成模拟JWT令牌
 			mockToken, _ := middleware.GenerateToken(h.config, uuid.New(), req.Username)
-			mockRefreshToken, _ := middleware.GenerateRefreshToken(h.config, uuid.New())
+			mockRefreshToken, _, _ := middleware.GenerateRefreshToken(h.config, uuid.New())
 
 			utils.Created(c, gin.H{
-				"token":         mockToken,
+				"access_token":  mockToken,
 				"refresh_token": mockRefreshToken,
+				"token_type":    "Bearer",
+				"expires_in":    int64(h.config.JWT.AccessTokenExpiry.Seconds()),
 				"user":          mockUser,
 			})
 			return
@@ -98,16 +109,25 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	}
 
 	// 生成刷新令牌
-	refreshToken, err := middleware.GenerateRefreshToken(h.config, user.ID)
+	refreshToken, refreshExpiresAt, err := middleware.GenerateRefreshToken(h.config, user.ID)
 	if err != nil {
 		utils.InternalServerError(c, "failed to generate refresh token")
 		return
 	}
 
+	// 保存刷新令牌到数据库
+	_, err = h.refreshTokenService.CreateRefreshToken(refreshToken, user.ID, refreshExpiresAt)
+	if err != nil {
+		utils.InternalServerError(c, "failed to save refresh token")
+		return
+	}
+
 	// 返回响应
 	utils.Created(c, gin.H{
-		"token":         token,
+		"access_token":  token,
 		"refresh_token": refreshToken,
+		"token_type":    "Bearer",
+		"expires_in":    int64(h.config.JWT.AccessTokenExpiry.Seconds()),
 		"user":          user,
 	})
 }
@@ -135,16 +155,25 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	// 生成刷新令牌
-	refreshToken, err := middleware.GenerateRefreshToken(h.config, user.ID)
+	refreshToken, refreshExpiresAt, err := middleware.GenerateRefreshToken(h.config, user.ID)
 	if err != nil {
 		utils.InternalServerError(c, "failed to generate refresh token")
 		return
 	}
 
+	// 保存刷新令牌到数据库
+	_, err = h.refreshTokenService.CreateRefreshToken(refreshToken, user.ID, refreshExpiresAt)
+	if err != nil {
+		utils.InternalServerError(c, "failed to save refresh token")
+		return
+	}
+
 	// 返回响应
 	utils.Success(c, gin.H{
-		"token":         token,
+		"access_token":  token,
 		"refresh_token": refreshToken,
+		"token_type":    "Bearer",
+		"expires_in":    int64(h.config.JWT.AccessTokenExpiry.Seconds()),
 		"user":          user,
 	})
 }
@@ -180,7 +209,7 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 	// 解析请求数据
 	var req struct {
 		FullName string `json:"full_name" binding:"omitempty,min=2,max=100"`
-		Avatar   string `json:"avatar" binding:"omitempty,max=255"`
+		Avatar   string `json:"avatar" binding:"omitempty,max=10000"`
 		Email    string `json:"email" binding:"omitempty,email"`
 	}
 
@@ -275,9 +304,26 @@ func (h *AuthHandler) WechatAuthCallback(c *gin.Context) {
 		return
 	}
 
-	utils.Success(c, AuthResponse{
-		Token: tokenStr,
-		User:  user,
+	// 生成刷新令牌
+	refreshToken, refreshExpiresAt, err := middleware.GenerateRefreshToken(h.config, user.ID)
+	if err != nil {
+		utils.InternalServerError(c, "failed to generate refresh token")
+		return
+	}
+
+	// 保存刷新令牌到数据库
+	_, err = h.refreshTokenService.CreateRefreshToken(refreshToken, user.ID, refreshExpiresAt)
+	if err != nil {
+		utils.InternalServerError(c, "failed to save refresh token")
+		return
+	}
+
+	utils.Success(c, gin.H{
+		"access_token":  tokenStr,
+		"refresh_token": refreshToken,
+		"token_type":    "Bearer",
+		"expires_in":    int64(h.config.JWT.AccessTokenExpiry.Seconds()),
+		"user":          user,
 	})
 }
 
@@ -346,9 +392,26 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 		return
 	}
 
-	utils.Success(c, AuthResponse{
-		Token: tokenStr,
-		User:  user,
+	// 生成刷新令牌
+	refreshToken, refreshExpiresAt, err := middleware.GenerateRefreshToken(h.config, user.ID)
+	if err != nil {
+		utils.InternalServerError(c, "failed to generate refresh token")
+		return
+	}
+
+	// 保存刷新令牌到数据库
+	_, err = h.refreshTokenService.CreateRefreshToken(refreshToken, user.ID, refreshExpiresAt)
+	if err != nil {
+		utils.InternalServerError(c, "failed to save refresh token")
+		return
+	}
+
+	utils.Success(c, gin.H{
+		"access_token":  tokenStr,
+		"refresh_token": refreshToken,
+		"token_type":    "Bearer",
+		"expires_in":    int64(h.config.JWT.AccessTokenExpiry.Seconds()),
+		"user":          user,
 	})
 }
 
@@ -396,25 +459,29 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	// 解析刷新令牌
-	claims := &middleware.JWTClaims{}
-	token, err := jwt.ParseWithClaims(req.RefreshToken, claims, func(token *jwt.Token) (interface{}, error) {
-		return []byte(h.config.JWT.Secret), nil
-	})
-
-	if err != nil || !token.Valid {
-		utils.Unauthorized(c, "invalid refresh token")
-		return
-	}
-
-	// 验证令牌用途
-	if claims.Issuer != "paper-format-checker-refresh" {
-		utils.Unauthorized(c, "invalid refresh token issuer")
+	// 验证刷新令牌
+	oldRefreshToken, err := h.refreshTokenService.ValidateRefreshToken(
+		req.RefreshToken,
+		h.config.JWT.MaxRefreshCount,
+	)
+	if err != nil {
+		switch err {
+		case service.ErrRefreshTokenNotFound:
+			utils.Unauthorized(c, "invalid refresh token")
+		case service.ErrRefreshTokenExpired:
+			utils.Unauthorized(c, "refresh token expired")
+		case service.ErrRefreshTokenRevoked:
+			utils.Unauthorized(c, "refresh token revoked")
+		case service.ErrMaxRefreshExceeded:
+			utils.Unauthorized(c, "maximum refresh count exceeded, please login again")
+		default:
+			utils.Unauthorized(c, "invalid refresh token")
+		}
 		return
 	}
 
 	// 获取用户信息
-	user, err := h.userService.GetUserByID(claims.UserID)
+	user, err := h.userService.GetUserByID(oldRefreshToken.UserID)
 	if err != nil {
 		utils.Unauthorized(c, "user not found")
 		return
@@ -428,18 +495,78 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	}
 
 	// 生成新的刷新令牌
-	newRefreshToken, err := middleware.GenerateRefreshToken(h.config, user.ID)
+	newRefreshToken, newRefreshExpiresAt, err := middleware.GenerateRefreshToken(h.config, user.ID)
 	if err != nil {
 		utils.InternalServerError(c, "failed to generate new refresh token")
 		return
 	}
 
+	// 更新刷新令牌记录（滚动刷新）
+	_, err = h.refreshTokenService.RefreshToken(
+		req.RefreshToken,
+		newRefreshToken,
+		newRefreshExpiresAt,
+		h.config.JWT.MaxRefreshCount,
+	)
+	if err != nil {
+		utils.InternalServerError(c, "failed to update refresh token")
+		return
+	}
+
+	// 将旧的access_token加入黑名单
+	// 注意：这里需要从请求头获取旧的access_token，但刷新接口可能没有
+	// 所以我们只在客户端明确传递时才加入黑名单
+
 	// 返回响应
 	utils.Success(c, gin.H{
-		"token":         newAccessToken,
+		"access_token":  newAccessToken,
 		"refresh_token": newRefreshToken,
+		"token_type":    "Bearer",
+		"expires_in":    int64(h.config.JWT.AccessTokenExpiry.Seconds()),
 		"user":          user,
 	})
+}
+
+// Logout 退出登录
+func (h *AuthHandler) Logout(c *gin.Context) {
+	// 从上下文获取用户ID
+	userID, exists := c.Get("user_id")
+	if !exists {
+		utils.Unauthorized(c, "user not authenticated")
+		return
+	}
+
+	// 获取Authorization头
+	authHeader := c.GetHeader("Authorization")
+	if authHeader != "" {
+		// 解析Bearer令牌
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) == 2 && parts[0] == "Bearer" {
+			accessToken := parts[1]
+
+			// 将access_token加入黑名单
+			claims := &middleware.JWTClaims{}
+			token, err := jwt.ParseWithClaims(accessToken, claims, func(token *jwt.Token) (interface{}, error) {
+				return []byte(h.config.JWT.Secret), nil
+			})
+
+			if err == nil && token.Valid {
+				_ = h.tokenBlacklistService.AddToken(
+					accessToken,
+					"access",
+					userID.(uuid.UUID),
+					claims.ExpiresAt.Time,
+					"user logout",
+				)
+			}
+		}
+	}
+
+	// 撤销用户的所有刷新令牌
+	_ = h.refreshTokenService.RevokeUserRefreshTokens(userID.(uuid.UUID), "user logout")
+
+	// 返回响应
+	utils.Success(c, gin.H{"message": "logged out successfully"})
 }
 
 // isPasswordComplex 检查密码复杂度

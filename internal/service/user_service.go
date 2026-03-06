@@ -26,6 +26,7 @@ type UserService interface {
 	ChangePassword(userID uuid.UUID, oldPassword, newPassword string) error
 	// 管理员相关功能
 	GetAllUsers(page, pageSize int) ([]model.User, int64, error)
+	CreateUser(username, email, password string, role, status, fullName string) (*model.User, error)
 	UpdateUserRole(userID uuid.UUID, role string) error
 	DeleteUser(userID uuid.UUID) error
 	UpdateUserStatus(userID uuid.UUID, status string) error
@@ -334,4 +335,45 @@ func (s *userService) UpdateUserFreeChecks(userID uuid.UUID, checks int) error {
 		return errors.New("invalid checks count")
 	}
 	return database.DB.Model(&model.User{}).Where("id = ?", userID).Update("free_checks", checks).Error
+}
+
+// CreateUser 管理员创建用户
+func (s *userService) CreateUser(username, email, password string, role, status, fullName string) (*model.User, error) {
+	if database.DB == nil {
+		return nil, errors.New("service unavailable")
+	}
+
+	var existingUser model.User
+	err := database.DB.Where("username = ?", username).First(&existingUser).Error
+	if err == nil {
+		return nil, errors.New("username already exists")
+	}
+
+	err = database.DB.Where("email = ?", email).First(&existingUser).Error
+	if err == nil {
+		return nil, errors.New("email already exists")
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	if err != nil {
+		return nil, err
+	}
+
+	user := &model.User{
+		Username:     username,
+		Email:        email,
+		PasswordHash: string(hashedPassword),
+		FullName:     fullName,
+		Role:         role,
+		Status:       status,
+		FreeChecks:   2,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	if err := database.DB.Create(user).Error; err != nil {
+		return nil, errors.New("failed to create user")
+	}
+
+	return user, nil
 }
