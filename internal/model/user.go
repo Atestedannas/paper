@@ -28,8 +28,9 @@ type User struct {
 	UpdatedAt time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
 
 	// 关联
-	Papers       []Paper       `gorm:"foreignKey:UserID" json:"papers,omitempty"`
-	Member       *Member       `gorm:"foreignKey:UserID" json:"member,omitempty"`
-	CheckResults []CheckResult `gorm:"foreignKey:UserID" json:"check_results,omitempty"`
-	Roles        []Role        `gorm:"many2many:user_roles;" json:"roles,omitempty"`
+	Papers            []Paper       `gorm:"foreignKey:UserID" json:"papers,omitempty"`
+	Member            *Member       `gorm:"foreignKey:UserID" json:"member,omitempty"`
+	CheckResults      []CheckResult `gorm:"foreignKey:UserID" json:"check_results,omitempty"`
+	Roles             []Role        `gorm:"many2many:user_roles;" json:"roles,omitempty"`
+	DirectPermissions []Permission  `gorm:"many2many:user_permissions;" json:"direct_permissions,omitempty"`
 }

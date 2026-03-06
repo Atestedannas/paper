@@ -277,8 +277,11 @@ func (s *userService) GetAllUsers(page, pageSize int) ([]model.User, int64, erro
 		return nil, 0, err
 	}
 
-	// 获取分页数据
-	if err := database.DB.Where("status != ?", "deleted").Offset(offset).Limit(pageSize).Order("created_at DESC").Find(&users).Error; err != nil {
+	// 获取分页数据，并预加载角色和权限信息
+	if err := database.DB.Where("status != ?", "deleted").
+		Preload("Roles").
+		Preload("DirectPermissions").
+		Offset(offset).Limit(pageSize).Order("created_at DESC").Find(&users).Error; err != nil {
 		return nil, 0, err
 	}
 
@@ -312,21 +315,28 @@ func (s *userService) DeleteUser(userID uuid.UUID) error {
 
 // UpdateUserStatus 更新用户状态
 func (s *userService) UpdateUserStatus(userID uuid.UUID, status string) error {
-	// 验证状态值
-	validStatuses := []string{"active", "inactive", "deleted"}
+	// 验证状态值（支持 disabled 作为 inactive 的别名）
+	validStatuses := []string{"active", "inactive", "disabled", "deleted"}
 	valid := false
+	actualStatus := status
+
 	for _, s := range validStatuses {
 		if s == status {
 			valid = true
+			// 将 disabled 转换为 inactive
+			if status == "disabled" {
+				actualStatus = "inactive"
+			}
 			break
 		}
 	}
+
 	if !valid {
 		return errors.New("invalid status value")
 	}
 
 	// 更新状态
-	return database.DB.Model(&model.User{}).Where("id = ?", userID).Update("status", status).Error
+	return database.DB.Model(&model.User{}).Where("id = ?", userID).Update("status", actualStatus).Error
 }
 
 // UpdateUserFreeChecks 更新用户免费检查次数

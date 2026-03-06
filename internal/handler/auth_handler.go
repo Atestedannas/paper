@@ -209,7 +209,7 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 	// 解析请求数据
 	var req struct {
 		FullName string `json:"full_name" binding:"omitempty,min=2,max=100"`
-		Avatar   string `json:"avatar" binding:"omitempty,max=10000"`
+		Avatar   string `json:"avatar" binding:"omitempty"`
 		Email    string `json:"email" binding:"omitempty,email"`
 	}
 

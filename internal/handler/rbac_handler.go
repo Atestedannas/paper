@@ -6,6 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/paper-format-checker/backend/internal/database"
+	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
 	"github.com/paper-format-checker/backend/internal/utils"
 )
@@ -40,7 +42,7 @@ func (h *RBACHandler) CreateUser(c *gin.Context) {
 		return
 	}
 
-	user, err := h.rbacService.CreateUser(req.Username, req.Password, req.Email, req.FullName)
+	user, err := h.rbacService.CreateUser(req.Username, req.Email, req.Password)
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "创建用户失败", err.Error())
 		return
@@ -395,6 +397,61 @@ func (h *RBACHandler) RemovePermissionFromRole(c *gin.Context) {
 	utils.SuccessResponse(c, "权限移除成功", nil)
 }
 
+// AssignPermissionToUser 为用户直接分配权限
+func (h *RBACHandler) AssignPermissionToUser(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("user_id"))
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的用户ID", err.Error())
+		return
+	}
+
+	permissionID, err := uuid.Parse(c.Param("permission_id"))
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的权限ID", err.Error())
+		return
+	}
+
+	var userPermission model.UserPermission
+	if err := database.DB.Where("user_id = ? AND permission_id = ?", userID, permissionID).First(&userPermission).Error; err == nil {
+		utils.SuccessResponse(c, "权限已存在", nil)
+		return
+	}
+
+	userPermission = model.UserPermission{
+		UserID:       userID,
+		PermissionID: permissionID,
+	}
+
+	if err := database.DB.Create(&userPermission).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "分配权限失败", err.Error())
+		return
+	}
+
+	utils.SuccessResponse(c, "权限分配成功", nil)
+}
+
+// RemovePermissionFromUser 从用户移除直接分配的权限
+func (h *RBACHandler) RemovePermissionFromUser(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("user_id"))
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的用户ID", err.Error())
+		return
+	}
+
+	permissionID, err := uuid.Parse(c.Param("permission_id"))
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的权限ID", err.Error())
+		return
+	}
+
+	if err := database.DB.Where("user_id = ? AND permission_id = ?", userID, permissionID).Delete(&model.UserPermission{}).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "移除权限失败", err.Error())
+		return
+	}
+
+	utils.SuccessResponse(c, "权限移除成功", nil)
+}
+
 // CheckPermission 检查用户权限
 func (h *RBACHandler) CheckPermission(c *gin.Context) {
 	userID, exists := c.Get("user_id")
@@ -426,16 +483,97 @@ func (h *RBACHandler) CheckPermission(c *gin.Context) {
 
 // GetUserPermissions 获取用户权限列表
 func (h *RBACHandler) GetUserPermissions(c *gin.Context) {
-	userID, exists := c.Get("user_id")
-	if !exists {
-		utils.ErrorResponse(c, http.StatusUnauthorized, "未找到用户信息", "")
+	userID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的用户 ID", err.Error())
 		return
 	}
 
-	permissions, err := h.rbacService.GetUserPermissions(userID.(uuid.UUID))
+	// 获取用户的所有权限（包括角色继承和直接分配的）
+	allPermissions, err := h.rbacService.GetUserPermissions(userID)
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "获取用户权限失败", err.Error())
 		return
+	}
+
+	// 获取用户直接分配的权限
+	directPermissionIDs, err := h.rbacService.GetUserDirectPermissionIDs(userID)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "获取用户直接权限失败", err.Error())
+		return
+	}
+
+	// 为每个权限标记来源
+	type PermissionWithSource struct {
+		model.Permission
+		FromRole  bool     `json:"from_role"`  // 是否来自角色继承
+		RoleNames []string `json:"role_names"` // 来自哪些角色
+		IsDirect  bool     `json:"is_direct"`  // 是否是直接分配的权限
+	}
+
+	result := make([]PermissionWithSource, 0, len(allPermissions))
+	for _, perm := range allPermissions {
+		pws := PermissionWithSource{
+			Permission: perm,
+			FromRole:   false,
+			RoleNames:  []string{},
+			IsDirect:   false,
+		}
+
+		// 检查是否是直接分配的权限
+		for _, directID := range directPermissionIDs {
+			if directID == perm.ID {
+				pws.IsDirect = true
+				break
+			}
+		}
+
+		// 检查是否来自角色
+		userRoles, err := h.rbacService.GetUserRoles(userID)
+		if err == nil {
+			for _, role := range userRoles {
+				rolePermissions, err := h.rbacService.GetRolePermissions(role.ID)
+				if err == nil {
+					for _, rolePerm := range rolePermissions {
+						if rolePerm.ID == perm.ID {
+							pws.FromRole = true
+							pws.RoleNames = append(pws.RoleNames, role.Name)
+							break
+						}
+					}
+				}
+			}
+		}
+
+		result = append(result, pws)
+	}
+
+	utils.SuccessResponse(c, "获取成功", result)
+}
+
+// GetUserDirectPermissions 获取用户直接分配的权限（不包括角色继承的）
+func (h *RBACHandler) GetUserDirectPermissions(c *gin.Context) {
+	userID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的用户 ID", err.Error())
+		return
+	}
+
+	// 获取用户直接分配的权限 ID
+	directPermissionIDs, err := h.rbacService.GetUserDirectPermissionIDs(userID)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "获取用户直接权限失败", err.Error())
+		return
+	}
+
+	// 获取权限详情
+	var permissions []model.Permission
+	if len(directPermissionIDs) > 0 {
+		err = database.DB.Where("id IN ?", directPermissionIDs).Find(&permissions).Error
+		if err != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "获取权限详情失败", err.Error())
+			return
+		}
 	}
 
 	utils.SuccessResponse(c, "获取成功", permissions)

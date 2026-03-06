@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"fmt"
@@ -16,6 +16,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/handler"
 	"github.com/paper-format-checker/backend/internal/middleware"
 	"github.com/paper-format-checker/backend/internal/model"
+	"github.com/paper-format-checker/backend/internal/service"
 )
 
 func main() {
@@ -49,6 +50,14 @@ func main() {
 		} else {
 			log.Println("Successfully migrated token tables")
 		}
+
+		// Initialize Casbin
+		casbinService := service.NewCasbinService()
+		if err := casbinService.Init(); err != nil {
+			log.Printf("Warning: Failed to initialize Casbin: %v", err)
+		} else {
+			log.Println("Successfully initialized Casbin")
+		}
 	}
 
 	// Fix foreign key constraint for orders table member_level_id field
@@ -59,9 +68,9 @@ func main() {
 	}
 
 	// Execute database migration and initialization (explicitly call at startup)
-	//if err := database.PerformMigration(); err != nil {
-	//	log.Printf("Warning: Failed to perform database migration: %v", err)
-	//}
+	if err := database.PerformMigration(); err != nil {
+		log.Printf("Warning: Failed to perform database migration: %v", err)
+	}
 
 	// Create Gin router
 	router := gin.Default()
@@ -99,6 +108,10 @@ func main() {
 	batchHandler := handler.NewBatchHandler()
 	paymentCheckHandler := handler.NewPaymentCheckHandler()
 	sandboxHandler := handler.NewSandboxHandler(cfg)
+
+	// RBAC enhanced handlers
+	menuHandler := handler.NewMenuHandler()
+	casbinHandler := handler.NewCasbinHandler()
 
 	// API routes - keep original route structure, add v1 version support
 	api := router.Group("/api")
@@ -263,25 +276,37 @@ func main() {
 			admin.GET("/stats", adminHandler.GetSystemStats)   // Get system statistics
 
 			// User management
-			admin.GET("/users", adminHandler.GetUsers)                              // Get user list
-			admin.POST("/users", adminHandler.CreateUser)                           // Create user
-			admin.PUT("/users/:id", adminHandler.UpdateUser)                        // Update user
-			admin.GET("/users/:id/roles", rbacHandler.GetUserRolesByID)             // Get user role list
-			admin.GET("/users/:id/permissions", rbacHandler.GetUserPermissionsByID) // Get user permission list
-			admin.PUT("/users/:id/role", adminHandler.UpdateUserRole)               // Update user role
-			admin.PUT("/users/:id/status", adminHandler.UpdateUserStatus)           // Update user status
-			admin.DELETE("/users/:id", adminHandler.DeleteUser)                     // Delete user
-			admin.POST("/users/set-super-admin", adminHandler.SetUserAsSuperAdmin)  // Set user as super admin
+			admin.GET("/users", adminHandler.GetUsers)                                       // Get user list
+			admin.POST("/users", adminHandler.CreateUser)                                    // Create user
+			admin.PUT("/users/:id", adminHandler.UpdateUser)                                 // Update user
+			admin.GET("/users/:id/roles", rbacHandler.GetUserRolesByID)                      // Get user role list
+			admin.GET("/users/:id/permissions", rbacHandler.GetUserPermissionsByID)          // Get user permission list (all)
+			admin.GET("/users/:id/direct-permissions", rbacHandler.GetUserDirectPermissions) // Get user direct permissions only
+			admin.PUT("/users/:id/role", adminHandler.UpdateUserRole)                        // Update user role
+			admin.PUT("/users/:id/status", adminHandler.UpdateUserStatus)                    // Update user status
+			admin.DELETE("/users/:id", adminHandler.DeleteUser)                              // Delete user
+			admin.POST("/users/set-super-admin", adminHandler.SetUserAsSuperAdmin)           // Set user as super admin
 
 			// Paper management
-			admin.GET("/papers", adminHandler.GetPapers) // Get paper list
+			admin.GET("/papers", adminHandler.GetPapers)          // Get paper list
+			admin.DELETE("/papers/:id", adminHandler.DeletePaper) // Delete paper by ID
+			admin.POST("/papers/batch-delete", adminHandler.BatchDeletePapers)
+			admin.POST("/papers/batch-check", adminHandler.BatchCheckPapers)
+			admin.POST("/papers/:id/check-format", adminHandler.CheckPaperFormat)
+			admin.GET("/papers/:id/file", adminHandler.DownloadPaperFile) // Batch delete papers
 
 			// RBAC permission management
-			admin.GET("/roles", rbacHandler.GetRoles)                                                             // Get role list
-			admin.POST("/roles", rbacHandler.CreateRole)                                                          // Create role
+			admin.GET("/roles", rbacHandler.GetRoles)    // Get role list
+			admin.POST("/roles", rbacHandler.CreateRole) // Create role
+
+			// Enhanced RBAC routes - Menu management (must be before /roles/:id to avoid conflict)
+			admin.GET("/roles/:id/menus", menuHandler.GetRoleMenus)
+			admin.POST("/roles/:id/menus", menuHandler.AssignMenusToRole)
+
 			admin.GET("/roles/:id", rbacHandler.GetRoleByID)                                                      // Get role details
 			admin.PUT("/roles/:id", rbacHandler.UpdateRole)                                                       // Update role
 			admin.DELETE("/roles/:id", rbacHandler.DeleteRole)                                                    // Delete role
+			admin.GET("/roles/:id/permissions", rbacHandler.GetRolePermissions)                                   // Get role permissions
 			admin.GET("/permissions", rbacHandler.GetPermissions)                                                 // Get permission list
 			admin.POST("/permissions", rbacHandler.CreatePermission)                                              // Create permission
 			admin.GET("/permissions/:id", rbacHandler.GetPermissionByID)                                          // Get permission details
@@ -291,6 +316,30 @@ func main() {
 			admin.DELETE("/user-role-assign/:user_id/:role_id", rbacHandler.RemoveRoleFromUser)                   // Remove role from user
 			admin.PUT("/role-permission-assign/:role_id/:permission_id", rbacHandler.AssignPermissionToRole)      // Assign permission to role
 			admin.DELETE("/role-permission-assign/:role_id/:permission_id", rbacHandler.RemovePermissionFromRole) // Remove permission from role
+			admin.PUT("/user-permission-assign/:user_id/:permission_id", rbacHandler.AssignPermissionToUser)      // Assign permission to user
+			admin.DELETE("/user-permission-assign/:user_id/:permission_id", rbacHandler.RemovePermissionFromUser) // Remove permission from user
+
+			// Enhanced RBAC routes - Menu management
+			admin.GET("/menus/tree", menuHandler.GetMenuTree)
+			admin.GET("/menus/user-tree", menuHandler.GetUserMenus) // 获取当前登录用户的菜单树
+			admin.GET("/menus", menuHandler.GetAllMenus)
+			admin.GET("/menus/user", menuHandler.GetUserMenus)
+			admin.POST("/menus", menuHandler.CreateMenu)
+			admin.PUT("/menus/:id", menuHandler.UpdateMenu)
+			admin.DELETE("/menus/:id", menuHandler.DeleteMenu)
+			admin.GET("/menus/:id", menuHandler.GetMenuByID)
+
+			// Casbin strategy management
+			admin.POST("/casbin/enforce", casbinHandler.Enforce)
+			admin.POST("/casbin/policy", casbinHandler.AddPolicy)
+			admin.DELETE("/casbin/policy", casbinHandler.RemovePolicy)
+			admin.POST("/casbin/grouping-policy", casbinHandler.AddGroupingPolicy)
+			admin.DELETE("/casbin/grouping-policy", casbinHandler.RemoveGroupingPolicy)
+			admin.GET("/casbin/policy/all", casbinHandler.GetPolicy)
+			admin.POST("/casbin/policy/load", casbinHandler.LoadPolicy)
+			admin.POST("/casbin/policy/save", casbinHandler.SavePolicy)
+			admin.GET("/casbin/user/permissions", casbinHandler.GetPermissionsForUser)
+			admin.GET("/casbin/user/roles", casbinHandler.GetRolesForUser)
 		}
 	}
 
@@ -470,15 +519,19 @@ func main() {
 			admin.GET("/dashboard", adminHandler.GetDashboard)
 			admin.GET("/stats", adminHandler.GetSystemStats)
 			admin.GET("/users", adminHandler.GetUsers)
-			admin.POST("/users", adminHandler.CreateUser)                           // Create user
-			admin.PUT("/users/:id", adminHandler.UpdateUser)                        // Update user
-			admin.GET("/users/:id/roles", rbacHandler.GetUserRolesByID)             // 鑾峰彇鐢ㄦ埛瑙掕壊鍒楄〃
-			admin.GET("/users/:id/permissions", rbacHandler.GetUserPermissionsByID) // 鑾峰彇鐢ㄦ埛鏉冮檺鍒楄〃
-			admin.PUT("/users/:id/role", adminHandler.UpdateUserRole)
+			admin.POST("/users", adminHandler.CreateUser)                                    // Create user
+			admin.PUT("/users/:id", adminHandler.UpdateUser)                                 // Update user
+			admin.GET("/users/:id/roles", rbacHandler.GetUserRolesByID)                      // 閼惧嘲褰囥劍鍩涚憴鎺曞閸掓銆?			admin.GET("/users/:id/permissions", rbacHandler.GetUserPermissionsByID) // 閼惧嘲褰囬悽銊﹀煕閺夊啴閸掓
+			admin.GET("/users/:id/direct-permissions", rbacHandler.GetUserDirectPermissions) // 鑾峰彇鐢ㄦ埛鐩存帴鍒嗛厤鐨勬潈闄?			admin.PUT("/users/:id/role", adminHandler.UpdateUserRole)
 			admin.PUT("/users/:id/status", adminHandler.UpdateUserStatus)
 			admin.DELETE("/users/:id", adminHandler.DeleteUser)
 			admin.POST("/users/set-super-admin", adminHandler.SetUserAsSuperAdmin) // 璁剧疆鐢ㄦ埛涓鸿秴绾х鐞嗗憳
 			admin.GET("/papers", adminHandler.GetPapers)
+			admin.DELETE("/papers/:id", adminHandler.DeletePaper)
+			admin.POST("/papers/batch-delete", adminHandler.BatchDeletePapers)
+			admin.POST("/papers/batch-check", adminHandler.BatchCheckPapers)
+			admin.POST("/papers/:id/check-format", adminHandler.CheckPaperFormat)
+			admin.GET("/papers/:id/file", adminHandler.DownloadPaperFile)
 
 			// Contact method management
 			admin.GET("/support/contact", configHandler.GetContactInfo) // Get contact info
@@ -542,11 +595,17 @@ func main() {
 			}
 
 			// RBAC permission management
-			admin.GET("/roles", rbacHandler.GetRoles)                                                             // Get role list
-			admin.POST("/roles", rbacHandler.CreateRole)                                                          // Create role
+			admin.GET("/roles", rbacHandler.GetRoles)    // Get role list
+			admin.POST("/roles", rbacHandler.CreateRole) // Create role
+
+			// Enhanced RBAC routes - Menu management (must be before /roles/:id to avoid conflict)
+			admin.GET("/roles/:id/menus", menuHandler.GetRoleMenus)
+			admin.POST("/roles/:id/menus", menuHandler.AssignMenusToRole)
+
 			admin.GET("/roles/:id", rbacHandler.GetRoleByID)                                                      // Get role details
 			admin.PUT("/roles/:id", rbacHandler.UpdateRole)                                                       // Update role
 			admin.DELETE("/roles/:id", rbacHandler.DeleteRole)                                                    // Delete role
+			admin.GET("/roles/:id/permissions", rbacHandler.GetRolePermissions)                                   // Get role permissions
 			admin.GET("/permissions", rbacHandler.GetPermissions)                                                 // Get permission list
 			admin.POST("/permissions", rbacHandler.CreatePermission)                                              // Create permission
 			admin.GET("/permissions/:id", rbacHandler.GetPermissionByID)                                          // Get permission details
@@ -556,6 +615,29 @@ func main() {
 			admin.DELETE("/user-role-assign/:user_id/:role_id", rbacHandler.RemoveRoleFromUser)                   // Remove role from user
 			admin.PUT("/role-permission-assign/:role_id/:permission_id", rbacHandler.AssignPermissionToRole)      // Assign permission to role
 			admin.DELETE("/role-permission-assign/:role_id/:permission_id", rbacHandler.RemovePermissionFromRole) // Remove permission from role
+			admin.PUT("/user-permission-assign/:user_id/:permission_id", rbacHandler.AssignPermissionToUser)      // Assign permission to user
+			admin.DELETE("/user-permission-assign/:user_id/:permission_id", rbacHandler.RemovePermissionFromUser) // Remove permission from user
+
+			// Enhanced RBAC routes - Menu management
+			admin.GET("/menus", menuHandler.GetAllMenus)
+			admin.GET("/menus/tree", menuHandler.GetMenuTree)
+			admin.GET("/menus/user", menuHandler.GetUserMenus)
+			admin.POST("/menus", menuHandler.CreateMenu)
+			admin.PUT("/menus/:id", menuHandler.UpdateMenu)
+			admin.DELETE("/menus/:id", menuHandler.DeleteMenu)
+			admin.GET("/menus/:id", menuHandler.GetMenuByID)
+
+			// Casbin strategy management
+			admin.POST("/casbin/enforce", casbinHandler.Enforce)
+			admin.POST("/casbin/policy", casbinHandler.AddPolicy)
+			admin.DELETE("/casbin/policy", casbinHandler.RemovePolicy)
+			admin.POST("/casbin/grouping-policy", casbinHandler.AddGroupingPolicy)
+			admin.DELETE("/casbin/grouping-policy", casbinHandler.RemoveGroupingPolicy)
+			admin.GET("/casbin/policy/all", casbinHandler.GetPolicy)
+			admin.POST("/casbin/policy/load", casbinHandler.LoadPolicy)
+			admin.POST("/casbin/policy/save", casbinHandler.SavePolicy)
+			admin.GET("/casbin/user/permissions", casbinHandler.GetPermissionsForUser)
+			admin.GET("/casbin/user/roles", casbinHandler.GetRolesForUser)
 		}
 
 		// University related routes

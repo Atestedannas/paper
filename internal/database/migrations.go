@@ -42,6 +42,7 @@ func RunMigrations() error {
 		&Migration20250129DropBadConstraint{},
 		&Migration20250129AddTemplateIDToFormatTemplates{},
 		&Migration20250124UpdateCQIECFormat{},
+		&Migration20250306CreateRBACTables{},
 	}
 
 	// 按顺序执行迁移

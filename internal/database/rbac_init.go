@@ -211,6 +211,46 @@ func InitRBACData() {
 			path:         "/api/v1/admin/permissions/*",
 			description:  "允许管理权限",
 		},
+
+		// 系统日志权限
+		{
+			name:         "系统日志查看",
+			code:         "system:logs:view",
+			resourceType: "api",
+			method:       "GET",
+			path:         "/api/v1/admin/settings/logs",
+			description:  "允许查看系统日志",
+		},
+
+		// 支付管理权限
+		{
+			name:         "支付管理",
+			code:         "payment:manage",
+			resourceType: "api",
+			method:       "*",
+			path:         "/api/v1/admin/settings/payment/*",
+			description:  "允许管理支付配置",
+		},
+
+		// 客服支持权限
+		{
+			name:         "客服支持管理",
+			code:         "support:manage",
+			resourceType: "api",
+			method:       "*",
+			path:         "/api/v1/admin/settings/support-contact",
+			description:  "允许管理客服支持",
+		},
+
+		// 论文格式管理权限
+		{
+			name:         "论文格式管理",
+			code:         "paper:format:manage",
+			resourceType: "api",
+			method:       "*",
+			path:         "/api/v1/admin/papers/format*",
+			description:  "允许管理论文格式",
+		},
 	}
 
 	for _, permData := range defaultPermissions {

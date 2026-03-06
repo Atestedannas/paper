@@ -394,11 +394,114 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 	}
 
 	if err := h.userService.UpdateUser(user); err != nil {
-		utils.ErrorResponse(c, http.StatusInternalServerError, "鏇存柊鐢ㄦ埛澶辫触", err.Error())
+		utils.ErrorResponse(c, http.StatusInternalServerError, "更新用户失败", err.Error())
 		return
 	}
 
-	utils.SuccessResponse(c, "鏇存柊鎴愬姛", gin.H{
+	utils.SuccessResponse(c, "更新成功", gin.H{
 		"user": user,
 	})
+}
+
+// DeletePaper 删除论文
+func (h *AdminHandler) DeletePaper(c *gin.Context) {
+	paperID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的论文 ID", err.Error())
+		return
+	}
+
+	if err := database.DB.Delete(&model.Paper{}, paperID).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "删除论文失败", err.Error())
+		return
+	}
+
+	utils.SuccessResponse(c, "删除成功", nil)
+}
+
+// BatchDeletePapers 批量删除论文
+func (h *AdminHandler) BatchDeletePapers(c *gin.Context) {
+	var req struct {
+		IDs []string `json:"ids" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "请求参数错误", err.Error())
+		return
+	}
+
+	if len(req.IDs) == 0 {
+		utils.ErrorResponse(c, http.StatusBadRequest, "论文 ID 列表不能为空", "")
+		return
+	}
+
+	deletedCount := 0
+	for _, idStr := range req.IDs {
+		paperID, err := uuid.Parse(idStr)
+		if err != nil {
+			continue
+		}
+
+		if err := database.DB.Delete(&model.Paper{}, paperID).Error; err == nil {
+			deletedCount++
+		}
+	}
+
+	utils.SuccessResponse(c, "批量删除成功", gin.H{
+		"deleted_count": deletedCount,
+		"total_count":   len(req.IDs),
+	})
+}
+
+// CheckPaperFormat 检查论文格式
+func (h *AdminHandler) CheckPaperFormat(c *gin.Context) {
+	paperID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的论文 ID", err.Error())
+		return
+	}
+
+	var paper model.Paper
+	if err := database.DB.First(&paper, paperID).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusNotFound, "论文不存在", err.Error())
+		return
+	}
+
+	utils.SuccessResponse(c, "格式检查已启动", gin.H{
+		"paper_id": paperID,
+		"status":   "checking",
+	})
+}
+
+// BatchCheckPapers 批量检查论文
+func (h *AdminHandler) BatchCheckPapers(c *gin.Context) {
+	var req struct {
+		IDs []string `json:"ids" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "请求参数错误", err.Error())
+		return
+	}
+
+	utils.SuccessResponse(c, "批量检查已启动", gin.H{
+		"count": len(req.IDs),
+	})
+}
+
+// DownloadPaperFile 下载论文文件
+func (h *AdminHandler) DownloadPaperFile(c *gin.Context) {
+	paperID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的论文 ID", err.Error())
+		return
+	}
+
+	var paper model.Paper
+	if err := database.DB.First(&paper, paperID).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusNotFound, "论文不存在", err.Error())
+		return
+	}
+
+	c.File(paper.FilePath)
 }

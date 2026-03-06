@@ -134,5 +134,12 @@ func migrateDatabase() error {
 
 		// 系统设置
 		&model.SystemSetting{},
+
+		// RBAC 权限管理模型
+		&model.Role{},
+		&model.Permission{},
+		&model.UserRole{},
+		&model.UserPermission{},
+		&model.RolePermission{},
 	)
 }
