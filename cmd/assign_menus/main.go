@@ -134,9 +134,4 @@ func main() {
 		}
 	}
 
-	fmt.Println("\n✓ 操作完成！")
-	fmt.Println("\n提示：")
-	fmt.Println("1. 请刷新浏览器页面重新登录")
-	fmt.Println("2. 登录后应该可以看到所有菜单")
-	fmt.Println("3. 如果还是看不到，请检查浏览器控制台的错误信息")
 }

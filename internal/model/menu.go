@@ -69,7 +69,7 @@ type MenuUpdateRequest struct {
 	Meta       map[string]interface{} `json:"meta"`
 }
 
-// MenuTreeResponse 菜单树响应
+// MenuTreeResponse 菜单树响应（直接返回前端路由配置）
 type MenuTreeResponse struct {
 	ID         uuid.UUID          `json:"id"`
 	ParentID   *uuid.UUID         `json:"parent_id"`

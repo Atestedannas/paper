@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -34,15 +35,34 @@ func (h *AdminOrderHandler) checkAdminPermission(c *gin.Context) bool {
 
 	// 从数据库中查询用户信息以验证权限
 	var user model.User
-	result := database.DB.Select("role").First(&user, "id = ?", userID)
+	result := database.DB.Select("role").Preload("Roles").First(&user, "id = ?", userID)
 	if result.Error != nil {
 		utils.ErrorResponse(c, 401, "用户不存在", result.Error.Error())
 		return false
 	}
 
-	// 检查用户角色是否为管理员
-	if user.Role != "admin" {
-		utils.ErrorResponse(c, 403, "需要管理员权限", "用户角色: "+user.Role)
+	// 调试日志：打印用户角色
+	fmt.Printf("[AdminOrderHandler] 用户 ID: %s, 旧角色字段：%s, RBAC 角色数：%d\n", userID, user.Role, len(user.Roles))
+	for _, role := range user.Roles {
+		fmt.Printf("  - RBAC 角色：%s (代码：%s)\n", role.Name, role.Code)
+	}
+
+	// 检查用户是否有管理员角色（支持 RBAC 新系统和旧系统）
+	isAdmin := false
+	// 检查旧的角色字段
+	if user.Role == "admin" || user.Role == "super_admin" {
+		isAdmin = true
+	}
+	// 检查 RBAC 角色
+	for _, role := range user.Roles {
+		if role.Code == "admin" || role.Code == "super_admin" {
+			isAdmin = true
+			break
+		}
+	}
+
+	if !isAdmin {
+		utils.ErrorResponse(c, 403, "需要管理员权限", "用户角色："+user.Role)
 		return false
 	}
 

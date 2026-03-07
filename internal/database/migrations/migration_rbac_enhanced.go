@@ -8,61 +8,66 @@ import (
 	"gorm.io/gorm"
 )
 
-// MigrationRBACEnhanced RBAC 增强版迁移
+// MigrationRBACEnhanced RBAC 增强版迁移（实现标准 Migration 接口）
 type MigrationRBACEnhanced struct{}
 
-// Migrate 执行迁移
-func (m *MigrationRBACEnhanced) Migrate(db *gorm.DB) error {
+// Name 返回迁移名称
+func (m *MigrationRBACEnhanced) Name() string {
+	return "20250306_rbac_enhanced"
+}
+
+// Up 执行迁移（实现标准 Migration 接口）
+func (m *MigrationRBACEnhanced) Up(tx *gorm.DB) error {
 	fmt.Println("开始执行 RBAC 增强版迁移...")
 
 	// 启用外键约束
-	if err := db.Exec("SET session_replication_role = 'replica'").Error; err != nil {
+	if err := tx.Exec("SET session_replication_role = 'replica'").Error; err != nil {
 		// PostgreSQL 特定，其他数据库可能不需要
 		fmt.Println("注意：跳过外键约束设置（非 PostgreSQL 数据库）")
 	}
 
 	// 1. 创建菜单表
-	if err := m.createMenusTable(db); err != nil {
+	if err := m.createMenusTable(tx); err != nil {
 		return fmt.Errorf("创建 menus 表失败：%w", err)
 	}
 
 	// 2. 创建权限表（authorities）
-	if err := m.createAuthoritiesTable(db); err != nil {
+	if err := m.createAuthoritiesTable(tx); err != nil {
 		return fmt.Errorf("创建 authorities 表失败：%w", err)
 	}
 
 	// 3. 创建 Casbin 规则表
-	if err := m.createCasbinRulesTable(db); err != nil {
+	if err := m.createCasbinRulesTable(tx); err != nil {
 		return fmt.Errorf("创建 casbin_rules 表失败：%w", err)
 	}
 
 	// 4. 创建数据权限规则表
-	if err := m.createDataPermissionRulesTable(db); err != nil {
+	if err := m.createDataPermissionRulesTable(tx); err != nil {
 		return fmt.Errorf("创建 data_permission_rules 表失败：%w", err)
 	}
 
 	// 5. 创建操作日志表
-	if err := m.createOperationLogsTable(db); err != nil {
+	if err := m.createOperationLogsTable(tx); err != nil {
 		return fmt.Errorf("创建 operation_logs 表失败：%w", err)
 	}
 
 	// 6. 创建角色 - 菜单关联表
-	if err := m.createRoleMenusTable(db); err != nil {
+	if err := m.createRoleMenusTable(tx); err != nil {
 		return fmt.Errorf("创建 role_menus 表失败：%w", err)
 	}
 
 	// 7. 创建角色 - 权限关联表
-	if err := m.createRoleAuthoritiesTable(db); err != nil {
+	if err := m.createRoleAuthoritiesTable(tx); err != nil {
 		return fmt.Errorf("创建 role_authorities 表失败：%w", err)
 	}
 
 	// 8. 更新 roles 表（添加 parent_id 和 sort_order）
-	if err := m.updateRolesTable(db); err != nil {
+	if err := m.updateRolesTable(tx); err != nil {
 		return fmt.Errorf("更新 roles 表失败：%w", err)
 	}
 
 	// 9. 插入默认数据
-	if err := m.insertDefaultData(db); err != nil {
+	if err := m.insertDefaultData(tx); err != nil {
 		return fmt.Errorf("插入默认数据失败：%w", err)
 	}
 
@@ -70,8 +75,8 @@ func (m *MigrationRBACEnhanced) Migrate(db *gorm.DB) error {
 	return nil
 }
 
-// Rollback 回滚迁移
-func (m *MigrationRBACEnhanced) Rollback(db *gorm.DB) error {
+// Down 回滚迁移（实现标准 Migration 接口）
+func (m *MigrationRBACEnhanced) Down(tx *gorm.DB) error {
 	fmt.Println("开始回滚 RBAC 增强版迁移...")
 
 	// 按相反顺序删除表
@@ -86,7 +91,7 @@ func (m *MigrationRBACEnhanced) Rollback(db *gorm.DB) error {
 	}
 
 	for _, table := range tables {
-		if err := db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", table)).Error; err != nil {
+		if err := tx.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", table)).Error; err != nil {
 			return fmt.Errorf("删除表 %s 失败：%w", table, err)
 		}
 	}
@@ -96,7 +101,7 @@ func (m *MigrationRBACEnhanced) Rollback(db *gorm.DB) error {
 }
 
 // createMenusTable 创建菜单表
-func (m *MigrationRBACEnhanced) createMenusTable(db *gorm.DB) error {
+func (m *MigrationRBACEnhanced) createMenusTable(tx *gorm.DB) error {
 	sql := `
 	CREATE TABLE IF NOT EXISTS menus (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -120,11 +125,11 @@ func (m *MigrationRBACEnhanced) createMenusTable(db *gorm.DB) error {
 	CREATE INDEX idx_menus_parent_id ON menus(parent_id);
 	CREATE INDEX idx_menus_sort_order ON menus(sort_order);
 	`
-	return db.Exec(sql).Error
+	return tx.Exec(sql).Error
 }
 
 // createAuthoritiesTable 创建权限表
-func (m *MigrationRBACEnhanced) createAuthoritiesTable(db *gorm.DB) error {
+func (m *MigrationRBACEnhanced) createAuthoritiesTable(tx *gorm.DB) error {
 	sql := `
 	CREATE TABLE IF NOT EXISTS authorities (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -142,11 +147,11 @@ func (m *MigrationRBACEnhanced) createAuthoritiesTable(db *gorm.DB) error {
 	CREATE INDEX idx_authorities_code ON authorities(code);
 	CREATE INDEX idx_authorities_type ON authorities(type);
 	`
-	return db.Exec(sql).Error
+	return tx.Exec(sql).Error
 }
 
 // createCasbinRulesTable 创建 Casbin 规则表
-func (m *MigrationRBACEnhanced) createCasbinRulesTable(db *gorm.DB) error {
+func (m *MigrationRBACEnhanced) createCasbinRulesTable(tx *gorm.DB) error {
 	sql := `
 	CREATE TABLE IF NOT EXISTS casbin_rules (
 		id SERIAL PRIMARY KEY,
@@ -164,11 +169,11 @@ func (m *MigrationRBACEnhanced) createCasbinRulesTable(db *gorm.DB) error {
 	CREATE INDEX idx_casbin_rules_v0 ON casbin_rules(v0);
 	CREATE INDEX idx_casbin_rules_v1 ON casbin_rules(v1);
 	`
-	return db.Exec(sql).Error
+	return tx.Exec(sql).Error
 }
 
 // createDataPermissionRulesTable 创建数据权限规则表
-func (m *MigrationRBACEnhanced) createDataPermissionRulesTable(db *gorm.DB) error {
+func (m *MigrationRBACEnhanced) createDataPermissionRulesTable(tx *gorm.DB) error {
 	sql := `
 	CREATE TABLE IF NOT EXISTS data_permission_rules (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -184,11 +189,11 @@ func (m *MigrationRBACEnhanced) createDataPermissionRulesTable(db *gorm.DB) erro
 	CREATE INDEX idx_data_permission_rules_role_id ON data_permission_rules(role_id);
 	CREATE INDEX idx_data_permission_rules_resource_type ON data_permission_rules(resource_type);
 	`
-	return db.Exec(sql).Error
+	return tx.Exec(sql).Error
 }
 
 // createOperationLogsTable 创建操作日志表
-func (m *MigrationRBACEnhanced) createOperationLogsTable(db *gorm.DB) error {
+func (m *MigrationRBACEnhanced) createOperationLogsTable(tx *gorm.DB) error {
 	sql := `
 	CREATE TABLE IF NOT EXISTS operation_logs (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -209,11 +214,11 @@ func (m *MigrationRBACEnhanced) createOperationLogsTable(db *gorm.DB) error {
 	CREATE INDEX idx_operation_logs_created_at ON operation_logs(created_at);
 	CREATE INDEX idx_operation_logs_operation ON operation_logs(operation);
 	`
-	return db.Exec(sql).Error
+	return tx.Exec(sql).Error
 }
 
 // createRoleMenusTable 创建角色 - 菜单关联表
-func (m *MigrationRBACEnhanced) createRoleMenusTable(db *gorm.DB) error {
+func (m *MigrationRBACEnhanced) createRoleMenusTable(tx *gorm.DB) error {
 	sql := `
 	CREATE TABLE IF NOT EXISTS role_menus (
 		role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
@@ -224,11 +229,11 @@ func (m *MigrationRBACEnhanced) createRoleMenusTable(db *gorm.DB) error {
 	CREATE INDEX idx_role_menus_role_id ON role_menus(role_id);
 	CREATE INDEX idx_role_menus_menu_id ON role_menus(menu_id);
 	`
-	return db.Exec(sql).Error
+	return tx.Exec(sql).Error
 }
 
 // createRoleAuthoritiesTable 创建角色 - 权限关联表
-func (m *MigrationRBACEnhanced) createRoleAuthoritiesTable(db *gorm.DB) error {
+func (m *MigrationRBACEnhanced) createRoleAuthoritiesTable(tx *gorm.DB) error {
 	sql := `
 	CREATE TABLE IF NOT EXISTS role_authorities (
 		role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
@@ -239,14 +244,14 @@ func (m *MigrationRBACEnhanced) createRoleAuthoritiesTable(db *gorm.DB) error {
 	CREATE INDEX idx_role_authorities_role_id ON role_authorities(role_id);
 	CREATE INDEX idx_role_authorities_authority_id ON role_authorities(authority_id);
 	`
-	return db.Exec(sql).Error
+	return tx.Exec(sql).Error
 }
 
 // updateRolesTable 更新 roles 表
-func (m *MigrationRBACEnhanced) updateRolesTable(db *gorm.DB) error {
+func (m *MigrationRBACEnhanced) updateRolesTable(tx *gorm.DB) error {
 	// 检查 parent_id 列是否存在
 	var count int64
-	if err := db.Raw(`
+	if err := tx.Raw(`
 		SELECT COUNT(*) FROM information_schema.columns 
 		WHERE table_name = 'roles' AND column_name = 'parent_id'
 	`).Scan(&count).Error; err != nil {
@@ -255,13 +260,13 @@ func (m *MigrationRBACEnhanced) updateRolesTable(db *gorm.DB) error {
 
 	if count == 0 {
 		// 添加 parent_id 列
-		if err := db.Exec("ALTER TABLE roles ADD COLUMN parent_id UUID REFERENCES roles(id) ON DELETE SET NULL").Error; err != nil {
+		if err := tx.Exec("ALTER TABLE roles ADD COLUMN parent_id UUID REFERENCES roles(id) ON DELETE SET NULL").Error; err != nil {
 			return err
 		}
 	}
 
 	// 检查 sort_order 列是否存在
-	if err := db.Raw(`
+	if err := tx.Raw(`
 		SELECT COUNT(*) FROM information_schema.columns 
 		WHERE table_name = 'roles' AND column_name = 'sort_order'
 	`).Scan(&count).Error; err != nil {
@@ -270,7 +275,7 @@ func (m *MigrationRBACEnhanced) updateRolesTable(db *gorm.DB) error {
 
 	if count == 0 {
 		// 添加 sort_order 列
-		if err := db.Exec("ALTER TABLE roles ADD COLUMN sort_order INT DEFAULT 0").Error; err != nil {
+		if err := tx.Exec("ALTER TABLE roles ADD COLUMN sort_order INT DEFAULT 0").Error; err != nil {
 			return err
 		}
 	}
@@ -279,7 +284,7 @@ func (m *MigrationRBACEnhanced) updateRolesTable(db *gorm.DB) error {
 }
 
 // insertDefaultData 插入默认数据
-func (m *MigrationRBACEnhanced) insertDefaultData(db *gorm.DB) error {
+func (m *MigrationRBACEnhanced) insertDefaultData(tx *gorm.DB) error {
 	now := time.Now()
 
 	// 1. 插入默认菜单
@@ -375,7 +380,7 @@ func (m *MigrationRBACEnhanced) insertDefaultData(db *gorm.DB) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO NOTHING`
 
-		if err := db.Exec(sql,
+		if err := tx.Exec(sql,
 			menu["id"],
 			menu["name"],
 			menu["title"],
@@ -445,7 +450,7 @@ func (m *MigrationRBACEnhanced) insertDefaultData(db *gorm.DB) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (code) DO NOTHING`
 
-		if err := db.Exec(sql,
+		if err := tx.Exec(sql,
 			auth["id"],
 			auth["name"],
 			auth["code"],
@@ -463,14 +468,14 @@ func (m *MigrationRBACEnhanced) insertDefaultData(db *gorm.DB) error {
 	var superAdminRole struct {
 		ID uuid.UUID
 	}
-	if err := db.Table("roles").Where("code = ?", "super_admin").First(&superAdminRole).Error; err == nil {
+	if err := tx.Table("roles").Where("code = ?", "super_admin").First(&superAdminRole).Error; err == nil {
 		// 分配所有菜单
 		var menus []struct {
 			ID uuid.UUID
 		}
-		if err := db.Table("menus").Find(&menus).Error; err == nil {
+		if err := tx.Table("menus").Find(&menus).Error; err == nil {
 			for _, menu := range menus {
-				if err := db.Exec(
+				if err := tx.Exec(
 					"INSERT INTO role_menus (role_id, menu_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
 					superAdminRole.ID, menu.ID,
 				).Error; err != nil {
@@ -483,9 +488,9 @@ func (m *MigrationRBACEnhanced) insertDefaultData(db *gorm.DB) error {
 		var authorities []struct {
 			ID uuid.UUID
 		}
-		if err := db.Table("authorities").Find(&authorities).Error; err == nil {
+		if err := tx.Table("authorities").Find(&authorities).Error; err == nil {
 			for _, auth := range authorities {
-				if err := db.Exec(
+				if err := tx.Exec(
 					"INSERT INTO role_authorities (role_id, authority_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
 					superAdminRole.ID, auth.ID,
 				).Error; err != nil {
@@ -495,7 +500,7 @@ func (m *MigrationRBACEnhanced) insertDefaultData(db *gorm.DB) error {
 		}
 
 		// 插入 Casbin 策略（超级管理员拥有所有权限）
-		if err := db.Exec(
+		if err := tx.Exec(
 			"INSERT INTO casbin_rules (p_type, v0, v1, v2) VALUES ('p', 'super_admin', '*', '*') ON CONFLICT DO NOTHING",
 		).Error; err != nil {
 			fmt.Printf("插入 Casbin 策略失败：%v\n", err)

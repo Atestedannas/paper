@@ -141,5 +141,13 @@ func migrateDatabase() error {
 		&model.UserRole{},
 		&model.UserPermission{},
 		&model.RolePermission{},
+
+		// 数据权限模型
+		&model.DataPermission{},
+		&model.DataPermissionRule{},
+
+		// ACL 行级权限模型
+		&model.ResourceACL{},
+		&model.ACLUser{},
 	)
 }

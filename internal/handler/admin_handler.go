@@ -403,7 +403,7 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 	})
 }
 
-// DeletePaper 删除论文
+// DeletePaper 删除论文（软删除）
 func (h *AdminHandler) DeletePaper(c *gin.Context) {
 	paperID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -411,6 +411,26 @@ func (h *AdminHandler) DeletePaper(c *gin.Context) {
 		return
 	}
 
+	// 查找论文
+	var paper model.Paper
+	if err := database.DB.First(&paper, paperID).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusNotFound, "论文不存在", err.Error())
+		return
+	}
+
+	// 检查是否已删除
+	if paper.DeletedAt.Time.Year() > 2000 {
+		utils.ErrorResponse(c, http.StatusBadRequest, "论文已被删除", "")
+		return
+	}
+
+	// 软删除关联的检查结果
+	if err := database.DB.Where("paper_id = ?", paperID).Delete(&model.CheckResult{}).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "删除关联检查结果失败", err.Error())
+		return
+	}
+
+	// 软删除论文
 	if err := database.DB.Delete(&model.Paper{}, paperID).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "删除论文失败", err.Error())
 		return
@@ -419,7 +439,7 @@ func (h *AdminHandler) DeletePaper(c *gin.Context) {
 	utils.SuccessResponse(c, "删除成功", nil)
 }
 
-// BatchDeletePapers 批量删除论文
+// BatchDeletePapers 批量删除论文（软删除）
 func (h *AdminHandler) BatchDeletePapers(c *gin.Context) {
 	var req struct {
 		IDs []string `json:"ids" binding:"required"`
@@ -436,19 +456,67 @@ func (h *AdminHandler) BatchDeletePapers(c *gin.Context) {
 	}
 
 	deletedCount := 0
+	failedCount := 0
+	skippedCount := 0
+
+	tx := database.DB.Begin()
+
 	for _, idStr := range req.IDs {
 		paperID, err := uuid.Parse(idStr)
 		if err != nil {
+			failedCount++
 			continue
 		}
 
-		if err := database.DB.Delete(&model.Paper{}, paperID).Error; err == nil {
-			deletedCount++
+		var paper model.Paper
+		if err := tx.First(&paper, paperID).Error; err != nil {
+			failedCount++
+			continue
 		}
+
+		if paper.DeletedAt.Valid {
+			skippedCount++
+			continue
+		}
+
+		var checkResults []model.CheckResult
+		if err := tx.Where("paper_id = ?", paperID).Find(&checkResults).Error; err != nil {
+			failedCount++
+			continue
+		}
+
+		for _, cr := range checkResults {
+			if err := tx.Where("check_result_id = ?", cr.ID).Delete(&model.FormatCorrection{}).Error; err != nil {
+				failedCount++
+				continue
+			}
+		}
+
+		if err := tx.Where("paper_id = ?", paperID).Delete(&model.CheckResult{}).Error; err != nil {
+			failedCount++
+			continue
+		}
+
+		if err := tx.Delete(&paper).Error; err != nil {
+			failedCount++
+			continue
+		}
+
+		deletedCount++
 	}
+
+	if failedCount > 0 {
+		tx.Rollback()
+		utils.ErrorResponse(c, http.StatusInternalServerError, "部分论文删除失败", "")
+		return
+	}
+
+	tx.Commit()
 
 	utils.SuccessResponse(c, "批量删除成功", gin.H{
 		"deleted_count": deletedCount,
+		"failed_count":  failedCount,
+		"skipped_count": skippedCount,
 		"total_count":   len(req.IDs),
 	})
 }
@@ -504,4 +572,90 @@ func (h *AdminHandler) DownloadPaperFile(c *gin.Context) {
 	}
 
 	c.File(paper.FilePath)
+}
+
+// RestorePaper 恢复已删除的论文
+func (h *AdminHandler) RestorePaper(c *gin.Context) {
+	paperID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的论文 ID", err.Error())
+		return
+	}
+
+	// 查找已删除的论文（使用 Unscoped 包含已删除的记录）
+	var paper model.Paper
+	if err := database.DB.Unscoped().First(&paper, paperID).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusNotFound, "论文不存在", err.Error())
+		return
+	}
+
+	// 检查是否真的被删除了
+	if paper.DeletedAt.Time.Year() <= 2000 {
+		utils.ErrorResponse(c, http.StatusBadRequest, "论文未被删除", "")
+		return
+	}
+
+	// 恢复论文（将 deleted_at 设置为 nil）
+	if err := database.DB.Unscoped().Model(&paper).Update("deleted_at", nil).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "恢复论文失败", err.Error())
+		return
+	}
+
+	utils.SuccessResponse(c, "恢复成功", nil)
+}
+
+// BatchRestorePapers 批量恢复已删除的论文
+func (h *AdminHandler) BatchRestorePapers(c *gin.Context) {
+	var req struct {
+		IDs []string `json:"ids" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "请求参数错误", err.Error())
+		return
+	}
+
+	if len(req.IDs) == 0 {
+		utils.ErrorResponse(c, http.StatusBadRequest, "论文 ID 列表不能为空", "")
+		return
+	}
+
+	restoredCount := 0
+	failedCount := 0
+	skippedCount := 0
+
+	for _, idStr := range req.IDs {
+		paperID, err := uuid.Parse(idStr)
+		if err != nil {
+			failedCount++
+			continue
+		}
+
+		// 查找已删除的论文
+		var paper model.Paper
+		if err := database.DB.Unscoped().First(&paper, paperID).Error; err != nil {
+			failedCount++
+			continue
+		}
+
+		// 检查是否真的被删除了
+		if paper.DeletedAt.Time.Year() <= 2000 {
+			skippedCount++
+			continue
+		}
+
+		// 恢复论文
+		if err := database.DB.Unscoped().Model(&paper).Update("deleted_at", nil).Error; err == nil {
+			restoredCount++
+		} else {
+			failedCount++
+		}
+	}
+
+	utils.SuccessResponse(c, "批量恢复成功", gin.H{
+		"restored_count": restoredCount,
+		"failed_count":   failedCount,
+		"skipped_count":  skippedCount,
+		"total_count":    len(req.IDs),
+	})
 }

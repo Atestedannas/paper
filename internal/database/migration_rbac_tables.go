@@ -57,6 +57,14 @@ func (m *Migration20250306CreateRBACTables) Up(tx *gorm.DB) error {
 		log.Println("Created role_permissions table")
 	}
 
+	// 创建角色菜单关联表（菜单即权限）
+	if !tx.Migrator().HasTable(&model.RoleMenu{}) {
+		if err := tx.AutoMigrate(&model.RoleMenu{}); err != nil {
+			return err
+		}
+		log.Println("Created role_menus table")
+	}
+
 	return nil
 }
 

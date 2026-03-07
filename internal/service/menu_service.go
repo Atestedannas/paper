@@ -190,37 +190,109 @@ func (s *menuService) GetMenuTree() ([]model.MenuTreeResponse, error) {
 	return s.buildMenuTree(menus, uuid.Nil), nil
 }
 
-// GetUserMenuTree 获取用户菜单树
+// GetUserMenuTree 获取用户菜单树（基于 Casbin 权限过滤）
 func (s *menuService) GetUserMenuTree(userID uuid.UUID) ([]model.MenuTreeResponse, error) {
 	// 获取用户所有角色
-	var user struct {
-		ID    uuid.UUID
-		Roles []model.Role `gorm:"many2many:user_roles;"`
+	var user model.User
+	if err := s.db.First(&user, userID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			// 用户不存在，返回空菜单树
+			return []model.MenuTreeResponse{}, nil
+		}
+		return nil, fmt.Errorf("获取用户失败：%w", err)
 	}
-	if err := s.db.Preload("Roles.Menus").First(&user, userID).Error; err != nil {
+
+	// 用户表 role 为 admin/super_admin 或用户名为 admin 时直接返回完整菜单（兼容未配置 user_roles 的 admin）
+	adminRoleCodes := map[string]bool{"super_admin": true, "admin": true}
+	if adminRoleCodes[user.Role] || user.Username == "admin" {
+		return s.GetMenuTree()
+	}
+
+	// 获取用户的所有角色
+	var roles []model.Role
+	if err := s.db.Model(&user).Association("Roles").Find(&roles); err != nil {
 		return nil, fmt.Errorf("获取用户角色失败：%w", err)
 	}
 
-	// 收集所有菜单 ID
-	menuIDMap := make(map[uuid.UUID]bool)
-	for _, role := range user.Roles {
-		for _, menu := range role.Menus {
-			menuIDMap[menu.ID] = true
+	// 如果用户没有角色，返回空菜单树
+	if len(roles) == 0 {
+		return []model.MenuTreeResponse{}, nil
+	}
+
+	// 管理员（user_roles 中任一角色的 code 为 admin/super_admin）：返回完整菜单树
+	for _, role := range roles {
+		if adminRoleCodes[role.Code] {
+			return s.GetMenuTree()
 		}
 	}
 
 	// 获取所有菜单
-	var menus []model.Menu
-	menuIDs := make([]uuid.UUID, 0, len(menuIDMap))
-	for id := range menuIDMap {
-		menuIDs = append(menuIDs, id)
+	var allMenus []model.Menu
+	if err := s.db.Order("parent_id, sort_order ASC").Find(&allMenus).Error; err != nil {
+		return nil, fmt.Errorf("获取所有菜单失败：%w", err)
 	}
 
-	if err := s.db.Where("id IN ?", menuIDs).Order("parent_id, sort_order ASC").Find(&menus).Error; err != nil {
-		return nil, fmt.Errorf("获取用户菜单失败：%w", err)
+	// 使用 Casbin 过滤用户有权限访问的菜单
+	casbinService := NewCasbinService()
+	userIDStr := userID.String()
+
+	var accessibleMenus []model.Menu
+	for _, menu := range allMenus {
+		// 跳过不可见的菜单
+		if !menu.Visible {
+			continue
+		}
+
+		// 对于菜单类型，使用权限标识检查
+		if menu.MenuType == "menu" || menu.MenuType == "catalog" {
+			// 如果没有设置权限标识，默认允许访问
+			if menu.Permission == "" {
+				accessibleMenus = append(accessibleMenus, menu)
+				continue
+			}
+
+			// 使用 Casbin 检查权限：sub=user_id, obj=permission, act=read
+			passed, err := casbinService.Enforce(userIDStr, menu.Permission, "read")
+			if err != nil {
+				fmt.Printf("Casbin 权限检查失败：%v\n", err)
+				continue
+			}
+			if passed {
+				accessibleMenus = append(accessibleMenus, menu)
+			}
+		} else if menu.MenuType == "api" {
+			// API 类型菜单，使用路径和方法检查
+			passed, err := casbinService.Enforce(userIDStr, menu.Path, "GET")
+			if err != nil {
+				fmt.Printf("Casbin API 权限检查失败：%v\n", err)
+				continue
+			}
+			if passed {
+				accessibleMenus = append(accessibleMenus, menu)
+			}
+		} else {
+			// 其他类型（如按钮）也使用权限标识检查
+			if menu.Permission == "" {
+				accessibleMenus = append(accessibleMenus, menu)
+				continue
+			}
+			passed, err := casbinService.Enforce(userIDStr, menu.Permission, "read")
+			if err != nil {
+				fmt.Printf("Casbin 权限检查失败：%v\n", err)
+				continue
+			}
+			if passed {
+				accessibleMenus = append(accessibleMenus, menu)
+			}
+		}
 	}
 
-	return s.buildMenuTree(menus, uuid.Nil), nil
+	// 如果没有菜单，返回空树
+	if len(accessibleMenus) == 0 {
+		return []model.MenuTreeResponse{}, nil
+	}
+
+	return s.buildMenuTree(accessibleMenus, uuid.Nil), nil
 }
 
 // AssignMenusToRole 为角色分配菜单
@@ -277,7 +349,7 @@ func (s *menuService) RemoveMenuFromRole(roleID uuid.UUID, menuID uuid.UUID) err
 	return nil
 }
 
-// buildMenuTree 构建菜单树
+// buildMenuTree 构建菜单树（添加 menu: true 标记到 meta）
 func (s *menuService) buildMenuTree(menus []model.Menu, parentID uuid.UUID) []model.MenuTreeResponse {
 	tree := make([]model.MenuTreeResponse, 0)
 
@@ -285,6 +357,22 @@ func (s *menuService) buildMenuTree(menus []model.Menu, parentID uuid.UUID) []mo
 		// 如果是顶级菜单或者父菜单匹配
 		if (menu.ParentID == nil && parentID == uuid.Nil) ||
 			(menu.ParentID != nil && *menu.ParentID == parentID) {
+
+			// 读取现有 meta
+			var metaMap map[string]interface{}
+			if menu.Meta != nil {
+				json.Unmarshal(menu.Meta, &metaMap)
+			}
+			if metaMap == nil {
+				metaMap = make(map[string]interface{})
+			}
+
+			// 添加 menu: true 标记（关键！前端需要这个字段来判断是否为菜单）
+			metaMap["menu"] = true
+
+			// 转换为 JSON
+			metaJSON, _ := json.Marshal(metaMap)
+
 			node := model.MenuTreeResponse{
 				ID:         menu.ID,
 				ParentID:   menu.ParentID,
@@ -299,7 +387,7 @@ func (s *menuService) buildMenuTree(menus []model.Menu, parentID uuid.UUID) []mo
 				Visible:    menu.Visible,
 				KeepAlive:  menu.KeepAlive,
 				Redirect:   menu.Redirect,
-				Meta:       menu.Meta,
+				Meta:       datatypes.JSON(metaJSON),
 				Children:   s.buildMenuTree(menus, menu.ID),
 			}
 			tree = append(tree, node)

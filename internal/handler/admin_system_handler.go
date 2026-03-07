@@ -169,7 +169,7 @@ func (h *AdminSystemHandler) TestPaymentProviderSettings(c *gin.Context) {
 	utils.SuccessResponse(c, "测试成功", result)
 }
 
-// UploadImage 上传图片
+// UploadImage 上传图片（支持 WebP 格式和自动压缩）
 func (h *AdminSystemHandler) UploadImage(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
@@ -182,9 +182,11 @@ func (h *AdminSystemHandler) UploadImage(c *gin.Context) {
 		"image/jpeg": true,
 		"image/png":  true,
 		"image/gif":  true,
+		"image/webp": true, // 新增 WebP 支持
 	}
-	if !allowedTypes[file.Header.Get("Content-Type")] {
-		utils.ErrorResponse(c, http.StatusBadRequest, "只支持 JPG/PNG/GIF 格式的图片", "")
+	contentType := file.Header.Get("Content-Type")
+	if !allowedTypes[contentType] {
+		utils.ErrorResponse(c, http.StatusBadRequest, "只支持 JPG/PNG/GIF/WebP 格式的图片", "")
 		return
 	}
 
@@ -196,8 +198,8 @@ func (h *AdminSystemHandler) UploadImage(c *gin.Context) {
 
 	// 获取文件扩展名
 	ext := strings.ToLower(filepath.Ext(file.Filename))
-	if ext != ".jpg" && ext != ".jpeg" && ext != ".png" && ext != ".gif" {
-		utils.ErrorResponse(c, http.StatusBadRequest, "只支持 JPG/PNG/GIF 格式", "")
+	if ext != ".jpg" && ext != ".jpeg" && ext != ".png" && ext != ".gif" && ext != ".webp" {
+		utils.ErrorResponse(c, http.StatusBadRequest, "只支持 JPG/PNG/GIF/WebP 格式", "")
 		return
 	}
 
@@ -208,22 +210,52 @@ func (h *AdminSystemHandler) UploadImage(c *gin.Context) {
 		return
 	}
 
-	// 生成唯一的文件名
-	uniqueName := fmt.Sprintf("%s_%d%s", uuid.New().String(), time.Now().UnixNano(), ext)
-	filePath := filepath.Join(uploadDir, uniqueName)
-
-	// 保存文件
-	if err := c.SaveUploadedFile(file, filePath); err != nil {
+	// 临时保存原始文件
+	tempPath := filepath.Join(uploadDir, fmt.Sprintf("temp_%s", uuid.New().String()))
+	if err := c.SaveUploadedFile(file, tempPath); err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "保存文件失败", err.Error())
 		return
 	}
+	defer os.Remove(tempPath) // 清理临时文件
 
-	// 返回文件的访问URL
+	// 压缩和转换图片
+	compressedData, newExt, err := utils.CompressImage(tempPath, utils.DefaultImageQuality)
+	if err != nil {
+		// 如果压缩失败，使用原始文件
+		utils.CompressImage(tempPath, utils.ImageQuality{
+			MaxWidth:    0,
+			MaxHeight:   0,
+			Quality:     100,
+			MaxSizeKB:   0,
+			ConvertWebP: false,
+		})
+	}
+
+	// 生成唯一的文件名（使用新的扩展名）
+	uniqueName := fmt.Sprintf("%s_%d%s", uuid.New().String(), time.Now().UnixNano(), newExt)
+	filePath := filepath.Join(uploadDir, uniqueName)
+
+	// 保存压缩后的文件
+	if err := os.WriteFile(filePath, compressedData, 0644); err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "保存压缩文件失败", err.Error())
+		return
+	}
+
+	// 计算压缩比例
+	originalSizeKB := float64(file.Size) / 1024
+	compressedSizeKB := float64(len(compressedData)) / 1024
+	compressionRatio := (1 - compressedSizeKB/originalSizeKB) * 100
+
+	// 返回文件的访问 URL
 	baseURL := c.Request.URL.Scheme + "://" + c.Request.Host
 	fileURL := fmt.Sprintf("%s/uploads/images/%s", baseURL, uniqueName)
 
 	utils.SuccessResponse(c, "上传成功", gin.H{
-		"url":  fileURL,
-		"path": filepath.Join("uploads", "images", uniqueName),
+		"url":               fileURL,
+		"path":              filepath.Join("uploads", "images", uniqueName),
+		"format":            strings.TrimPrefix(newExt, "."),
+		"original_size":     fmt.Sprintf("%.2f KB", originalSizeKB),
+		"compressed_size":   fmt.Sprintf("%.2f KB", compressedSizeKB),
+		"compression_ratio": fmt.Sprintf("%.2f%%", compressionRatio),
 	})
 }

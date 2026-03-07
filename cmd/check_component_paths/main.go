@@ -20,8 +20,6 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	fmt.Println("Database connected successfully\n")
-
 	// 获取 admin 角色
 	var adminRole model.Role
 	if err := database.DB.Where("code = ?", "admin").First(&adminRole).Error; err != nil {

@@ -141,22 +141,34 @@ func (s *orderService) GetOrderByOrderNo(orderNo string) (*model.Order, error) {
 	return &order, nil
 }
 
-// GetOrdersByUserID 根据用户ID获取订单列表
+// GetOrdersByUserID 根据用户ID获取订单列表（包含 ACL 授权的订单）
 func (s *orderService) GetOrdersByUserID(userID uuid.UUID, page, pageSize int) ([]model.Order, int64, error) {
 	var orders []model.Order
 	var total int64
 
-	// 计算偏移量
 	offset := (page - 1) * pageSize
 
-	// 获取总记录数
-	if err := database.DB.Model(&model.Order{}).Where("user_id = ?", userID).Count(&total).Error; err != nil {
+	aclService := NewACLService()
+	accessibleOrderIDs, err := aclService.GetAccessibleResources(userID, model.ACLResourceTypeOrder)
+	if err != nil {
 		return nil, 0, err
 	}
 
-	// 获取分页数据
+	query := database.DB.Model(&model.Order{})
+
+	if len(accessibleOrderIDs) > 0 {
+		query = query.Where("user_id = ? OR id IN ?", userID, accessibleOrderIDs)
+	} else {
+		query = query.Where("user_id = ?", userID)
+	}
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
 	if err := database.DB.Preload("MemberLevel").Preload("PaymentRecord").
 		Where("user_id = ?", userID).
+		Or("id IN ? AND user_id != ?", accessibleOrderIDs, userID).
 		Order("created_at DESC").
 		Offset(offset).Limit(pageSize).
 		Find(&orders).Error; err != nil {

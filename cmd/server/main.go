@@ -113,6 +113,9 @@ func main() {
 	menuHandler := handler.NewMenuHandler()
 	casbinHandler := handler.NewCasbinHandler()
 
+	// ACL handlers
+	aclHandler := handler.NewACLHandler()
+
 	// API routes - keep original route structure, add v1 version support
 	api := router.Group("/api")
 	{
@@ -295,6 +298,10 @@ func main() {
 			admin.POST("/papers/:id/check-format", adminHandler.CheckPaperFormat)
 			admin.GET("/papers/:id/file", adminHandler.DownloadPaperFile) // Batch delete papers
 
+			// Paper restore endpoints (soft delete recovery)
+			admin.POST("/papers/:id/restore", adminHandler.RestorePaper)
+			admin.POST("/papers/batch-restore", adminHandler.BatchRestorePapers)
+
 			// RBAC permission management
 			admin.GET("/roles", rbacHandler.GetRoles)    // Get role list
 			admin.POST("/roles", rbacHandler.CreateRole) // Create role
@@ -340,6 +347,15 @@ func main() {
 			admin.POST("/casbin/policy/save", casbinHandler.SavePolicy)
 			admin.GET("/casbin/user/permissions", casbinHandler.GetPermissionsForUser)
 			admin.GET("/casbin/user/roles", casbinHandler.GetRolesForUser)
+
+			// ACL 行级权限管理
+			admin.POST("/acl/grant", aclHandler.GrantAccess)
+			admin.POST("/acl/revoke", aclHandler.RevokeAccess)
+			admin.GET("/acl/can-access/:user_id", aclHandler.CanAccess)
+			admin.GET("/acl/accessible/:user_id", aclHandler.GetAccessibleResources)
+			admin.GET("/acl/resource", aclHandler.GetResourceACL)
+			admin.GET("/acl/user/:user_id", aclHandler.GetUserACLs)
+			admin.DELETE("/acl/resource", aclHandler.DeleteResourceACL)
 		}
 	}
 
@@ -533,6 +549,10 @@ func main() {
 			admin.POST("/papers/:id/check-format", adminHandler.CheckPaperFormat)
 			admin.GET("/papers/:id/file", adminHandler.DownloadPaperFile)
 
+			// Paper restore endpoints (soft delete recovery)
+			admin.POST("/papers/:id/restore", adminHandler.RestorePaper)
+			admin.POST("/papers/batch-restore", adminHandler.BatchRestorePapers)
+
 			// Contact method management
 			admin.GET("/support/contact", configHandler.GetContactInfo) // Get contact info
 
@@ -621,6 +641,7 @@ func main() {
 			// Enhanced RBAC routes - Menu management
 			admin.GET("/menus", menuHandler.GetAllMenus)
 			admin.GET("/menus/tree", menuHandler.GetMenuTree)
+			admin.GET("/menus/user-tree", menuHandler.GetUserMenus)
 			admin.GET("/menus/user", menuHandler.GetUserMenus)
 			admin.POST("/menus", menuHandler.CreateMenu)
 			admin.PUT("/menus/:id", menuHandler.UpdateMenu)
@@ -638,6 +659,15 @@ func main() {
 			admin.POST("/casbin/policy/save", casbinHandler.SavePolicy)
 			admin.GET("/casbin/user/permissions", casbinHandler.GetPermissionsForUser)
 			admin.GET("/casbin/user/roles", casbinHandler.GetRolesForUser)
+
+			// ACL 行级权限管理
+			admin.POST("/acl/grant", aclHandler.GrantAccess)
+			admin.POST("/acl/revoke", aclHandler.RevokeAccess)
+			admin.GET("/acl/can-access/:user_id", aclHandler.CanAccess)
+			admin.GET("/acl/accessible/:user_id", aclHandler.GetAccessibleResources)
+			admin.GET("/acl/resource", aclHandler.GetResourceACL)
+			admin.GET("/acl/user/:user_id", aclHandler.GetUserACLs)
+			admin.DELETE("/acl/resource", aclHandler.DeleteResourceACL)
 		}
 
 		// University related routes

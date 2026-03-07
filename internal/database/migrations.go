@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/paper-format-checker/backend/internal/database/migrations"
 	"github.com/paper-format-checker/backend/internal/model"
 	"gorm.io/gorm"
 )
@@ -43,6 +44,10 @@ func RunMigrations() error {
 		&Migration20250129AddTemplateIDToFormatTemplates{},
 		&Migration20250124UpdateCQIECFormat{},
 		&Migration20250306CreateRBACTables{},
+		&Migration20250306IncreaseAvatarLength{},
+		&Migration20250306AddDeletedAtToPapers{},
+		// RBAC 增强版迁移（包括菜单和权限初始化）
+		&migrations.MigrationRBACEnhanced{},
 	}
 
 	// 按顺序执行迁移
@@ -282,4 +287,69 @@ func (m *Migration20250129AddPaymentConfig) Up(tx *gorm.DB) error {
 
 func (m *Migration20250129AddPaymentConfig) Down(tx *gorm.DB) error {
 	return tx.Where("key = ?", "payment_config").Delete(&model.SystemSetting{}).Error
+}
+
+// Migration20250306AddDeletedAtToPapers 为 papers 表添加 deleted_at 字段
+type Migration20250306AddDeletedAtToPapers struct{}
+
+func (m *Migration20250306AddDeletedAtToPapers) Name() string {
+	return "20250306_add_deleted_at_to_papers"
+}
+
+func (m *Migration20250306AddDeletedAtToPapers) Up(tx *gorm.DB) error {
+	// 检查列是否已存在
+	var exists bool
+	err := tx.Raw(`
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns 
+			WHERE table_name = 'papers' AND column_name = 'deleted_at'
+		)
+	`).Scan(&exists).Error
+	if err != nil {
+		return fmt.Errorf("检查列是否存在失败：%w", err)
+	}
+
+	if exists {
+		log.Println("Column deleted_at already exists in papers table, skipping")
+		return nil
+	}
+
+	// 添加 deleted_at 列
+	log.Println("Adding deleted_at column to papers table")
+	err = tx.Exec(`
+		ALTER TABLE papers 
+		ADD COLUMN deleted_at TIMESTAMPTZ NULL
+	`).Error
+	if err != nil {
+		return fmt.Errorf("添加 deleted_at 列失败：%w", err)
+	}
+
+	// 为 deleted_at 创建索引
+	log.Println("Creating index on deleted_at column")
+	err = tx.Exec(`
+		CREATE INDEX idx_papers_deleted_at ON papers(deleted_at)
+	`).Error
+	if err != nil {
+		return fmt.Errorf("创建 deleted_at 索引失败：%w", err)
+	}
+
+	log.Println("Successfully added deleted_at column to papers table")
+	return nil
+}
+
+func (m *Migration20250306AddDeletedAtToPapers) Down(tx *gorm.DB) error {
+	// 删除索引
+	err := tx.Exec(`DROP INDEX IF EXISTS idx_papers_deleted_at`).Error
+	if err != nil {
+		return fmt.Errorf("删除索引失败：%w", err)
+	}
+
+	// 删除列
+	err = tx.Exec(`ALTER TABLE papers DROP COLUMN IF EXISTS deleted_at`).Error
+	if err != nil {
+		return fmt.Errorf("删除列失败：%w", err)
+	}
+
+	log.Println("Successfully removed deleted_at column from papers table")
+	return nil
 }

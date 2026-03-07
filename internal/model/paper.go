@@ -28,9 +28,10 @@ type Paper struct {
 	ParsedInfo            string `gorm:"type:jsonb" json:"parsed_info"`             // 解析出的论文结构信息
 	AutoDetectedTemplates string `gorm:"type:jsonb" json:"auto_detected_templates"` // 自动检测到的可能模板列表
 
-	Status    string    `gorm:"size:20;default:uploaded" json:"status"` // uploaded, parsed, template_selected, checked, corrected
-	CreatedAt time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
-	UpdatedAt time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
+	Status    string         `gorm:"size:20;default:uploaded" json:"status"` // uploaded, parsed, template_selected, checked, corrected
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`      // 软删除标记
+	CreatedAt time.Time      `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
+	UpdatedAt time.Time      `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
 
 	// 关联
 	User             User            `gorm:"foreignKey:UserID" json:"user,omitempty"`

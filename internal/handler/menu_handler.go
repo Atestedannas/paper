@@ -116,9 +116,21 @@ func (h *MenuHandler) GetUserMenus(c *gin.Context) {
 	}
 
 	uid, ok := userID.(uuid.UUID)
+
 	if !ok {
-		utils.ErrorResponse(c, http.StatusInternalServerError, "用户 ID 格式错误", "")
-		return
+
+		// 尝试从字符串转换
+		uidStr, ok := userID.(string)
+		if !ok {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "用户 ID 格式错误", "")
+			return
+		}
+		var err error
+		uid, err = uuid.Parse(uidStr)
+		if err != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "用户 ID 格式错误", err.Error())
+			return
+		}
 	}
 
 	tree, err := h.menuService.GetUserMenuTree(uid)

@@ -170,3 +170,51 @@ func (d *DataPermission) SetFieldPermissions(perms []ColumnPermission) error {
 	d.FieldPermissions = string(data)
 	return nil
 }
+
+const (
+	ACLResourceTypeOrder  = "order"
+	ACLResourceTypePaper  = "paper"
+	ACLResourceTypeUser   = "user"
+	ACLResourceTypeReport = "report"
+)
+
+const (
+	ACLAccessLevelRead  = "read"
+	ACLAccessLevelWrite = "write"
+	ACLAccessLevelAdmin = "admin"
+)
+
+type ResourceACL struct {
+	ID           uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	ResourceType string    `gorm:"size:50;not null;index:idx_resource_type_id" json:"resource_type"`
+	ResourceID   uuid.UUID `gorm:"type:uuid;not null;index:idx_resource_type_id" json:"resource_id"`
+	OwnerID      uuid.UUID `gorm:"type:uuid;not null;index" json:"owner_id"`
+	CreatorID    uuid.UUID `gorm:"type:uuid" json:"creator_id"`
+	CreatedAt    time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
+	UpdatedAt    time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
+}
+
+func (ResourceACL) TableName() string {
+	return "resource_acls"
+}
+
+type ACLUser struct {
+	ACLID       uuid.UUID `gorm:"type:uuid;primaryKey" json:"acl_id"`
+	UserID      uuid.UUID `gorm:"type:uuid;primaryKey;index" json:"user_id"`
+	AccessLevel string    `gorm:"size:20;default:'read'" json:"access_level"`
+	CreatedAt   time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
+}
+
+func (ACLUser) TableName() string {
+	return "resource_acl_users"
+}
+
+type ACLWithUsers struct {
+	ResourceACL
+	Users []ACLUser `gorm:"foreignKey:ACLID" json:"users"`
+}
+
+type ACLUserInput struct {
+	UserID      uuid.UUID `json:"user_id"`
+	AccessLevel string    `json:"access_level"`
+}
