@@ -22,10 +22,17 @@ type Config struct {
 	JWT           JWTConfig           `mapstructure:"jwt"`
 	File          FileConfig          `mapstructure:"file"`
 	Log           LogConfig           `mapstructure:"log"`
+	RBAC          RBACConfig          `mapstructure:"rbac"`
 	Wechat        WechatConfig        `mapstructure:"wechat"`
 	WechatSandbox WechatSandboxConfig `mapstructure:"wechat_sandbox"`
 	Alipay        AlipayConfig        `mapstructure:"alipay"`
 	Payment       PaymentConfig       `mapstructure:"payment"`
+}
+
+// RBACConfig RBAC 配置
+type RBACConfig struct {
+	// 主模型：permission（默认）。保留 authority 仅用于历史兼容观测。
+	Model string `mapstructure:"model"`
 }
 
 // PaymentConfig 支付配置
@@ -138,6 +145,9 @@ func LoadConfig(configPath string) (*Config, error) {
 			Level: "info",
 			Path:  "./logs",
 		},
+		RBAC: RBACConfig{
+			Model: "permission",
+		},
 		Wechat: WechatConfig{
 			AppID:          "",
 			MchID:          "",
@@ -245,6 +255,17 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
 		config.Log.Level = logLevel
+	}
+
+	// 从环境变量加载 RBAC 配置
+	if rbacModel := os.Getenv("RBAC_MODEL"); rbacModel != "" {
+		switch rbacModel {
+		case "permission", "authority":
+			config.RBAC.Model = rbacModel
+		default:
+			log.Printf("Warning: invalid RBAC_MODEL=%s, fallback to permission", rbacModel)
+			config.RBAC.Model = "permission"
+		}
 	}
 
 	// 从环境变量加载微信支付配置

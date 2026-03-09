@@ -398,8 +398,8 @@ func (m *MigrationRBACEnhanced) insertDefaultData(tx *gorm.DB) error {
 		}
 	}
 
-	// 2. 插入默认权限
-	defaultAuthorities := []map[string]interface{}{
+	// 2. 插入默认权限（permissions 主模型）
+	defaultPermissions := []map[string]interface{}{
 		// 用户管理权限
 		{"name": "查看用户列表", "code": "user:list", "type": "api", "resource_path": "/api/v1/admin/users", "http_method": "GET"},
 		{"name": "创建用户", "code": "user:create", "type": "api", "resource_path": "/api/v1/admin/users", "http_method": "POST"},
@@ -414,10 +414,10 @@ func (m *MigrationRBACEnhanced) insertDefaultData(tx *gorm.DB) error {
 		{"name": "角色管理", "code": "rbac:role:manage", "type": "menu", "resource_path": "", "http_method": ""},
 
 		// 权限管理权限
-		{"name": "查看权限列表", "code": "rbac:permission:list", "type": "api", "resource_path": "/api/v1/admin/authorities", "http_method": "GET"},
-		{"name": "创建权限", "code": "rbac:permission:create", "type": "api", "resource_path": "/api/v1/admin/authorities", "http_method": "POST"},
-		{"name": "更新权限", "code": "rbac:permission:update", "type": "api", "resource_path": "/api/v1/admin/authorities/*", "http_method": "PUT"},
-		{"name": "删除权限", "code": "rbac:permission:delete", "type": "api", "resource_path": "/api/v1/admin/authorities/*", "http_method": "DELETE"},
+		{"name": "查看权限列表", "code": "rbac:permission:list", "type": "api", "resource_path": "/api/v1/admin/permissions", "http_method": "GET"},
+		{"name": "创建权限", "code": "rbac:permission:create", "type": "api", "resource_path": "/api/v1/admin/permissions", "http_method": "POST"},
+		{"name": "更新权限", "code": "rbac:permission:update", "type": "api", "resource_path": "/api/v1/admin/permissions/*", "http_method": "PUT"},
+		{"name": "删除权限", "code": "rbac:permission:delete", "type": "api", "resource_path": "/api/v1/admin/permissions/*", "http_method": "DELETE"},
 		{"name": "权限管理", "code": "rbac:permission:manage", "type": "menu", "resource_path": "", "http_method": ""},
 
 		// 菜单管理权限
@@ -439,28 +439,25 @@ func (m *MigrationRBACEnhanced) insertDefaultData(tx *gorm.DB) error {
 		{"name": "查看控制台", "code": "system:dashboard:view", "type": "menu", "resource_path": "/api/v1/admin/dashboard", "http_method": "GET"},
 	}
 
-	for _, auth := range defaultAuthorities {
-		authID := uuid.New()
-		auth["id"] = authID
-		auth["created_at"] = now
-		auth["updated_at"] = now
+	for _, perm := range defaultPermissions {
+		perm["created_at"] = now
+		perm["updated_at"] = now
 
-		sql := `
-		INSERT INTO authorities (id, name, code, type, resource_path, http_method, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		// 只写 permissions；authorities 在 Phase-2 后仅保留历史兼容，不再写入
+		permissionSQL := `
+		INSERT INTO permissions (id, name, code, resource_type, method, path, description, created_at)
+		VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, ? ,?)
 		ON CONFLICT (code) DO NOTHING`
-
-		if err := tx.Exec(sql,
-			auth["id"],
-			auth["name"],
-			auth["code"],
-			auth["type"],
-			auth["resource_path"],
-			auth["http_method"],
-			auth["created_at"],
-			auth["updated_at"],
+		if err := tx.Exec(permissionSQL,
+			perm["name"],
+			perm["code"],
+			perm["type"],
+			perm["http_method"],
+			perm["resource_path"],
+			"seeded by migration_rbac_enhanced",
+			perm["created_at"],
 		).Error; err != nil {
-			return fmt.Errorf("插入权限 %s 失败：%w", auth["code"], err)
+			return fmt.Errorf("插入 permissions %s 失败：%w", perm["code"], err)
 		}
 	}
 
@@ -484,17 +481,17 @@ func (m *MigrationRBACEnhanced) insertDefaultData(tx *gorm.DB) error {
 			}
 		}
 
-		// 分配所有权限
-		var authorities []struct {
+		// 同步分配所有 permissions（主链路）
+		var permissions []struct {
 			ID uuid.UUID
 		}
-		if err := tx.Table("authorities").Find(&authorities).Error; err == nil {
-			for _, auth := range authorities {
+		if err := tx.Table("permissions").Find(&permissions).Error; err == nil {
+			for _, perm := range permissions {
 				if err := tx.Exec(
-					"INSERT INTO role_authorities (role_id, authority_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
-					superAdminRole.ID, auth.ID,
+					"INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+					superAdminRole.ID, perm.ID,
 				).Error; err != nil {
-					fmt.Printf("分配权限失败：%v\n", err)
+					fmt.Printf("分配 role_permissions 失败：%v\n", err)
 				}
 			}
 		}

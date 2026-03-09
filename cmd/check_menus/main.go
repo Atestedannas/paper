@@ -22,7 +22,7 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	fmt.Println("Database connected successfully\n")
+	fmt.Println("Database connected successfully")
 
 	// 获取所有菜单
 	var menus []model.Menu

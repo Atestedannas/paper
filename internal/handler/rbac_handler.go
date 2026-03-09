@@ -633,6 +633,9 @@ func (h *RBACHandler) GetUserPermissionsByID(c *gin.Context) {
 // GetUsersByRole 根据角色获取用户列表
 func (h *RBACHandler) GetUsersByRole(c *gin.Context) {
 	roleID := c.Param("role_id")
+	if roleID == "" {
+		roleID = c.Param("id")
+	}
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
 

@@ -75,6 +75,8 @@ type FormatFixRequest struct {
 	IssueIDs    []string  `json:"issue_ids" binding:"omitempty"`
 }
 
+const maxIssueIDsPerRequest = 500
+
 // UploadPaper 上传论文
 func (h *PaperHandler) UploadPaper(c *gin.Context) {
 	// 获取支付配置
@@ -498,24 +500,189 @@ func (h *PaperHandler) FixFormat(c *gin.Context) {
 	if req.PaperID == uuid.Nil {
 		req.PaperID = paperID
 	}
+	if req.PaperID != paperID {
+		utils.BadRequest(c, "paper_id in body must match url id")
+		return
+	}
 
-	// 修复论文格式
-	_, err = h.paperService.FixPaperFormat(userID.(uuid.UUID), req.PaperID, req.CheckResult)
+	normalizedIssueIDs, err := normalizeIssueIDs(req.IssueIDs)
 	if err != nil {
+		utils.BadRequest(c, err.Error())
+		return
+	}
+
+	if req.FixAll && len(normalizedIssueIDs) > 0 {
+		utils.BadRequest(c, "fix_all and issue_ids cannot be provided at the same time")
+		return
+	}
+	if !req.FixAll && len(normalizedIssueIDs) == 0 {
+		utils.BadRequest(c, "issue_ids is required when fix_all is false")
+		return
+	}
+
+	// 修复论文格式（支持按 issue 粒度）
+	fixResult, err := h.paperService.FixPaperFormatWithOptions(
+		userID.(uuid.UUID),
+		req.PaperID,
+		req.CheckResult,
+		service.FixPaperFormatOptions{
+			FixAll:   req.FixAll,
+			IssueIDs: normalizedIssueIDs,
+		},
+	)
+	if err != nil {
+		if isFixInputError(err) {
+			utils.BadRequest(c, err.Error())
+			return
+		}
 		utils.InternalServerError(c, err.Error())
 		return
 	}
 
 	// 返回响应
-	utils.Success(c, gin.H{"message": "格式修复成功"})
+	utils.Success(c, gin.H{
+		"message": "格式修复成功",
+		"result":  fixResult,
+	})
 }
 
 // GetFormatStandards 获取格式标准列表，支持按机构和文档类型过滤
 func (h *PaperHandler) GetFormatStandards(c *gin.Context) {
-	// 从查询参数中获取过滤条件
+	// 解析分页参数
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
 
-	// 返回响应
-	utils.Success(c, gin.H{})
+	// 构建查询
+	query := database.DB.Model(&model.FormatTemplate{}).Preload("University")
+	isAdminRoute := strings.Contains(c.FullPath(), "/admin/")
+
+	// 非管理员路由默认仅返回已激活且公开模板
+	if !isAdminRoute {
+		query = query.Where("is_active = ? AND is_public = ?", true, true)
+	}
+
+	// 过滤条件
+	if universityID := c.Query("university_id"); universityID != "" {
+		uid, err := strconv.ParseInt(universityID, 10, 64)
+		if err != nil {
+			utils.BadRequest(c, "invalid university_id")
+			return
+		}
+		query = query.Where("university_id = ?", uid)
+	}
+
+	if documentType := strings.TrimSpace(c.Query("document_type")); documentType != "" {
+		query = query.Where("document_type = ?", documentType)
+	}
+
+	if subject := strings.TrimSpace(c.Query("subject")); subject != "" {
+		query = query.Where("subject = ?", subject)
+	}
+
+	if source := strings.TrimSpace(c.Query("source")); source != "" {
+		query = query.Where("source = ?", source)
+	}
+
+	if isActiveStr := c.Query("is_active"); isActiveStr != "" {
+		isActive, err := strconv.ParseBool(isActiveStr)
+		if err != nil {
+			utils.BadRequest(c, "invalid is_active")
+			return
+		}
+		query = query.Where("is_active = ?", isActive)
+	}
+
+	if isPublicStr := c.Query("is_public"); isPublicStr != "" {
+		isPublic, err := strconv.ParseBool(isPublicStr)
+		if err != nil {
+			utils.BadRequest(c, "invalid is_public")
+			return
+		}
+		query = query.Where("is_public = ?", isPublic)
+	}
+
+	if keyword := strings.TrimSpace(c.Query("keyword")); keyword != "" {
+		like := "%" + keyword + "%"
+		query = query.Where(
+			"name ILIKE ? OR description ILIKE ? OR template_id ILIKE ?",
+			like, like, like,
+		)
+	}
+
+	// 排序
+	sortBy := c.DefaultQuery("sort_by", "created_at")
+	order := strings.ToLower(c.DefaultQuery("order", "desc"))
+	if order != "asc" {
+		order = "desc"
+	}
+	allowedSortFields := map[string]bool{
+		"created_at":  true,
+		"updated_at":  true,
+		"name":        true,
+		"version":     true,
+		"usage_count": true,
+	}
+	if !allowedSortFields[sortBy] {
+		sortBy = "created_at"
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		utils.InternalServerError(c, "failed to count format standards")
+		return
+	}
+
+	var templates []model.FormatTemplate
+	offset := (page - 1) * pageSize
+	if err := query.Offset(offset).Limit(pageSize).Order(sortBy + " " + order).Find(&templates).Error; err != nil {
+		utils.InternalServerError(c, "failed to fetch format standards")
+		return
+	}
+
+	// 前端友好的列表结构（兼容 admin/templates 的 items 读取）
+	items := make([]gin.H, 0, len(templates))
+	for _, t := range templates {
+		universityName := ""
+		if t.University != nil {
+			universityName = t.University.Name
+		}
+
+		items = append(items, gin.H{
+			"id":            t.ID,
+			"template_id":   t.TemplateID,
+			"name":          t.Name,
+			"university_id": t.UniversityID,
+			"university":    universityName,
+			"document_type": t.DocumentType,
+			"subject":       t.Subject,
+			"source":        t.Source,
+			"version":       t.Version,
+			"enabled":       t.IsActive,
+			"is_active":     t.IsActive,
+			"is_public":     t.IsPublic,
+			"usage_count":   t.UsageCount,
+			"success_rate":  t.SuccessRate,
+			"description":   t.Description,
+			"created_at":    t.CreatedAt,
+			"updated_at":    t.UpdatedAt,
+		})
+	}
+
+	utils.Success(c, gin.H{
+		"items":     items,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
 }
 
 // GetPaperCheckResults 获取论文的检查结果列表
@@ -639,10 +806,17 @@ func (h *PaperHandler) GetCorrectedPaperFile(c *gin.Context) {
 
 // ComparePaperFormats 对比论文格式
 func (h *PaperHandler) ComparePaperFormats(c *gin.Context) {
-	// 获取检查结果ID
-	checkResultID, err := uuid.Parse(c.Param("check_result_id"))
+	userID, _ := c.Get("user_id")
+	paperID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		utils.BadRequest(c, "invalid check result id")
+		utils.BadRequest(c, "invalid paper id")
+		return
+	}
+
+	// 获取检查结果ID
+	checkResultID, err := h.resolveCheckResultID(c, userID.(uuid.UUID), paperID)
+	if err != nil {
+		utils.BadRequest(c, err.Error())
 		return
 	}
 
@@ -686,21 +860,39 @@ func (h *PaperHandler) ExportCheckReport(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 
 	// 获取论文ID
-	_, err := uuid.Parse(c.Param("id"))
+	paperID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		utils.BadRequest(c, "invalid paper id")
 		return
 	}
 
-	// 获取检查结果ID
-	checkResultID, err := uuid.Parse(c.Param("check_result_id"))
+	checkResultID, err := h.resolveCheckResultID(c, userID.(uuid.UUID), paperID)
 	if err != nil {
-		utils.BadRequest(c, "invalid check result id")
+		utils.BadRequest(c, err.Error())
+		return
+	}
+
+	format := strings.ToLower(strings.TrimSpace(c.DefaultQuery("format", "txt")))
+	reportType := strings.ToLower(strings.TrimSpace(c.DefaultQuery("type", "report")))
+	if !isAllowedReportFormat(format) {
+		utils.BadRequest(c, "invalid report format, allowed: txt, html, json")
+		return
+	}
+	if !isAllowedReportType(reportType) {
+		utils.BadRequest(c, "invalid report type, allowed: report, correction-report")
 		return
 	}
 
 	// 导出检查报告
-	report, err := h.paperService.ExportCheckReport(userID.(uuid.UUID), checkResultID)
+	var report string
+	switch format {
+	case "json":
+		report, err = h.paperService.ExportCheckReportJSON(userID.(uuid.UUID), checkResultID, reportType)
+	case "html":
+		report, err = h.paperService.ExportCheckReportHTML(userID.(uuid.UUID), checkResultID, reportType)
+	default:
+		report, err = h.paperService.ExportCheckReport(userID.(uuid.UUID), checkResultID)
+	}
 	if err != nil {
 		utils.InternalServerError(c, err.Error())
 		return
@@ -716,32 +908,162 @@ func (h *PaperHandler) DownloadCheckReport(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 
 	// 获取论文ID
-	_, err := uuid.Parse(c.Param("id"))
+	paperID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		utils.BadRequest(c, "invalid paper id")
 		return
 	}
 
-	// 获取检查结果ID
-	checkResultID, err := uuid.Parse(c.Param("check_result_id"))
+	checkResultID, err := h.resolveCheckResultID(c, userID.(uuid.UUID), paperID)
 	if err != nil {
-		utils.BadRequest(c, "invalid check result id")
+		utils.BadRequest(c, err.Error())
 		return
 	}
 
 	// 导出检查报告
-	report, err := h.paperService.ExportCheckReport(userID.(uuid.UUID), checkResultID)
+	reportType := strings.ToLower(strings.TrimSpace(c.DefaultQuery("type", "report")))
+	format := strings.ToLower(strings.TrimSpace(c.DefaultQuery("format", "txt")))
+	if !isAllowedReportFormat(format) {
+		utils.BadRequest(c, "invalid report format, allowed: txt, html, json")
+		return
+	}
+	if !isAllowedReportType(reportType) {
+		utils.BadRequest(c, "invalid report type, allowed: report, correction-report")
+		return
+	}
+
+	var report string
+	switch format {
+	case "json":
+		report, err = h.paperService.ExportCheckReportJSON(userID.(uuid.UUID), checkResultID, reportType)
+		if err == nil {
+			c.Header("Content-Disposition", "attachment; filename=check_report.json")
+			c.Header("Content-Type", "application/json; charset=utf-8")
+			c.String(200, report)
+			return
+		}
+	case "html":
+		report, err = h.paperService.ExportCheckReportHTML(userID.(uuid.UUID), checkResultID, reportType)
+		if err == nil {
+			c.Header("Content-Disposition", "attachment; filename=check_report.html")
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(200, report)
+			return
+		}
+	default:
+		report, err = h.paperService.ExportCheckReport(userID.(uuid.UUID), checkResultID)
+		if err == nil {
+			c.Header("Content-Disposition", "attachment; filename=check_report.txt")
+			c.Header("Content-Type", "text/plain; charset=utf-8")
+			c.String(200, report)
+			return
+		}
+	}
+	if err != nil {
+		utils.InternalServerError(c, err.Error())
+		return
+	}
+}
+
+// DownloadCheckReportHTML 下载HTML格式检查报告
+func (h *PaperHandler) DownloadCheckReportHTML(c *gin.Context) {
+	// 从上下文获取用户ID
+	userID, _ := c.Get("user_id")
+
+	paperID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.BadRequest(c, "invalid paper id")
+		return
+	}
+
+	checkResultID, err := h.resolveCheckResultID(c, userID.(uuid.UUID), paperID)
+	if err != nil {
+		utils.BadRequest(c, err.Error())
+		return
+	}
+
+	reportType := strings.ToLower(strings.TrimSpace(c.DefaultQuery("type", "report")))
+	if !isAllowedReportType(reportType) {
+		utils.BadRequest(c, "invalid report type, allowed: report, correction-report")
+		return
+	}
+	report, err := h.paperService.ExportCheckReportHTML(userID.(uuid.UUID), checkResultID, reportType)
 	if err != nil {
 		utils.InternalServerError(c, err.Error())
 		return
 	}
 
-	// 设置响应头
-	c.Header("Content-Disposition", "attachment; filename=check_report.txt")
-	c.Header("Content-Type", "text/plain; charset=utf-8")
-
-	// 返回报告内容
+	c.Header("Content-Disposition", "attachment; filename=check_report.html")
+	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.String(200, report)
+}
+
+func (h *PaperHandler) resolveCheckResultID(c *gin.Context, userID, paperID uuid.UUID) (uuid.UUID, error) {
+	raw := strings.TrimSpace(c.Param("check_result_id"))
+	if raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			return uuid.Nil, fmt.Errorf("invalid check result id")
+		}
+		if _, err := h.paperService.GetCheckResultForPaperUser(userID, paperID, parsed); err != nil {
+			return uuid.Nil, fmt.Errorf("check result not found for current paper")
+		}
+		return parsed, nil
+	}
+
+	if queryID := strings.TrimSpace(c.Query("check_result_id")); queryID != "" {
+		parsed, err := uuid.Parse(queryID)
+		if err != nil {
+			return uuid.Nil, fmt.Errorf("invalid check result id")
+		}
+		if _, err := h.paperService.GetCheckResultForPaperUser(userID, paperID, parsed); err != nil {
+			return uuid.Nil, fmt.Errorf("check result not found for current paper")
+		}
+		return parsed, nil
+	}
+
+	latestID, err := h.paperService.ResolveLatestCheckResultID(userID, paperID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to resolve latest check result")
+	}
+	return latestID, nil
+}
+
+func normalizeIssueIDs(issueIDs []string) ([]string, error) {
+	if len(issueIDs) > maxIssueIDsPerRequest {
+		return nil, fmt.Errorf("too many issue_ids, max %d", maxIssueIDsPerRequest)
+	}
+	normalized := make([]string, 0, len(issueIDs))
+	seen := make(map[string]struct{}, len(issueIDs))
+	for _, raw := range issueIDs {
+		issueID := strings.TrimSpace(raw)
+		if issueID == "" {
+			continue
+		}
+		if _, ok := seen[issueID]; ok {
+			continue
+		}
+		seen[issueID] = struct{}{}
+		normalized = append(normalized, issueID)
+	}
+	return normalized, nil
+}
+
+func isFixInputError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "issue_ids") ||
+		strings.Contains(msg, "no issue selected") ||
+		strings.Contains(msg, "no fixable issues") ||
+		strings.Contains(msg, "status is not completed") ||
+		strings.Contains(msg, "check result")
+}
+
+func isAllowedReportType(v string) bool {
+	return v == "report" || v == "correction-report"
+}
+
+func isAllowedReportFormat(v string) bool {
+	return v == "txt" || v == "html" || v == "json"
 }
 
 // ParseFormatRequirementsRequest 解析格式要求请求结构体

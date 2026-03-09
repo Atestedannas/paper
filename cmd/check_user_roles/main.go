@@ -21,7 +21,7 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	fmt.Println("Database connected successfully\n")
+	fmt.Println("Database connected successfully")
 
 	// 检查指定的 admin 用户
 	adminUserID, _ := uuid.Parse("7ec52f1f-c859-4f83-8831-640b45157c59")

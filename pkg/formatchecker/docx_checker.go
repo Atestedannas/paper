@@ -1,13 +1,17 @@
 package formatchecker
 
 import (
+	"archive/zip"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"gitee.com/greatmusicians/unioffice/document"
 	"gitee.com/greatmusicians/unioffice/measurement"
@@ -22,6 +26,17 @@ type DOCXChecker struct {
 	processor fileprocessor.FileProcessor
 	standard  FormatStandard
 }
+
+const (
+	masterMinChineseAbstractChars = 2000
+	masterMinBodyChineseChars     = 8000
+	masterMinBodyEnglishWords     = 3000
+	masterMinReferencesCount      = 40
+	masterRecentRefRatio          = 0.50
+	masterForeignRefRatio         = 0.30
+	masterTitleMaxChars           = 20
+	masterTitleExpectedSize       = 26.0
+)
 
 // NewDOCXChecker 创建DOCX检查器实例
 func NewDOCXChecker() *DOCXChecker {
@@ -86,6 +101,9 @@ func (c *DOCXChecker) Check(ctx context.Context, docPath string) (*CheckResult, 
 
 	// 4. 检查表格格式
 	c.checkTablesDetailed(ctx, r, docPath, result, &c.standard)
+
+	// 5. 硕士论文高优先级规则检查（Day 10+）
+	c.runMasterThesisPriorityChecks(r, docPath, result, &c.standard)
 
 	// 更新问题统计
 	c.updateIssueStatistics(result)
@@ -602,6 +620,7 @@ func (c *DOCXChecker) checkBodyParagraphFormat(para document.Paragraph, index in
 
 	// 检查段落中所有run的格式
 	for runIndex, run := range runs {
+		runText := run.Text()
 		// 检查字体
 		if bodyStyle.FontName != "" {
 			actualFont := getRunFontName(run)
@@ -629,6 +648,34 @@ func (c *DOCXChecker) checkBodyParagraphFormat(para document.Paragraph, index in
 					Description: fmt.Sprintf("正文字号不匹配: 段落%d的第%d个文本块期望 %.1fpt, 实际 %.1fpt", index+1, runIndex+1, expectedSize, actualSize),
 					Original:    actualSize,
 					Suggestion:  expectedSize,
+				})
+			}
+		}
+
+		// 硕士规范：中文用宋体，英文/数字用 Times New Roman
+		if containsChineseText(runText) {
+			actualFont := getRunFontName(run)
+			if !fontsMatch(actualFont, "宋体") {
+				result.Issues = append(result.Issues, FormatIssue{
+					ID:          generateIssueID("body_cn_font"),
+					Type:        IssueTypeFont,
+					Severity:    SeverityWarning,
+					Description: fmt.Sprintf("正文中文字体建议为宋体: 段落%d第%d个文本块当前 %s", index+1, runIndex+1, actualFont),
+					Original:    actualFont,
+					Suggestion:  "宋体",
+				})
+			}
+		}
+		if containsLatinOrDigit(runText) {
+			actualFont := getRunFontName(run)
+			if !fontsMatch(actualFont, "Times New Roman") {
+				result.Issues = append(result.Issues, FormatIssue{
+					ID:          generateIssueID("body_en_font"),
+					Type:        IssueTypeFont,
+					Severity:    SeverityWarning,
+					Description: fmt.Sprintf("正文英文/数字字体建议为 Times New Roman: 段落%d第%d个文本块当前 %s", index+1, runIndex+1, actualFont),
+					Original:    actualFont,
+					Suggestion:  "Times New Roman",
 				})
 			}
 		}
@@ -664,6 +711,33 @@ func (c *DOCXChecker) checkBodyParagraphFormat(para document.Paragraph, index in
 				Suggestion:  expectedSpacing,
 			})
 		}
+	}
+
+	// 检查段前段后
+	actualBefore := getParagraphSpacingBefore(para)
+	actualAfter := getParagraphSpacingAfter(para)
+	expectedBefore := bodyStyle.SpacingBefore
+	expectedAfter := bodyStyle.SpacingAfter
+
+	if expectedBefore > 0 && absFloat64(actualBefore-expectedBefore) > 2.0 {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("body_spacing_before"),
+			Type:        IssueTypeSpacing,
+			Severity:    SeverityWarning,
+			Description: fmt.Sprintf("正文段前间距不匹配: 期望 %.1fpt, 实际 %.1fpt", expectedBefore, actualBefore),
+			Original:    actualBefore,
+			Suggestion:  expectedBefore,
+		})
+	}
+	if expectedAfter > 0 && absFloat64(actualAfter-expectedAfter) > 2.0 {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("body_spacing_after"),
+			Type:        IssueTypeSpacing,
+			Severity:    SeverityWarning,
+			Description: fmt.Sprintf("正文段后间距不匹配: 期望 %.1fpt, 实际 %.1fpt", expectedAfter, actualAfter),
+			Original:    actualAfter,
+			Suggestion:  expectedAfter,
+		})
 	}
 }
 
@@ -797,6 +871,22 @@ func getLineSpacing(para document.Paragraph) float64 {
 	return 0
 }
 
+func getParagraphSpacingBefore(para document.Paragraph) float64 {
+	pPr := para.X().PPr
+	if pPr == nil || pPr.Spacing == nil || pPr.Spacing.BeforeAttr == nil || pPr.Spacing.BeforeAttr.ST_UnsignedDecimalNumber == nil {
+		return 0
+	}
+	return float64(*pPr.Spacing.BeforeAttr.ST_UnsignedDecimalNumber) / 20.0
+}
+
+func getParagraphSpacingAfter(para document.Paragraph) float64 {
+	pPr := para.X().PPr
+	if pPr == nil || pPr.Spacing == nil || pPr.Spacing.AfterAttr == nil || pPr.Spacing.AfterAttr.ST_UnsignedDecimalNumber == nil {
+		return 0
+	}
+	return float64(*pPr.Spacing.AfterAttr.ST_UnsignedDecimalNumber) / 20.0
+}
+
 func getAlignment(para document.Paragraph) wml.ST_Jc {
 	pPr := para.X().PPr
 	if pPr == nil || pPr.Jc == nil {
@@ -838,6 +928,1305 @@ func alignmentToString(align wml.ST_Jc) string {
 	default:
 		return "left"
 	}
+}
+
+func (c *DOCXChecker) runMasterThesisPriorityChecks(doc *document.Document, docPath string, result *CheckResult, standard *FormatStandard) {
+	paragraphs := doc.Paragraphs()
+	texts := make([]string, 0, len(paragraphs))
+	for _, p := range paragraphs {
+		text := strings.TrimSpace(extractParagraphText(p))
+		if text != "" {
+			texts = append(texts, text)
+		}
+	}
+	structure := inspectDOCXStructure(docPath)
+
+	c.checkMasterCoverTitleRule(paragraphs, result)
+	c.checkMasterWordCountRule(texts, result)
+	c.checkMasterAbstractRule(texts, result)
+	c.checkMasterHeadingRule(texts, result)
+	c.checkMasterCaptionRule(texts, structure, result)
+	c.checkMasterReferenceRule(texts, result)
+	c.checkMasterHeaderFooterRule(structure, result)
+	c.checkMasterPageNumberRule(structure, result)
+	c.checkMasterTOCSectionRule(structure, result)
+	c.checkHeaderFooterOnlyPageNumberRule(structure, result)
+}
+
+func (c *DOCXChecker) checkMasterCoverTitleRule(paragraphs []document.Paragraph, result *CheckResult) {
+	for _, p := range paragraphs {
+		title := strings.TrimSpace(extractParagraphText(p))
+		if title == "" {
+			continue
+		}
+		if utf8Len(title) > masterTitleMaxChars {
+			result.Issues = append(result.Issues, FormatIssue{
+				ID:          generateIssueID("cover_title_len"),
+				Type:        IssueTypeTitlePage,
+				Severity:    SeverityWarning,
+				Description: fmt.Sprintf("封面标题建议不超过%d字，当前约%d字", masterTitleMaxChars, utf8Len(title)),
+				Original:    utf8Len(title),
+				Suggestion:  masterTitleMaxChars,
+			})
+		}
+		runs := p.Runs()
+		if len(runs) > 0 {
+			size := getRunFontSize(runs[0])
+			if size > 0 && absFloat64(size-masterTitleExpectedSize) > 1.5 {
+				result.Issues = append(result.Issues, FormatIssue{
+					ID:          generateIssueID("cover_title_size"),
+					Type:        IssueTypeTitlePage,
+					Severity:    SeverityWarning,
+					Description: fmt.Sprintf("封面标题字号建议约%.0fpt，当前%.1fpt", masterTitleExpectedSize, size),
+					Original:    size,
+					Suggestion:  masterTitleExpectedSize,
+				})
+			}
+			if !runs[0].Properties().Bold() {
+				result.Issues = append(result.Issues, FormatIssue{
+					ID:          generateIssueID("cover_title_bold"),
+					Type:        IssueTypeTitlePage,
+					Severity:    SeverityWarning,
+					Description: "封面标题建议加粗",
+					Original:    false,
+					Suggestion:  true,
+				})
+			}
+			font := getRunFontName(runs[0])
+			if font != "" && !fontsMatch(font, "宋体") {
+				result.Issues = append(result.Issues, FormatIssue{
+					ID:          generateIssueID("cover_title_font"),
+					Type:        IssueTypeTitlePage,
+					Severity:    SeverityWarning,
+					Description: fmt.Sprintf("封面标题建议使用宋体，当前 %s", font),
+					Original:    font,
+					Suggestion:  "宋体",
+				})
+			}
+		}
+		if getAlignment(p) != wml.ST_JcCenter {
+			result.Issues = append(result.Issues, FormatIssue{
+				ID:          generateIssueID("cover_title_align"),
+				Type:        IssueTypeTitlePage,
+				Severity:    SeverityWarning,
+				Description: "封面标题建议居中",
+				Original:    alignmentToString(getAlignment(p)),
+				Suggestion:  "center",
+			})
+		}
+		break
+	}
+}
+
+func (c *DOCXChecker) checkMasterWordCountRule(texts []string, result *CheckResult) {
+	fullText := strings.Join(texts, "\n")
+	bodyCN, bodyEN := countBodyCNEChars(fullText)
+	if bodyCN < masterMinBodyChineseChars {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("body_cn_count"),
+			Type:        IssueTypeMainBody,
+			Severity:    SeverityWarning,
+			Description: fmt.Sprintf("正文字数不足: 中文约%d，建议至少%d", bodyCN, masterMinBodyChineseChars),
+			Original:    bodyCN,
+			Suggestion:  masterMinBodyChineseChars,
+		})
+	}
+	if bodyEN < masterMinBodyEnglishWords {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("body_en_count"),
+			Type:        IssueTypeMainBody,
+			Severity:    SeverityInfo,
+			Description: fmt.Sprintf("正文英文词数不足: 当前约%d，建议至少%d", bodyEN, masterMinBodyEnglishWords),
+			Original:    bodyEN,
+			Suggestion:  masterMinBodyEnglishWords,
+		})
+	}
+}
+
+func (c *DOCXChecker) checkMasterAbstractRule(texts []string, result *CheckResult) {
+	joined := strings.Join(texts, "\n")
+	cnAbs := extractSectionByHeading(joined, []string{"摘要"}, []string{"关键词", "abstract", "目录"})
+	if utf8Len(cnAbs) > 0 && utf8Len(cnAbs) < masterMinChineseAbstractChars {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("cn_abstract_len"),
+			Type:        IssueTypeAbstract,
+			Severity:    SeverityWarning,
+			Description: fmt.Sprintf("中文摘要字数不足: 当前约%d，建议约%d", utf8Len(cnAbs), masterMinChineseAbstractChars),
+			Original:    utf8Len(cnAbs),
+			Suggestion:  masterMinChineseAbstractChars,
+		})
+	}
+	enAbs := extractSectionByHeading(joined, []string{"abstract"}, []string{"keywords", "目录", "正文"})
+	if strings.TrimSpace(enAbs) == "" {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("en_abstract_missing"),
+			Type:        IssueTypeAbstract,
+			Severity:    SeverityWarning,
+			Description: "未检测到英文摘要（Abstract）",
+			Original:    "missing",
+			Suggestion:  "present",
+		})
+	}
+}
+
+func (c *DOCXChecker) checkMasterHeadingRule(texts []string, result *CheckResult) {
+	maxDepth := 0
+	var scienceCount, artsCount int
+	for _, t := range texts {
+		if isScienceHeading(t) {
+			scienceCount++
+			if d := scienceHeadingDepth(t); d > maxDepth {
+				maxDepth = d
+			}
+		}
+		if isArtsHeading(t) {
+			artsCount++
+			if d := artsHeadingDepth(t); d > maxDepth {
+				maxDepth = d
+			}
+		}
+	}
+	if scienceCount > 0 && artsCount > 0 {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("heading_mixed_scheme"),
+			Type:        IssueTypeHeading,
+			Severity:    SeverityWarning,
+			Description: "标题编号疑似混用文科/理工科两套体系",
+			Original:    "mixed",
+			Suggestion:  "single_scheme",
+		})
+	}
+	if maxDepth > 4 {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("heading_depth"),
+			Type:        IssueTypeHeading,
+			Severity:    SeverityError,
+			Description: fmt.Sprintf("检测到五级及以下标题（深度%d），规范建议禁用", maxDepth),
+			Original:    maxDepth,
+			Suggestion:  4,
+		})
+	}
+}
+
+func (c *DOCXChecker) checkMasterCaptionRule(texts []string, structure docxStructuralInfo, result *CheckResult) {
+	figRe := regexp.MustCompile(`^图\s*\d+(\.\d+)?`)
+	tabRe := regexp.MustCompile(`^表\s*\d+(\.\d+)?`)
+	eqRe := regexp.MustCompile(`^\(\d+\.\d+\)$`)
+	figCount, tabCount, eqCount := 0, 0, 0
+	for _, t := range texts {
+		tt := strings.TrimSpace(t)
+		if figRe.MatchString(tt) {
+			figCount++
+		}
+		if tabRe.MatchString(tt) {
+			tabCount++
+		}
+		if eqRe.MatchString(tt) {
+			eqCount++
+		}
+	}
+	if figCount == 0 {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("figure_caption"),
+			Type:        IssueTypeFigure,
+			Severity:    SeverityInfo,
+			Description: "未检测到标准图题格式（如：图2.1 标题）",
+			Original:    0,
+			Suggestion:  "图x.y 标题",
+		})
+	}
+	if tabCount == 0 {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("table_caption"),
+			Type:        IssueTypeTable,
+			Severity:    SeverityInfo,
+			Description: "未检测到标准表题格式（如：表2.1 标题）",
+			Original:    0,
+			Suggestion:  "表x.y 标题",
+		})
+	}
+	if eqCount == 0 {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("equation_number"),
+			Type:        IssueTypeFigure,
+			Severity:    SeverityInfo,
+			Description: "未检测到标准公式编号格式（如：(2.1)）",
+			Original:    0,
+			Suggestion:  "(x.y)",
+		})
+	}
+
+	// 结构级校验（升级）：支持跨空段落；图题关联到前序锚点对象；公式编号应右对齐
+	for i, node := range structure.BodyNodes {
+		if node.Kind != "p" {
+			continue
+		}
+		text := strings.TrimSpace(node.Text)
+		if tabRe.MatchString(text) {
+			tableIdx := findNextNonEmptyTableNode(structure.BodyNodes, i, 8)
+			if tableIdx == -1 {
+				result.Issues = append(result.Issues, FormatIssue{
+					ID:          generateIssueID("table_caption_position"),
+					Type:        IssueTypeTable,
+					Severity:    SeverityWarning,
+					Description: "表题位置疑似不规范：未在后续相邻块（允许跨空段）定位到对应表格",
+					Original:    "caption_not_before_table",
+					Suggestion:  "caption_before_table",
+				})
+			}
+		}
+		if figRe.MatchString(text) {
+			figureIdx := findPrevDrawingNode(structure.BodyNodes, i, 8)
+			if figureIdx == -1 {
+				result.Issues = append(result.Issues, FormatIssue{
+					ID:          generateIssueID("figure_caption_position"),
+					Type:        IssueTypeFigure,
+					Severity:    SeverityWarning,
+					Description: "图题位置疑似不规范：未在前序相邻块（允许跨空段）定位到图对象",
+					Original:    "caption_not_after_figure",
+					Suggestion:  "caption_after_figure",
+				})
+			} else if !structure.BodyNodes[figureIdx].HasAnchorObj {
+				result.Issues = append(result.Issues, FormatIssue{
+					ID:          generateIssueID("figure_anchor_assoc"),
+					Type:        IssueTypeFigure,
+					Severity:    SeverityInfo,
+					Description: "图题对象关联较弱：前序图块未检测到锚点对象（wp:anchor/wp:inline）",
+					Original:    "drawing_without_anchor_signature",
+					Suggestion:  "drawing_with_anchor_signature",
+				})
+			}
+		}
+		if eqRe.MatchString(text) && !node.RightAligned {
+			result.Issues = append(result.Issues, FormatIssue{
+				ID:          generateIssueID("equation_number_align"),
+				Type:        IssueTypeFigure,
+				Severity:    SeverityWarning,
+				Description: "公式编号疑似不规范：建议右对齐",
+				Original:    "not_right_aligned",
+				Suggestion:  "right_aligned",
+			})
+		}
+	}
+}
+
+func (c *DOCXChecker) checkMasterReferenceRule(texts []string, result *CheckResult) {
+	refLines := collectReferenceLines(texts)
+	total := len(refLines)
+	if total == 0 {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("refs_missing"),
+			Type:        IssueTypeReference,
+			Severity:    SeverityWarning,
+			Description: "未识别到参考文献条目",
+			Original:    0,
+			Suggestion:  masterMinReferencesCount,
+		})
+		return
+	}
+	if total < masterMinReferencesCount {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("refs_count"),
+			Type:        IssueTypeReference,
+			Severity:    SeverityWarning,
+			Description: fmt.Sprintf("参考文献数量不足: 当前%d，建议至少%d", total, masterMinReferencesCount),
+			Original:    total,
+			Suggestion:  masterMinReferencesCount,
+		})
+	}
+
+	currentYear := 2025
+	recent, foreign := 0, 0
+	yearRe := regexp.MustCompile(`(19|20)\d{2}`)
+	for _, line := range refLines {
+		if hasLatinLetter(line) {
+			foreign++
+		}
+		matches := yearRe.FindAllString(line, -1)
+		for _, y := range matches {
+			yi, _ := strconv.Atoi(y)
+			if yi >= currentYear-5 {
+				recent++
+				break
+			}
+		}
+	}
+	recentRatio := float64(recent) / float64(total)
+	foreignRatio := float64(foreign) / float64(total)
+	if recentRatio < masterRecentRefRatio {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("refs_recent_ratio"),
+			Type:        IssueTypeReference,
+			Severity:    SeverityWarning,
+			Description: fmt.Sprintf("近五年参考文献比例偏低: 当前%.0f%%，建议至少%.0f%%", recentRatio*100, masterRecentRefRatio*100),
+			Original:    recentRatio,
+			Suggestion:  masterRecentRefRatio,
+		})
+	}
+	if foreignRatio < masterForeignRefRatio {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("refs_foreign_ratio"),
+			Type:        IssueTypeReference,
+			Severity:    SeverityWarning,
+			Description: fmt.Sprintf("外文参考文献比例偏低: 当前%.0f%%，建议至少%.0f%%", foreignRatio*100, masterForeignRefRatio*100),
+			Original:    foreignRatio,
+			Suggestion:  masterForeignRefRatio,
+		})
+	}
+}
+
+func (c *DOCXChecker) checkMasterHeaderFooterRule(structure docxStructuralInfo, result *CheckResult) {
+	evenHeader := strings.TrimSpace(structure.HeaderByType["even"])
+	if evenHeader == "" {
+		evenHeader = strings.Join(structure.HeaderTexts, "\n")
+	}
+	if !strings.Contains(evenHeader, "北京大学硕士学位论文") {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("header_even_rule"),
+			Type:        IssueTypeHeaderFooter,
+			Severity:    SeverityWarning,
+			Description: "页眉结构校验：未检测到偶数页目标文本“北京大学硕士学位论文”",
+			Original:    evenHeader,
+			Suggestion:  "北京大学硕士学位论文",
+		})
+	}
+	if !structure.HasEvenAndOddHeaders {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("header_odd_even_switch"),
+			Type:        IssueTypeHeaderFooter,
+			Severity:    SeverityWarning,
+			Description: "页眉结构校验：未启用奇偶页不同页眉（w:evenAndOddHeaders）",
+			Original:    false,
+			Suggestion:  true,
+		})
+	}
+	if structure.HeaderCount < 2 {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("header_def_count"),
+			Type:        IssueTypeHeaderFooter,
+			Severity:    SeverityInfo,
+			Description: "页眉结构校验：检测到的页眉定义不足，无法完整区分奇偶页页眉",
+			Original:    structure.HeaderCount,
+			Suggestion:  2,
+		})
+	}
+
+	oddHeader := strings.TrimSpace(structure.HeaderByType["default"])
+	if oddHeader == "" {
+		oddHeader = strings.TrimSpace(structure.HeaderByType["odd"])
+	}
+	if oddHeader == "" && len(structure.HeaderTexts) > 0 {
+		oddHeader = strings.TrimSpace(structure.HeaderTexts[0])
+	}
+	if oddHeader == "" {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("header_odd_missing"),
+			Type:        IssueTypeHeaderFooter,
+			Severity:    SeverityInfo,
+			Description: "页眉结构校验：未检测到奇数页页眉内容",
+			Original:    "missing",
+			Suggestion:  "chapter_title",
+		})
+		return
+	}
+
+	if len(structure.ChapterCandidates) > 0 && !headerMatchesChapterCandidate(oddHeader, structure.ChapterCandidates) {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("header_chapter_match"),
+			Type:        IssueTypeHeaderFooter,
+			Severity:    SeverityWarning,
+			Description: "页眉结构校验：奇数页页眉与章节标题候选不匹配",
+			Original:    oddHeader,
+			Suggestion:  "chapter_title_candidate",
+		})
+	}
+}
+
+func (c *DOCXChecker) checkMasterPageNumberRule(structure docxStructuralInfo, result *CheckResult) {
+	if !structure.HasRomanPageNum || !structure.HasArabicPageNum {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("page_number_style"),
+			Type:        IssueTypePageNumber,
+			Severity:    SeverityWarning,
+			Description: "页码结构校验：未同时检测到罗马与阿拉伯分页格式（w:pgNumType）",
+			Original:    fmt.Sprintf("roman=%v, arabic=%v", structure.HasRomanPageNum, structure.HasArabicPageNum),
+			Suggestion:  "roman+arabic",
+		})
+	}
+	if !structure.HasPageNumField {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("page_number_field"),
+			Type:        IssueTypePageNumber,
+			Severity:    SeverityInfo,
+			Description: "页码结构校验：未检测到 PAGE 域，可能未插入自动页码",
+			Original:    false,
+			Suggestion:  true,
+		})
+	}
+
+	// 分段一致性：前置部分（摘要/目录）应使用罗马数字，正文应切换阿拉伯数字
+	if structure.FrontMatterStart >= 0 && structure.MainBodyStart > structure.FrontMatterStart {
+		if len(structure.PageNumFormats) < 2 {
+			result.Issues = append(result.Issues, FormatIssue{
+				ID:          generateIssueID("page_number_segment_count"),
+				Type:        IssueTypePageNumber,
+				Severity:    SeverityWarning,
+				Description: "页码结构校验：存在前置部分与正文分段，但页码格式定义不足（未检测到明确切换）",
+				Original:    structure.PageNumFormats,
+				Suggestion:  []string{"upperRoman", "decimal"},
+			})
+			return
+		}
+		firstFmt := strings.ToLower(strings.TrimSpace(structure.PageNumFormats[0]))
+		lastFmt := strings.ToLower(strings.TrimSpace(structure.PageNumFormats[len(structure.PageNumFormats)-1]))
+		if (firstFmt != "upperroman" && firstFmt != "roman") || lastFmt != "decimal" {
+			result.Issues = append(result.Issues, FormatIssue{
+				ID:          generateIssueID("page_number_segment_order"),
+				Type:        IssueTypePageNumber,
+				Severity:    SeverityWarning,
+				Description: "页码结构校验：摘要/目录到正文的页码格式切换顺序不一致（应 Roman -> Arabic）",
+				Original:    structure.PageNumFormats,
+				Suggestion:  []string{"upperRoman", "decimal"},
+			})
+		}
+	}
+}
+
+func (c *DOCXChecker) checkMasterTOCSectionRule(structure docxStructuralInfo, result *CheckResult) {
+	if structure.TOCStart == -1 {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("toc_missing"),
+			Type:        IssueTypePageNumber,
+			Severity:    SeverityWarning,
+			Description: "结构校验：未检测到目录区段",
+			Original:    "missing",
+			Suggestion:  "toc_section",
+		})
+		return
+	}
+
+	if !structure.HasTOCField {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("toc_field_missing"),
+			Type:        IssueTypePageNumber,
+			Severity:    SeverityWarning,
+			Description: "结构校验：目录未检测到 TOC 域（建议使用自动目录域）",
+			Original:    false,
+			Suggestion:  true,
+		})
+	}
+	if structure.TOCMaxLevel > 3 {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("toc_level_overflow"),
+			Type:        IssueTypeHeading,
+			Severity:    SeverityWarning,
+			Description: fmt.Sprintf("结构校验：目录域层级超过三级（当前最大 %d 级）", structure.TOCMaxLevel),
+			Original:    structure.TOCMaxLevel,
+			Suggestion:  3,
+		})
+	}
+
+	if structure.MainBodyStart == -1 || structure.MainBodyStart <= structure.TOCStart {
+		return
+	}
+	tocSectionIdx := findSectionIndexForNode(structure.Sections, structure.TOCStart)
+	mainSectionIdx := findSectionIndexForNode(structure.Sections, structure.MainBodyStart)
+	if tocSectionIdx == -1 || mainSectionIdx == -1 {
+		return
+	}
+	if tocSectionIdx == mainSectionIdx {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("toc_main_same_section"),
+			Type:        IssueTypePageNumber,
+			Severity:    SeverityWarning,
+			Description: "结构校验：目录与正文位于同一分节，目录页码“另编”规则可能不满足",
+			Original:    tocSectionIdx,
+			Suggestion:  "separate_sections",
+		})
+		return
+	}
+
+	tocSection := structure.Sections[tocSectionIdx]
+	mainSection := structure.Sections[mainSectionIdx]
+	// “目录页码另编”：至少应出现不同起始定义或独立格式定义
+	if tocSection.HasPgNumType && mainSection.HasPgNumType &&
+		tocSection.PageNumFmt == mainSection.PageNumFmt &&
+		tocSection.PageNumStart == mainSection.PageNumStart {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("toc_page_number_not_restarted"),
+			Type:        IssueTypePageNumber,
+			Severity:    SeverityWarning,
+			Description: "结构校验：目录与正文页码定义完全一致，未体现“目录页码另编”",
+			Original:    fmt.Sprintf("fmt=%s,start=%d", tocSection.PageNumFmt, tocSection.PageNumStart),
+			Suggestion:  "different_page_numbering_definition",
+		})
+	}
+}
+
+func (c *DOCXChecker) checkHeaderFooterOnlyPageNumberRule(structure docxStructuralInfo, result *CheckResult) {
+	if structure.HeaderHasNonPageText {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("header_extra_text"),
+			Type:        IssueTypeHeaderFooter,
+			Severity:    SeverityWarning,
+			Description: "结构校验：检测到除页码外的页眉文本，不符合“除页码外不设其他页眉页脚”",
+			Original:    "header_has_non_page_text",
+			Suggestion:  "page_number_only",
+		})
+	}
+	if structure.FooterHasNonPageText {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("footer_extra_text"),
+			Type:        IssueTypeHeaderFooter,
+			Severity:    SeverityWarning,
+			Description: "结构校验：检测到除页码外的页脚文本，不符合“除页码外不设其他页眉页脚”",
+			Original:    "footer_has_non_page_text",
+			Suggestion:  "page_number_only",
+		})
+	}
+	if !structure.HasPageNumField {
+		result.Issues = append(result.Issues, FormatIssue{
+			ID:          generateIssueID("page_number_only_missing_field"),
+			Type:        IssueTypePageNumber,
+			Severity:    SeverityInfo,
+			Description: "结构校验：未检测到自动页码域（PAGE），请确认页码是否正确插入",
+			Original:    false,
+			Suggestion:  true,
+		})
+	}
+}
+
+func extractParagraphText(p document.Paragraph) string {
+	var b strings.Builder
+	for _, run := range p.Runs() {
+		b.WriteString(run.Text())
+	}
+	return b.String()
+}
+
+func utf8Len(s string) int {
+	return len([]rune(strings.TrimSpace(s)))
+}
+
+func containsChineseText(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsLatinOrDigit(s string) bool {
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLatinLetter(s string) bool {
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+
+func countBodyCNEChars(text string) (int, int) {
+	cnChars := 0
+	enWords := 0
+	word := strings.Builder{}
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) {
+			cnChars++
+			if word.Len() > 0 {
+				enWords++
+				word.Reset()
+			}
+			continue
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			word.WriteRune(r)
+			continue
+		}
+		if word.Len() > 0 {
+			enWords++
+			word.Reset()
+		}
+	}
+	if word.Len() > 0 {
+		enWords++
+	}
+	return cnChars, enWords
+}
+
+func extractSectionByHeading(fullText string, starts []string, ends []string) string {
+	lines := strings.Split(fullText, "\n")
+	start := -1
+	for i, line := range lines {
+		l := strings.TrimSpace(strings.ToLower(line))
+		for _, s := range starts {
+			if l == strings.ToLower(strings.TrimSpace(s)) || strings.HasPrefix(l, strings.ToLower(strings.TrimSpace(s))+" ") {
+				start = i + 1
+				break
+			}
+		}
+		if start != -1 {
+			break
+		}
+	}
+	if start == -1 || start >= len(lines) {
+		return ""
+	}
+	end := len(lines)
+	for i := start; i < len(lines); i++ {
+		l := strings.TrimSpace(strings.ToLower(lines[i]))
+		for _, e := range ends {
+			el := strings.ToLower(strings.TrimSpace(e))
+			if l == el || strings.HasPrefix(l, el) {
+				end = i
+				return strings.Join(lines[start:end], "\n")
+			}
+		}
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+func isScienceHeading(text string) bool {
+	t := strings.TrimSpace(text)
+	matched, _ := regexp.MatchString(`^\d+(\.\d+){0,3}\s*`, t)
+	return matched
+}
+
+func scienceHeadingDepth(text string) int {
+	t := strings.TrimSpace(text)
+	re := regexp.MustCompile(`^(\d+(\.\d+){0,3})`)
+	m := re.FindStringSubmatch(t)
+	if len(m) < 2 {
+		return 0
+	}
+	return strings.Count(m[1], ".") + 1
+}
+
+func isArtsHeading(text string) bool {
+	t := strings.TrimSpace(text)
+	patterns := []string{
+		`^[一二三四五六七八九十]+、`,
+		`^（[一二三四五六七八九十]+）`,
+		`^\([一二三四五六七八九十]+\)`,
+		`^\d+\.`,
+		`^（\d+）`,
+		`^\(\d+\)`,
+	}
+	for _, p := range patterns {
+		m, _ := regexp.MatchString(p, t)
+		if m {
+			return true
+		}
+	}
+	return false
+}
+
+func artsHeadingDepth(text string) int {
+	t := strings.TrimSpace(text)
+	switch {
+	case regexp.MustCompile(`^[一二三四五六七八九十]+、`).MatchString(t):
+		return 1
+	case regexp.MustCompile(`^（[一二三四五六七八九十]+）|^\([一二三四五六七八九十]+\)`).MatchString(t):
+		return 2
+	case regexp.MustCompile(`^\d+\.`).MatchString(t):
+		return 3
+	case regexp.MustCompile(`^（\d+）|^\(\d+\)`).MatchString(t):
+		return 4
+	default:
+		return 0
+	}
+}
+
+func collectReferenceLines(texts []string) []string {
+	start := -1
+	for i, t := range texts {
+		tt := strings.TrimSpace(strings.ToLower(t))
+		if tt == "参考文献" || strings.HasPrefix(tt, "参考文献") {
+			start = i + 1
+			break
+		}
+	}
+	if start == -1 {
+		return []string{}
+	}
+	lines := make([]string, 0)
+	refStartRe := regexp.MustCompile(`^(\[\d+\]|\d+\.)`)
+	stopHeadings := []string{"附录", "致谢", "攻读", "声明"}
+	for i := start; i < len(texts); i++ {
+		line := strings.TrimSpace(texts[i])
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		shouldStop := false
+		for _, stop := range stopHeadings {
+			if strings.HasPrefix(lower, strings.ToLower(stop)) {
+				shouldStop = true
+				break
+			}
+		}
+		if shouldStop {
+			break
+		}
+		if refStartRe.MatchString(line) || hasLatinLetter(line) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+type bodyNode struct {
+	Kind         string
+	Text         string
+	IsEmpty      bool
+	HasDrawing   bool
+	HasAnchorObj bool
+	RightAligned bool
+	HasSectPr    bool
+	PageNumFmt   string
+	PageNumStart int
+	HasTOCField  bool
+	TOCMaxLevel  int
+	RawXML       string
+}
+
+type docSection struct {
+	StartNode    int
+	EndNode      int
+	HasPgNumType bool
+	PageNumFmt   string
+	PageNumStart int
+}
+
+type docxStructuralInfo struct {
+	HasEvenAndOddHeaders bool
+	HeaderTexts          []string
+	HeaderCount          int
+	HeaderByType         map[string]string
+	FooterTexts          []string
+	HeaderHasNonPageText bool
+	FooterHasNonPageText bool
+	HasRomanPageNum      bool
+	HasArabicPageNum     bool
+	HasPageNumField      bool
+	PageNumFormats       []string
+	FrontMatterStart     int
+	MainBodyStart        int
+	TOCStart             int
+	TOCEnd               int
+	HasTOCField          bool
+	TOCMaxLevel          int
+	ChapterCandidates    []string
+	Sections             []docSection
+	BodyNodes            []bodyNode
+}
+
+func inspectDOCXStructure(docPath string) docxStructuralInfo {
+	info := docxStructuralInfo{
+		HeaderTexts:       make([]string, 0),
+		HeaderByType:      make(map[string]string),
+		FooterTexts:       make([]string, 0),
+		PageNumFormats:    make([]string, 0),
+		FrontMatterStart:  -1,
+		MainBodyStart:     -1,
+		TOCStart:          -1,
+		TOCEnd:            -1,
+		TOCMaxLevel:       0,
+		ChapterCandidates: make([]string, 0),
+		Sections:          make([]docSection, 0),
+		BodyNodes:         make([]bodyNode, 0),
+	}
+
+	zr, err := zip.OpenReader(docPath)
+	if err != nil {
+		return info
+	}
+	defer zr.Close()
+
+	fileMap := make(map[string]string)
+	for _, f := range zr.File {
+		content, err := readZipFileAsString(f)
+		if err != nil {
+			continue
+		}
+		fileMap[f.Name] = content
+	}
+
+	if settingsXML, ok := fileMap["word/settings.xml"]; ok {
+		info.HasEvenAndOddHeaders = strings.Contains(settingsXML, "w:evenAndOddHeaders")
+	}
+
+	if documentXML, ok := fileMap["word/document.xml"]; ok {
+		dxml := strings.ToLower(documentXML)
+		info.PageNumFormats = parsePageNumFormats(documentXML)
+		for _, fmtName := range info.PageNumFormats {
+			switch fmtName {
+			case "roman", "upperroman":
+				info.HasRomanPageNum = true
+			case "decimal":
+				info.HasArabicPageNum = true
+			}
+		}
+		if strings.Contains(dxml, "page") && (strings.Contains(dxml, "instrtext") || strings.Contains(dxml, "fldsimple")) && strings.Contains(dxml, " page ") {
+			info.HasPageNumField = true
+		}
+		info.BodyNodes = parseBodyNodes(documentXML)
+		info.FrontMatterStart, info.MainBodyStart = detectFrontAndMainRanges(info.BodyNodes)
+		info.TOCStart, info.TOCEnd = detectTOCRange(info.BodyNodes, info.MainBodyStart)
+		info.HasTOCField, info.TOCMaxLevel = detectTOCField(info.BodyNodes)
+		info.ChapterCandidates = extractChapterCandidates(info.BodyNodes)
+		info.Sections = parseSections(info.BodyNodes)
+		info.HeaderByType = parseHeaderByType(documentXML, fileMap["word/_rels/document.xml.rels"], fileMap)
+	}
+
+	headerPaths := make([]string, 0)
+	footerPaths := make([]string, 0)
+	for name := range fileMap {
+		lower := strings.ToLower(name)
+		if strings.HasPrefix(lower, "word/header") && strings.HasSuffix(lower, ".xml") {
+			headerPaths = append(headerPaths, name)
+		}
+		if strings.HasPrefix(lower, "word/footer") && strings.HasSuffix(lower, ".xml") {
+			footerPaths = append(footerPaths, name)
+		}
+	}
+	sort.Strings(headerPaths)
+	sort.Strings(footerPaths)
+	info.HeaderCount = len(headerPaths)
+	for _, p := range headerPaths {
+		info.HeaderTexts = append(info.HeaderTexts, collectXMLText(fileMap[p]))
+		lower := strings.ToLower(fileMap[p])
+		if strings.Contains(lower, " page ") && (strings.Contains(lower, "instrtext") || strings.Contains(lower, "fldsimple")) {
+			info.HasPageNumField = true
+		}
+		if hasNonPageTextInHeaderFooterXML(fileMap[p]) {
+			info.HeaderHasNonPageText = true
+		}
+	}
+	for _, p := range footerPaths {
+		info.FooterTexts = append(info.FooterTexts, collectXMLText(fileMap[p]))
+		lower := strings.ToLower(fileMap[p])
+		if strings.Contains(lower, " page ") && (strings.Contains(lower, "instrtext") || strings.Contains(lower, "fldsimple")) {
+			info.HasPageNumField = true
+		}
+		if hasNonPageTextInHeaderFooterXML(fileMap[p]) {
+			info.FooterHasNonPageText = true
+		}
+	}
+
+	return info
+}
+
+func readZipFileAsString(f *zip.File) (string, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return "", err
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func collectXMLText(xml string) string {
+	re := regexp.MustCompile(`(?s)<w:t[^>]*>(.*?)</w:t>`)
+	matches := re.FindAllStringSubmatch(xml, -1)
+	parts := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) > 1 {
+			parts = append(parts, strings.TrimSpace(m[1]))
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+func parseBodyNodes(documentXML string) []bodyNode {
+	re := regexp.MustCompile(`(?s)<w:p\b.*?</w:p>|<w:tbl\b.*?</w:tbl>`)
+	blocks := re.FindAllString(documentXML, -1)
+	nodes := make([]bodyNode, 0, len(blocks))
+	for _, block := range blocks {
+		lower := strings.ToLower(block)
+		if strings.HasPrefix(lower, "<w:tbl") {
+			nodes = append(nodes, bodyNode{Kind: "tbl"})
+			continue
+		}
+		text := collectXMLText(block)
+		trimmed := strings.TrimSpace(text)
+		rightAligned := strings.Contains(lower, `w:jc`) && strings.Contains(lower, `w:val="right"`)
+		hasTOCField, tocMaxLevel := parseTOCInfoFromParagraphXML(block)
+		hasSectPr, pageFmt, pageStart := parseSectPrInfoFromParagraphXML(block)
+		nodes = append(nodes, bodyNode{
+			Kind:         "p",
+			Text:         trimmed,
+			IsEmpty:      trimmed == "",
+			HasDrawing:   strings.Contains(lower, "<w:drawing"),
+			HasAnchorObj: strings.Contains(lower, "<wp:anchor") || strings.Contains(lower, "<wp:inline"),
+			RightAligned: rightAligned,
+			HasSectPr:    hasSectPr,
+			PageNumFmt:   pageFmt,
+			PageNumStart: pageStart,
+			HasTOCField:  hasTOCField,
+			TOCMaxLevel:  tocMaxLevel,
+			RawXML:       block,
+		})
+	}
+	return nodes
+}
+
+func findNextNonEmptyTableNode(nodes []bodyNode, fromIdx int, maxLookahead int) int {
+	looked := 0
+	for i := fromIdx + 1; i < len(nodes); i++ {
+		n := nodes[i]
+		if n.Kind == "p" && n.IsEmpty {
+			continue
+		}
+		looked++
+		if n.Kind == "tbl" {
+			return i
+		}
+		if looked >= maxLookahead {
+			break
+		}
+	}
+	return -1
+}
+
+func findPrevDrawingNode(nodes []bodyNode, fromIdx int, maxLookback int) int {
+	looked := 0
+	for i := fromIdx - 1; i >= 0; i-- {
+		n := nodes[i]
+		if n.Kind == "p" && n.IsEmpty {
+			continue
+		}
+		looked++
+		if n.Kind == "p" && n.HasDrawing {
+			return i
+		}
+		if looked >= maxLookback {
+			break
+		}
+	}
+	return -1
+}
+
+func parseTOCInfoFromParagraphXML(paragraphXML string) (bool, int) {
+	lower := strings.ToLower(paragraphXML)
+	if !strings.Contains(lower, " toc ") && !strings.Contains(lower, "toc") {
+		return false, 0
+	}
+	// Word TOC field usually appears in instrText: TOC \o "1-3"
+	re := regexp.MustCompile(`(?i)toc\s+\\o\s+"(\d+)-(\d+)"`)
+	m := re.FindStringSubmatch(paragraphXML)
+	if len(m) >= 3 {
+		maxLevel, err := strconv.Atoi(m[2])
+		if err == nil {
+			return true, maxLevel
+		}
+	}
+	return true, 0
+}
+
+func parseSectPrInfoFromParagraphXML(paragraphXML string) (bool, string, int) {
+	lower := strings.ToLower(paragraphXML)
+	if !strings.Contains(lower, "<w:sectpr") {
+		return false, "", 0
+	}
+	fmtRe := regexp.MustCompile(`(?i)<w:pgNumType\b[^>]*w:fmt="([^"]+)"`)
+	startRe := regexp.MustCompile(`(?i)<w:pgNumType\b[^>]*w:start="([^"]+)"`)
+	fmtMatch := fmtRe.FindStringSubmatch(paragraphXML)
+	startMatch := startRe.FindStringSubmatch(paragraphXML)
+
+	pageFmt := ""
+	pageStart := 0
+	if len(fmtMatch) > 1 {
+		pageFmt = strings.ToLower(strings.TrimSpace(fmtMatch[1]))
+	}
+	if len(startMatch) > 1 {
+		pageStart, _ = strconv.Atoi(strings.TrimSpace(startMatch[1]))
+	}
+	return true, pageFmt, pageStart
+}
+
+func detectTOCRange(nodes []bodyNode, mainBodyStart int) (int, int) {
+	start := -1
+	end := -1
+	for i, n := range nodes {
+		if n.Kind != "p" {
+			continue
+		}
+		t := strings.TrimSpace(strings.ToLower(n.Text))
+		if start == -1 && (t == "目录" || strings.HasPrefix(t, "目录")) {
+			start = i
+			continue
+		}
+		if start != -1 {
+			if mainBodyStart != -1 && i >= mainBodyStart {
+				end = i - 1
+				break
+			}
+		}
+	}
+	if start != -1 && end == -1 {
+		if mainBodyStart > start {
+			end = mainBodyStart - 1
+		} else {
+			end = len(nodes) - 1
+		}
+	}
+	return start, end
+}
+
+func detectTOCField(nodes []bodyNode) (bool, int) {
+	hasField := false
+	maxLevel := 0
+	for _, n := range nodes {
+		if !n.HasTOCField {
+			continue
+		}
+		hasField = true
+		if n.TOCMaxLevel > maxLevel {
+			maxLevel = n.TOCMaxLevel
+		}
+	}
+	return hasField, maxLevel
+}
+
+func parseSections(nodes []bodyNode) []docSection {
+	sections := make([]docSection, 0)
+	if len(nodes) == 0 {
+		return sections
+	}
+	current := docSection{
+		StartNode:    0,
+		EndNode:      len(nodes) - 1,
+		HasPgNumType: false,
+		PageNumFmt:   "",
+		PageNumStart: 0,
+	}
+	for i, n := range nodes {
+		if n.Kind != "p" || !n.HasSectPr {
+			continue
+		}
+		current.EndNode = i
+		if n.PageNumFmt != "" {
+			current.HasPgNumType = true
+			current.PageNumFmt = n.PageNumFmt
+		}
+		if n.PageNumStart > 0 {
+			current.PageNumStart = n.PageNumStart
+		}
+		sections = append(sections, current)
+		current = docSection{
+			StartNode:    i + 1,
+			EndNode:      len(nodes) - 1,
+			HasPgNumType: false,
+			PageNumFmt:   "",
+			PageNumStart: 0,
+		}
+	}
+	if len(sections) == 0 || sections[len(sections)-1].StartNode != current.StartNode {
+		sections = append(sections, current)
+	}
+	return sections
+}
+
+func findSectionIndexForNode(sections []docSection, nodeIdx int) int {
+	for i, s := range sections {
+		if nodeIdx >= s.StartNode && nodeIdx <= s.EndNode {
+			return i
+		}
+	}
+	return -1
+}
+
+func hasNonPageTextInHeaderFooterXML(xml string) bool {
+	parts := extractXMLTextParts(xml)
+	allowed := regexp.MustCompile(`^[0-9ivxlcdmIVXLCDM\-\–\—\.\(\)（）\s]*$`)
+	for _, p := range parts {
+		text := strings.TrimSpace(p)
+		if text == "" {
+			continue
+		}
+		if !allowed.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractXMLTextParts(xml string) []string {
+	re := regexp.MustCompile(`(?s)<w:t[^>]*>(.*?)</w:t>`)
+	matches := re.FindAllStringSubmatch(xml, -1)
+	parts := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) > 1 {
+			parts = append(parts, m[1])
+		}
+	}
+	return parts
+}
+
+func parsePageNumFormats(documentXML string) []string {
+	re := regexp.MustCompile(`(?i)<w:pgNumType\b[^>]*w:fmt="([^"]+)"[^>]*/?>`)
+	matches := re.FindAllStringSubmatch(documentXML, -1)
+	formats := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) > 1 {
+			formats = append(formats, strings.ToLower(strings.TrimSpace(m[1])))
+		}
+	}
+	return formats
+}
+
+func parseHeaderByType(documentXML, relsXML string, fileMap map[string]string) map[string]string {
+	result := make(map[string]string)
+	if strings.TrimSpace(documentXML) == "" || strings.TrimSpace(relsXML) == "" {
+		return result
+	}
+
+	relRe := regexp.MustCompile(`(?i)<Relationship[^>]*\bId="([^"]+)"[^>]*\bTarget="([^"]+)"`)
+	relMatches := relRe.FindAllStringSubmatch(relsXML, -1)
+	relMap := make(map[string]string, len(relMatches))
+	for _, m := range relMatches {
+		if len(m) < 3 {
+			continue
+		}
+		id := strings.TrimSpace(m[1])
+		target := strings.TrimSpace(m[2])
+		target = strings.ReplaceAll(target, "\\", "/")
+		target = strings.TrimPrefix(target, "../")
+		if !strings.HasPrefix(target, "word/") {
+			target = "word/" + target
+		}
+		relMap[id] = target
+	}
+
+	refRe := regexp.MustCompile(`(?is)<w:headerReference\b[^>]*>`)
+	typeRe := regexp.MustCompile(`w:type="([^"]+)"`)
+	idRe := regexp.MustCompile(`r:id="([^"]+)"`)
+	refs := refRe.FindAllString(documentXML, -1)
+	for _, tag := range refs {
+		tm := typeRe.FindStringSubmatch(tag)
+		im := idRe.FindStringSubmatch(tag)
+		if len(tm) < 2 || len(im) < 2 {
+			continue
+		}
+		typ := strings.ToLower(strings.TrimSpace(tm[1]))
+		rid := strings.TrimSpace(im[1])
+		target, ok := relMap[rid]
+		if !ok {
+			continue
+		}
+		xml := fileMap[target]
+		if strings.TrimSpace(xml) == "" {
+			continue
+		}
+		result[typ] = collectXMLText(xml)
+	}
+	return result
+}
+
+func detectFrontAndMainRanges(nodes []bodyNode) (int, int) {
+	frontStart := -1
+	mainStart := -1
+	for i, n := range nodes {
+		if n.Kind != "p" {
+			continue
+		}
+		t := strings.TrimSpace(strings.ToLower(n.Text))
+		if frontStart == -1 && (t == "摘要" || t == "目录" || strings.HasPrefix(t, "摘要") || strings.HasPrefix(t, "目录")) {
+			frontStart = i
+		}
+		if mainStart == -1 && isMainBodyStartHeading(n.Text) {
+			mainStart = i
+		}
+	}
+	return frontStart, mainStart
+}
+
+func isMainBodyStartHeading(text string) bool {
+	t := strings.TrimSpace(text)
+	patterns := []string{
+		`^第[一二三四五六七八九十百]+章`,
+		`^第\d+章`,
+		`^一、`,
+		`^1[\s\.、].*`,
+	}
+	for _, p := range patterns {
+		ok, _ := regexp.MatchString(p, t)
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+func extractChapterCandidates(nodes []bodyNode) []string {
+	candidates := make([]string, 0)
+	seen := make(map[string]struct{})
+	candidateRe := regexp.MustCompile(`^(第[一二三四五六七八九十百\d]+章|[一二三四五六七八九十]+、|\d+(\.\d+){0,3}\.?)`)
+	for _, n := range nodes {
+		if n.Kind != "p" {
+			continue
+		}
+		t := strings.TrimSpace(n.Text)
+		if t == "" {
+			continue
+		}
+		if !candidateRe.MatchString(t) {
+			continue
+		}
+		norm := normalizeHeadingText(t)
+		if norm == "" {
+			continue
+		}
+		if _, ok := seen[norm]; ok {
+			continue
+		}
+		seen[norm] = struct{}{}
+		candidates = append(candidates, norm)
+		if len(candidates) >= 12 {
+			break
+		}
+	}
+	return candidates
+}
+
+func headerMatchesChapterCandidate(header string, candidates []string) bool {
+	h := normalizeHeadingText(header)
+	if h == "" {
+		return false
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if strings.Contains(h, c) || strings.Contains(c, h) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeHeadingText(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.NewReplacer(" ", "", "\t", "", "　", "").Replace(s)
+	rePrefix := regexp.MustCompile(`^(第[一二三四五六七八九十百\d]+章|[一二三四五六七八九十]+、|\d+(\.\d+){0,3}\.?)`)
+	s = rePrefix.ReplaceAllString(s, "")
+	rePunc := regexp.MustCompile("[，。；：:、,.()（）【】\\[\\]《》<>“”\"'`]")
+	s = rePunc.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }
 
 // ApplyCorrections 应用修正建议到文档

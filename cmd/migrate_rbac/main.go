@@ -26,7 +26,7 @@ func main() {
 
 	// Run RBAC enhanced migration
 	migration := &migrations.MigrationRBACEnhanced{}
-	if err := migration.Migrate(database.DB); err != nil {
+	if err := migration.Up(database.DB); err != nil {
 		log.Fatalf("Failed to run migration: %v", err)
 	}
 

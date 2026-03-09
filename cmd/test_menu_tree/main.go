@@ -20,7 +20,7 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	fmt.Println("Database connected successfully\n")
+	fmt.Println("Database connected successfully")
 
 	// 测试 GetMenuTree
 	menuService := service.NewMenuService()

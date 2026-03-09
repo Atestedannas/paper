@@ -3,6 +3,8 @@ package handler
 import (
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -140,13 +142,52 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 func (h *AdminHandler) GetPapers(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
+	q := strings.TrimSpace(c.Query("q"))
+	status := strings.TrimSpace(c.Query("status"))
+	deleted := strings.ToLower(strings.TrimSpace(c.Query("deleted")))
+	date := strings.TrimSpace(c.Query("date"))
 
 	var papers []model.Paper
 	var total int64
 
-	database.DB.Model(&model.Paper{}).Count(&total)
+	// 默认仅查未删除；当 deleted 为空（前端“全部”）时，包含已删除数据。
+	query := database.DB.Model(&model.Paper{})
+	if deleted == "" || deleted == "true" {
+		query = query.Unscoped()
+	}
+	if deleted == "true" {
+		query = query.Where("papers.deleted_at IS NOT NULL")
+	} else if deleted == "false" {
+		query = query.Where("papers.deleted_at IS NULL")
+	}
+	if q != "" {
+		like := "%" + q + "%"
+		query = query.Where("(papers.title ILIKE ? OR EXISTS (SELECT 1 FROM users WHERE users.id = papers.user_id AND users.username ILIKE ?))", like, like)
+	}
+	if status != "" {
+		query = query.Where("papers.status = ?", status)
+	}
+	if date != "" {
+		now := time.Now()
+		switch date {
+		case "today":
+			start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+			query = query.Where("papers.created_at >= ?", start)
+		case "7d":
+			query = query.Where("papers.created_at >= ?", now.AddDate(0, 0, -7))
+		case "30d":
+			query = query.Where("papers.created_at >= ?", now.AddDate(0, 0, -30))
+		case "90d":
+			query = query.Where("papers.created_at >= ?", now.AddDate(0, 0, -90))
+		}
+	}
+
+	if err := query.Count(&total).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "获取论文总数失败", err.Error())
+		return
+	}
 	offset := (page - 1) * pageSize
-	if err := database.DB.Preload("User").Preload("SelectedTemplate").Offset(offset).Limit(pageSize).Order("created_at DESC").Find(&papers).Error; err != nil {
+	if err := query.Preload("User").Preload("SelectedTemplate").Offset(offset).Limit(pageSize).Order("papers.created_at DESC").Find(&papers).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "鑾峰彇璁烘枃鍒楄〃澶辫触", err.Error())
 		return
 	}
@@ -424,13 +465,8 @@ func (h *AdminHandler) DeletePaper(c *gin.Context) {
 		return
 	}
 
-	// 软删除关联的检查结果
-	if err := database.DB.Where("paper_id = ?", paperID).Delete(&model.CheckResult{}).Error; err != nil {
-		utils.ErrorResponse(c, http.StatusInternalServerError, "删除关联检查结果失败", err.Error())
-		return
-	}
-
-	// 软删除论文
+	// 架构调整：仅对 papers 做软删除，不在该事务中手动级联删子表。
+	// 这样可避免外键链导致批量删除回滚，也保留恢复所需的检查历史数据。
 	if err := database.DB.Delete(&model.Paper{}, paperID).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "删除论文失败", err.Error())
 		return
@@ -455,67 +491,36 @@ func (h *AdminHandler) BatchDeletePapers(c *gin.Context) {
 		return
 	}
 
-	deletedCount := 0
-	failedCount := 0
-	skippedCount := 0
-
-	tx := database.DB.Begin()
-
+	validIDs := make([]uuid.UUID, 0, len(req.IDs))
+	invalidCount := 0
 	for _, idStr := range req.IDs {
 		paperID, err := uuid.Parse(idStr)
 		if err != nil {
-			failedCount++
+			invalidCount++
 			continue
 		}
-
-		var paper model.Paper
-		if err := tx.First(&paper, paperID).Error; err != nil {
-			failedCount++
-			continue
-		}
-
-		if paper.DeletedAt.Valid {
-			skippedCount++
-			continue
-		}
-
-		var checkResults []model.CheckResult
-		if err := tx.Where("paper_id = ?", paperID).Find(&checkResults).Error; err != nil {
-			failedCount++
-			continue
-		}
-
-		for _, cr := range checkResults {
-			if err := tx.Where("check_result_id = ?", cr.ID).Delete(&model.FormatCorrection{}).Error; err != nil {
-				failedCount++
-				continue
-			}
-		}
-
-		if err := tx.Where("paper_id = ?", paperID).Delete(&model.CheckResult{}).Error; err != nil {
-			failedCount++
-			continue
-		}
-
-		if err := tx.Delete(&paper).Error; err != nil {
-			failedCount++
-			continue
-		}
-
-		deletedCount++
+		validIDs = append(validIDs, paperID)
 	}
 
-	if failedCount > 0 {
-		tx.Rollback()
-		utils.ErrorResponse(c, http.StatusInternalServerError, "部分论文删除失败", "")
+	if len(validIDs) == 0 {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无有效的论文 ID", "")
 		return
 	}
 
-	tx.Commit()
+	// 架构调整：批量删除仅做 papers 软删除，避免手动级联删除造成外键冲突与全量回滚。
+	result := database.DB.Where("id IN ?", validIDs).Delete(&model.Paper{})
+	if result.Error != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "批量删除失败", result.Error.Error())
+		return
+	}
+
+	deletedCount := int(result.RowsAffected)
+	skippedCount := len(validIDs) - deletedCount
 
 	utils.SuccessResponse(c, "批量删除成功", gin.H{
 		"deleted_count": deletedCount,
-		"failed_count":  failedCount,
+		"failed_count":  0,
+		"invalid_count": invalidCount,
 		"skipped_count": skippedCount,
 		"total_count":   len(req.IDs),
 	})
@@ -620,41 +625,39 @@ func (h *AdminHandler) BatchRestorePapers(c *gin.Context) {
 		return
 	}
 
-	restoredCount := 0
-	failedCount := 0
-	skippedCount := 0
-
+	validIDs := make([]uuid.UUID, 0, len(req.IDs))
+	invalidCount := 0
 	for _, idStr := range req.IDs {
 		paperID, err := uuid.Parse(idStr)
 		if err != nil {
-			failedCount++
+			invalidCount++
 			continue
 		}
-
-		// 查找已删除的论文
-		var paper model.Paper
-		if err := database.DB.Unscoped().First(&paper, paperID).Error; err != nil {
-			failedCount++
-			continue
-		}
-
-		// 检查是否真的被删除了
-		if paper.DeletedAt.Time.Year() <= 2000 {
-			skippedCount++
-			continue
-		}
-
-		// 恢复论文
-		if err := database.DB.Unscoped().Model(&paper).Update("deleted_at", nil).Error; err == nil {
-			restoredCount++
-		} else {
-			failedCount++
-		}
+		validIDs = append(validIDs, paperID)
 	}
+
+	if len(validIDs) == 0 {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无有效的论文 ID", "")
+		return
+	}
+
+	result := database.DB.Unscoped().
+		Model(&model.Paper{}).
+		Where("id IN ?", validIDs).
+		Where("deleted_at IS NOT NULL").
+		Update("deleted_at", nil)
+	if result.Error != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "批量恢复失败", result.Error.Error())
+		return
+	}
+
+	restoredCount := int(result.RowsAffected)
+	skippedCount := len(validIDs) - restoredCount
 
 	utils.SuccessResponse(c, "批量恢复成功", gin.H{
 		"restored_count": restoredCount,
-		"failed_count":   failedCount,
+		"failed_count":   0,
+		"invalid_count":  invalidCount,
 		"skipped_count":  skippedCount,
 		"total_count":    len(req.IDs),
 	})

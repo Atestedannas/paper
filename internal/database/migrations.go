@@ -48,6 +48,8 @@ func RunMigrations() error {
 		&Migration20250306AddDeletedAtToPapers{},
 		// RBAC 增强版迁移（包括菜单和权限初始化）
 		&migrations.MigrationRBACEnhanced{},
+		// RBAC 双模型收敛（authority -> permission，非破坏式）
+		&Migration20260307UnifyRBACModel{},
 	}
 
 	// 按顺序执行迁移

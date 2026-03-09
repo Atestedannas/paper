@@ -202,9 +202,9 @@ func (s *menuService) GetUserMenuTree(userID uuid.UUID) ([]model.MenuTreeRespons
 		return nil, fmt.Errorf("获取用户失败：%w", err)
 	}
 
-	// 用户表 role 为 admin/super_admin 或用户名为 admin 时直接返回完整菜单（兼容未配置 user_roles 的 admin）
-	adminRoleCodes := map[string]bool{"super_admin": true, "admin": true}
-	if adminRoleCodes[user.Role] || user.Username == "admin" {
+	// 仅 super_admin 直接返回完整菜单；admin 也走标准权限链路
+	superAdminRoleCodes := map[string]bool{"super_admin": true}
+	if superAdminRoleCodes[user.Role] {
 		return s.GetMenuTree()
 	}
 
@@ -219,9 +219,9 @@ func (s *menuService) GetUserMenuTree(userID uuid.UUID) ([]model.MenuTreeRespons
 		return []model.MenuTreeResponse{}, nil
 	}
 
-	// 管理员（user_roles 中任一角色的 code 为 admin/super_admin）：返回完整菜单树
+	// super_admin（user_roles 中任一角色的 code 为 super_admin）：返回完整菜单树
 	for _, role := range roles {
-		if adminRoleCodes[role.Code] {
+		if superAdminRoleCodes[role.Code] {
 			return s.GetMenuTree()
 		}
 	}

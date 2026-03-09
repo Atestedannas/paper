@@ -11,6 +11,13 @@ import (
 	"github.com/paper-format-checker/backend/internal/utils"
 )
 
+func getRoleIDParam(c *gin.Context) string {
+	if id := c.Param("role_id"); id != "" {
+		return id
+	}
+	return c.Param("id")
+}
+
 // MenuHandler 菜单处理器
 type MenuHandler struct {
 	menuService service.MenuService
@@ -144,7 +151,7 @@ func (h *MenuHandler) GetUserMenus(c *gin.Context) {
 
 // AssignMenusToRole 为角色分配菜单
 func (h *MenuHandler) AssignMenusToRole(c *gin.Context) {
-	roleID, err := uuid.Parse(c.Param("role_id"))
+	roleID, err := uuid.Parse(getRoleIDParam(c))
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusBadRequest, "无效的角色 ID", err.Error())
 		return
@@ -168,7 +175,7 @@ func (h *MenuHandler) AssignMenusToRole(c *gin.Context) {
 
 // GetRoleMenus 获取角色菜单
 func (h *MenuHandler) GetRoleMenus(c *gin.Context) {
-	roleID, err := uuid.Parse(c.Param("role_id"))
+	roleID, err := uuid.Parse(getRoleIDParam(c))
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusBadRequest, "无效的角色 ID", err.Error())
 		return

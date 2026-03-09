@@ -71,15 +71,39 @@ func (h *AdminTemplateHandler) GetTemplates(c *gin.Context) {
 		return
 	}
 
-	// 构建响应
-	response := TemplateListResponse{
-		Templates: templates,
-		Total:     total,
-		Page:      page,
-		PageSize:  pageSize,
+	// 兼容前端的 items 读取习惯
+	items := make([]gin.H, 0, len(templates))
+	for _, t := range templates {
+		universityName := ""
+		if t.University != nil {
+			universityName = t.University.Name
+		}
+		items = append(items, gin.H{
+			"id":            t.ID,
+			"template_id":   t.TemplateID,
+			"name":          t.Name,
+			"university_id": t.UniversityID,
+			"university":    universityName,
+			"document_type": t.DocumentType,
+			"subject":       t.Subject,
+			"source":        t.Source,
+			"version":       t.Version,
+			"enabled":       t.IsActive,
+			"is_active":     t.IsActive,
+			"is_public":     t.IsPublic,
+			"description":   t.Description,
+			"created_at":    t.CreatedAt,
+			"updated_at":    t.UpdatedAt,
+		})
 	}
 
-	utils.SuccessResponse(c, "获取成功", response)
+	utils.Success(c, gin.H{
+		"items":     items,
+		"templates": templates,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
 }
 
 // GetTemplate 获取模板详情
@@ -245,6 +269,97 @@ func (h *AdminTemplateHandler) DeleteTemplate(c *gin.Context) {
 	utils.SuccessResponse(c, "删除成功", nil)
 }
 
+// ToggleTemplate 启停模板
+func (h *AdminTemplateHandler) ToggleTemplate(c *gin.Context) {
+	if !h.checkAdminPermission(c) {
+		return
+	}
+
+	templateID := c.Param("id")
+	templateUUID, err := uuid.Parse(templateID)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的模板ID", err.Error())
+		return
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "请求参数错误", err.Error())
+		return
+	}
+
+	if err := database.DB.Model(&model.FormatTemplate{}).
+		Where("id = ?", templateUUID).
+		Update("is_active", req.Enabled).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "更新模板状态失败", err.Error())
+		return
+	}
+
+	utils.SuccessResponse(c, "更新成功", gin.H{
+		"id":      templateUUID,
+		"enabled": req.Enabled,
+	})
+}
+
+// GetTemplateVersions 获取模板版本列表（当前返回简化版本视图）
+func (h *AdminTemplateHandler) GetTemplateVersions(c *gin.Context) {
+	if !h.checkAdminPermission(c) {
+		return
+	}
+
+	templateID := c.Param("id")
+	templateUUID, err := uuid.Parse(templateID)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的模板ID", err.Error())
+		return
+	}
+
+	var template model.FormatTemplate
+	if err := database.DB.First(&template, "id = ?", templateUUID).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusNotFound, "模板不存在", err.Error())
+		return
+	}
+
+	utils.Success(c, gin.H{
+		"items": []gin.H{
+			{
+				"id":         template.ID,
+				"version":    template.Version,
+				"created_at": template.UpdatedAt.Format(time.RFC3339),
+			},
+		},
+	})
+}
+
+// PromoteTemplateVersion 设为当前版本（当前实现为兼容接口）
+func (h *AdminTemplateHandler) PromoteTemplateVersion(c *gin.Context) {
+	if !h.checkAdminPermission(c) {
+		return
+	}
+
+	templateID := c.Param("id")
+	templateUUID, err := uuid.Parse(templateID)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的模板ID", err.Error())
+		return
+	}
+
+	// 校验模板存在
+	var template model.FormatTemplate
+	if err := database.DB.First(&template, "id = ?", templateUUID).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusNotFound, "模板不存在", err.Error())
+		return
+	}
+
+	// 目前无独立版本表，返回兼容成功响应
+	utils.SuccessResponse(c, "设置成功", gin.H{
+		"id":      template.ID,
+		"version": template.Version,
+	})
+}
+
 // ParsePaperToTemplate 从论文解析模板
 func (h *AdminTemplateHandler) ParsePaperToTemplate(c *gin.Context) {
 	if !h.checkAdminPermission(c) {
@@ -315,9 +430,9 @@ func (h *AdminTemplateHandler) GetTemplateUsageStats(c *gin.Context) {
 
 // checkAdminPermission 检查管理员权限
 func (h *AdminTemplateHandler) checkAdminPermission(c *gin.Context) bool {
-	// 从JWT中获取用户角色
-	role, exists := c.Get("user_role")
-	if !exists || role != "admin" {
+	// 从JWT中获取用户角色（AuthMiddleware 中键名为 role）
+	role, exists := c.Get("role")
+	if !exists || (role != "admin" && role != "super_admin") {
 		utils.ErrorResponse(c, http.StatusForbidden, "需要管理员权限", "")
 		return false
 	}

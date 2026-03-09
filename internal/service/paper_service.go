@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"mime/multipart"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,6 +27,14 @@ import (
 type PaperService struct {
 	config *config.Config
 }
+
+// FixPaperFormatOptions 控制按问题粒度修复
+type FixPaperFormatOptions struct {
+	FixAll   bool
+	IssueIDs []string
+}
+
+const maxIssueIDsPerFixRequest = 500
 
 // NewPaperService 鍒涘缓璁烘枃鏈嶅姟
 func NewPaperService(config *config.Config) PaperService {
@@ -168,15 +178,49 @@ func (s PaperService) FixPaperFormatByParsedRequirements(userID, paperID uuid.UU
 
 // FixPaperFormat 淇璁烘枃鏍煎紡
 func (s PaperService) FixPaperFormat(userID, paperID, checkResultID uuid.UUID) (interface{}, error) {
+	return s.FixPaperFormatWithOptions(userID, paperID, checkResultID, FixPaperFormatOptions{
+		FixAll: true,
+	})
+}
+
+// FixPaperFormatWithOptions 按 Issue 粒度修复论文格式
+func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID uuid.UUID, options FixPaperFormatOptions) (interface{}, error) {
+	if err := validateFixPaperFormatOptions(options); err != nil {
+		return nil, err
+	}
+
 	// 1. 鑾峰彇璁烘枃鍜屾鏌ョ粨鏋?
 	paper, err := s.GetPaperByID(userID, paperID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get paper: %v", err)
 	}
 
-	var checkResult model.CheckResult
-	if err := database.DB.Where("id = ?", checkResultID).First(&checkResult).Error; err != nil {
-		return nil, fmt.Errorf("failed to get check result: %v", err)
+	checkResult, err := s.GetCheckResultForPaperUser(userID, paperID, checkResultID)
+	if err != nil {
+		return nil, err
+	}
+	if checkResult.Status != "completed" {
+		return nil, fmt.Errorf("check result status is not completed")
+	}
+
+	allIssueIDs, err := s.ensureFormatCorrectionsFromCheckResult(checkResult)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare corrections: %v", err)
+	}
+	if len(allIssueIDs) == 0 {
+		return nil, fmt.Errorf("no fixable issues found for check result %s", checkResultID.String())
+	}
+
+	selectedIssueIDs, err := resolveSelectedIssueIDs(allIssueIDs, options)
+	if err != nil {
+		return nil, err
+	}
+	if len(selectedIssueIDs) == 0 {
+		return nil, fmt.Errorf("no issue selected to apply")
+	}
+
+	if err := s.markAppliedCorrections(checkResult.ID, selectedIssueIDs); err != nil {
+		return nil, fmt.Errorf("failed to update correction selection: %v", err)
 	}
 
 	// 2. 鑾峰彇鏍煎紡妯℃澘
@@ -210,7 +254,11 @@ func (s PaperService) FixPaperFormat(userID, paperID, checkResultID uuid.UUID) (
 
 	// 浣跨敤澧炲己澶勭悊鍣ㄨ繘琛岀簿纭牸寮忎慨姝?
 	fixedPath, fixErr = processor.ApplyCorrections(ctx, paper.FilePath, []map[string]interface{}{
-		{"format_rules": rulesMap},
+		{
+			"format_rules":       rulesMap,
+			"selected_issue_ids": selectedIssueIDs,
+			"fix_all":            options.FixAll || len(options.IssueIDs) == 0,
+		},
 	})
 	if fixErr != nil {
 		return nil, fmt.Errorf("failed to fix document: %v", fixErr)
@@ -229,7 +277,195 @@ func (s PaperService) FixPaperFormat(userID, paperID, checkResultID uuid.UUID) (
 	return map[string]interface{}{
 		"corrected_file_path": fixedPath,
 		"download_url":        fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String()),
+		"applied_issue_ids":   selectedIssueIDs,
+		"applied_issue_count": len(selectedIssueIDs),
+		"fix_all":             options.FixAll || len(options.IssueIDs) == 0,
 	}, nil
+}
+
+func validateFixPaperFormatOptions(options FixPaperFormatOptions) error {
+	if options.FixAll && len(options.IssueIDs) > 0 {
+		return fmt.Errorf("fix_all and issue_ids cannot be provided at the same time")
+	}
+	if !options.FixAll && len(options.IssueIDs) == 0 {
+		return fmt.Errorf("issue_ids is required when fix_all is false")
+	}
+	if len(options.IssueIDs) > maxIssueIDsPerFixRequest {
+		return fmt.Errorf("too many issue_ids, max %d", maxIssueIDsPerFixRequest)
+	}
+	return nil
+}
+
+// GetCheckResultForPaperUser 验证检查结果属于指定论文与用户
+func (s PaperService) GetCheckResultForPaperUser(userID, paperID, checkResultID uuid.UUID) (*model.CheckResult, error) {
+	query := database.DB.Where("id = ? AND paper_id = ?", checkResultID, paperID)
+	if userID != uuid.Nil {
+		query = query.Where("user_id = ?", userID)
+	}
+
+	var checkResult model.CheckResult
+	if err := query.First(&checkResult).Error; err != nil {
+		return nil, fmt.Errorf("failed to get check result: %w", err)
+	}
+	return &checkResult, nil
+}
+
+func (s PaperService) ensureFormatCorrectionsFromCheckResult(checkResult *model.CheckResult) ([]string, error) {
+	var existing []model.FormatCorrection
+	if err := database.DB.Where("check_result_id = ?", checkResult.ID).Order("created_at ASC").Find(&existing).Error; err != nil {
+		return nil, err
+	}
+	if len(existing) > 0 {
+		ids := make([]string, 0, len(existing))
+		seen := make(map[string]struct{}, len(existing))
+		for _, correction := range existing {
+			issueID := strings.TrimSpace(correction.IssueID)
+			if issueID == "" {
+				continue
+			}
+			if _, ok := seen[issueID]; ok {
+				continue
+			}
+			seen[issueID] = struct{}{}
+			ids = append(ids, issueID)
+		}
+		return ids, nil
+	}
+
+	issues, err := parseIssuesFromRaw(checkResult.Issues)
+	if err != nil {
+		return nil, err
+	}
+	if len(issues) == 0 {
+		return []string{}, nil
+	}
+
+	tx := database.DB.Begin()
+	if tx.Error != nil {
+		return nil, tx.Error
+	}
+
+	createdIssueIDs := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			issueID = uuid.NewString()
+		}
+
+		originalJSON, _ := json.Marshal(issue.Original)
+		correctedJSON, _ := json.Marshal(issue.Suggestion)
+		locationJSON, _ := json.Marshal(map[string]interface{}{
+			"page":     issue.Page,
+			"position": issue.Position,
+		})
+
+		correction := &model.FormatCorrection{
+			ID:               uuid.New(),
+			CheckResultID:    checkResult.ID,
+			IssueID:          issueID,
+			CorrectionType:   string(issue.Type),
+			OriginalContent:  string(originalJSON),
+			CorrectedContent: string(correctedJSON),
+			Location:         string(locationJSON),
+			IsApplied:        false,
+			Confidence:       1.0,
+			Description:      issue.Description,
+		}
+		if err := tx.Create(correction).Error; err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+		createdIssueIDs = append(createdIssueIDs, issueID)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return nil, err
+	}
+
+	return createdIssueIDs, nil
+}
+
+func parseIssuesFromRaw(raw string) ([]formatchecker.FormatIssue, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "[]" {
+		return []formatchecker.FormatIssue{}, nil
+	}
+
+	var issues []formatchecker.FormatIssue
+	if err := json.Unmarshal([]byte(raw), &issues); err == nil {
+		return issues, nil
+	}
+
+	var encoded string
+	if err := json.Unmarshal([]byte(raw), &encoded); err != nil {
+		return nil, fmt.Errorf("failed to parse check issues: %w", err)
+	}
+	if err := json.Unmarshal([]byte(encoded), &issues); err != nil {
+		return nil, fmt.Errorf("failed to parse double-encoded check issues: %w", err)
+	}
+	return issues, nil
+}
+
+func resolveSelectedIssueIDs(allIssueIDs []string, options FixPaperFormatOptions) ([]string, error) {
+	if options.FixAll || len(options.IssueIDs) == 0 {
+		return allIssueIDs, nil
+	}
+
+	allSet := make(map[string]struct{}, len(allIssueIDs))
+	for _, issueID := range allIssueIDs {
+		allSet[issueID] = struct{}{}
+	}
+
+	selected := make([]string, 0, len(options.IssueIDs))
+	seen := make(map[string]struct{}, len(options.IssueIDs))
+	missing := make([]string, 0)
+	for _, raw := range options.IssueIDs {
+		issueID := strings.TrimSpace(raw)
+		if issueID == "" {
+			continue
+		}
+		if _, ok := seen[issueID]; ok {
+			continue
+		}
+		seen[issueID] = struct{}{}
+		if _, ok := allSet[issueID]; !ok {
+			missing = append(missing, issueID)
+			continue
+		}
+		selected = append(selected, issueID)
+	}
+
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return nil, fmt.Errorf("some issue_ids are not found in check result: %s", strings.Join(missing, ", "))
+	}
+
+	return selected, nil
+}
+
+func (s PaperService) markAppliedCorrections(checkResultID uuid.UUID, selectedIssueIDs []string) error {
+	tx := database.DB.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+
+	if err := tx.Model(&model.FormatCorrection{}).
+		Where("check_result_id = ?", checkResultID).
+		Update("is_applied", false).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	if len(selectedIssueIDs) > 0 {
+		if err := tx.Model(&model.FormatCorrection{}).
+			Where("check_result_id = ? AND issue_id IN ?", checkResultID, selectedIssueIDs).
+			Update("is_applied", true).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
+	return tx.Commit().Error
 }
 
 // UploadPaper 涓婁紶璁烘枃
@@ -468,6 +704,275 @@ func (s PaperService) ComparePaperFormats(userID, paperID, checkResultID uuid.UU
 
 // ExportCheckReport 瀵煎嚭妫€鏌ユ姤鍛?
 func (s PaperService) ExportCheckReport(userID, checkResultID uuid.UUID) (string, error) {
-	// TODO: 瀹炵幇瀵煎嚭鎶ュ憡閫昏緫
-	return "", nil
+	reportData, err := s.buildCheckReportData(userID, checkResultID)
+	if err != nil {
+		return "", err
+	}
+	return buildTextCheckReport(reportData, "report"), nil
+}
+
+// ResolveLatestCheckResultID 获取论文最新检查结果ID
+func (s PaperService) ResolveLatestCheckResultID(userID, paperID uuid.UUID) (uuid.UUID, error) {
+	query := database.DB.Model(&model.CheckResult{}).Where("paper_id = ? AND status = ?", paperID, "completed")
+	if userID != uuid.Nil {
+		query = query.Where("user_id = ?", userID)
+	}
+	var checkResult model.CheckResult
+	if err := query.Order("created_at DESC").First(&checkResult).Error; err != nil {
+		return uuid.Nil, fmt.Errorf("failed to get latest check result: %w", err)
+	}
+	return checkResult.ID, nil
+}
+
+// ExportCheckReportHTML 导出HTML格式检查报告
+func (s PaperService) ExportCheckReportHTML(userID, checkResultID uuid.UUID, reportType string) (string, error) {
+	reportType = normalizeReportType(reportType)
+	reportData, err := s.buildCheckReportData(userID, checkResultID)
+	if err != nil {
+		return "", err
+	}
+	return buildHTMLCheckReport(reportData, reportType), nil
+}
+
+// ExportCheckReportJSON 导出JSON格式检查报告
+func (s PaperService) ExportCheckReportJSON(userID, checkResultID uuid.UUID, reportType string) (string, error) {
+	reportType = normalizeReportType(reportType)
+	reportData, err := s.buildCheckReportData(userID, checkResultID)
+	if err != nil {
+		return "", err
+	}
+
+	payload := map[string]interface{}{
+		"paper":               reportData.Paper,
+		"check_result":        reportData.CheckResult,
+		"template":            reportData.Template,
+		"issues":              reportData.Issues,
+		"differences":         reportData.Differences,
+		"corrections":         reportData.Corrections,
+		"report_type":         reportType,
+		"generated_at":        time.Now(),
+		"applied_issue_count": len(reportData.AppliedIssueIDs),
+		"applied_issue_ids":   reportData.AppliedIssueIDs,
+	}
+	b, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal report json: %w", err)
+	}
+	return string(b), nil
+}
+
+type checkReportData struct {
+	Paper           model.Paper
+	CheckResult     model.CheckResult
+	Template        model.FormatTemplate
+	Issues          []formatchecker.FormatIssue
+	Differences     []FormatDifference
+	Corrections     []model.FormatCorrection
+	AppliedIssueIDs []string
+}
+
+func (s PaperService) buildCheckReportData(userID, checkResultID uuid.UUID) (*checkReportData, error) {
+	checkQuery := database.DB.Where("id = ?", checkResultID)
+	if userID != uuid.Nil {
+		checkQuery = checkQuery.Where("user_id = ?", userID)
+	}
+
+	var checkResult model.CheckResult
+	if err := checkQuery.First(&checkResult).Error; err != nil {
+		return nil, fmt.Errorf("failed to get check result: %w", err)
+	}
+	if checkResult.Status != "completed" {
+		return nil, fmt.Errorf("check result status is not completed")
+	}
+
+	paper, err := s.GetPaperByID(userID, checkResult.PaperID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get paper: %w", err)
+	}
+
+	var template model.FormatTemplate
+	if err := database.DB.Where("id = ?", checkResult.TemplateID).First(&template).Error; err != nil {
+		return nil, fmt.Errorf("failed to get format template: %w", err)
+	}
+
+	issues, err := parseIssuesFromRaw(checkResult.Issues)
+	if err != nil {
+		return nil, err
+	}
+
+	differences, err := parseDifferencesFromRaw(checkResult.Differences)
+	if err != nil {
+		return nil, err
+	}
+
+	var corrections []model.FormatCorrection
+	if err := database.DB.Where("check_result_id = ?", checkResult.ID).Order("created_at ASC").Find(&corrections).Error; err != nil {
+		return nil, fmt.Errorf("failed to get corrections: %w", err)
+	}
+
+	appliedIssueIDs := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, correction := range corrections {
+		if !correction.IsApplied {
+			continue
+		}
+		issueID := strings.TrimSpace(correction.IssueID)
+		if issueID == "" {
+			continue
+		}
+		if _, ok := seen[issueID]; ok {
+			continue
+		}
+		seen[issueID] = struct{}{}
+		appliedIssueIDs = append(appliedIssueIDs, issueID)
+	}
+
+	return &checkReportData{
+		Paper:           *paper,
+		CheckResult:     checkResult,
+		Template:        template,
+		Issues:          issues,
+		Differences:     differences,
+		Corrections:     corrections,
+		AppliedIssueIDs: appliedIssueIDs,
+	}, nil
+}
+
+func parseDifferencesFromRaw(raw string) ([]FormatDifference, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "[]" {
+		return []FormatDifference{}, nil
+	}
+
+	var differences []FormatDifference
+	if err := json.Unmarshal([]byte(raw), &differences); err == nil {
+		return differences, nil
+	}
+
+	var encoded string
+	if err := json.Unmarshal([]byte(raw), &encoded); err != nil {
+		return nil, fmt.Errorf("failed to parse check differences: %w", err)
+	}
+	if err := json.Unmarshal([]byte(encoded), &differences); err != nil {
+		return nil, fmt.Errorf("failed to parse double-encoded check differences: %w", err)
+	}
+	return differences, nil
+}
+
+func buildTextCheckReport(data *checkReportData, reportType string) string {
+	var b strings.Builder
+	now := time.Now().Format("2006-01-02 15:04:05")
+
+	b.WriteString("论文格式检查报告\n")
+	b.WriteString("====================\n")
+	b.WriteString(fmt.Sprintf("生成时间：%s\n", now))
+	b.WriteString(fmt.Sprintf("论文标题：%s\n", fallback(data.Paper.Title, data.Paper.FileName)))
+	b.WriteString(fmt.Sprintf("模板名称：%s\n", fallback(data.Template.Name, data.Template.TemplateID)))
+	b.WriteString(fmt.Sprintf("问题总数：%d（error=%d, warning=%d, info=%d）\n", data.CheckResult.TotalIssues, data.CheckResult.ErrorCount, data.CheckResult.WarningCount, data.CheckResult.InfoCount))
+	b.WriteString(fmt.Sprintf("可追踪差异：%d，修正建议：%d，已应用修正：%d\n\n", len(data.Differences), len(data.Corrections), len(data.AppliedIssueIDs)))
+
+	if reportType != "correction-report" {
+		b.WriteString("详细问题列表\n")
+		b.WriteString("--------------------\n")
+		if len(data.Issues) == 0 {
+			b.WriteString("无详细问题数据\n\n")
+		} else {
+			for i, issue := range data.Issues {
+				b.WriteString(fmt.Sprintf("%d) [%s/%s] %s\n", i+1, issue.Type, issue.Severity, issue.Description))
+				b.WriteString(fmt.Sprintf("   issue_id=%s, page=%d, position=%d\n", issue.ID, issue.Page, issue.Position))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("修正建议\n")
+	b.WriteString("--------------------\n")
+	if len(data.Corrections) == 0 {
+		b.WriteString("无修正建议数据\n")
+	} else {
+		for i, correction := range data.Corrections {
+			status := "待应用"
+			if correction.IsApplied {
+				status = "已应用"
+			}
+			b.WriteString(fmt.Sprintf("%d) [%s] %s\n", i+1, status, fallback(correction.Description, correction.CorrectionType)))
+			b.WriteString(fmt.Sprintf("   issue_id=%s, confidence=%.2f\n", correction.IssueID, correction.Confidence))
+		}
+	}
+
+	return b.String()
+}
+
+func buildHTMLCheckReport(data *checkReportData, reportType string) string {
+	now := time.Now().Format("2006-01-02 15:04:05")
+	var b strings.Builder
+
+	b.WriteString("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">")
+	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+	b.WriteString("<title>论文格式检查报告</title>")
+	b.WriteString("<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.6;color:#1f2937}h1,h2{margin:12px 0}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border:1px solid #e5e7eb;padding:8px;text-align:left;vertical-align:top}th{background:#f9fafb}code{background:#f3f4f6;padding:1px 4px;border-radius:4px}</style>")
+	b.WriteString("</head><body>")
+	b.WriteString("<h1>论文格式检查报告</h1>")
+	b.WriteString(fmt.Sprintf("<p>生成时间：%s</p>", html.EscapeString(now)))
+	b.WriteString(fmt.Sprintf("<p>论文标题：%s</p>", html.EscapeString(fallback(data.Paper.Title, data.Paper.FileName))))
+	b.WriteString(fmt.Sprintf("<p>模板名称：%s</p>", html.EscapeString(fallback(data.Template.Name, data.Template.TemplateID))))
+	b.WriteString(fmt.Sprintf("<p>问题总数：%d（error=%d, warning=%d, info=%d）</p>", data.CheckResult.TotalIssues, data.CheckResult.ErrorCount, data.CheckResult.WarningCount, data.CheckResult.InfoCount))
+	b.WriteString(fmt.Sprintf("<p>可追踪差异：%d，修正建议：%d，已应用修正：%d</p>", len(data.Differences), len(data.Corrections), len(data.AppliedIssueIDs)))
+
+	if reportType != "correction-report" {
+		b.WriteString("<h2>详细问题列表</h2><table><thead><tr><th>#</th><th>严重级别</th><th>类型</th><th>描述</th><th>位置</th><th>Issue ID</th></tr></thead><tbody>")
+		if len(data.Issues) == 0 {
+			b.WriteString("<tr><td colspan=\"6\">无详细问题数据</td></tr>")
+		} else {
+			for i, issue := range data.Issues {
+				b.WriteString("<tr>")
+				b.WriteString(fmt.Sprintf("<td>%d</td>", i+1))
+				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(string(issue.Severity))))
+				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(string(issue.Type))))
+				b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(issue.Description)))
+				b.WriteString(fmt.Sprintf("<td>page=%d, pos=%d</td>", issue.Page, issue.Position))
+				b.WriteString(fmt.Sprintf("<td><code>%s</code></td>", html.EscapeString(issue.ID)))
+				b.WriteString("</tr>")
+			}
+		}
+		b.WriteString("</tbody></table>")
+	}
+
+	b.WriteString("<h2>修正建议</h2><table><thead><tr><th>#</th><th>状态</th><th>描述</th><th>Issue ID</th><th>置信度</th></tr></thead><tbody>")
+	if len(data.Corrections) == 0 {
+		b.WriteString("<tr><td colspan=\"5\">无修正建议数据</td></tr>")
+	} else {
+		for i, correction := range data.Corrections {
+			status := "待应用"
+			if correction.IsApplied {
+				status = "已应用"
+			}
+			b.WriteString("<tr>")
+			b.WriteString(fmt.Sprintf("<td>%d</td>", i+1))
+			b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(status)))
+			b.WriteString(fmt.Sprintf("<td>%s</td>", html.EscapeString(fallback(correction.Description, correction.CorrectionType))))
+			b.WriteString(fmt.Sprintf("<td><code>%s</code></td>", html.EscapeString(correction.IssueID)))
+			b.WriteString(fmt.Sprintf("<td>%.2f</td>", correction.Confidence))
+			b.WriteString("</tr>")
+		}
+	}
+	b.WriteString("</tbody></table>")
+	b.WriteString("</body></html>")
+
+	return b.String()
+}
+
+func fallback(primary, secondary string) string {
+	if strings.TrimSpace(primary) != "" {
+		return primary
+	}
+	return secondary
+}
+
+func normalizeReportType(reportType string) string {
+	reportType = strings.TrimSpace(strings.ToLower(reportType))
+	if reportType == "correction-report" {
+		return "correction-report"
+	}
+	return "report"
 }

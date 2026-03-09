@@ -26,6 +26,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
+	log.Printf("RBAC model: %s", cfg.RBAC.Model)
 
 	// Check if port is in use, if so try to kill the process using it
 	if isPortInUse(cfg.Server.Port) {
@@ -98,6 +99,7 @@ func main() {
 	adminSystemHandler := handler.NewAdminSystemHandler()
 	universityHandler := handler.NewUniversityHandler()
 	adminUniversityHandler := handler.NewAdminUniversityHandler()
+	adminTemplateHandler := handler.NewAdminTemplateHandler()
 	rbacHandler := handler.NewRBACHandler()
 	configHandler := handler.NewConfigHandler()
 	billingHandler := handler.NewBillingHandler()
@@ -254,6 +256,8 @@ func main() {
 			papers.GET("/:id", paperHandler.GetPaper)
 			papers.DELETE("/:id", paperHandler.DeletePaper)
 			papers.GET("/:id/check-result", paperHandler.GetPaperCheckResults)
+			papers.GET("/:id/export-report", middleware.PaymentMiddleware(cfg, middleware.ServiceReportDownload), paperHandler.DownloadCheckReport)
+			papers.GET("/:id/export-report-html", middleware.PaymentMiddleware(cfg, middleware.ServiceReportDownload), paperHandler.DownloadCheckReportHTML)
 			papers.GET("/:id/corrected-file", middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetCorrectedPaperFile)
 		}
 
@@ -272,7 +276,7 @@ func main() {
 		}
 
 		// Admin routes
-		admin := api.Group("/admin", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware())
+		admin := api.Group("/admin", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware(), middleware.AdminRBACMiddleware())
 		{
 			// Dashboard
 			admin.GET("/dashboard", adminHandler.GetDashboard) // Get admin dashboard data
@@ -309,6 +313,7 @@ func main() {
 			// Enhanced RBAC routes - Menu management (must be before /roles/:id to avoid conflict)
 			admin.GET("/roles/:id/menus", menuHandler.GetRoleMenus)
 			admin.POST("/roles/:id/menus", menuHandler.AssignMenusToRole)
+			admin.GET("/roles/:id/users", rbacHandler.GetUsersByRole)
 
 			admin.GET("/roles/:id", rbacHandler.GetRoleByID)                                                      // Get role details
 			admin.PUT("/roles/:id", rbacHandler.UpdateRole)                                                       // Update role
@@ -502,9 +507,17 @@ func main() {
 			papers.DELETE("/:id", paperHandler.DeletePaper)
 			papers.GET("/:id/check-result", paperHandler.GetPaperCheckResults)
 			papers.GET("/:id/compare/:check_result_id", paperHandler.ComparePaperFormats)
+			papers.GET("/:id/export-report", middleware.PaymentMiddleware(cfg, middleware.ServiceReportDownload), paperHandler.DownloadCheckReport)
+			papers.GET("/:id/export-report-html", middleware.PaymentMiddleware(cfg, middleware.ServiceReportDownload), paperHandler.DownloadCheckReportHTML)
 			papers.GET("/:id/file", middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetPaperFile)
 			papers.GET("/:id/corrected-file", middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetCorrectedPaperFile)
 			papers.POST("/:id/fix/by-template", paperHandler.FixByTemplate)
+		}
+
+		// Template import route (for admin template library)
+		templates := apiV1.Group("/templates", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware())
+		{
+			templates.POST("/import", paperHandler.UploadTemplate)
 		}
 
 		// Contact form routes
@@ -530,7 +543,7 @@ func main() {
 		}
 
 		// Admin routes
-		admin := apiV1.Group("/admin", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware())
+		admin := apiV1.Group("/admin", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware(), middleware.AdminRBACMiddleware())
 		{
 			admin.GET("/dashboard", adminHandler.GetDashboard)
 			admin.GET("/stats", adminHandler.GetSystemStats)
@@ -596,12 +609,19 @@ func main() {
 			// Template library management (as alias for standards)
 			templates := admin.Group("/templates")
 			{
-				templates.POST("", paperHandler.CreateFormatStandard)
-				templates.PUT("/:id", paperHandler.UpdateFormatStandard)
-				templates.DELETE("/:id", paperHandler.DeleteFormatStandard)
-				templates.GET("/:id", paperHandler.GetFormatStandardByID)
-				templates.GET("/:id/display", paperHandler.GetFormatStandardForDisplay) // Get format standard for frontend display
-				templates.GET("", paperHandler.GetFormatStandards)
+				templates.GET("", adminTemplateHandler.GetTemplates)
+				templates.POST("", adminTemplateHandler.CreateTemplate)
+				templates.GET("/:id", adminTemplateHandler.GetTemplate)
+				templates.PUT("/:id", adminTemplateHandler.UpdateTemplate)
+				templates.DELETE("/:id", adminTemplateHandler.DeleteTemplate)
+				templates.PUT("/:id/toggle", adminTemplateHandler.ToggleTemplate)
+				templates.GET("/:id/versions", adminTemplateHandler.GetTemplateVersions)
+				templates.POST("/:id/versions/:versionId/promote", adminTemplateHandler.PromoteTemplateVersion)
+				templates.POST("/parse-paper", adminTemplateHandler.ParsePaperToTemplate)
+				templates.GET("/:id/usage-stats", adminTemplateHandler.GetTemplateUsageStats)
+
+				// legacy aliases
+				templates.GET("/:id/display", paperHandler.GetFormatStandardForDisplay)
 			}
 
 			// Format standard management
@@ -621,6 +641,7 @@ func main() {
 			// Enhanced RBAC routes - Menu management (must be before /roles/:id to avoid conflict)
 			admin.GET("/roles/:id/menus", menuHandler.GetRoleMenus)
 			admin.POST("/roles/:id/menus", menuHandler.AssignMenusToRole)
+			admin.GET("/roles/:id/users", rbacHandler.GetUsersByRole)
 
 			admin.GET("/roles/:id", rbacHandler.GetRoleByID)                                                      // Get role details
 			admin.PUT("/roles/:id", rbacHandler.UpdateRole)                                                       // Update role
@@ -694,7 +715,13 @@ func main() {
 
 	// Health check route
 	router.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		c.JSON(http.StatusOK, gin.H{
+			"status": "ok",
+			"rbac":   database.GetRBACHealthStatus(cfg.RBAC.Model),
+		})
+	})
+	router.GET("/health/rbac", func(c *gin.Context) {
+		c.JSON(http.StatusOK, database.GetRBACHealthStatus(cfg.RBAC.Model))
 	})
 
 	// Start server

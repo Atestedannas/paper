@@ -14,6 +14,40 @@ import (
 	"gorm.io/gorm"
 )
 
+func resolveAdminResource(path string) string {
+	p := strings.TrimSpace(path)
+	p = strings.TrimPrefix(p, "/api/v1/admin/")
+	p = strings.TrimPrefix(p, "/api/admin/")
+	p = strings.TrimPrefix(p, "api/v1/admin/")
+	p = strings.TrimPrefix(p, "api/admin/")
+	if p == "" {
+		return "system"
+	}
+
+	segment := strings.Split(strings.Trim(p, "/"), "/")[0]
+	switch segment {
+	case "users":
+		return "user"
+	case "papers":
+		return "paper"
+	case "orders", "order":
+		return "order"
+	case "roles", "permissions", "role-permission-assign", "user-role-assign", "user-permission-assign":
+		return "rbac"
+	case "menus", "settings", "stats", "dashboard":
+		return "system"
+	case "templates":
+		return "template"
+	case "universities":
+		return "university"
+	default:
+		if strings.HasSuffix(segment, "s") && len(segment) > 1 {
+			return strings.TrimSuffix(segment, "s")
+		}
+		return segment
+	}
+}
+
 // JWTClaims JWT声明结构体
 type JWTClaims struct {
 	UserID   uuid.UUID `json:"user_id"`
@@ -281,6 +315,58 @@ func AdminMiddleware() gin.HandlerFunc {
 		role, exists := c.Get("role")
 		if !exists || (role != "admin" && role != "super_admin") {
 			c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// AdminRBACMiddleware 管理端细粒度权限校验（super_admin 直通，其他 admin 按权限码匹配）
+func AdminRBACMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, _ := c.Get("role")
+		if role == "super_admin" {
+			c.Next()
+			return
+		}
+
+		userIDValue, exists := c.Get("user_id")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+			c.Abort()
+			return
+		}
+
+		userID, ok := userIDValue.(uuid.UUID)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
+			c.Abort()
+			return
+		}
+
+		rbacService, err := service.NewRBACService()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize rbac service"})
+			c.Abort()
+			return
+		}
+
+		resource := resolveAdminResource(c.Request.URL.Path)
+		action := c.Request.Method
+		allowed, err := rbacService.HasPermission(userID, resource, action)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "permission check failed"})
+			c.Abort()
+			return
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":    "permission denied",
+				"resource": resource,
+				"action":   action,
+			})
 			c.Abort()
 			return
 		}
