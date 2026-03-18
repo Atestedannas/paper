@@ -1,10 +1,19 @@
 package service
 
 import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/paper-format-checker/backend/internal/config"
@@ -57,23 +66,103 @@ func (s *AlipayService) GenerateLoginURL() (string, error) {
 	return fmt.Sprintf("%s?%s", s.config.AuthorizeURL, params.Encode()), nil
 }
 
+// generateSign 生成 Alipay RSA2 签名（SHA256WithRSA）
+func (s *AlipayService) generateSign(params url.Values) (string, error) {
+	// 1. 排序、拼接待签名字符串（排除 sign / sign_type）
+	var keys []string
+	for k := range params {
+		if k != "sign" && k != "sign_type" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", k, params.Get(k)))
+	}
+	signStr := strings.Join(parts, "&")
+
+	// 2. 解析 PKCS8 私钥（支持带 PEM 头或纯 base64）
+	pkeyStr := strings.TrimSpace(s.config.AppPrivateKey)
+	if !strings.Contains(pkeyStr, "-----BEGIN") {
+		pkeyStr = "-----BEGIN PRIVATE KEY-----\n" + pkeyStr + "\n-----END PRIVATE KEY-----"
+	}
+	block, _ := pem.Decode([]byte(pkeyStr))
+	if block == nil {
+		return "", fmt.Errorf("alipay: failed to decode private key PEM")
+	}
+	keyIface, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("alipay: failed to parse private key: %w", err)
+	}
+	rsaKey, ok := keyIface.(*rsa.PrivateKey)
+	if !ok {
+		return "", fmt.Errorf("alipay: private key is not RSA")
+	}
+
+	// 3. SHA256WithRSA 签名
+	h := sha256.New()
+	h.Write([]byte(signStr))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, rsaKey, crypto.SHA256, h.Sum(nil))
+	if err != nil {
+		return "", fmt.Errorf("alipay: signing failed: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(sig), nil
+}
+
+// buildSignedParams 构造带签名的参数
+func (s *AlipayService) buildSignedParams(method string, bizContent string) (url.Values, error) {
+	params := url.Values{}
+	params.Set("app_id", s.config.AppID)
+	params.Set("method", method)
+	params.Set("charset", "utf-8")
+	params.Set("sign_type", "RSA2")
+	params.Set("timestamp", time.Now().Format("2006-01-02 15:04:05"))
+	params.Set("version", "1.0")
+	if bizContent != "" {
+		params.Set("biz_content", bizContent)
+	}
+
+	if s.config.AppPrivateKey == "" {
+		return params, nil
+	}
+	sign, err := s.generateSign(params)
+	if err != nil {
+		return nil, err
+	}
+	params.Set("sign", sign)
+	return params, nil
+}
+
+// gatewayURL 返回生产或沙箱网关
+func (s *AlipayService) gatewayURL() string {
+	if s.config.SandboxEnabled && s.config.SandboxGatewayURL != "" {
+		return s.config.SandboxGatewayURL
+	}
+	return s.config.GatewayURL
+}
+
 // ExchangeCodeForToken 用授权码换取访问令牌
 func (s *AlipayService) ExchangeCodeForToken(code string) (*AlipayAccessToken, error) {
 	params := url.Values{}
-	params.Add("app_id", s.config.AppID)
-	params.Add("method", "alipay.system.oauth.token")
-	params.Add("charset", "utf-8")
-	params.Add("sign_type", "RSA2")
-	params.Add("timestamp", time.Now().Format("2006-01-02 15:04:05"))
-	params.Add("version", "1.0")
-	params.Add("grant_type", "authorization_code")
-	params.Add("code", code)
+	params.Set("app_id", s.config.AppID)
+	params.Set("method", "alipay.system.oauth.token")
+	params.Set("charset", "utf-8")
+	params.Set("sign_type", "RSA2")
+	params.Set("timestamp", time.Now().Format("2006-01-02 15:04:05"))
+	params.Set("version", "1.0")
+	params.Set("grant_type", "authorization_code")
+	params.Set("code", code)
 
-	// 实际应用中需要对请求进行签名，这里简化处理
-	// sign := s.generateSign(params)
-	// params.Add("sign", sign)
+	if s.config.AppPrivateKey != "" {
+		sign, err := s.generateSign(params)
+		if err != nil {
+			return nil, err
+		}
+		params.Set("sign", sign)
+	}
 
-	url := fmt.Sprintf("%s?%s", s.config.GatewayURL, params.Encode())
+	url := fmt.Sprintf("%s?%s", s.gatewayURL(), params.Encode())
 
 	resp, err := s.httpClient.Get(url)
 	if err != nil {
@@ -108,19 +197,23 @@ func (s *AlipayService) ExchangeCodeForToken(code string) (*AlipayAccessToken, e
 // GetUserInfo 获取支付宝用户信息
 func (s *AlipayService) GetUserInfo(accessToken string) (*AlipayUserInfo, error) {
 	params := url.Values{}
-	params.Add("app_id", s.config.AppID)
-	params.Add("method", "alipay.user.info.share")
-	params.Add("charset", "utf-8")
-	params.Add("sign_type", "RSA2")
-	params.Add("timestamp", time.Now().Format("2006-01-02 15:04:05"))
-	params.Add("version", "1.0")
-	params.Add("auth_token", accessToken)
+	params.Set("app_id", s.config.AppID)
+	params.Set("method", "alipay.user.info.share")
+	params.Set("charset", "utf-8")
+	params.Set("sign_type", "RSA2")
+	params.Set("timestamp", time.Now().Format("2006-01-02 15:04:05"))
+	params.Set("version", "1.0")
+	params.Set("auth_token", accessToken)
 
-	// 实际应用中需要对请求进行签名，这里简化处理
-	// sign := s.generateSign(params)
-	// params.Add("sign", sign)
+	if s.config.AppPrivateKey != "" {
+		sign, err := s.generateSign(params)
+		if err != nil {
+			return nil, err
+		}
+		params.Set("sign", sign)
+	}
 
-	url := fmt.Sprintf("%s?%s", s.config.GatewayURL, params.Encode())
+	url := fmt.Sprintf("%s?%s", s.gatewayURL(), params.Encode())
 
 	resp, err := s.httpClient.Get(url)
 	if err != nil {

@@ -151,7 +151,9 @@ func (s *orderService) GetOrdersByUserID(userID uuid.UUID, page, pageSize int) (
 	aclService := NewACLService()
 	accessibleOrderIDs, err := aclService.GetAccessibleResources(userID, model.ACLResourceTypeOrder)
 	if err != nil {
-		return nil, 0, err
+		// ACL 表可能尚未创建，降级为仅查询本人订单
+		log.Printf("[GetOrdersByUserID] ACL 查询失败，降级为仅用户订单: %v", err)
+		accessibleOrderIDs = nil
 	}
 
 	query := database.DB.Model(&model.Order{})
@@ -166,10 +168,12 @@ func (s *orderService) GetOrdersByUserID(userID uuid.UUID, page, pageSize int) (
 		return nil, 0, err
 	}
 
-	if err := database.DB.Preload("MemberLevel").Preload("PaymentRecord").
-		Where("user_id = ?", userID).
-		Or("id IN ? AND user_id != ?", accessibleOrderIDs, userID).
-		Order("created_at DESC").
+	findQuery := database.DB.Preload("MemberLevel").Preload("PaymentRecord").
+		Where("user_id = ?", userID)
+	if len(accessibleOrderIDs) > 0 {
+		findQuery = findQuery.Or("id IN ? AND user_id != ?", accessibleOrderIDs, userID)
+	}
+	if err := findQuery.Order("created_at DESC").
 		Offset(offset).Limit(pageSize).
 		Find(&orders).Error; err != nil {
 		return nil, 0, err

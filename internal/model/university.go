@@ -23,6 +23,8 @@ type University struct {
 	FilePath           string          `gorm:"-" json:"file_path"`           // 模板文件路径
 	DocxTemplateURL    string          `gorm:"-" json:"docx_template_url"`   // DOCX模板URL
 	PdfTemplateURL     string          `gorm:"-" json:"pdf_template_url"`    // PDF模板URL
+	Subject            string          `gorm:"-" json:"subject"`             // 学科类别（来自关联模板）
+	DocumentType       string          `gorm:"-" json:"document_type"`       // 文档类型（来自关联模板）
 
 	// 关联
 	Templates []FormatTemplate `gorm:"foreignKey:UniversityID" json:"templates,omitempty"`

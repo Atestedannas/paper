@@ -110,6 +110,14 @@ func PerformMigration() error {
 		}
 	}
 
+	// 6. 确保智能分类器相关表存在（独立迁移，避免被前面的错误阻断）
+	if err := DB.AutoMigrate(&model.ParagraphSample{}, &model.ClassifierModelState{}); err != nil {
+		log.Printf("WARNING: 智能分类器表迁移失败: %v", err)
+	}
+
+	// 7. 确保 paragraph_samples 新增字段存在
+	DB.Exec(`ALTER TABLE paragraph_samples ADD COLUMN IF NOT EXISTS has_originality_kw boolean DEFAULT false`)
+
 	log.Println("数据库迁移和初始化完成")
 	return nil
 }
@@ -149,5 +157,9 @@ func migrateDatabase() error {
 		// ACL 行级权限模型
 		&model.ResourceACL{},
 		&model.ACLUser{},
+
+		// 智能分类器（自进化段落分类系统）
+		&model.ParagraphSample{},
+		&model.ClassifierModelState{},
 	)
 }

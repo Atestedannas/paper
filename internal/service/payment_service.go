@@ -41,7 +41,7 @@ func NewPaymentService(config *config.Config) PaymentService {
 	}
 }
 
-// CreatePayment 创建支付记录
+// CreatePayment 创建支付记录（幂等：同订单存在 pending 记录则复用）
 func (s *paymentService) CreatePayment(orderID uuid.UUID, paymentMethod string, paymentType string, clientIP string) (*model.PaymentRecord, map[string]interface{}, error) {
 	orderService := NewOrderService()
 	order, err := orderService.GetOrderByID(orderID)
@@ -58,11 +58,28 @@ func (s *paymentService) CreatePayment(orderID uuid.UUID, paymentMethod string, 
 		return nil, nil, errors.New("order has expired")
 	}
 
+	// 幂等：同订单存在 pending 支付记录则直接复用，重新生成二维码
+	var existing model.PaymentRecord
+	if err := database.DB.
+		Where("order_id = ? AND payment_status = 'pending'", orderID).
+		First(&existing).Error; err == nil {
+		paymentParams, err := s.generatePaymentParams(&existing, order, clientIP, paymentType)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &existing, paymentParams, nil
+	}
+
+	// 新建支付记录，用 UUID 前缀占位，避免空字符串重复违反唯一约束
+	newID := uuid.New()
 	payment := &model.PaymentRecord{
+		ID:            newID,
 		OrderID:       orderID,
+		TransactionID: "PENDING_" + newID.String(),
 		PaymentAmount: order.TotalAmount,
 		PaymentMethod: paymentMethod,
 		PaymentStatus: "pending",
+		ExtraData:     "{}",
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 	}
@@ -183,14 +200,27 @@ func (s *paymentService) verifyWeChatSign(params map[string]interface{}) error {
 // generateAlipayPaymentParams 生成支付宝支付参数
 func (s *paymentService) generateAlipayPaymentParams(payment *model.PaymentRecord, order *model.Order, paymentType string) (map[string]interface{}, error) {
 	switch paymentType {
+	case "precreate":
+		// 扫码支付：调用 alipay.trade.precreate，返回 qr.alipay.com 链接
+		qrContent, err := s.alipayPagePayService.CreateTradePrecreate(order, order.TotalAmount)
+		if err != nil {
+			return nil, fmt.Errorf("支付宝扫码支付创建失败: %w", err)
+		}
+		qrCodeURL := s.alipayPagePayService.GenerateQRCodeImageURL(qrContent, 256)
+		return map[string]interface{}{
+			"payment_type": "precreate",
+			"qr_content":   qrContent,
+			"qr_code_url":  qrCodeURL,
+			"order_no":     order.OrderNo,
+			"total_amount": order.TotalAmount,
+		}, nil
 	case "page":
+		// 网页跳转支付：构建完整支付 URL，前端跳转或生成二维码
 		paymentURL, err := s.alipayPagePayService.CreateTradePagePay(order, order.TotalAmount)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create alipay page pay: %w", err)
+			return nil, fmt.Errorf("支付宝页面支付创建失败: %w", err)
 		}
-
 		qrCodeURL := s.alipayPagePayService.GenerateQRCodeImageURL(paymentURL, 256)
-
 		return map[string]interface{}{
 			"payment_type": "page",
 			"payment_url":  paymentURL,

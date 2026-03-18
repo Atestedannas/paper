@@ -18,6 +18,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/config"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
+	"github.com/paper-format-checker/backend/pkg/aiclassifier"
 	"github.com/paper-format-checker/backend/pkg/fileprocessor"
 	"github.com/paper-format-checker/backend/pkg/formatchecker"
 	"gorm.io/gorm"
@@ -41,6 +42,30 @@ func NewPaperService(config *config.Config) PaperService {
 	return PaperService{
 		config: config,
 	}
+}
+
+// createSmartProcessor 创建带智能分类器的增强处理器
+func (s PaperService) createSmartProcessor() *fileprocessor.EnhancedProcessor {
+	processor := fileprocessor.NewEnhancedProcessor()
+
+	if s.config != nil && s.config.DeepSeek.Cookie != "" {
+		sc := aiclassifier.NewSmartClassifier(
+			database.DB,
+			s.config.DeepSeek.Cookie,
+			s.config.DeepSeek.Bearer,
+			s.config.DeepSeek.Enabled,
+			s.config.DeepSeek.RetrainThreshold,
+			s.config.DeepSeek.MaxCallsPerDocument,
+		)
+		processor.SetSmartClassifier(sc)
+		log.Printf("[PaperService] 智能分类器已注入，阶段=%s", sc.GetPhase())
+	} else if database.DB != nil {
+		sc := aiclassifier.NewSmartClassifier(database.DB, "", "", false, 200, 20)
+		processor.SetSmartClassifier(sc)
+		log.Println("[PaperService] 智能分类器已注入（无AI，仅规则+本地模型）")
+	}
+
+	return processor
 }
 
 // CheckPaperFormat 妫€鏌ヨ鏂囨牸寮?
@@ -245,7 +270,7 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 		}
 	}
 
-	processor := fileprocessor.NewEnhancedProcessor()
+	processor := s.createSmartProcessor()
 
 	// 4. 淇鏂囨。
 	ctx := context.Background()
@@ -532,7 +557,7 @@ func (s PaperService) UploadPaper(userID uuid.UUID, title, description string, f
 
 				// 濡傛灉鏄洿鎺ョ粨鏋勶紝浣跨敤 ParseRequirementsToStandard 鍑芥暟
 				//standard := formatchecker.ParseRequirementsToStandard(rulesMap) // 浣跨敤鏍囧噯瑙ｆ瀽锛屼絾鐩存帴浣跨敤rulesMap
-				processor := fileprocessor.NewEnhancedProcessor()
+				processor := s.createSmartProcessor()
 
 				ctx := context.Background()
 				// 浣跨敤澧炲己澶勭悊鍣ㄧ洿鎺ュ簲鐢ㄦ牸寮忚鍒?
@@ -674,7 +699,7 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 				log.Println("🔧 使用增强处理器进行格式修正")
 				log.Println("========================================")
 
-				fp := fileprocessor.NewEnhancedProcessor()
+				fp := s.createSmartProcessor()
 				newFilePath, err := fp.ApplyCorrections(context.Background(), paper.FilePath, []map[string]interface{}{
 					{"format_rules": rulesMap},
 				})

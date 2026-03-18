@@ -41,6 +41,7 @@ func (h *PaymentHandler) CreatePayment(c *gin.Context) {
 		if req.PaymentMethod == "wechat" {
 			req.PaymentType = "native"
 		} else {
+			// alipay.trade.page.pay：本地构建签名 URL，无需 precreate 权限
 			req.PaymentType = "page"
 		}
 	}
@@ -48,7 +49,7 @@ func (h *PaymentHandler) CreatePayment(c *gin.Context) {
 	// 验证支付类型
 	validPaymentTypes := map[string][]string{
 		"wechat": {"native", "jsapi"},
-		"alipay": {"page"},
+		"alipay": {"page", "precreate"},
 	}
 	if !contains(validPaymentTypes[req.PaymentMethod], req.PaymentType) {
 		utils.BadRequest(c, "invalid payment type")

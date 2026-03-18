@@ -50,17 +50,39 @@ func RunMigrations() error {
 		&migrations.MigrationRBACEnhanced{},
 		// RBAC 双模型收敛（authority -> permission，非破坏式）
 		&Migration20260307UnifyRBACModel{},
+		// ACL 行级权限表
+		&Migration20260311CreateACLTables{},
+		// 修正重庆文理学院模板左右页边距 3.17 → 3.18
+		&Migration20260312FixCQWLMargins{},
+		// 创建/修正四川师范大学格式模板（含完整格式规范）
+		&Migration20260312FixSCNUFormat{},
+		// 将四川师范大学格式规则升级为 EnhancedProcessor 统一结构（v2）
+		&Migration20260313FixSCNUFormatV2{},
+		// 创建智能分类器相关表（paragraph_samples / classifier_model_states）
+		&Migration20260315CreateAIClassifierTables{},
+		// 创建重庆理工大学论文格式模板
+		&Migration20260315CreateCQUTFormat{},
+		// V2: 强制更新重庆理工大学所有模板（修复 abstract/keywords/english_abstract 规则数据）
+		&Migration20260315FixCQUTFormatV2{},
 	}
 
-	// 按顺序执行迁移
+	// 按顺序执行迁移（单个失败不阻止后续，仅记录 warning）
+	var firstErr error
 	for _, migration := range migrations {
 		if err := runMigration(migration); err != nil {
-			return fmt.Errorf("migration %s failed: %w", migration.Name(), err)
+			log.Printf("⚠️  Migration %s failed (non-fatal, continuing): %v", migration.Name(), err)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 
-	log.Println("All migrations completed successfully")
-	return nil
+	if firstErr != nil {
+		log.Printf("All migrations finished with at least one error: %v", firstErr)
+	} else {
+		log.Println("All migrations completed successfully")
+	}
+	return firstErr
 }
 
 // runMigration 运行单个迁移
@@ -354,4 +376,74 @@ func (m *Migration20250306AddDeletedAtToPapers) Down(tx *gorm.DB) error {
 
 	log.Println("Successfully removed deleted_at column from papers table")
 	return nil
+}
+
+// Migration20260311CreateACLTables 创建 ACL 行级权限表
+type Migration20260311CreateACLTables struct{}
+
+func (m *Migration20260311CreateACLTables) Name() string {
+	return "20260311_create_acl_tables"
+}
+
+func (m *Migration20260311CreateACLTables) Up(tx *gorm.DB) error {
+	// 创建 resource_acls 表
+	if err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS resource_acls (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			resource_type VARCHAR(50) NOT NULL,
+			resource_id UUID NOT NULL,
+			owner_id UUID NOT NULL,
+			creator_id UUID,
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+		)
+	`).Error; err != nil {
+		return fmt.Errorf("创建 resource_acls 表失败: %w", err)
+	}
+
+	// 创建索引
+	if err := tx.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_resource_type_id
+		ON resource_acls(resource_type, resource_id)
+	`).Error; err != nil {
+		return fmt.Errorf("创建 resource_acls 索引失败: %w", err)
+	}
+
+	if err := tx.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_resource_acls_owner_id
+		ON resource_acls(owner_id)
+	`).Error; err != nil {
+		return fmt.Errorf("创建 resource_acls owner_id 索引失败: %w", err)
+	}
+
+	// 创建 resource_acl_users 表
+	if err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS resource_acl_users (
+			acl_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			access_level VARCHAR(20) DEFAULT 'read',
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (acl_id, user_id),
+			CONSTRAINT fk_acl_users_acl FOREIGN KEY (acl_id) REFERENCES resource_acls(id) ON DELETE CASCADE
+		)
+	`).Error; err != nil {
+		return fmt.Errorf("创建 resource_acl_users 表失败: %w", err)
+	}
+
+	if err := tx.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_resource_acl_users_user_id
+		ON resource_acl_users(user_id)
+	`).Error; err != nil {
+		return fmt.Errorf("创建 resource_acl_users user_id 索引失败: %w", err)
+	}
+
+	log.Println("ACL tables created successfully")
+	return nil
+}
+
+func (m *Migration20260311CreateACLTables) Down(tx *gorm.DB) error {
+	if err := tx.Exec(`DROP TABLE IF EXISTS resource_acl_users`).Error; err != nil {
+		return err
+	}
+	return tx.Exec(`DROP TABLE IF EXISTS resource_acls`).Error
 }

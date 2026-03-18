@@ -1072,16 +1072,14 @@ func (h *AdminUniversityHandler) GetUniversities(c *gin.Context) {
 
 			universities[i].FormatRequirements = json.RawMessage(activeTemplate.FormatRules)
 			universities[i].FilePath = activeTemplate.FilePath
+			universities[i].Subject = activeTemplate.Subject
+			universities[i].DocumentType = activeTemplate.DocumentType
 
 			// 简单的URL构造，实际可能需要更复杂的逻辑
 			if strings.HasSuffix(strings.ToLower(activeTemplate.FilePath), ".docx") {
 				universities[i].DocxTemplateURL = "/" + activeTemplate.FilePath // 假设FilePath是相对uploads的路径，或者已经是完整路径
 				// 如果FilePath是绝对路径或不带/uploads前缀，需调整
 				if !strings.HasPrefix(activeTemplate.FilePath, "/") && !strings.HasPrefix(activeTemplate.FilePath, "http") {
-					// 假设存储的是 temp/uploads/xxx 或 uploads/xxx
-					// 静态服务挂载在 /uploads -> ./uploads
-					// 如果FilePath是 temp/uploads/xxx，则访问 /uploads/temp/uploads/xxx ? 不对
-					// 通常 FilePath 应该是 uploads/xxx
 					universities[i].DocxTemplateURL = "/" + strings.ReplaceAll(activeTemplate.FilePath, "\\", "/")
 				}
 			} else if strings.HasSuffix(strings.ToLower(activeTemplate.FilePath), ".pdf") {
@@ -1128,6 +1126,8 @@ func (h *AdminUniversityHandler) GetUniversity(c *gin.Context) {
 
 		university.FormatRequirements = json.RawMessage(activeTemplate.FormatRules)
 		university.FilePath = activeTemplate.FilePath
+		university.Subject = activeTemplate.Subject
+		university.DocumentType = activeTemplate.DocumentType
 
 		path := "/" + strings.ReplaceAll(activeTemplate.FilePath, "\\", "/")
 		if strings.HasSuffix(strings.ToLower(activeTemplate.FilePath), ".docx") {

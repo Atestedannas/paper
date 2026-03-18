@@ -176,42 +176,97 @@ func (h *ConfigHandler) GetPaperCheckConfig(c *gin.Context) {
 	utils.SuccessResponse(c, "获取论文格式检查配置成功", response)
 }
 
+// contactFieldMap 前端字段名 -> 数据库 key 映射
+var contactFieldMap = map[string]string{
+	"name":           "contact_name",
+	"email_support":  "contact_email_support",
+	"email_business": "contact_email_business",
+	"wechat_qrcode":  "contact_wechat_qrcode",
+	"phone":          "contact_phone",
+	"address":        "contact_address",
+	"work_hours":     "contact_work_hours",
+	"remarks":        "contact_remarks",
+}
+
 // GetContactInfo 获取联系信息（公开接口）
 func (h *ConfigHandler) GetContactInfo(c *gin.Context) {
-	// 从数据库获取联系信息配置
-	var settings []model.SystemSetting
-
-	contactInfoKeys := []string{
-		"contact_email_support",  // 技术支持邮箱
-		"contact_email_business", // 商务合作邮箱
-		"contact_wechat_qrcode",  // 微信二维码图片URL
-		"contact_phone",          // 联系电话
-		"contact_address",        // 联系地址
-		"contact_work_hours",     // 工作时间
+	dbKeys := make([]string, 0, len(contactFieldMap))
+	for _, v := range contactFieldMap {
+		dbKeys = append(dbKeys, v)
 	}
 
-	if err := database.DB.Where("key IN ?", contactInfoKeys).Find(&settings).Error; err != nil {
+	var settings []model.SystemSetting
+	if err := database.DB.Where("key IN ?", dbKeys).Find(&settings).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "获取联系信息失败", err.Error())
 		return
 	}
 
-	// 构建配置映射
 	configMap := make(map[string]string)
-	for _, setting := range settings {
-		configMap[setting.Key] = setting.Value
+	for _, s := range settings {
+		configMap[s.Key] = s.Value
 	}
 
-	// 构建响应，默认值从原硬编码数据获取
 	response := gin.H{
-		"email_support":  getStringValue(configMap, "contact_email_support", "2673078804@qq.com"),
-		"email_business": getStringValue(configMap, "contact_email_business", "2673078804@qq.com"),
-		"wechat_qrcode":  getStringValue(configMap, "contact_wechat_qrcode", "https://img1.baidu.com/it/u=3719270913,2773989566&fm=253&fmt=auto&app=138&f=JPEG?w=500&h=500"),
+		"name":           getStringValue(configMap, "contact_name", ""),
+		"email_support":  getStringValue(configMap, "contact_email_support", ""),
+		"email_business": getStringValue(configMap, "contact_email_business", ""),
+		"wechat_qrcode":  getStringValue(configMap, "contact_wechat_qrcode", ""),
 		"phone":          getStringValue(configMap, "contact_phone", ""),
 		"address":        getStringValue(configMap, "contact_address", ""),
 		"work_hours":     getStringValue(configMap, "contact_work_hours", ""),
+		"remarks":        getStringValue(configMap, "contact_remarks", ""),
 	}
 
 	utils.SuccessResponse(c, "获取联系信息成功", response)
+}
+
+// UpdateContactInfo 更新联系信息（管理员接口）
+func (h *ConfigHandler) UpdateContactInfo(c *gin.Context) {
+	var req struct {
+		Name          string `json:"name"`
+		EmailSupport  string `json:"email_support"`
+		EmailBusiness string `json:"email_business"`
+		WechatQrcode  string `json:"wechat_qrcode"`
+		Phone         string `json:"phone"`
+		Address       string `json:"address"`
+		WorkHours     string `json:"work_hours"`
+		Remarks       string `json:"remarks"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "请求参数错误", err.Error())
+		return
+	}
+
+	// 将前端字段逐一 upsert 到 system_settings 表
+	updates := map[string]string{
+		"contact_name":           req.Name,
+		"contact_email_support":  req.EmailSupport,
+		"contact_email_business": req.EmailBusiness,
+		"contact_wechat_qrcode":  req.WechatQrcode,
+		"contact_phone":          req.Phone,
+		"contact_address":        req.Address,
+		"contact_work_hours":     req.WorkHours,
+		"contact_remarks":        req.Remarks,
+	}
+
+	for key, value := range updates {
+		setting := model.SystemSetting{Key: key, Value: value}
+		if err := database.DB.Where(model.SystemSetting{Key: key}).
+			Assign(model.SystemSetting{Value: value, Description: "客服联系信息"}).
+			FirstOrCreate(&setting).Error; err != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "保存联系信息失败", err.Error())
+			return
+		}
+		// 更新已存在的值
+		if err := database.DB.Model(&model.SystemSetting{}).
+			Where("key = ?", key).
+			Update("value", value).Error; err != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "更新联系信息失败", err.Error())
+			return
+		}
+	}
+
+	utils.SuccessResponse(c, "联系信息保存成功", nil)
 }
 
 // getStringValue 安全获取字符串值

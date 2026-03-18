@@ -15,6 +15,15 @@ type WechatSandboxConfig struct {
 	SandboxSignKey string `mapstructure:"sandbox_sign_key"`
 }
 
+// DeepSeekConfig DeepSeek AI 配置
+type DeepSeekConfig struct {
+	Cookie              string `mapstructure:"cookie"`
+	Bearer              string `mapstructure:"bearer"`
+	Enabled             bool   `mapstructure:"enabled"`
+	MaxCallsPerDocument int    `mapstructure:"max_calls_per_document"`
+	RetrainThreshold    int    `mapstructure:"retrain_threshold"` // 累积多少样本后触发重训练
+}
+
 // Config 应用配置结构体
 type Config struct {
 	Server        ServerConfig        `mapstructure:"server"`
@@ -27,6 +36,7 @@ type Config struct {
 	WechatSandbox WechatSandboxConfig `mapstructure:"wechat_sandbox"`
 	Alipay        AlipayConfig        `mapstructure:"alipay"`
 	Payment       PaymentConfig       `mapstructure:"payment"`
+	DeepSeek      DeepSeekConfig      `mapstructure:"deepseek"`
 }
 
 // RBACConfig RBAC 配置
@@ -99,17 +109,23 @@ type WechatConfig struct {
 
 // AlipayConfig 支付宝配置
 type AlipayConfig struct {
-	AppID             string `mapstructure:"app_id"`
-	AppPrivateKey     string `mapstructure:"app_private_key"`
-	AlipayPublicKey   string `mapstructure:"alipay_public_key"`
-	NotifyURL         string `mapstructure:"notify_url"`
-	ReturnURL         string `mapstructure:"return_url"`
-	RedirectURL       string `mapstructure:"redirect_url"`
-	Scope             string `mapstructure:"scope"`
-	AuthorizeURL      string `mapstructure:"authorize_url"`
-	GatewayURL        string `mapstructure:"gateway_url"`
-	SandboxEnabled    bool   `mapstructure:"sandbox_enabled"`
-	SandboxGatewayURL string `mapstructure:"sandbox_gateway_url"`
+	AppID                string `mapstructure:"app_id"`
+	AppPrivateKey        string `mapstructure:"app_private_key"`
+	AlipayPublicKey      string `mapstructure:"alipay_public_key"`
+	SignType             string `mapstructure:"sign_type"` // RSA 或 RSA2（默认 RSA2）
+	NotifyURL            string `mapstructure:"notify_url"`
+	ReturnURL            string `mapstructure:"return_url"`
+	RedirectURL          string `mapstructure:"redirect_url"`
+	Scope                string `mapstructure:"scope"`
+	AuthorizeURL         string `mapstructure:"authorize_url"`
+	GatewayURL           string `mapstructure:"gateway_url"`
+	SandboxEnabled       bool   `mapstructure:"sandbox_enabled"`
+	SandboxAppID         string `mapstructure:"sandbox_app_id"`
+	SandboxAppPrivateKey string `mapstructure:"sandbox_app_private_key"`
+	SandboxSignType      string `mapstructure:"sandbox_sign_type"` // 沙箱签名类型（默认 RSA2）
+	SandboxGatewayURL    string `mapstructure:"sandbox_gateway_url"`
+	SandboxNotifyURL     string `mapstructure:"sandbox_notify_url"`
+	SandboxReturnURL     string `mapstructure:"sandbox_return_url"`
 }
 
 // LoadConfig 从环境变量和配置文件加载配置
@@ -310,6 +326,12 @@ func LoadConfig(configPath string) (*Config, error) {
 	if alipayPublicKey := os.Getenv("ALIPAY_PUBLIC_KEY"); alipayPublicKey != "" {
 		config.Alipay.AlipayPublicKey = alipayPublicKey
 	}
+	if alipaySignType := os.Getenv("ALIPAY_SIGN_TYPE"); alipaySignType != "" {
+		config.Alipay.SignType = alipaySignType
+	}
+	if config.Alipay.SignType == "" {
+		config.Alipay.SignType = "RSA2" // 默认 RSA2
+	}
 	if alipayNotifyURL := os.Getenv("ALIPAY_NOTIFY_URL"); alipayNotifyURL != "" {
 		config.Alipay.NotifyURL = alipayNotifyURL
 	}
@@ -332,6 +354,21 @@ func LoadConfig(configPath string) (*Config, error) {
 		if enabled, err := strconv.ParseBool(alipaySandboxEnabled); err == nil {
 			config.Alipay.SandboxEnabled = enabled
 		}
+	}
+	if v := os.Getenv("ALIPAY_SANDBOX_APP_ID"); v != "" {
+		config.Alipay.SandboxAppID = v
+	}
+	if v := os.Getenv("ALIPAY_SANDBOX_APP_PRIVATE_KEY"); v != "" {
+		config.Alipay.SandboxAppPrivateKey = v
+	}
+	if v := os.Getenv("ALIPAY_SANDBOX_SIGN_TYPE"); v != "" {
+		config.Alipay.SandboxSignType = v
+	}
+	if v := os.Getenv("ALIPAY_SANDBOX_NOTIFY_URL"); v != "" {
+		config.Alipay.SandboxNotifyURL = v
+	}
+	if v := os.Getenv("ALIPAY_SANDBOX_RETURN_URL"); v != "" {
+		config.Alipay.SandboxReturnURL = v
 	}
 	if alipaySandboxGatewayURL := os.Getenv("ALIPAY_SANDBOX_GATEWAY_URL"); alipaySandboxGatewayURL != "" {
 		config.Alipay.SandboxGatewayURL = alipaySandboxGatewayURL
@@ -372,6 +409,36 @@ func LoadConfig(configPath string) (*Config, error) {
 		if v, err := strconv.ParseFloat(compare, 64); err == nil {
 			config.Payment.Compare = v
 		}
+	}
+
+	// 从环境变量加载 DeepSeek 配置
+	if cookie := os.Getenv("DEEPSEEK_COOKIE"); cookie != "" {
+		config.DeepSeek.Cookie = cookie
+		config.DeepSeek.Enabled = true
+	}
+	if bearer := os.Getenv("DEEPSEEK_BEARER"); bearer != "" {
+		config.DeepSeek.Bearer = bearer
+	}
+	if enabled := os.Getenv("DEEPSEEK_ENABLED"); enabled != "" {
+		if v, err := strconv.ParseBool(enabled); err == nil {
+			config.DeepSeek.Enabled = v
+		}
+	}
+	if maxCalls := os.Getenv("DEEPSEEK_MAX_CALLS_PER_DOC"); maxCalls != "" {
+		if v, err := strconv.Atoi(maxCalls); err == nil {
+			config.DeepSeek.MaxCallsPerDocument = v
+		}
+	}
+	if config.DeepSeek.MaxCallsPerDocument == 0 {
+		config.DeepSeek.MaxCallsPerDocument = 20
+	}
+	if threshold := os.Getenv("DEEPSEEK_RETRAIN_THRESHOLD"); threshold != "" {
+		if v, err := strconv.Atoi(threshold); err == nil {
+			config.DeepSeek.RetrainThreshold = v
+		}
+	}
+	if config.DeepSeek.RetrainThreshold == 0 {
+		config.DeepSeek.RetrainThreshold = 200
 	}
 
 	return config, nil

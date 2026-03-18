@@ -142,8 +142,9 @@ func main() {
 			auth.GET("/wechat/login-url", authHandler.GetWechatAuthURL)
 			auth.GET("/wechat/callback", authHandler.WechatAuthCallback)
 
-			// Alipay login
+			// Alipay login (GET for platform redirect, POST for API call)
 			auth.GET("/alipay/login-url", authHandler.GetAlipayAuthURL)
+			auth.GET("/alipay/callback", authHandler.AlipayAuthCallback)
 			auth.POST("/alipay/callback", authHandler.AlipayAuthCallback)
 
 			// File download
@@ -295,12 +296,13 @@ func main() {
 			admin.POST("/users/set-super-admin", adminHandler.SetUserAsSuperAdmin)           // Set user as super admin
 
 			// Paper management
-			admin.GET("/papers", adminHandler.GetPapers)          // Get paper list
-			admin.DELETE("/papers/:id", adminHandler.DeletePaper) // Delete paper by ID
+			admin.GET("/papers", adminHandler.GetPapers)
+			admin.DELETE("/papers/:id", adminHandler.DeletePaper)
 			admin.POST("/papers/batch-delete", adminHandler.BatchDeletePapers)
+			admin.POST("/papers/batch-force-delete", adminHandler.BatchForceDeletePapers)
 			admin.POST("/papers/batch-check", adminHandler.BatchCheckPapers)
 			admin.POST("/papers/:id/check-format", adminHandler.CheckPaperFormat)
-			admin.GET("/papers/:id/file", adminHandler.DownloadPaperFile) // Batch delete papers
+			admin.GET("/papers/:id/file", adminHandler.DownloadPaperFile)
 
 			// Paper restore endpoints (soft delete recovery)
 			admin.POST("/papers/:id/restore", adminHandler.RestorePaper)
@@ -386,8 +388,9 @@ func main() {
 			auth.GET("/wechat/login-url", authHandler.GetWechatAuthURL)
 			auth.GET("/wechat/callback", authHandler.WechatAuthCallback)
 
-			// Alipay login
+			// Alipay login (GET for platform redirect, POST for API call)
 			auth.GET("/alipay/login-url", authHandler.GetAlipayAuthURL)
+			auth.GET("/alipay/callback", authHandler.AlipayAuthCallback)
 			auth.POST("/alipay/callback", authHandler.AlipayAuthCallback)
 
 			// File download
@@ -558,6 +561,7 @@ func main() {
 			admin.GET("/papers", adminHandler.GetPapers)
 			admin.DELETE("/papers/:id", adminHandler.DeletePaper)
 			admin.POST("/papers/batch-delete", adminHandler.BatchDeletePapers)
+			admin.POST("/papers/batch-force-delete", adminHandler.BatchForceDeletePapers)
 			admin.POST("/papers/batch-check", adminHandler.BatchCheckPapers)
 			admin.POST("/papers/:id/check-format", adminHandler.CheckPaperFormat)
 			admin.GET("/papers/:id/file", adminHandler.DownloadPaperFile)
@@ -567,7 +571,8 @@ func main() {
 			admin.POST("/papers/batch-restore", adminHandler.BatchRestorePapers)
 
 			// Contact method management
-			admin.GET("/support/contact", configHandler.GetContactInfo) // Get contact info
+			admin.GET("/support/contact", configHandler.GetContactInfo)    // Get contact info
+			admin.PUT("/support/contact", configHandler.UpdateContactInfo) // Update contact info
 
 			// Payment strategy configuration
 			admin.GET("/settings/payment-config", adminSystemHandler.GetPaymentConfig)

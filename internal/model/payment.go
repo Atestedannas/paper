@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // MemberLevel 会员等级模型
@@ -77,6 +78,21 @@ type PaymentRecord struct {
 
 	// 关联
 	Order Order `gorm:"foreignKey:OrderID" json:"order,omitempty"`
+}
+
+// BeforeCreate GORM hook：确保 jsonb 字段不为空字符串
+func (m *MemberLevel) BeforeCreate(tx *gorm.DB) error {
+	if m.Features == "" {
+		m.Features = "[]"
+	}
+	return nil
+}
+
+func (p *PaymentRecord) BeforeCreate(tx *gorm.DB) error {
+	if p.ExtraData == "" {
+		p.ExtraData = "{}"
+	}
+	return nil
 }
 
 // PaymentResourceLink 支付资源关联表

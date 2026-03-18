@@ -345,10 +345,19 @@ func (h *AuthHandler) GetAlipayAuthURL(c *gin.Context) {
 	})
 }
 
-// AlipayAuthCallback 支付宝登录回调
+// AlipayAuthCallback 支付宝登录回调（GET 重定向 / POST API 均支持）
 func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
-	// 获取授权码
+	// GET: platform redirect appends auth_code as query param
 	code := c.Query("auth_code")
+	// POST: frontend may send JSON body
+	if code == "" {
+		var body struct {
+			AuthCode string `json:"auth_code"`
+		}
+		if err := c.ShouldBindJSON(&body); err == nil {
+			code = body.AuthCode
+		}
+	}
 
 	if code == "" {
 		utils.BadRequest(c, "missing authorization code")

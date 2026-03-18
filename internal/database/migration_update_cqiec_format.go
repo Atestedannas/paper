@@ -19,51 +19,57 @@ func (m *Migration20250124UpdateCQIECFormat) Up(tx *gorm.DB) error {
 
 	var university model.University
 	if err := tx.Where("name = ?", "重庆工程学院").First(&university).Error; err != nil {
-		return gorm.ErrRecordNotFound
+		// 学校不存在时跳过，不影响其他迁移
+		log.Printf("重庆工程学院未找到，跳过该迁移: %v", err)
+		return nil
 	}
 
 	cqiecUniversityID := university.ID
-
-	var existingTemplate model.FormatTemplate
-	err := tx.Where("university_id = ? AND document_type = ? AND source = ?", cqiecUniversityID, "本科论文", "system").First(&existingTemplate).Error
-
 	formatRulesJSON := m.generateFormatRules()
 
+	var existingTemplate model.FormatTemplate
+	err := tx.Where("university_id = ? AND document_type = ? AND source = ?",
+		cqiecUniversityID, "本科论文", "system").First(&existingTemplate).Error
+
 	if err == gorm.ErrRecordNotFound {
-		log.Println("未找到现有模板，创建新模板...")
-		newTemplate := model.FormatTemplate{
-			TemplateID:   "cqiec_bachelor_thesis_2024",
-			Name:         "重庆工程学院本科毕业论文格式标准（2024版）",
-			UniversityID: &cqiecUniversityID,
-			DocumentType: "本科论文",
-			Subject:      "综合",
-			Source:       "system",
-			Version:      "2.0",
-			IsPublic:     true,
-			IsActive:     true,
-			FormatRules:  formatRulesJSON,
-			Description:  "重庆工程学院本科毕业设计（论文）格式规范（2024版）",
+		log.Println("未找到现有模板，使用原始 SQL 创建新模板...")
+		// 使用原始 SQL 避免 GORM 类型推断问题
+		createErr := tx.Exec(`
+			INSERT INTO format_templates
+				(id, template_id, name, university_id, document_type, subject,
+				 source, version, is_public, is_active, format_rules, description,
+				 parse_confidence, usage_count, success_rate, created_at, updated_at)
+			VALUES
+				(gen_random_uuid(), $1, $2, $3, '本科论文', '综合',
+				 'system', '2.0', true, true, $4, $5,
+				 0.0, 0, 0.0, NOW(), NOW())
+			ON CONFLICT DO NOTHING
+		`, "cqiec_bachelor_thesis_2024", "重庆工程学院本科毕业论文格式标准（2024版）",
+			cqiecUniversityID, formatRulesJSON,
+			"重庆工程学院本科毕业设计（论文）格式规范（2024版）").Error
+		if createErr != nil {
+			log.Printf("创建重庆工程学院模板失败（非致命，跳过）: %v", createErr)
+		} else {
+			log.Println("已创建重庆工程学院新模板")
 		}
-		if err := tx.Create(&newTemplate).Error; err != nil {
-			return err
-		}
-		log.Printf("已创建新模板，ID: %s", newTemplate.ID)
 	} else if err != nil {
-		return err
+		log.Printf("查询重庆工程学院模板失败（非致命，跳过）: %v", err)
 	} else {
 		log.Println("找到现有模板，更新格式要求...")
-		if err := tx.Model(&existingTemplate).Updates(map[string]interface{}{
+		updateErr := tx.Model(&existingTemplate).Updates(map[string]interface{}{
 			"name":         "重庆工程学院本科毕业论文格式标准（2024版）",
 			"version":      "2.0",
 			"format_rules": formatRulesJSON,
 			"description":  "重庆工程学院本科毕业设计（论文）格式规范（2024版）",
-		}).Error; err != nil {
-			return err
+		}).Error
+		if updateErr != nil {
+			log.Printf("更新重庆工程学院模板失败（非致命，跳过）: %v", updateErr)
+		} else {
+			log.Printf("已更新模板，ID: %s", existingTemplate.ID)
 		}
-		log.Printf("已更新模板，ID: %s", existingTemplate.ID)
 	}
 
-	log.Println("重庆工程学院格式要求更新完成")
+	log.Println("重庆工程学院格式要求处理完成")
 	return nil
 }
 

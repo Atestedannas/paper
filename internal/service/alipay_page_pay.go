@@ -5,6 +5,7 @@ import (
 	"crypto"
 	crand "crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -225,6 +226,86 @@ func minInt(a, b int) int {
 	return b
 }
 
+// effectiveSignType 获取实际生效的签名类型（沙箱优先，默认 RSA2）
+func (s *AlipayPagePayService) effectiveSignType() string {
+	if s.config.Alipay.SandboxEnabled && s.config.Alipay.SandboxSignType != "" {
+		st := strings.ToUpper(strings.TrimSpace(s.config.Alipay.SandboxSignType))
+		if st == "RSA" {
+			return "RSA"
+		}
+		return "RSA2"
+	}
+	st := strings.ToUpper(strings.TrimSpace(s.config.Alipay.SignType))
+	if st == "RSA" {
+		return "RSA"
+	}
+	return "RSA2"
+}
+
+// looksLikeFilePath 判断字符串是否看起来像文件路径而非 base64 私钥。
+// Base64 私钥通常长度 > 200，而合法文件路径一般很短且带路径分隔符前缀或文件扩展名。
+func looksLikeFilePath(s string) bool {
+	if len(s) > 200 {
+		return false // 太长，肯定不是路径
+	}
+	if strings.Contains(s, "-----BEGIN") {
+		return false // PEM 格式，直接解析
+	}
+	// Unix/Windows 绝对路径
+	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") {
+		return true
+	}
+	// Windows 绝对路径（C:\... 或 C:/...）
+	if len(s) >= 3 && s[1] == ':' && (s[2] == '\\' || s[2] == '/') {
+		return true
+	}
+	// 相对路径且带常见密钥扩展名
+	if strings.HasSuffix(s, ".pem") || strings.HasSuffix(s, ".key") || strings.HasSuffix(s, ".txt") {
+		return true
+	}
+	return false
+}
+
+// parsePrivateKey 解析 RSA 私钥（支持裸 base64、PKCS1 PEM、PKCS8 PEM）
+func parsePrivateKey(keyStr string) (*rsa.PrivateKey, error) {
+	keyStr = strings.TrimSpace(keyStr)
+	// 如果不含 PEM 头，自动添加（先尝试 PKCS8，再尝试 PKCS1）
+	if !strings.Contains(keyStr, "-----BEGIN") {
+		// 尝试 PKCS8
+		p8 := "-----BEGIN PRIVATE KEY-----\n" + keyStr + "\n-----END PRIVATE KEY-----"
+		if blk, _ := pem.Decode([]byte(p8)); blk != nil {
+			if k, err := x509.ParsePKCS8PrivateKey(blk.Bytes); err == nil {
+				if rk, ok := k.(*rsa.PrivateKey); ok {
+					return rk, nil
+				}
+			}
+		}
+		// 尝试 PKCS1
+		p1 := "-----BEGIN RSA PRIVATE KEY-----\n" + keyStr + "\n-----END RSA PRIVATE KEY-----"
+		if blk, _ := pem.Decode([]byte(p1)); blk != nil {
+			if k, err := x509.ParsePKCS1PrivateKey(blk.Bytes); err == nil {
+				return k, nil
+			}
+		}
+		return nil, fmt.Errorf("无法解析私钥：既不是 PKCS8 也不是 PKCS1 格式")
+	}
+	blk, _ := pem.Decode([]byte(keyStr))
+	if blk == nil {
+		return nil, fmt.Errorf("PEM 解码失败")
+	}
+	// PKCS8
+	if k, err := x509.ParsePKCS8PrivateKey(blk.Bytes); err == nil {
+		if rk, ok := k.(*rsa.PrivateKey); ok {
+			return rk, nil
+		}
+	}
+	// PKCS1
+	if k, err := x509.ParsePKCS1PrivateKey(blk.Bytes); err == nil {
+		return k, nil
+	}
+	return nil, fmt.Errorf("私钥格式无法识别（尝试了 PKCS8 和 PKCS1）")
+}
+
 func (s *AlipayPagePayService) GenerateSign(params map[string]string) (string, error) {
 	var keys []string
 	for k := range params {
@@ -244,50 +325,39 @@ func (s *AlipayPagePayService) GenerateSign(params map[string]string) (string, e
 		signStr.WriteString(params[k])
 	}
 
-	// 检查私钥是否是文件路径
-	privateKeyData := s.config.Alipay.AppPrivateKey
-	log.Printf("[GenerateSign] PrivateKey config length: %d, starts with: %s", len(privateKeyData), privateKeyData[:minInt(50, len(privateKeyData))])
-	log.Printf("[GenerateSign] AppID: %s, SignType: RSA2", s.config.Alipay.AppID)
+	signType := s.effectiveSignType()
+	log.Printf("[GenerateSign] AppID: %s, SignType: %s", s.effectiveAppID(), signType)
 
-	// 如果私钥看起来像文件路径（包含/或\且不是PEM格式），则从文件读取
-	if (strings.Contains(privateKeyData, "/") || strings.Contains(privateKeyData, "\\")) &&
-		!strings.Contains(privateKeyData, "-----BEGIN") {
-		log.Printf("[GenerateSign] Private key is a file path, reading from file: %s", privateKeyData)
-		var err error
-		privateKeyData, err = s.readPrivateKeyFileContent(privateKeyData)
-		if err != nil {
-			return "", fmt.Errorf("failed to read private key file: %w", err)
+	privateKeyData := strings.TrimSpace(s.effectivePrivateKey())
+	// 仅当看起来是文件系统路径时才读文件
+	// Base64 私钥很长（>100字符）且以字母/数字开头，不会是文件路径
+	if looksLikeFilePath(privateKeyData) {
+		var readErr error
+		privateKeyData, readErr = s.readPrivateKeyFileContent(privateKeyData)
+		if readErr != nil {
+			return "", fmt.Errorf("读取私钥文件失败: %w", readErr)
 		}
-		log.Printf("[GenerateSign] Successfully read private key from file, key length: %d", len(privateKeyData))
 	}
 
-	block, _ := pem.Decode([]byte(privateKeyData))
-	if block == nil {
-		return "", fmt.Errorf("failed to decode private key")
-	}
-
-	// 尝试解析PKCS#1格式，如果失败则尝试PKCS#8格式
-	var key *rsa.PrivateKey
-	var err error
-
-	key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+	key, err := parsePrivateKey(privateKeyData)
 	if err != nil {
-		// 如果PKCS#1解析失败，尝试PKCS#8格式
-		log.Printf("[GenerateSign] PKCS#1 parse failed (err: %v), trying PKCS#8 format", err)
-		pkcs8Data, parseErr := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if parseErr != nil {
-			return "", fmt.Errorf("failed to parse private key: PKCS#1: %w, PKCS#8: %v", err, parseErr)
-		}
-		// 类型断言为RSA私钥
-		key = pkcs8Data.(*rsa.PrivateKey)
-		log.Printf("[GenerateSign] Successfully parsed PKCS#8 format RSA private key")
+		return "", fmt.Errorf("解析私钥失败: %w", err)
 	}
 
-	h := sha256.New()
-	h.Write(signStr.Bytes())
-	signature, err := rsa.SignPKCS1v15(crand.Reader, key, crypto.SHA256, h.Sum(nil))
+	var signature []byte
+	if signType == "RSA" {
+		// RSA = SHA1WithRSA（支付宝老版本）
+		h := sha1.New()
+		h.Write(signStr.Bytes())
+		signature, err = rsa.SignPKCS1v15(crand.Reader, key, crypto.SHA1, h.Sum(nil))
+	} else {
+		// RSA2 = SHA256WithRSA（推荐）
+		h := sha256.New()
+		h.Write(signStr.Bytes())
+		signature, err = rsa.SignPKCS1v15(crand.Reader, key, crypto.SHA256, h.Sum(nil))
+	}
 	if err != nil {
-		return "", fmt.Errorf("failed to sign: %w", err)
+		return "", fmt.Errorf("签名失败: %w", err)
 	}
 
 	return base64.StdEncoding.EncodeToString(signature), nil
@@ -386,33 +456,16 @@ func (s *AlipayPagePayService) VerifySign(params map[string]string, sign string)
 }
 
 func (s *AlipayPagePayService) CreateTradePagePay(order *model.Order, paymentAmount float64) (string, error) {
-	log.Printf("[CreateTradePagePay] 开始生成支付宝支付 - AppID: %s, Amount: %.2f", s.config.Alipay.AppID, paymentAmount)
-	log.Printf("[CreateTradePagePay] NotifyURL: %s", s.config.Alipay.NotifyURL)
-	log.Printf("[CreateTradePagePay] ReturnURL: %s", s.config.Alipay.ReturnURL)
+	log.Printf("[CreateTradePagePay] 开始生成支付宝支付 - AppID: %s, Amount: %.2f", s.effectiveAppID(), paymentAmount)
+	log.Printf("[CreateTradePagePay] NotifyURL: %s", s.effectiveNotifyURL())
+	log.Printf("[CreateTradePagePay] ReturnURL: %s", s.effectiveReturnURL())
 	log.Printf("[CreateTradePagePay] GatewayURL: %s", s.GetGatewayURL())
 
-	// 如果配置不完整，返回模拟的支付 URL
-	if s.config.Alipay.AppID == "" || s.config.Alipay.AppPrivateKey == "" || s.config.Alipay.AlipayPublicKey == "" {
-		// 生成更完整的模拟支付宝支付 URL，包含必要的参数
-		// 使用支付宝沙箱测试 APPID
-		timestamp := time.Now().Format("2006-01-02 15:04:05")
-		subject := "论文格式检查服务"
-
-		// 使用 url.Values 构建查询参数，确保所有参数都被正确编码
-		queryParams := url.Values{}
-		queryParams.Add("method", "alipay.trade.page.pay")
-		queryParams.Add("app_id", "2016101500698584")
-		queryParams.Add("charset", "utf-8")
-		queryParams.Add("sign_type", "RSA2")
-		queryParams.Add("timestamp", timestamp)
-		queryParams.Add("version", "1.0")
-		queryParams.Add("total_amount", fmt.Sprintf("%.2f", paymentAmount))
-		queryParams.Add("out_trade_no", order.OrderNo)
-		queryParams.Add("subject", subject)
-
-		mockPaymentURL := fmt.Sprintf("https://openapi.alipaydev.com/gateway.do?%s", queryParams.Encode())
-		log.Printf("[CreateTradePagePay] 支付宝配置不完整，返回模拟支付 URL: %s", mockPaymentURL)
-		return mockPaymentURL, nil
+	// 配置不完整或私钥无效时降级为演示 URL
+	if !s.isAlipayConfigComplete() {
+		demo := s.demoAlipayQrContent(order, paymentAmount)
+		log.Printf("[CreateTradePagePay] 支付宝配置不完整/私钥无效，返回演示 URL: %s", demo)
+		return demo, nil
 	}
 
 	subject := "论文格式检查服务"
@@ -446,14 +499,14 @@ func (s *AlipayPagePayService) CreateTradePagePay(order *model.Order, paymentAmo
 	}
 
 	params := map[string]string{
-		"app_id":      s.config.Alipay.AppID,
+		"app_id":      s.effectiveAppID(),
 		"method":      "alipay.trade.page.pay",
 		"charset":     "utf-8",
-		"sign_type":   "RSA2",
+		"sign_type":   s.effectiveSignType(),
 		"timestamp":   time.Now().Format("2006-01-02 15:04:05"),
 		"version":     "1.0",
-		"notify_url":  s.config.Alipay.NotifyURL,
-		"return_url":  s.config.Alipay.ReturnURL,
+		"notify_url":  s.effectiveNotifyURL(),
+		"return_url":  s.effectiveReturnURL(),
 		"biz_content": string(bizContentJSON),
 	}
 
@@ -477,16 +530,82 @@ func (s *AlipayPagePayService) CreateTradePagePay(order *model.Order, paymentAmo
 	return paymentURL, nil
 }
 
+// effectiveAppID 返回当前生效的 AppID（按沙箱开关）
+func (s *AlipayPagePayService) effectiveAppID() string {
+	if s.config.Alipay.SandboxEnabled && s.config.Alipay.SandboxAppID != "" {
+		return s.config.Alipay.SandboxAppID
+	}
+	return s.config.Alipay.AppID
+}
+
+// effectivePrivateKey 返回当前生效的私钥（按沙箱开关）
+func (s *AlipayPagePayService) effectivePrivateKey() string {
+	if s.config.Alipay.SandboxEnabled && s.config.Alipay.SandboxAppPrivateKey != "" {
+		return s.config.Alipay.SandboxAppPrivateKey
+	}
+	return s.config.Alipay.AppPrivateKey
+}
+
+// effectiveNotifyURL 返回当前生效的异步通知地址
+func (s *AlipayPagePayService) effectiveNotifyURL() string {
+	if s.config.Alipay.SandboxEnabled && s.config.Alipay.SandboxNotifyURL != "" {
+		return s.config.Alipay.SandboxNotifyURL
+	}
+	return s.config.Alipay.NotifyURL
+}
+
+// effectiveReturnURL 返回当前生效的同步跳转地址
+func (s *AlipayPagePayService) effectiveReturnURL() string {
+	if s.config.Alipay.SandboxEnabled && s.config.Alipay.SandboxReturnURL != "" {
+		return s.config.Alipay.SandboxReturnURL
+	}
+	return s.config.Alipay.ReturnURL
+}
+
+// isAlipayConfigComplete 检查支付宝配置是否完整且私钥可用
+func (s *AlipayPagePayService) isAlipayConfigComplete() bool {
+	appID := s.effectiveAppID()
+	rawKey := strings.TrimSpace(s.effectivePrivateKey())
+	if appID == "" || rawKey == "" {
+		return false
+	}
+	// 过滤占位符
+	if strings.Contains(rawKey, "在此填入") || strings.Contains(rawKey, "TODO") || len(rawKey) < 64 {
+		return false
+	}
+	// 如果是文件路径，尝试读取后再解析
+	keyStr := rawKey
+	if looksLikeFilePath(rawKey) {
+		data, err := s.readPrivateKeyFileContent(rawKey)
+		if err != nil {
+			log.Printf("[isAlipayConfigComplete] 私钥文件读取失败: %v", err)
+			return false
+		}
+		keyStr = data
+	}
+	if _, err := parsePrivateKey(keyStr); err != nil {
+		log.Printf("[isAlipayConfigComplete] 私钥解析失败: %v", err)
+		return false
+	}
+	return true
+}
+
+// demoAlipayQrContent 返回演示用的二维码内容（不能真实付款，仅作 UI 展示）
+func (s *AlipayPagePayService) demoAlipayQrContent(order *model.Order, amount float64) string {
+	return fmt.Sprintf("https://qr.alipay.com/demo?order=%s&amount=%.2f&t=%d",
+		order.OrderNo, amount, time.Now().Unix())
+}
+
 func (s *AlipayPagePayService) CreateTradePrecreate(order *model.Order, paymentAmount float64) (string, error) {
-	log.Printf("[CreateTradePrecreate] 开始生成支付宝扫码支付 - AppID: %s, Amount: %.2f", s.config.Alipay.AppID, paymentAmount)
-	log.Printf("[CreateTradePrecreate] NotifyURL: %s", s.config.Alipay.NotifyURL)
+	log.Printf("[CreateTradePrecreate] 开始生成支付宝扫码支付 - AppID: %s, Amount: %.2f", s.effectiveAppID(), paymentAmount)
+	log.Printf("[CreateTradePrecreate] NotifyURL: %s", s.effectiveNotifyURL())
 	log.Printf("[CreateTradePrecreate] GatewayURL: %s", s.GetGatewayURL())
 
-	// 如果配置不完整，返回模拟的二维码内容
-	if s.config.Alipay.AppID == "" || s.config.Alipay.AppPrivateKey == "" || s.config.Alipay.AlipayPublicKey == "" {
-		mockQrCode := fmt.Sprintf("https://qr.alipay.com/bax0888xxxxxxxxxx")
-		log.Printf("[CreateTradePrecreate] 支付宝配置不完整，返回模拟二维码: %s", mockQrCode)
-		return mockQrCode, nil
+	// 配置不完整或私钥无效时降级为演示二维码
+	if !s.isAlipayConfigComplete() {
+		demo := s.demoAlipayQrContent(order, paymentAmount)
+		log.Printf("[CreateTradePrecreate] 支付宝配置不完整/私钥无效，返回演示二维码: %s", demo)
+		return demo, nil
 	}
 
 	subject := "论文格式检查服务"
@@ -519,13 +638,13 @@ func (s *AlipayPagePayService) CreateTradePrecreate(order *model.Order, paymentA
 	}
 
 	params := map[string]string{
-		"app_id":      s.config.Alipay.AppID,
+		"app_id":      s.effectiveAppID(),
 		"method":      "alipay.trade.precreate",
 		"charset":     "utf-8",
-		"sign_type":   "RSA2",
+		"sign_type":   s.effectiveSignType(),
 		"timestamp":   time.Now().Format("2006-01-02 15:04:05"),
 		"version":     "1.0",
-		"notify_url":  s.config.Alipay.NotifyURL,
+		"notify_url":  s.effectiveNotifyURL(),
 		"biz_content": string(bizContentJSON),
 	}
 
@@ -574,7 +693,7 @@ func (s *AlipayPagePayService) CreateTradePrecreate(order *model.Order, paymentA
 }
 
 func (s *AlipayPagePayService) QueryTrade(orderNo string) (*AlipayTradeQueryResponse, error) {
-	if s.config.Alipay.AppID == "" || s.config.Alipay.AppPrivateKey == "" || s.config.Alipay.AlipayPublicKey == "" {
+	if !s.isAlipayConfigComplete() {
 		return nil, fmt.Errorf("alipay payment config is incomplete")
 	}
 
@@ -588,10 +707,10 @@ func (s *AlipayPagePayService) QueryTrade(orderNo string) (*AlipayTradeQueryResp
 	}
 
 	params := map[string]string{
-		"app_id":      s.config.Alipay.AppID,
+		"app_id":      s.effectiveAppID(),
 		"method":      "alipay.trade.query",
 		"charset":     "utf-8",
-		"sign_type":   "RSA2",
+		"sign_type":   s.effectiveSignType(),
 		"timestamp":   time.Now().Format("2006-01-02 15:04:05"),
 		"version":     "1.0",
 		"biz_content": string(bizContentJSON),
@@ -625,7 +744,7 @@ func (s *AlipayPagePayService) QueryTrade(orderNo string) (*AlipayTradeQueryResp
 }
 
 func (s *AlipayPagePayService) RefundTrade(orderNo string, refundAmount float64) (*AlipayTradeRefundResponse, error) {
-	if s.config.Alipay.AppID == "" || s.config.Alipay.AppPrivateKey == "" || s.config.Alipay.AlipayPublicKey == "" {
+	if !s.isAlipayConfigComplete() {
 		return nil, fmt.Errorf("alipay payment config is incomplete")
 	}
 
@@ -644,10 +763,10 @@ func (s *AlipayPagePayService) RefundTrade(orderNo string, refundAmount float64)
 	}
 
 	params := map[string]string{
-		"app_id":      s.config.Alipay.AppID,
+		"app_id":      s.effectiveAppID(),
 		"method":      "alipay.trade.refund",
 		"charset":     "utf-8",
-		"sign_type":   "RSA2",
+		"sign_type":   s.effectiveSignType(),
 		"timestamp":   time.Now().Format("2006-01-02 15:04:05"),
 		"version":     "1.0",
 		"biz_content": string(bizContentJSON),
@@ -742,7 +861,7 @@ func (s *AlipayPagePayService) GenerateQRCodeImage(data string, width int) []byt
 }
 
 func (s *AlipayPagePayService) CloseTrade(orderNo string) error {
-	if s.config.Alipay.AppID == "" || s.config.Alipay.AppPrivateKey == "" || s.config.Alipay.AlipayPublicKey == "" {
+	if !s.isAlipayConfigComplete() {
 		return fmt.Errorf("alipay payment config is incomplete")
 	}
 
@@ -756,10 +875,10 @@ func (s *AlipayPagePayService) CloseTrade(orderNo string) error {
 	}
 
 	params := map[string]string{
-		"app_id":      s.config.Alipay.AppID,
+		"app_id":      s.effectiveAppID(),
 		"method":      "alipay.trade.close",
 		"charset":     "utf-8",
-		"sign_type":   "RSA2",
+		"sign_type":   s.effectiveSignType(),
 		"timestamp":   time.Now().Format("2006-01-02 15:04:05"),
 		"version":     "1.0",
 		"biz_content": string(bizContentJSON),

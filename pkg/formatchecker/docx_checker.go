@@ -23,8 +23,9 @@ import (
 
 // DOCXChecker DOCX格式检查器
 type DOCXChecker struct {
-	processor fileprocessor.FileProcessor
-	standard  FormatStandard
+	processor  fileprocessor.FileProcessor
+	standard   FormatStandard
+	styleCache *docxStyleCache // 样式继承缓存，在 Check() 开始时初始化
 }
 
 const (
@@ -89,6 +90,9 @@ func (c *DOCXChecker) Check(ctx context.Context, docPath string) (*CheckResult, 
 		return nil, fmt.Errorf("failed to open document: %w", err)
 	}
 	defer r.Close()
+
+	// 加载样式继承缓存（修复字体/字号/行距的漏检问题）
+	c.styleCache = loadDocxStyleCache(docPath)
 
 	// 1. 检查页面设置
 	c.checkPageSetupDetailed(r, docPath, result, &c.standard)
@@ -374,30 +378,39 @@ func (c *DOCXChecker) identifyHeadingLevel(text string, para document.Paragraph)
 }
 
 // matchesHeading1Format 检查是否符合一级标题格式特征
+// 改为多条件积分制，避免单条件(如"加粗")就判定为一级标题导致的大量误判
 func (c *DOCXChecker) matchesHeading1Format(para document.Paragraph) bool {
-	// 获取第一个run的格式
 	runs := para.Runs()
 	if len(runs) == 0 {
 		return false
 	}
 
-	// 检查字体大小
-	fontSize := getRunFontSize(runs[0])
-	if fontSize >= 15 { // >= 15pt
-		return true
+	score := 0
+
+	// 字号 >= 14pt（四号），权重较高
+	fontSize := c.resolveRunSize(runs[0], para)
+	if fontSize >= 14 {
+		score += 2
 	}
 
-	// 检查对齐方式
+	// 居中对齐
 	if getAlignment(para) == wml.ST_JcCenter {
-		return true
+		score++
 	}
 
-	// 检查加粗
+	// 加粗
 	if runs[0].Properties().Bold() {
-		return true
+		score++
 	}
 
-	return false
+	// 段落文本长度适中（独占行标题通常较短）
+	text := strings.TrimSpace(extractParagraphText(para))
+	if len([]rune(text)) >= 2 && len([]rune(text)) <= 50 {
+		score++
+	}
+
+	// 需要至少2分才认定为一级标题（防止单纯加粗的正文被误判）
+	return score >= 2
 }
 
 // matchesHeading2Format 检查是否符合二级标题格式特征
@@ -455,7 +468,7 @@ func (c *DOCXChecker) checkHeading1Format(para document.Paragraph, index int, re
 
 	// 检查字体
 	if len(standard.HeadingStyles) > 0 && standard.HeadingStyles[0].FontName != "" {
-		actualFont := getRunFontName(runs[0])
+		actualFont := c.resolveRunFont(runs[0], para)
 		if !fontsMatch(actualFont, standard.HeadingStyles[0].FontName) {
 			result.Issues = append(result.Issues, FormatIssue{
 				ID:          generateIssueID("heading1_font"),
@@ -470,9 +483,9 @@ func (c *DOCXChecker) checkHeading1Format(para document.Paragraph, index int, re
 
 	// 检查字号
 	if len(standard.HeadingStyles) > 0 && standard.HeadingStyles[0].FontSize > 0 {
-		actualSize := getRunFontSize(runs[0])
+		actualSize := c.resolveRunSize(runs[0], para)
 		expectedSize := standard.HeadingStyles[0].FontSize
-		if absFloat64(actualSize-expectedSize) > 0.5 {
+		if actualSize > 0 && absFloat64(actualSize-expectedSize) > 0.5 {
 			result.Issues = append(result.Issues, FormatIssue{
 				ID:          generateIssueID("heading1_size"),
 				Type:        IssueTypeHeading,
@@ -510,7 +523,7 @@ func (c *DOCXChecker) checkHeading2Format(para document.Paragraph, index int, re
 
 	// 检查字体
 	if len(standard.HeadingStyles) > 1 && standard.HeadingStyles[1].FontName != "" {
-		actualFont := getRunFontName(runs[0])
+		actualFont := c.resolveRunFont(runs[0], para)
 		if !fontsMatch(actualFont, standard.HeadingStyles[1].FontName) {
 			result.Issues = append(result.Issues, FormatIssue{
 				ID:          generateIssueID("heading2_font"),
@@ -525,9 +538,9 @@ func (c *DOCXChecker) checkHeading2Format(para document.Paragraph, index int, re
 
 	// 检查字号
 	if len(standard.HeadingStyles) > 1 && standard.HeadingStyles[1].FontSize > 0 {
-		actualSize := getRunFontSize(runs[0])
+		actualSize := c.resolveRunSize(runs[0], para)
 		expectedSize := standard.HeadingStyles[1].FontSize
-		if absFloat64(actualSize-expectedSize) > 0.5 {
+		if actualSize > 0 && absFloat64(actualSize-expectedSize) > 0.5 {
 			result.Issues = append(result.Issues, FormatIssue{
 				ID:          generateIssueID("heading2_size"),
 				Type:        IssueTypeHeading,
@@ -549,7 +562,7 @@ func (c *DOCXChecker) checkHeading3Format(para document.Paragraph, index int, re
 
 	// 检查字体
 	if len(standard.HeadingStyles) > 2 && standard.HeadingStyles[2].FontName != "" {
-		actualFont := getRunFontName(runs[0])
+		actualFont := c.resolveRunFont(runs[0], para)
 		if !fontsMatch(actualFont, standard.HeadingStyles[2].FontName) {
 			result.Issues = append(result.Issues, FormatIssue{
 				ID:          generateIssueID("heading3_font"),
@@ -564,9 +577,9 @@ func (c *DOCXChecker) checkHeading3Format(para document.Paragraph, index int, re
 
 	// 检查字号
 	if len(standard.HeadingStyles) > 2 && standard.HeadingStyles[2].FontSize > 0 {
-		actualSize := getRunFontSize(runs[0])
+		actualSize := c.resolveRunSize(runs[0], para)
 		expectedSize := standard.HeadingStyles[2].FontSize
-		if absFloat64(actualSize-expectedSize) > 0.5 {
+		if actualSize > 0 && absFloat64(actualSize-expectedSize) > 0.5 {
 			result.Issues = append(result.Issues, FormatIssue{
 				ID:          generateIssueID("heading3_size"),
 				Type:        IssueTypeHeading,
@@ -618,63 +631,73 @@ func (c *DOCXChecker) checkBodyParagraphFormat(para document.Paragraph, index in
 		bodyStyle = standard.ParagraphStyles[0]
 	}
 
-	// 检查段落中所有run的格式
+	// 段落级别的字体/字号检查（用第一个非空 run 代表整段，避免每个 run 都报错）
+	// 先用继承链解析出段落的实际字体和字号
+	paraFont := ""
+	paraSize := 0.0
+	for _, run := range runs {
+		if strings.TrimSpace(run.Text()) == "" {
+			continue
+		}
+		paraFont = c.resolveRunFont(run, para)
+		paraSize = c.resolveRunSize(run, para)
+		break
+	}
+
+	if bodyStyle.FontName != "" && paraFont != "" {
+		if !fontsMatch(paraFont, bodyStyle.FontName) {
+			result.Issues = append(result.Issues, FormatIssue{
+				ID:          generateIssueID("body_font"),
+				Type:        IssueTypeFont,
+				Severity:    SeverityError,
+				Description: fmt.Sprintf("正文字体不匹配: 段落%d 期望 %s, 实际 %s", index+1, bodyStyle.FontName, paraFont),
+				Original:    paraFont,
+				Suggestion:  bodyStyle.FontName,
+			})
+		}
+	}
+
+	if bodyStyle.FontSize > 0 && paraSize > 0 {
+		expectedSize := bodyStyle.FontSize
+		if absFloat64(paraSize-expectedSize) > 0.5 {
+			result.Issues = append(result.Issues, FormatIssue{
+				ID:          generateIssueID("body_size"),
+				Type:        IssueTypeFont,
+				Severity:    SeverityError,
+				Description: fmt.Sprintf("正文字号不匹配: 段落%d 期望 %.1fpt, 实际 %.1fpt", index+1, expectedSize, paraSize),
+				Original:    paraSize,
+				Suggestion:  expectedSize,
+			})
+		}
+	}
+
+	// 检查每个 run 的中英文字体合规性（run 级别有独立字体设置时才报）
 	for runIndex, run := range runs {
 		runText := run.Text()
-		// 检查字体
-		if bodyStyle.FontName != "" {
-			actualFont := getRunFontName(run)
-			if !fontsMatch(actualFont, bodyStyle.FontName) {
-				result.Issues = append(result.Issues, FormatIssue{
-					ID:          generateIssueID("body_font"),
-					Type:        IssueTypeFont,
-					Severity:    SeverityError,
-					Description: fmt.Sprintf("正文字体不匹配: 段落%d的第%d个文本块期望 %s, 实际 %s", index+1, runIndex+1, bodyStyle.FontName, actualFont),
-					Original:    actualFont,
-					Suggestion:  bodyStyle.FontName,
-				})
-			}
-		}
-
-		// 检查字号
-		if bodyStyle.FontSize > 0 {
-			actualSize := getRunFontSize(run)
-			expectedSize := bodyStyle.FontSize
-			if absFloat64(actualSize-expectedSize) > 0.5 {
-				result.Issues = append(result.Issues, FormatIssue{
-					ID:          generateIssueID("body_size"),
-					Type:        IssueTypeFont,
-					Severity:    SeverityError,
-					Description: fmt.Sprintf("正文字号不匹配: 段落%d的第%d个文本块期望 %.1fpt, 实际 %.1fpt", index+1, runIndex+1, expectedSize, actualSize),
-					Original:    actualSize,
-					Suggestion:  expectedSize,
-				})
-			}
-		}
+		// 只检查 run 上有内联字体设置的情况，避免样式继承误报
+		inlineFont := getRunFontName(run)
 
 		// 硕士规范：中文用宋体，英文/数字用 Times New Roman
-		if containsChineseText(runText) {
-			actualFont := getRunFontName(run)
-			if !fontsMatch(actualFont, "宋体") {
+		if inlineFont != "" && containsChineseText(runText) {
+			if !fontsMatch(inlineFont, "宋体") {
 				result.Issues = append(result.Issues, FormatIssue{
 					ID:          generateIssueID("body_cn_font"),
 					Type:        IssueTypeFont,
 					Severity:    SeverityWarning,
-					Description: fmt.Sprintf("正文中文字体建议为宋体: 段落%d第%d个文本块当前 %s", index+1, runIndex+1, actualFont),
-					Original:    actualFont,
+					Description: fmt.Sprintf("正文中文字体建议为宋体: 段落%d第%d块当前 %s", index+1, runIndex+1, inlineFont),
+					Original:    inlineFont,
 					Suggestion:  "宋体",
 				})
 			}
 		}
-		if containsLatinOrDigit(runText) {
-			actualFont := getRunFontName(run)
-			if !fontsMatch(actualFont, "Times New Roman") {
+		if inlineFont != "" && containsLatinOrDigit(runText) {
+			if !fontsMatch(inlineFont, "Times New Roman") {
 				result.Issues = append(result.Issues, FormatIssue{
 					ID:          generateIssueID("body_en_font"),
 					Type:        IssueTypeFont,
 					Severity:    SeverityWarning,
-					Description: fmt.Sprintf("正文英文/数字字体建议为 Times New Roman: 段落%d第%d个文本块当前 %s", index+1, runIndex+1, actualFont),
-					Original:    actualFont,
+					Description: fmt.Sprintf("正文英文/数字字体建议为 Times New Roman: 段落%d第%d块当前 %s", index+1, runIndex+1, inlineFont),
+					Original:    inlineFont,
 					Suggestion:  "Times New Roman",
 				})
 			}
@@ -682,24 +705,31 @@ func (c *DOCXChecker) checkBodyParagraphFormat(para document.Paragraph, index in
 	}
 
 	// 检查首行缩进
+	// 修复：期望值应以字符数 × 字号(pt) × 20(twips/pt) 计算，而非乘以 Centimeter 常量
 	if bodyStyle.FirstLineIndent > 0 {
 		actualIndent := getFirstLineIndent(para)
-		expectedIndent := bodyStyle.FirstLineIndent * measurement.Centimeter
-		if abs(int(actualIndent)-int(expectedIndent)) > 20 { // 允许20twips的误差
+		// 用解析到的正文字号换算：2字符 × fontSize × 20 twips/pt
+		fontSizeForIndent := paraSize
+		if fontSizeForIndent <= 0 {
+			fontSizeForIndent = 12 // 小四号默认值
+		}
+		expectedIndentTwips := measurement.Distance(bodyStyle.FirstLineIndent * fontSizeForIndent * 20)
+		toleranceTwips := measurement.Distance(fontSizeForIndent * 20 * 0.3) // 30% 容差
+		if actualIndent > 0 && abs(int(actualIndent)-int(expectedIndentTwips)) > int(toleranceTwips) {
 			result.Issues = append(result.Issues, FormatIssue{
 				ID:          generateIssueID("body_indent"),
 				Type:        IssueTypeSpacing,
 				Severity:    SeverityWarning,
-				Description: fmt.Sprintf("正文首行缩进不匹配: 期望 %.2fcm, 实际 %.2fcm", bodyStyle.FirstLineIndent, actualIndent/measurement.Centimeter),
-				Original:    actualIndent / measurement.Centimeter,
-				Suggestion:  bodyStyle.FirstLineIndent,
+				Description: fmt.Sprintf("正文首行缩进不匹配: 期望约 %.0f 字符缩进 (%.0f twips), 实际 %.0f twips", bodyStyle.FirstLineIndent, float64(expectedIndentTwips), float64(actualIndent)),
+				Original:    float64(actualIndent),
+				Suggestion:  float64(expectedIndentTwips),
 			})
 		}
 	}
 
-	// 检查行间距
+	// 检查行间距（使用继承链）
 	if bodyStyle.LineSpacing > 0 {
-		actualSpacing := getLineSpacing(para)
+		actualSpacing := c.resolveLineSpacing(para)
 		expectedSpacing := bodyStyle.LineSpacing
 		if absFloat64(actualSpacing-expectedSpacing) > 2.0 { // 允许2pt的误差
 			result.Issues = append(result.Issues, FormatIssue{
@@ -2052,7 +2082,7 @@ func findSectionIndexForNode(sections []docSection, nodeIdx int) int {
 
 func hasNonPageTextInHeaderFooterXML(xml string) bool {
 	parts := extractXMLTextParts(xml)
-	allowed := regexp.MustCompile(`^[0-9ivxlcdmIVXLCDM\-\–\—\.\(\)（）\s]*$`)
+	allowed := regexp.MustCompile(`^[0-9ivxlcdmIVXLCDM\-–—\.\(\)（）\s]*$`)
 	for _, p := range parts {
 		text := strings.TrimSpace(p)
 		if text == "" {

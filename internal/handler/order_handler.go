@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"log"
 	"strconv"
 
@@ -28,17 +29,40 @@ func NewOrderHandler() *OrderHandler {
 // CreateOrder 创建订单
 func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	// 解析请求数据
-	var req struct {
-		ServiceType   string  `json:"service_type"`
-		Amount        float64 `json:"amount"`
-		PaperID       string  `json:"paper_id"`
-		TemplateID    string  `json:"template_id"`
-		PaymentMethod string  `json:"payment_method" binding:"required,oneof=wechat alipay"`
+	var rawReq struct {
+		ServiceType   string      `json:"service_type"`
+		Amount        float64     `json:"amount"`
+		PaperID       string      `json:"paper_id"`
+		TemplateID    interface{} `json:"template_id"` // 兼容数字和字符串
+		PaymentMethod string      `json:"payment_method" binding:"required,oneof=wechat alipay"`
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBindJSON(&rawReq); err != nil {
 		utils.BadRequest(c, err.Error())
 		return
+	}
+
+	// 将 template_id 统一转为字符串（前端可能传数字）
+	var req struct {
+		ServiceType   string
+		Amount        float64
+		PaperID       string
+		TemplateID    string
+		PaymentMethod string
+	}
+	req.ServiceType = rawReq.ServiceType
+	req.Amount = rawReq.Amount
+	req.PaperID = rawReq.PaperID
+	req.PaymentMethod = rawReq.PaymentMethod
+	switch v := rawReq.TemplateID.(type) {
+	case string:
+		req.TemplateID = v
+	case float64:
+		req.TemplateID = fmt.Sprintf("%.0f", v)
+	case nil:
+		req.TemplateID = ""
+	default:
+		req.TemplateID = fmt.Sprintf("%v", v)
 	}
 
 	// 从上下文获取用户ID

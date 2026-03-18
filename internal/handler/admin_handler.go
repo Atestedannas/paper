@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
 	"github.com/paper-format-checker/backend/internal/utils"
+	"gorm.io/gorm"
 )
 
 // AdminHandler 绠＄悊鍛樺鐞嗗櫒
@@ -35,22 +38,81 @@ func NewAdminHandler(config *config.Config) *AdminHandler {
 
 // GetDashboard 鑾峰彇绠＄悊鍛樻帶鍒跺彴鏁版嵁
 func (h *AdminHandler) GetDashboard(c *gin.Context) {
-	utils.SuccessResponse(c, "鑾峰彇鎴愬姛", gin.H{
-		"user_growth":    []int{120, 200, 150, 250, 300, 400},
-		"recent_users":   5,
-		"pending_orders": 3,
-		"total_papers":   150,
-		"today_checks":   20,
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	yesterdayStart := todayStart.AddDate(0, 0, -1)
+	thisMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	lastMonthStart := thisMonthStart.AddDate(0, -1, 0)
+
+	var totalUsers, lastMonthNewUsers, thisMonthNewUsers int64
+	database.DB.Model(&model.User{}).Count(&totalUsers)
+	database.DB.Model(&model.User{}).Where("created_at >= ? AND created_at < ?", lastMonthStart, thisMonthStart).Count(&lastMonthNewUsers)
+	database.DB.Model(&model.User{}).Where("created_at >= ?", thisMonthStart).Count(&thisMonthNewUsers)
+
+	var totalPapers, lastMonthNewPapers, thisMonthNewPapers int64
+	database.DB.Model(&model.Paper{}).Count(&totalPapers)
+	database.DB.Model(&model.Paper{}).Where("created_at >= ? AND created_at < ?", lastMonthStart, thisMonthStart).Count(&lastMonthNewPapers)
+	database.DB.Model(&model.Paper{}).Where("created_at >= ?", thisMonthStart).Count(&thisMonthNewPapers)
+
+	var todayChecks, yesterdayChecks int64
+	database.DB.Model(&model.CheckResult{}).Where("created_at >= ?", todayStart).Count(&todayChecks)
+	database.DB.Model(&model.CheckResult{}).Where("created_at >= ? AND created_at < ?", yesterdayStart, todayStart).Count(&yesterdayChecks)
+
+	growthData := make([]map[string]interface{}, 7)
+	for i := 6; i >= 0; i-- {
+		day := todayStart.AddDate(0, 0, -i)
+		nextDay := day.AddDate(0, 0, 1)
+		var cnt int64
+		database.DB.Model(&model.User{}).Where("created_at >= ? AND created_at < ?", day, nextDay).Count(&cnt)
+		growthData[6-i] = map[string]interface{}{
+			"date":  day.Format("01-02"),
+			"count": cnt,
+		}
+	}
+
+	var recentUserList []model.User
+	database.DB.Order("created_at DESC").Limit(5).Find(&recentUserList)
+
+	var recentPapers []model.Paper
+	database.DB.Preload("User").Order("created_at DESC").Limit(5).Find(&recentPapers)
+
+	var usersIncrease, papersIncrease float64
+	if lastMonthNewUsers > 0 {
+		usersIncrease = float64(thisMonthNewUsers-lastMonthNewUsers) / float64(lastMonthNewUsers) * 100
+	}
+	if lastMonthNewPapers > 0 {
+		papersIncrease = float64(thisMonthNewPapers-lastMonthNewPapers) / float64(lastMonthNewPapers) * 100
+	}
+	var checksChange float64
+	if yesterdayChecks > 0 {
+		checksChange = float64(todayChecks-yesterdayChecks) / float64(yesterdayChecks) * 100
+	}
+
+	utils.SuccessResponse(c, "获取成功", gin.H{
+		"total_users":     totalUsers,
+		"total_papers":    totalPapers,
+		"today_checks":    todayChecks,
+		"users_increase":  usersIncrease,
+		"papers_increase": papersIncrease,
+		"checks_change":   checksChange,
+		"user_growth":     growthData,
+		"recent_users":    recentUserList,
+		"recent_papers":   recentPapers,
+		"system_status":   "正常",
 	})
 }
 
-// GetSystemStats 鑾峰彇绯荤粺缁熻鏁版嵁
+// GetSystemStats 获取系统统计数据
 func (h *AdminHandler) GetSystemStats(c *gin.Context) {
-	utils.SuccessResponse(c, "鑾峰彇鎴愬姛", gin.H{
-		"total_users":  1000,
-		"total_papers": 5000,
-		"total_checks": 10000,
-		"total_orders": 500,
+	var totalUsers, totalPapers, totalChecks int64
+	database.DB.Model(&model.User{}).Count(&totalUsers)
+	database.DB.Model(&model.Paper{}).Count(&totalPapers)
+	database.DB.Model(&model.CheckResult{}).Count(&totalChecks)
+
+	utils.SuccessResponse(c, "获取成功", gin.H{
+		"total_users":  totalUsers,
+		"total_papers": totalPapers,
+		"total_checks": totalChecks,
 	})
 }
 
@@ -187,13 +249,51 @@ func (h *AdminHandler) GetPapers(c *gin.Context) {
 		return
 	}
 	offset := (page - 1) * pageSize
-	if err := query.Preload("User").Preload("SelectedTemplate").Offset(offset).Limit(pageSize).Order("papers.created_at DESC").Find(&papers).Error; err != nil {
-		utils.ErrorResponse(c, http.StatusInternalServerError, "鑾峰彇璁烘枃鍒楄〃澶辫触", err.Error())
+	if err := query.
+		Preload("User").
+		Preload("SelectedTemplate").
+		Preload("CheckResults", func(db *gorm.DB) *gorm.DB {
+			return db.Order("created_at DESC")
+		}).
+		Offset(offset).Limit(pageSize).Order("papers.created_at DESC").Find(&papers).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "获取论文列表失败", err.Error())
 		return
 	}
 
-	utils.SuccessResponse(c, "鑾峰彇鎴愬姛", gin.H{
-		"papers":      papers,
+	// 构造前端友好的响应结构，补充检查时间和问题统计
+	type PaperRow struct {
+		model.Paper
+		DisplayTitle  string     `json:"display_title"`
+		FormatName    string     `json:"format_name"`
+		SubmitterName string     `json:"submitter_name"`
+		CheckTime     *time.Time `json:"check_time"`
+		FormatIssues  int        `json:"format_issues"`
+	}
+	rows := make([]PaperRow, 0, len(papers))
+	for _, p := range papers {
+		row := PaperRow{Paper: p}
+		// display title: prefer Title, fallback to FileName
+		if p.Title != "" {
+			row.DisplayTitle = p.Title
+		} else {
+			row.DisplayTitle = p.FileName
+		}
+		// format template name
+		if p.SelectedTemplate != nil {
+			row.FormatName = p.SelectedTemplate.Name
+		}
+		// submitter name
+		row.SubmitterName = p.User.Username
+		// check time and issues from latest check result
+		if len(p.CheckResults) > 0 {
+			latest := p.CheckResults[0]
+			row.CheckTime = &latest.CreatedAt
+			row.FormatIssues = latest.TotalIssues
+		}
+		rows = append(rows, row)
+	}
+	utils.SuccessResponse(c, "获取成功", gin.H{
+		"papers":      rows,
 		"total":       total,
 		"page":        page,
 		"page_size":   pageSize,
@@ -522,6 +622,89 @@ func (h *AdminHandler) BatchDeletePapers(c *gin.Context) {
 		"failed_count":  0,
 		"invalid_count": invalidCount,
 		"skipped_count": skippedCount,
+		"total_count":   len(req.IDs),
+	})
+}
+
+// BatchForceDeletePapers 批量永久删除论文（硬删除 + 删除服务器文件）
+func (h *AdminHandler) BatchForceDeletePapers(c *gin.Context) {
+	var req struct {
+		IDs []string `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "请求参数错误", err.Error())
+		return
+	}
+	if len(req.IDs) == 0 {
+		utils.ErrorResponse(c, http.StatusBadRequest, "ID列表不能为空", "")
+		return
+	}
+
+	validIDs := make([]uuid.UUID, 0, len(req.IDs))
+	for _, idStr := range req.IDs {
+		if id, err := uuid.Parse(idStr); err == nil {
+			validIDs = append(validIDs, id)
+		}
+	}
+	if len(validIDs) == 0 {
+		utils.ErrorResponse(c, http.StatusBadRequest, "没有有效的论文ID", "")
+		return
+	}
+
+	// 1. 查询论文信息（包含软删除记录，用于后续删除文件）
+	var papers []model.Paper
+	if err := database.DB.Unscoped().Where("id IN ?", validIDs).Find(&papers).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "查询论文失败", err.Error())
+		return
+	}
+
+	// 2. 在事务中按正确顺序硬删除（子表 -> 父表）
+	var deletedCount int
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		// 2a. 删除格式修正记录（子查询批量删除）
+		if err := tx.Unscoped().Exec(
+			"DELETE FROM format_corrections WHERE check_result_id IN (SELECT id FROM check_results WHERE paper_id IN ?)",
+			validIDs,
+		).Error; err != nil {
+			return fmt.Errorf("删除格式修正记录失败: %w", err)
+		}
+
+		// 2b. 删除检查结果
+		if err := tx.Unscoped().Where("paper_id IN ?", validIDs).Delete(&model.CheckResult{}).Error; err != nil {
+			return fmt.Errorf("删除检查记录失败: %w", err)
+		}
+
+		// 2c. 硬删除论文
+		res := tx.Unscoped().Where("id IN ?", validIDs).Delete(&model.Paper{})
+		if res.Error != nil {
+			return fmt.Errorf("删除论文失败: %w", res.Error)
+		}
+		deletedCount = int(res.RowsAffected)
+		return nil
+	})
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "永久删除失败: "+err.Error(), "")
+		return
+	}
+
+	// 3. 事务成功后删除服务器文件（文件删除失败不影响响应成功）
+	var fileErrors []string
+	for _, p := range papers {
+		if p.FilePath != "" {
+			if e := os.Remove(p.FilePath); e != nil && !os.IsNotExist(e) {
+				fileErrors = append(fileErrors, p.FilePath+": "+e.Error())
+			}
+		}
+		if p.CorrectedFilePath != "" {
+			if e := os.Remove(p.CorrectedFilePath); e != nil && !os.IsNotExist(e) {
+				fileErrors = append(fileErrors, p.CorrectedFilePath+": "+e.Error())
+			}
+		}
+	}
+
+	utils.SuccessResponse(c, "永久删除成功", gin.H{
+		"deleted_count": deletedCount,
+		"file_errors":   fileErrors,
 		"total_count":   len(req.IDs),
 	})
 }

@@ -183,14 +183,15 @@ type ReferenceStyle struct {
 
 // AbstractStyle 摘要样式配置
 type AbstractStyle struct {
-	Type           string  `json:"type"`            // 摘要类型 (chinese, english)
-	Heading        string  `json:"heading"`         // 摘要标题
-	FontName       string  `json:"font_name"`       // 字体名称
-	FontSize       float64 `json:"font_size"`       // 字体大小
-	Bold           bool    `json:"bold"`            // 是否粗体
-	Alignment      string  `json:"alignment"`       // 对齐方式
-	LineSpacing    float64 `json:"line_spacing"`    // 行间距
-	KeywordsPrefix string  `json:"keywords_prefix"` // 关键词前缀
+	Type            string  `json:"type"`              // 摘要类型 (chinese, english)
+	Heading         string  `json:"heading"`           // 摘要标题
+	FontName        string  `json:"font_name"`         // 字体名称
+	FontSize        float64 `json:"font_size"`         // 字体大小
+	Bold            bool    `json:"bold"`              // 是否粗体
+	Alignment       string  `json:"alignment"`         // 对齐方式
+	LineSpacing     float64 `json:"line_spacing"`      // 行间距
+	FirstLineIndent float64 `json:"first_line_indent"` // 首行缩进（字符数，如 2 = 每段起首空两格）
+	KeywordsPrefix  string  `json:"keywords_prefix"`   // 关键词前缀
 }
 
 // CheckerFactory 格式检查器工厂
@@ -1103,16 +1104,46 @@ func parseAbstractStylesFromDirectStructure(settings map[string]interface{}) []A
 	var styles []AbstractStyle
 
 	// 解析中文摘要
+	// 支持两种路径：
+	//   1. abstract.content（模板编辑器写入路径）
+	//   2. abstract.chinese.body（SCNU等迁移脚本写入路径）
 	if abstract, ok := settings["abstract"].(map[string]interface{}); ok {
+		var bodyContent map[string]interface{}
+
+		// 路径1：abstract.content（编辑器写入）
 		if content, ok := abstract["content"].(map[string]interface{}); ok {
-			styles = append(styles, AbstractStyle{
-				Type:        "chinese",
-				Heading:     getString(abstract, "label", "摘要：")[:len(getString(abstract, "label", "摘要："))-3], // 去掉冒号
-				FontName:    getString(content, "font_name", "宋体"),
-				Bold:        getBool(content, "bold", false),
-				Alignment:   getString(content, "alignment", "center"),
-				LineSpacing: 20,
-			})
+			bodyContent = content
+		}
+		// 路径2：abstract.chinese.body（迁移脚本写入）
+		if bodyContent == nil {
+			if chinese, ok := abstract["chinese"].(map[string]interface{}); ok {
+				if body, ok := chinese["body"].(map[string]interface{}); ok {
+					bodyContent = body
+				}
+			}
+		}
+
+		if bodyContent != nil {
+			style := AbstractStyle{
+				Type:      "chinese",
+				Heading:   "摘要",
+				FontName:  getString(bodyContent, "font_name", "宋体"),
+				Bold:      getBool(bodyContent, "bold", false),
+				Alignment: getString(bodyContent, "alignment", "justify"),
+			}
+			if fs, ok := bodyContent["font_size"].(string); ok {
+				style.FontSize = parseFontSize(fs)
+			} else if fs, ok := bodyContent["font_size"].(float64); ok {
+				style.FontSize = fs
+			}
+			if ind, ok := bodyContent["first_line_indent"].(string); ok {
+				if ind == "2字符" || ind == "2" {
+					style.FirstLineIndent = 2
+				}
+			} else if ind, ok := bodyContent["first_line_indent"].(float64); ok {
+				style.FirstLineIndent = ind
+			}
+			styles = append(styles, style)
 		}
 	}
 
@@ -1306,6 +1337,40 @@ func parseParagraphStylesEnglish(settings map[string]interface{}) []ParagraphSty
 					SpacingAfter:    getFloat64(style, "spacing_after", 0),
 				})
 			}
+		}
+	}
+
+	// 回退：若没有 paragraph_styles 数组，尝试直接读取 body 对象
+	// （适用于 SCNU 等模板：顶层有 page_setup 英文键，同时用 body 对象描述正文格式）
+	if len(styles) == 0 {
+		if body, ok := settings["body"].(map[string]interface{}); ok {
+			style := ParagraphStyle{
+				Name:      "正文",
+				FontName:  getString(body, "font_name", "宋体"),
+				Alignment: getString(body, "alignment", "justify"),
+			}
+			if fs, ok := body["font_size"].(string); ok {
+				style.FontSize = parseFontSize(fs)
+			} else if fs, ok := body["font_size"].(float64); ok {
+				style.FontSize = fs
+			}
+			if ls, ok := body["line_space"].(string); ok {
+				if ls == "1.5" {
+					style.LineSpacing = 24
+				}
+			} else if ls, ok := body["line_space"].(float64); ok {
+				style.LineSpacing = ls * 16
+			} else if ls, ok := body["line_spacing"].(float64); ok {
+				style.LineSpacing = ls
+			}
+			if ind, ok := body["first_line_indent"].(string); ok {
+				if ind == "2字符" || ind == "2" {
+					style.FirstLineIndent = 2
+				}
+			} else if ind, ok := body["first_line_indent"].(float64); ok {
+				style.FirstLineIndent = ind
+			}
+			styles = append(styles, style)
 		}
 	}
 

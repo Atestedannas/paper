@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/paper-format-checker/backend/pkg/aiclassifier"
 )
 
 // FormatParserService 格式解析服务
-type FormatParserService struct{}
+type FormatParserService struct {
+	aiClient *aiclassifier.DeepSeekWebClient
+}
 
 // NewFormatParserService 创建格式解析服务
 func NewFormatParserService() *FormatParserService {

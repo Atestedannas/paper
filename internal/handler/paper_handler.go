@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -16,6 +18,8 @@ import (
 
 	"rsc.io/pdf"
 
+	"gitee.com/greatmusicians/unioffice/document"
+	"github.com/EndFirstCorp/doc2txt"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/nguyenthenguyen/docx"
@@ -39,11 +43,14 @@ type PaperHandler struct {
 
 // NewPaperHandler 创建论文处理器实例
 func NewPaperHandler(config *config.Config) *PaperHandler {
+	fps := service.NewFormatParserService()
+	fps.InitAIClient(config.DeepSeek.Cookie, config.DeepSeek.Bearer, config.DeepSeek.Enabled)
+
 	return &PaperHandler{
 		paperService:            service.NewPaperService(config),
 		templateParserService:   service.NewTemplateParserService(),
 		formatComparisonService: service.NewFormatComparisonService(),
-		formatParserService:     service.NewFormatParserService(),
+		formatParserService:     fps,
 		settingService:          service.GetSystemSettingService(),
 		config:                  config,
 	}
@@ -2350,25 +2357,37 @@ func (h *PaperHandler) applyCorrectionsAndGenerateFile(originalPath string, issu
 }
 
 // UploadTemplate 上传高校论文格式模板
+// 支持格式：.docx .doc .pdf .txt .md .rtf .html .htm
 func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 	var formatText string
 
-	//  解析模板
-	//  保存到数据库
-	//
-
-	// 优先从表单文本字段获取
+	// 优先从表单文本字段获取（纯文本模式）
 	formatText = c.PostForm("format_text")
-	// 如果没有文本，尝试从文件获取
-	// 验证文件类型
+	if strings.TrimSpace(formatText) != "" {
+		// 直接使用文本，跳过文件处理
+		h.processTemplateText(c, formatText)
+		return
+	}
+
+	// ── 文件上传模式 ──────────────────────────────────────────────
 	file, err := c.FormFile("file")
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusBadRequest, "请提供格式文本或上传文件", "")
 		return
 	}
+
+	// 支持的扩展名
 	ext := strings.ToLower(filepath.Ext(file.Filename))
-	if ext != ".txt" && ext != ".doc" && ext != ".docx" && ext != ".pdf" {
-		utils.ErrorResponse(c, http.StatusBadRequest, "只支持TXT、DOC、DOCX、PDF格式", "")
+	allowedExts := map[string]bool{
+		".txt": true, ".md": true,
+		".doc": true, ".docx": true,
+		".pdf":  true,
+		".rtf":  true,
+		".html": true, ".htm": true,
+	}
+	if !allowedExts[ext] {
+		utils.ErrorResponse(c, http.StatusBadRequest,
+			fmt.Sprintf("不支持的文件格式 %s，支持：TXT、MD、DOC、DOCX、PDF、RTF、HTML", ext), "")
 		return
 	}
 
@@ -2379,50 +2398,91 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 		return
 	}
 
-	// 保存文件
+	// 保存文件（保留原始扩展名，但用 UUID 命名避免冲突）
 	tempFileName := fmt.Sprintf("%s_%d%s", uuid.New().String(), time.Now().Unix(), ext)
 	tempFilePath := filepath.Join(uploadDir, tempFileName)
-
 	if err := c.SaveUploadedFile(file, tempFilePath); err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "保存文件失败", err.Error())
 		return
 	}
 
-	// 根据文件类型提取文本
+	// 通过文件魔数检测真实格式，不只依赖扩展名
+	realType, detectErr := h.detectFileType(tempFilePath)
+	if detectErr == nil && realType != "" && realType != ext {
+		// 扩展名与实际格式不符，使用真实格式
+		ext = realType
+	}
+
+	// 根据真实格式提取文本
 	var extractErr error
 	switch ext {
-	case ".txt":
+	case ".txt", ".md":
 		formatText, extractErr = h.extractTextFromTXT(tempFilePath)
-	case ".doc", ".docx":
-		formatText, extractErr = h.extractTextFromDOCX(tempFilePath)
+	case ".docx":
+		formatText, extractErr = h.extractTextFromDOCXRobust(tempFilePath)
+	case ".doc":
+		formatText, extractErr = h.extractTextFromDOC(tempFilePath)
 	case ".pdf":
 		formatText, extractErr = h.extractTextFromPDF(tempFilePath)
+	case ".rtf":
+		formatText, extractErr = h.extractTextFromRTF(tempFilePath)
+	case ".html", ".htm":
+		formatText, extractErr = h.extractTextFromHTML(tempFilePath)
 	default:
 		extractErr = fmt.Errorf("不支持的文件格式: %s", ext)
 	}
 
-	if extractErr != nil {
-		utils.ErrorResponse(c, http.StatusInternalServerError, "提取文件内容失败", extractErr.Error())
+	// 提取失败时尝试纯文本兜底
+	if extractErr != nil || strings.TrimSpace(formatText) == "" {
+		fallback, fallbackErr := h.extractTextFallback(tempFilePath)
+		if fallbackErr == nil && strings.TrimSpace(fallback) != "" {
+			formatText = fallback
+			extractErr = nil
+		} else if extractErr != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError,
+				"提取文件内容失败", fmt.Sprintf("格式: %s, 错误: %v", ext, extractErr))
+			return
+		}
+	}
+
+	if strings.TrimSpace(formatText) == "" {
+		utils.ErrorResponse(c, http.StatusBadRequest, "文件内容为空，无法解析格式规范", "")
 		return
 	}
 
-	// 清理临时文件（可选）
-	//defer os.Remove(tempFilePath)
+	h.processTemplateText(c, formatText)
+}
 
-	if formatText == "" {
+// processTemplateText 用提取的文本解析并保存格式模板（公共逻辑）
+func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string) {
+	if strings.TrimSpace(formatText) == "" {
 		utils.ErrorResponse(c, http.StatusBadRequest, "格式文本不能为空", "")
 		return
 	}
 
-	// 获取表单参数
+	// 安全上限：防止正则/AI处理超时（200K chars → 正则 <1s）
+	const maxTemplateRunes = 200000
+	runes := []rune(formatText)
+	if len(runes) > maxTemplateRunes {
+		log.Printf("[上传模板] 文本过长 (%d 字符)，截断到 %d 字符", len(runes), maxTemplateRunes)
+		formatText = string(runes[:maxTemplateRunes])
+		runes = runes[:maxTemplateRunes]
+	}
+
 	universityName := c.PostForm("university_name")
 	documentType := c.PostForm("document_type")
 	subject := c.PostForm("subject")
 	description := c.PostForm("description")
 
-	// 如果没有提供高校名称，尝试从文本中提取
+	preview := string(runes)
+	if len(runes) > 500 {
+		preview = string(runes[:500])
+	}
+	log.Printf("[上传模板] 提取文本预览 (%d 字符):\n%s", len(runes), preview)
+
 	if universityName == "" {
 		universityInfo := h.formatParserService.ExtractUniversityInfo(formatText)
+		log.Printf("[上传模板] 正则提取结果: %v", universityInfo)
 		if name, ok := universityInfo["name"]; ok {
 			universityName = name
 		}
@@ -2432,38 +2492,42 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 	}
 
 	if universityName == "" {
-		utils.ErrorResponse(c, http.StatusBadRequest, "高校名称不能为空", "")
-		return
+		log.Println("[上传模板] 正则未识别到高校名称，尝试 AI 提取...")
+		aiInfo := h.formatParserService.ExtractUniversityInfoWithAI(formatText)
+		if name, ok := aiInfo["name"]; ok && name != "" {
+			universityName = name
+			log.Printf("[上传模板] AI 识别到高校: %s", universityName)
+		}
+		if docType, ok := aiInfo["document_type"]; ok && docType != "" && documentType == "" {
+			documentType = docType
+		}
 	}
 
+	if universityName == "" {
+		utils.ErrorResponse(c, http.StatusBadRequest, "高校名称不能为空，请通过 university_name 参数提供", "")
+		return
+	}
 	if documentType == "" {
 		documentType = "本科论文"
 	}
-
 	if subject == "" {
 		subject = "综合"
 	}
 
-	// 解析格式规范
-	formatRules, err := h.formatParserService.ParseFormatFromText(formatText)
-
+	formatRules, err := h.formatParserService.ParseFormatFromTextSmart(formatText)
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "解析格式失败", err.Error())
 		return
 	}
 
-	// 将 formatRules 转换为 JSON 字符串
 	formatRulesJSON, err := json.Marshal(formatRules)
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "序列化格式规则失败", err.Error())
 		return
 	}
 
-	// 查找或创建高校记录
 	var university model.University
-	result := database.DB.Where("name = ?", universityName).First(&university)
-	if result.Error != nil {
-		// 如果高校不存在，创建新的高校记录
+	if res := database.DB.Where("name = ?", universityName).First(&university); res.Error != nil {
 		university = model.University{
 			Name:        universityName,
 			Abbr:        universityName,
@@ -2474,57 +2538,83 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 			utils.ErrorResponse(c, http.StatusInternalServerError, "创建高校记录失败", err.Error())
 			return
 		}
-	} else {
-		// 如果高校已存在，更新描述
-		if description != "" {
-			database.DB.Model(&university).Update("description", description)
-		}
+	} else if description != "" {
+		database.DB.Model(&university).Update("description", description)
 	}
 
-	// 查找是否存在相同的模板（高校+文档类型+学科）
 	var existingTemplate model.FormatTemplate
-	err = database.DB.Where("university_id = ? AND document_type = ? AND subject = ?", university.ID, documentType, subject).First(&existingTemplate).Error
-
+	err = database.DB.Where("university_id = ? AND document_type = ? AND subject = ?",
+		university.ID, documentType, subject).First(&existingTemplate).Error
 	if err == nil {
-		// 更新现有模板
 		existingTemplate.FormatRules = string(formatRulesJSON)
-		existingTemplate.FilePath = tempFilePath
 		existingTemplate.UpdatedAt = time.Now()
 		if description != "" {
 			existingTemplate.Description = description
 		}
-
 		if err := database.DB.Save(&existingTemplate).Error; err != nil {
 			utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式模板失败", err.Error())
 			return
 		}
-	} else {
-		// 创建格式模板记录
-		// 确保TemplateID是唯一的，避免UUID解析错误
-
-		newTemplateID := uuid.New().String()
-
-		newTemplate := model.FormatTemplate{
-			TemplateID:   newTemplateID, // 使用纯UUID字符串
-			Name:         fmt.Sprintf("%s%s格式标准", universityName, documentType),
-			UniversityID: &university.ID,
-			DocumentType: documentType,
-			Subject:      subject,
-			FilePath:     tempFilePath,
-			Source:       "university_upload",
-			IsActive:     true,
-			IsPublic:     true,
-			FormatRules:  string(formatRulesJSON),
-			Description:  description,
-		}
-
-		if err := database.DB.Create(&newTemplate).Error; err != nil {
-			utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())
-			return
-		}
+		utils.Success(c, gin.H{"message": "格式模板已更新", "id": existingTemplate.ID})
+		return
 	}
 
-	utils.Success(c, "上传并解析成功")
+	newTemplate := model.FormatTemplate{
+		TemplateID:   uuid.New().String(),
+		Name:         fmt.Sprintf("%s%s格式标准", universityName, documentType),
+		UniversityID: &university.ID,
+		DocumentType: documentType,
+		Subject:      subject,
+		Source:       "university_upload",
+		IsActive:     true,
+		IsPublic:     true,
+		FormatRules:  string(formatRulesJSON),
+		Description:  description,
+	}
+	if err := database.DB.Create(&newTemplate).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())
+		return
+	}
+
+	utils.Created(c, gin.H{"message": "格式模板已创建", "id": newTemplate.ID})
+}
+
+// detectFileType 通过魔数检测文件真实类型，返回对应扩展名
+func (h *PaperHandler) detectFileType(filePath string) (string, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	buf := make([]byte, 8)
+	n, err := f.Read(buf)
+	if err != nil || n < 4 {
+		return "", fmt.Errorf("文件过短")
+	}
+
+	// ZIP (DOCX/XLSX/PPTX)
+	if buf[0] == 0x50 && buf[1] == 0x4B && buf[2] == 0x03 && buf[3] == 0x04 {
+		return ".docx", nil
+	}
+	// OLE2 Compound (DOC/XLS/PPT)
+	if buf[0] == 0xD0 && buf[1] == 0xCF && buf[2] == 0x11 && buf[3] == 0xE0 {
+		return ".doc", nil
+	}
+	// PDF
+	if buf[0] == 0x25 && buf[1] == 0x50 && buf[2] == 0x44 && buf[3] == 0x46 {
+		return ".pdf", nil
+	}
+	// RTF
+	if n >= 5 && string(buf[:5]) == `{\rtf` {
+		return ".rtf", nil
+	}
+	// HTML (简单检测)
+	preview := strings.ToLower(strings.TrimSpace(string(buf[:n])))
+	if strings.HasPrefix(preview, "<!doc") || strings.HasPrefix(preview, "<html") {
+		return ".html", nil
+	}
+	return "", nil
 }
 
 // extractTextFromTXT 从TXT文件提取文本
@@ -2536,36 +2626,403 @@ func (h *PaperHandler) extractTextFromTXT(filePath string) (string, error) {
 	return string(content), nil
 }
 
-// extractTextFromDOCX 从DOCX文件提取文本（改进版）
-func (h *PaperHandler) extractTextFromDOCX(filePath string) (string, error) {
-	// 尝试使用 nguyenthenguyen/docx 库
-	doc, err := docx.ReadDocxFile(filePath)
-	if err != nil {
-		// 如果失败，回退到简单实现
-		return h.extractTextFromDOCXSimple(filePath)
+// extractTextFromDOCXRobust 从DOCX文件提取文本（unioffice 优先）
+func (h *PaperHandler) extractTextFromDOCXRobust(filePath string) (string, error) {
+	// 方案1: unioffice 库 — 正确解析 OOXML 段落结构，无乱码
+	if text := h.tryUniofficeExtract(filePath); text != "" {
+		return text, nil
 	}
-	defer doc.Close()
-
-	// 获取文档内容
-	docx1 := doc.Editable()
-	content := docx1.GetContent()
-
-	// 清理内容
-	content = h.cleanDocxContent(content)
-
-	if content == "" {
-		// 如果内容为空，尝试简单实现
-		return h.extractTextFromDOCXSimple(filePath)
+	// 方案2: nguyenthenguyen/docx 库
+	if doc, err := docx.ReadDocxFile(filePath); err == nil {
+		defer doc.Close()
+		content := h.cleanDocxContent(doc.Editable().GetContent())
+		if content != "" {
+			return content, nil
+		}
 	}
-
-	return content, nil
+	// 方案3: ZIP 直接解析 document.xml
+	return h.extractTextFromDOCXSimple(filePath)
 }
 
-// cleanDocxContent 清理DOCX内容
+// extractTextFromDOCX 从DOCX文件提取文本（保持兼容）
+func (h *PaperHandler) extractTextFromDOCX(filePath string) (string, error) {
+	return h.extractTextFromDOCXRobust(filePath)
+}
+
+// tryUniofficeExtract 使用 unioffice 从 .docx 提取干净的段落文本
+func (h *PaperHandler) tryUniofficeExtract(filePath string) string {
+	doc, err := document.Open(filePath)
+	if err != nil {
+		return ""
+	}
+
+	var sb strings.Builder
+	for _, para := range doc.Paragraphs() {
+		var line strings.Builder
+		for _, run := range para.Runs() {
+			line.WriteString(run.Text())
+		}
+		text := strings.TrimSpace(line.String())
+		if text != "" {
+			sb.WriteString(text)
+			sb.WriteByte('\n')
+		}
+	}
+
+	result := strings.TrimSpace(sb.String())
+	if len([]rune(result)) < 10 {
+		return ""
+	}
+	log.Printf("[DOCX提取] unioffice 成功: %d 字符", len([]rune(result)))
+	return result
+}
+
+// extractTextFromDOC 从旧版DOC（OLE2 Compound）文件提取文本
+func (h *PaperHandler) extractTextFromDOC(filePath string) (string, error) {
+	// 方案 1：先尝试作为 DOCX (ZIP) 处理（有些 .doc 实际上是 DOCX）
+	if text, err := h.extractTextFromDOCXRobust(filePath); err == nil && strings.TrimSpace(text) != "" {
+		log.Println("[DOC提取] 方案1成功: 文件实际是 DOCX 格式")
+		return text, nil
+	}
+
+	// 方案 2：PowerShell COM 自动化 — 调用 WPS/Word 提取文本（Windows，最可靠）
+	if text := h.tryComDocToText(filePath); text != "" {
+		log.Printf("[DOC提取] 方案2成功: COM (WPS/Word), %d 字符", len([]rune(text)))
+		return text, nil
+	}
+
+	// 方案 3：使用 doc2txt 库解析 OLE2 .doc
+	if text := h.tryDoc2txt(filePath); text != "" {
+		log.Printf("[DOC提取] 方案3成功: doc2txt, %d 字符", len([]rune(text)))
+		return text, nil
+	}
+
+	// 方案 4：LibreOffice soffice 命令行转换
+	if text := h.trySofficeConvert(filePath); text != "" {
+		log.Printf("[DOC提取] 方案4成功: soffice, %d 字符", len([]rune(text)))
+		return text, nil
+	}
+
+	// 方案 5：扫描 OLE2 二进制中的 UTF-16LE 中文文本（宽松模式）
+	if text := h.tryBinaryUTF16Extract(filePath); text != "" {
+		log.Printf("[DOC提取] 方案5成功: 二进制UTF-16LE, %d 字符", len([]rune(text)))
+		return text, nil
+	}
+
+	return "", fmt.Errorf("DOC 文件文本提取失败，建议将文件另存为 DOCX 格式后重新上传")
+}
+
+// tryDoc2txt 尝试用 doc2txt 库提取 .doc 文本
+func (h *PaperHandler) tryDoc2txt(filePath string) string {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	reader, err := doc2txt.ParseDoc(f)
+	if err != nil {
+		log.Printf("[DOC提取] doc2txt 解析失败: %v", err)
+		return ""
+	}
+
+	const maxBytes = 2 * 1024 * 1024
+	textBytes, err := io.ReadAll(io.LimitReader(reader, maxBytes))
+	if err != nil {
+		log.Printf("[DOC提取] doc2txt 读取失败: %v", err)
+		return ""
+	}
+
+	text := h.cleanExtractedText(string(textBytes))
+	chineseCount := countChinese(text)
+	log.Printf("[DOC提取] doc2txt 结果: %d 字符, 中文 %d 个", len([]rune(text)), chineseCount)
+
+	if chineseCount < 30 {
+		log.Println("[DOC提取] doc2txt 结果质量不佳，尝试其他方案")
+		return ""
+	}
+	return text
+}
+
+// tryComDocToText 使用 PowerShell COM 自动化 (WPS / Word) 提取 .doc 纯文本
+func (h *PaperHandler) tryComDocToText(filePath string) string {
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return ""
+	}
+	absPath = strings.ReplaceAll(absPath, `/`, `\`)
+	escapedPath := strings.ReplaceAll(absPath, `'`, `''`)
+
+	// PowerShell 脚本：尝试多个 COM ProgID，通过 stdout 输出文本
+	psScript := fmt.Sprintf(`
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+$path = '%s'
+$app = $null
+$ids = @('Word.Application','KWps.Application','wps.Application','KWPS.Application')
+foreach ($id in $ids) {
+  try { $app = New-Object -ComObject $id; break } catch {}
+}
+if (-not $app) { exit 1 }
+$app.Visible = $false
+$app.DisplayAlerts = 0
+try {
+  $doc = $app.Documents.Open($path)
+  [Console]::Out.Write($doc.Content.Text)
+  $doc.Close([ref]$false)
+} finally {
+  $app.Quit()
+}
+`, escapedPath)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
+	cmd.Env = os.Environ()
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[DOC提取] COM 失败: %v (output: %.200s)", err, string(output))
+		return ""
+	}
+
+	text := strings.TrimSpace(string(output))
+	chineseCount := countChinese(text)
+	log.Printf("[DOC提取] COM (WPS/Word) 结果: %d 字符, 中文 %d 个", len([]rune(text)), chineseCount)
+
+	if chineseCount < 10 {
+		return ""
+	}
+	return text
+}
+
+// trySofficeConvert 尝试使用 LibreOffice soffice 将 .doc 转为 .txt
+func (h *PaperHandler) trySofficeConvert(filePath string) string {
+	sofficePaths := []string{
+		"soffice",
+		`C:\Program Files\LibreOffice\program\soffice.exe`,
+		`C:\Program Files (x86)\LibreOffice\program\soffice.exe`,
+		"/usr/bin/soffice",
+		"/usr/local/bin/soffice",
+	}
+
+	var sofficeBin string
+	for _, p := range sofficePaths {
+		if _, err := exec.LookPath(p); err == nil {
+			sofficeBin = p
+			break
+		}
+	}
+	if sofficeBin == "" {
+		log.Println("[DOC提取] LibreOffice 未找到，跳过")
+		return ""
+	}
+
+	absPath, _ := filepath.Abs(filePath)
+	outDir := filepath.Dir(absPath)
+	baseName := strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
+	txtPath := filepath.Join(outDir, baseName+".txt")
+	defer os.Remove(txtPath)
+
+	cmd := exec.Command(sofficeBin,
+		"--headless", "--convert-to", "txt:Text (encoded):UTF8",
+		"--outdir", outDir, absPath,
+	)
+	cmd.Env = append(os.Environ(), "HOME="+os.TempDir())
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[DOC提取] soffice 转换失败: %v, output: %s", err, string(output))
+		return ""
+	}
+
+	textBytes, err := os.ReadFile(txtPath)
+	if err != nil {
+		return ""
+	}
+
+	text := strings.TrimSpace(string(textBytes))
+	chineseCount := countChinese(text)
+	log.Printf("[DOC提取] soffice 成功: %d 字符, 中文 %d 个", len([]rune(text)), chineseCount)
+	if chineseCount < 10 {
+		return ""
+	}
+	return text
+}
+
+// tryBinaryUTF16Extract 从 OLE2 二进制中扫描 UTF-16LE 编码的中文文本
+// 这是最后的保底方案：虽然会有部分乱码，但能保证提取到关键的中文内容（如高校名称）
+func (h *PaperHandler) tryBinaryUTF16Extract(filePath string) string {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+
+	// 跳过 OLE2 文件头元数据
+	startOffset := 0
+	if len(data) > 0x900 {
+		startOffset = 0x900
+	}
+
+	var sb strings.Builder
+	const maxOutput = 500 * 1024
+
+	i := startOffset
+	for i < len(data)-1 {
+		lo, hi := data[i], data[i+1]
+		cp := uint16(lo) | uint16(hi)<<8
+
+		switch {
+		case cp >= 0x4E00 && cp <= 0x9FFF:
+			sb.WriteRune(rune(cp))
+			i += 2
+		case cp >= 0x3000 && cp <= 0x303F:
+			sb.WriteRune(rune(cp))
+			i += 2
+		case cp >= 0xFF00 && cp <= 0xFFEF:
+			sb.WriteRune(rune(cp))
+			i += 2
+		case lo >= 0x20 && lo < 0x7F:
+			sb.WriteByte(lo)
+			i++
+		case lo == 0x0D || lo == 0x0A:
+			sb.WriteByte('\n')
+			i++
+		default:
+			i++
+		}
+
+		if sb.Len() > maxOutput {
+			break
+		}
+	}
+
+	text := h.cleanExtractedText(sb.String())
+	chineseCount := countChinese(text)
+	log.Printf("[DOC提取] 二进制UTF-16LE: %d 字符, 中文 %d 个", len([]rune(text)), chineseCount)
+
+	if chineseCount < 5 {
+		return ""
+	}
+	return text
+}
+
+func countChinese(text string) int {
+	count := 0
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			count++
+		}
+	}
+	return count
+}
+
+// extractTextFromRTF 从RTF文件提取纯文本
+func (h *PaperHandler) extractTextFromRTF(filePath string) (string, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+	text := string(data)
+	// 移除RTF控制字和组
+	re := regexp.MustCompile(`\\\*[^\\{}]+|\\[a-z]+[-\d]*\s?|\{|\}`)
+	text = re.ReplaceAllString(text, " ")
+	// 处理 \uN 转义（Unicode字符）
+	uniRe := regexp.MustCompile(`\\u(\d+)\??`)
+	text = uniRe.ReplaceAllStringFunc(text, func(m string) string {
+		matches := uniRe.FindStringSubmatch(m)
+		if len(matches) < 2 {
+			return ""
+		}
+		if n, err := strconv.Atoi(matches[1]); err == nil {
+			if n < 0 {
+				n += 65536
+			}
+			return string(rune(n))
+		}
+		return ""
+	})
+	return h.cleanExtractedText(text), nil
+}
+
+// extractTextFromHTML 从HTML文件提取纯文本
+func (h *PaperHandler) extractTextFromHTML(filePath string) (string, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+	text := string(data)
+	// 移除 <script> 和 <style> 块
+	text = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`).ReplaceAllString(text, " ")
+	text = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`).ReplaceAllString(text, " ")
+	// 移除所有HTML标签
+	text = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(text, " ")
+	// HTML实体解码（常见）
+	text = strings.NewReplacer(
+		"&nbsp;", " ", "&lt;", "<", "&gt;", ">",
+		"&amp;", "&", "&quot;", `"`, "&#39;", "'",
+	).Replace(text)
+	return h.cleanExtractedText(text), nil
+}
+
+// extractTextFallback 兜底：尝试将文件作为文本读取
+func (h *PaperHandler) extractTextFallback(filePath string) (string, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+	// 仅保留可打印字符和中文
+	var sb strings.Builder
+	for _, r := range string(data) {
+		if r >= 0x20 && r < 0x7F || r >= 0x4E00 && r <= 0x9FFF || r == '\n' || r == '\r' {
+			sb.WriteRune(r)
+		}
+	}
+	text := h.cleanExtractedText(sb.String())
+	if len(text) < 10 {
+		return "", fmt.Errorf("文件内容无法识别")
+	}
+	return text, nil
+}
+
+// cleanDocxContent 清理DOCX内容（从原始XML中提取纯文本）
 func (h *PaperHandler) cleanDocxContent(content string) string {
-	// 移除多余的空白字符
-	content = regexp.MustCompile(`\s+`).ReplaceAllString(content, " ")
-	// 移除首尾空白
+	// GetContent() 返回的是原始 XML，需要先提取 <w:t> 标签中的文本
+	if strings.Contains(content, "<w:") {
+		var sb strings.Builder
+		textRe := regexp.MustCompile(`<w:t[^>]*>([^<]*)</w:t>`)
+		// 用段落标签作为换行分隔
+		paraContent := regexp.MustCompile(`</w:p>`).ReplaceAllString(content, "</w:p>\n")
+
+		for _, line := range strings.Split(paraContent, "\n") {
+			matches := textRe.FindAllStringSubmatch(line, -1)
+			if len(matches) == 0 {
+				continue
+			}
+			var lineText strings.Builder
+			for _, m := range matches {
+				if len(m) > 1 {
+					lineText.WriteString(m[1])
+				}
+			}
+			text := strings.TrimSpace(lineText.String())
+			if text != "" {
+				sb.WriteString(text)
+				sb.WriteString("\n")
+			}
+		}
+		content = sb.String()
+	}
+
+	// XML 实体解码
+	content = strings.ReplaceAll(content, "&lt;", "<")
+	content = strings.ReplaceAll(content, "&gt;", ">")
+	content = strings.ReplaceAll(content, "&amp;", "&")
+	content = strings.ReplaceAll(content, "&quot;", "\"")
+	content = strings.ReplaceAll(content, "&#39;", "'")
+
+	// 移除残留的 XML 标签
+	content = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(content, "")
+	// 合并多个连续空行为一个
+	content = regexp.MustCompile(`\n{3,}`).ReplaceAllString(content, "\n\n")
 	content = strings.TrimSpace(content)
 	return content
 }
