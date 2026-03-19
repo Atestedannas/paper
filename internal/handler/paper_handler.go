@@ -100,22 +100,33 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 		isCheckFree = true // 默认免费
 	}
 
-	// 如果需要付费，返回402 Payment Required状态码
+	// 如果需要付费，检查当前用户是否为免费用户
 	if !isCheckFree {
-		// 获取付费金额
-		formatCheckPrice, _ := paymentConfig["format_check"].(float64)
-		formatFixPrice, _ := paymentConfig["format_fix"].(float64)
-
-		paymentInfo := gin.H{
-			"is_check_free":    isCheckFree,
-			"format_check":     formatCheckPrice,
-			"format_fix":       formatFixPrice,
-			"total_amount":     formatCheckPrice + formatFixPrice,
-			"payment_required": true,
+		// 检查登录用户是否为免费用户（IsFreeUser 或 admin）
+		userBypass := false
+		if userObj, exists := c.Get("user"); exists {
+			if u, ok := userObj.(*model.User); ok {
+				if u.IsFreeUser || u.Role == "admin" {
+					userBypass = true
+				}
+			}
 		}
-		paymentInfoJSON, _ := json.Marshal(paymentInfo)
-		utils.ErrorResponse(c, http.StatusPaymentRequired, "论文格式检查和修正需要付费", string(paymentInfoJSON))
-		return
+
+		if !userBypass {
+			formatCheckPrice, _ := paymentConfig["format_check"].(float64)
+			formatFixPrice, _ := paymentConfig["format_fix"].(float64)
+
+			paymentInfo := gin.H{
+				"is_check_free":    isCheckFree,
+				"format_check":     formatCheckPrice,
+				"format_fix":       formatFixPrice,
+				"total_amount":     formatCheckPrice + formatFixPrice,
+				"payment_required": true,
+			}
+			paymentInfoJSON, _ := json.Marshal(paymentInfo)
+			utils.ErrorResponse(c, http.StatusPaymentRequired, "论文格式检查和修正需要付费", string(paymentInfoJSON))
+			return
+		}
 	}
 
 	// 验证和解析请求参数

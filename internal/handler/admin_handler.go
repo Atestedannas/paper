@@ -389,6 +389,7 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 		Role          string   `json:"role"`
 		Status        string   `json:"status"`
 		FullName      string   `json:"full_name"`
+		IsFreeUser    *bool    `json:"is_free_user"`
 		RoleIDs       []string `json:"role_ids"`
 		PermissionIDs []string `json:"permission_ids"`
 	}
@@ -442,6 +443,12 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "创建用户失败", err.Error())
 		return
+	}
+
+	// 设置免费用户标记
+	if req.IsFreeUser != nil && *req.IsFreeUser {
+		user.IsFreeUser = true
+		_ = h.userService.UpdateUser(user)
 	}
 
 	for _, roleID := range resolvedRoleIDs {
@@ -500,11 +507,12 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 	}
 
 	var req struct {
-		Username *string `json:"username"`
-		Email    *string `json:"email"`
-		FullName *string `json:"full_name"`
-		Role     *string `json:"role"`
-		Status   *string `json:"status"`
+		Username   *string `json:"username"`
+		Email      *string `json:"email"`
+		FullName   *string `json:"full_name"`
+		Role       *string `json:"role"`
+		Status     *string `json:"status"`
+		IsFreeUser *bool   `json:"is_free_user"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -532,6 +540,9 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 	}
 	if req.Status != nil {
 		user.Status = *req.Status
+	}
+	if req.IsFreeUser != nil {
+		user.IsFreeUser = *req.IsFreeUser
 	}
 
 	if err := h.userService.UpdateUser(user); err != nil {

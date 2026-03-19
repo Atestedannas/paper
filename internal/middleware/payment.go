@@ -179,8 +179,8 @@ func CheckUserPaymentStatus(userID uuid.UUID, serviceType ServiceType, price flo
 		return false, fmt.Errorf("获取用户信息失败: %v", err)
 	}
 
-	// 检查用户是否为管理员，管理员免费
-	if user.Role == "admin" {
+	// 管理员或管理员指定的免费用户，直接放行
+	if user.Role == "admin" || user.IsFreeUser {
 		return true, nil
 	}
 

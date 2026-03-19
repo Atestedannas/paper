@@ -246,12 +246,11 @@ func (h *AdminSystemHandler) UploadImage(c *gin.Context) {
 	compressedSizeKB := float64(len(compressedData)) / 1024
 	compressionRatio := (1 - compressedSizeKB/originalSizeKB) * 100
 
-	// 返回文件的访问 URL
-	baseURL := c.Request.URL.Scheme + "://" + c.Request.Host
-	fileURL := fmt.Sprintf("%s/uploads/images/%s", baseURL, uniqueName)
+	// 返回文件的访问 URL（使用相对路径，兼容代理/不同端口）
+	relativePath := fmt.Sprintf("/uploads/images/%s", uniqueName)
 
 	utils.SuccessResponse(c, "上传成功", gin.H{
-		"url":               fileURL,
+		"url":               relativePath,
 		"path":              filepath.Join("uploads", "images", uniqueName),
 		"format":            strings.TrimPrefix(newExt, "."),
 		"original_size":     fmt.Sprintf("%.2f KB", originalSizeKB),

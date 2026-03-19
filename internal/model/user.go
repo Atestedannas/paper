@@ -18,7 +18,8 @@ type User struct {
 	Role         string    `gorm:"size:20;default:user" json:"role"`     // user, admin
 
 	// 新用户试用额度
-	FreeChecks int `gorm:"default:2" json:"free_checks"` // 剩余免费检查次数
+	FreeChecks int  `gorm:"default:2" json:"free_checks"`      // 剩余免费检查次数
+	IsFreeUser bool `gorm:"default:false" json:"is_free_user"` // 管理员指定的免费用户，跳过所有付费检查
 
 	// 第三方登录相关字段
 	WechatOpenID *string `gorm:"size:100;uniqueIndex" json:"wechat_open_id,omitempty"`

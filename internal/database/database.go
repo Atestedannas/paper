@@ -118,6 +118,11 @@ func PerformMigration() error {
 	// 7. 确保 paragraph_samples 新增字段存在
 	DB.Exec(`ALTER TABLE paragraph_samples ADD COLUMN IF NOT EXISTS has_originality_kw boolean DEFAULT false`)
 
+	// 8. 确保 CMS 帖子相关表存在
+	if err := DB.AutoMigrate(&model.CmsPost{}, &model.CmsReply{}); err != nil {
+		log.Printf("WARNING: CMS 帖子表迁移失败: %v", err)
+	}
+
 	log.Println("数据库迁移和初始化完成")
 	return nil
 }
@@ -161,5 +166,9 @@ func migrateDatabase() error {
 		// 智能分类器（自进化段落分类系统）
 		&model.ParagraphSample{},
 		&model.ClassifierModelState{},
+
+		// CMS 帖子系统
+		&model.CmsPost{},
+		&model.CmsReply{},
 	)
 }

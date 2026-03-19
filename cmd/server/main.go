@@ -95,6 +95,7 @@ func main() {
 	paymentHandler := handler.NewPaymentHandler(cfg)
 	paperHandler := handler.NewPaperHandler(cfg)
 	contactHandler := handler.NewContactHandler()
+	cmsHandler := handler.NewCmsHandler()
 	adminHandler := handler.NewAdminHandler(cfg)
 	adminSystemHandler := handler.NewAdminSystemHandler()
 	universityHandler := handler.NewUniversityHandler()
@@ -537,6 +538,26 @@ func main() {
 			}
 		}
 
+		// CMS 帖子路由
+		cmsPublic := apiV1.Group("/cms")
+		{
+			cmsPublic.GET("/posts", cmsHandler.ListPosts)
+			cmsPublic.GET("/posts/:id", cmsHandler.GetPost)
+		}
+		cmsAuth := apiV1.Group("/cms", middleware.AuthMiddleware(cfg, database.DB))
+		{
+			cmsAuth.POST("/posts", cmsHandler.CreatePost)
+			cmsAuth.POST("/posts/:id/replies", cmsHandler.CreateReply)
+			cmsAuth.DELETE("/posts/:id", cmsHandler.DeletePost)
+			cmsAuth.DELETE("/posts/:id/replies/:replyId", cmsHandler.DeleteReply)
+		}
+
+		// General upload routes (auth required, no admin needed)
+		upload := apiV1.Group("/upload", middleware.AuthMiddleware(cfg, database.DB))
+		{
+			upload.POST("/image", adminSystemHandler.UploadImage)
+		}
+
 		// Batch operation routes
 		batch := apiV1.Group("/batch", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware())
 		{
@@ -582,7 +603,7 @@ func main() {
 			admin.PUT("/settings/payment/:provider", adminSystemHandler.UpdatePaymentProviderSettings)
 			admin.POST("/settings/payment/:provider/test", adminSystemHandler.TestPaymentProviderSettings)
 
-			// Image upload
+			// Image upload (admin)
 			admin.POST("/upload/image", adminSystemHandler.UploadImage)
 
 			// Billing configuration management
