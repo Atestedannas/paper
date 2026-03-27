@@ -64,6 +64,8 @@ func RunMigrations() error {
 		&Migration20260315CreateCQUTFormat{},
 		// V2: 强制更新重庆理工大学所有模板（修复 abstract/keywords/english_abstract 规则数据）
 		&Migration20260315FixCQUTFormatV2{},
+		// 创建重庆人文科技学院本科论文格式模板
+		&Migration20260327CreateCQRWSTFormat{},
 	}
 
 	// 按顺序执行迁移（单个失败不阻止后续，仅记录 warning）

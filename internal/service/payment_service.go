@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,7 +17,7 @@ import (
 type PaymentService interface {
 	CreatePayment(orderID uuid.UUID, paymentMethod string, paymentType string, clientIP string) (*model.PaymentRecord, map[string]interface{}, error)
 	HandleWeChatCallback(data []byte) (map[string]interface{}, error)
-	HandleAlipayCallback(data map[string]interface{}) (map[string]interface{}, error)
+	HandleAlipayCallback(data map[string]interface{}) error
 	GetPaymentByID(id uuid.UUID) (*model.PaymentRecord, error)
 	GetPaymentByOrderID(orderID uuid.UUID) (*model.PaymentRecord, error)
 	GetPaymentByTransactionID(transactionID string) (*model.PaymentRecord, error)
@@ -58,12 +59,19 @@ func (s *paymentService) CreatePayment(orderID uuid.UUID, paymentMethod string, 
 		return nil, nil, errors.New("order has expired")
 	}
 
-	// 幂等：同订单存在 pending 支付记录则直接复用，重新生成二维码
+	// 幂等：同订单存在 pending 支付记录则复用；若用户切换微信/支付宝，同步更新 payment_method
 	var existing model.PaymentRecord
 	if err := database.DB.
 		Where("order_id = ? AND payment_status = 'pending'", orderID).
 		First(&existing).Error; err == nil {
-		paymentParams, err := s.generatePaymentParams(&existing, order, clientIP, paymentType)
+		if existing.PaymentMethod != paymentMethod {
+			existing.PaymentMethod = paymentMethod
+			existing.UpdatedAt = time.Now()
+			if err := database.DB.Save(&existing).Error; err != nil {
+				return nil, nil, err
+			}
+		}
+		paymentParams, err := s.generatePaymentParams(&existing, order, clientIP, paymentMethod, paymentType)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -88,7 +96,7 @@ func (s *paymentService) CreatePayment(orderID uuid.UUID, paymentMethod string, 
 		return nil, nil, err
 	}
 
-	paymentParams, err := s.generatePaymentParams(payment, order, clientIP, paymentType)
+	paymentParams, err := s.generatePaymentParams(payment, order, clientIP, paymentMethod, paymentType)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -96,9 +104,9 @@ func (s *paymentService) CreatePayment(orderID uuid.UUID, paymentMethod string, 
 	return payment, paymentParams, nil
 }
 
-// generatePaymentParams 生成支付参数
-func (s *paymentService) generatePaymentParams(payment *model.PaymentRecord, order *model.Order, clientIP string, paymentType string) (map[string]interface{}, error) {
-	switch payment.PaymentMethod {
+// generatePaymentParams 使用本次请求的 paymentMethod（避免复用 pending 记录时仍走旧的微信/支付宝分支）
+func (s *paymentService) generatePaymentParams(payment *model.PaymentRecord, order *model.Order, clientIP string, paymentMethod string, paymentType string) (map[string]interface{}, error) {
+	switch paymentMethod {
 	case "wechat":
 		return s.generateWeChatPaymentParams(payment, order, clientIP, paymentType)
 	case "alipay":
@@ -201,10 +209,9 @@ func (s *paymentService) verifyWeChatSign(params map[string]interface{}) error {
 func (s *paymentService) generateAlipayPaymentParams(payment *model.PaymentRecord, order *model.Order, paymentType string) (map[string]interface{}, error) {
 	switch paymentType {
 	case "precreate":
-		// 扫码支付：调用 alipay.trade.precreate，返回 qr.alipay.com 链接
 		qrContent, err := s.alipayPagePayService.CreateTradePrecreate(order, order.TotalAmount)
 		if err != nil {
-			return nil, fmt.Errorf("支付宝扫码支付创建失败: %w", err)
+			return nil, fmt.Errorf("支付宝当面付创建失败: %w", err)
 		}
 		qrCodeURL := s.alipayPagePayService.GenerateQRCodeImageURL(qrContent, 256)
 		return map[string]interface{}{
@@ -214,20 +221,38 @@ func (s *paymentService) generateAlipayPaymentParams(payment *model.PaymentRecor
 			"order_no":     order.OrderNo,
 			"total_amount": order.TotalAmount,
 		}, nil
-	case "page":
-		// 网页跳转支付：构建完整支付 URL，前端跳转或生成二维码
-		paymentURL, err := s.alipayPagePayService.CreateTradePagePay(order, order.TotalAmount)
+	case "wap":
+		paymentURL, err := s.alipayPagePayService.CreateTradeWapPay(order, order.TotalAmount)
 		if err != nil {
-			return nil, fmt.Errorf("支付宝页面支付创建失败: %w", err)
+			return nil, fmt.Errorf("支付宝手机网站支付创建失败: %w", err)
 		}
 		qrCodeURL := s.alipayPagePayService.GenerateQRCodeImageURL(paymentURL, 256)
 		return map[string]interface{}{
-			"payment_type": "page",
+			"payment_type": "wap",
 			"payment_url":  paymentURL,
+			"qr_content":   paymentURL,
 			"qr_code_url":  qrCodeURL,
 			"order_no":     order.OrderNo,
 			"total_amount": order.TotalAmount,
 		}, nil
+	case "page":
+		paymentURL, err := s.alipayPagePayService.CreateTradePagePay(order, order.TotalAmount)
+		if err != nil {
+			return nil, fmt.Errorf("支付宝页面支付创建失败: %w", err)
+		}
+		return map[string]interface{}{
+			"payment_type": "page",
+			"payment_url":  paymentURL,
+			"order_no":     order.OrderNo,
+			"total_amount": order.TotalAmount,
+		}, nil
+	case "auto":
+		result, err := s.generateAlipayPaymentParams(payment, order, "wap")
+		if err != nil {
+			log.Printf("[AlipayAuto] wap 失败: %v，降级到 page 模式", err)
+			return s.generateAlipayPaymentParams(payment, order, "page")
+		}
+		return result, nil
 	default:
 		return nil, errors.New("unsupported alipay payment type")
 	}
@@ -246,17 +271,26 @@ func (s *paymentService) generateAlipaySign(params map[string]interface{}) (stri
 	return "mock_alipay_signature", nil
 }
 
-// verifyAlipaySign 验证支付宝签名
+// verifyAlipaySign 验证支付宝异步通知签名（需配置开放平台「支付宝公钥」，非应用公钥）
 func (s *paymentService) verifyAlipaySign(params map[string]interface{}) error {
-	// TODO: 实现真实的支付宝签名验证逻辑
-	// 1. 从参数中提取sign
-	// 2. 移除sign参数
-	// 3. 参数排序
-	// 4. 拼接字符串
-	// 5. 使用支付宝公钥验证签名
-
-	// 临时跳过验证，实际项目中需要实现
-	return nil
+	strParams := make(map[string]string)
+	for k, v := range params {
+		switch val := v.(type) {
+		case string:
+			strParams[k] = val
+		case []string:
+			if len(val) > 0 {
+				strParams[k] = val[0]
+			}
+		default:
+			strParams[k] = fmt.Sprintf("%v", v)
+		}
+	}
+	sign := strParams["sign"]
+	if sign == "" {
+		return fmt.Errorf("missing sign")
+	}
+	return s.alipayPagePayService.VerifySign(strParams, sign)
 }
 
 // HandleWeChatCallback 处理微信支付回调
@@ -325,64 +359,75 @@ func (s *paymentService) HandleWeChatCallback(data []byte) (map[string]interface
 	}, nil
 }
 
-// HandleAlipayCallback 处理支付宝支付回调
-func (s *paymentService) HandleAlipayCallback(data map[string]interface{}) (map[string]interface{}, error) {
-	// 验证签名
-	if err := s.verifyAlipaySign(data); err != nil {
-		return nil, fmt.Errorf("alipay signature verification failed: %w", err)
+// resolvePaymentByOutTradeNo out_trade_no 为订单号（ORD…）或支付记录 UUID
+func (s *paymentService) resolvePaymentByOutTradeNo(outTradeNo string) (*model.PaymentRecord, error) {
+	if outTradeNo == "" {
+		return nil, fmt.Errorf("empty out_trade_no")
 	}
+	if paymentID, err := uuid.Parse(outTradeNo); err == nil {
+		return s.GetPaymentByID(paymentID)
+	}
+	orderSvc := NewOrderService()
+	order, err := orderSvc.GetOrderByOrderNo(outTradeNo)
+	if err != nil {
+		return nil, err
+	}
+	var payment model.PaymentRecord
+	if err := database.DB.Preload("Order").Where("order_id = ? AND payment_status = ?", order.ID, "pending").
+		Order("created_at DESC").First(&payment).Error; err != nil {
+		if err := database.DB.Preload("Order").Where("order_id = ?", order.ID).Order("created_at DESC").First(&payment).Error; err != nil {
+			return nil, err
+		}
+	}
+	return &payment, nil
+}
 
-	// 获取支付结果
+// HandleAlipayCallback 处理支付宝支付回调（返回 error，由 Handler 写 success/fail 明文）
+func (s *paymentService) HandleAlipayCallback(data map[string]interface{}) error {
+	log.Printf("[AlipayCallback] 收到支付宝回调: trade_status=%v, out_trade_no=%v, trade_no=%v",
+		data["trade_status"], data["out_trade_no"], data["trade_no"])
+
+	if err := s.verifyAlipaySign(data); err != nil {
+		log.Printf("[AlipayCallback] 验签失败: %v", err)
+		return fmt.Errorf("alipay signature verification failed: %w", err)
+	}
+	log.Printf("[AlipayCallback] 验签成功")
+
 	tradeStatus, _ := data["trade_status"].(string)
 	outTradeNo, _ := data["out_trade_no"].(string)
 	tradeNo, _ := data["trade_no"].(string)
 
-	// 转换支付ID
-	paymentID, err := uuid.Parse(outTradeNo)
+	payment, err := s.resolvePaymentByOutTradeNo(outTradeNo)
 	if err != nil {
-		return nil, err
+		log.Printf("[AlipayCallback] 根据订单号 %s 查找支付记录失败: %v", outTradeNo, err)
+		return err
 	}
+	paymentID := payment.ID
+	log.Printf("[AlipayCallback] 找到支付记录: paymentID=%s, orderID=%s", paymentID, payment.OrderID)
 
-	// 获取支付记录
-	payment, err := s.GetPaymentByID(paymentID)
-	if err != nil {
-		return nil, err
-	}
-
-	// 更新支付状态
 	if tradeStatus == "TRADE_SUCCESS" || tradeStatus == "TRADE_FINISHED" {
-		// 支付成功
-		err = s.UpdatePaymentStatus(paymentID, "success", tradeNo)
-		if err != nil {
-			return nil, err
+		if err := s.UpdatePaymentStatus(paymentID, "success", tradeNo); err != nil {
+			log.Printf("[AlipayCallback] 更新支付状态失败: %v", err)
+			return err
 		}
-
-		// 更新订单状态
 		orderService := NewOrderService()
-		err = orderService.UpdateOrderStatus(payment.OrderID, "completed", "paid")
-		if err != nil {
-			return nil, err
+		if err := orderService.UpdateOrderStatus(payment.OrderID, "completed", "paid"); err != nil {
+			log.Printf("[AlipayCallback] 更新订单状态失败: %v", err)
+			return err
 		}
-	} else {
-		// 支付失败
-		err = s.UpdatePaymentStatus(paymentID, "failed", tradeNo)
-		if err != nil {
-			return nil, err
-		}
-
-		// 更新订单状态
-		orderService := NewOrderService()
-		err = orderService.UpdateOrderStatus(payment.OrderID, "failed", "failed")
-		if err != nil {
-			return nil, err
-		}
+		log.Printf("[AlipayCallback] 支付成功，订单 %s 已更新为 paid", payment.OrderID)
+		return nil
 	}
 
-	// 返回支付宝要求的响应格式
-	return map[string]interface{}{
-		"code": "10000",
-		"msg":  "Success",
-	}, nil
+	log.Printf("[AlipayCallback] 支付未成功，trade_status=%s", tradeStatus)
+	if err := s.UpdatePaymentStatus(paymentID, "failed", tradeNo); err != nil {
+		return err
+	}
+	orderService := NewOrderService()
+	if err := orderService.UpdateOrderStatus(payment.OrderID, "failed", "failed"); err != nil {
+		return err
+	}
+	return nil
 }
 
 // GetPaymentByID 根据ID获取支付记录

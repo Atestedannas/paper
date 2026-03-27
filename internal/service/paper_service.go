@@ -8,6 +8,7 @@ import (
 	"log"
 	"mime/multipart"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -510,6 +511,18 @@ func (s PaperService) UploadPaper(userID uuid.UUID, title, description string, f
 		return nil, fmt.Errorf("failed to save file: %w", err)
 	}
 
+	// .doc → .docx conversion via LibreOffice
+	if fileType == "doc" {
+		docxPath, err := convertDocToDocx(filePath)
+		if err != nil {
+			os.Remove(filePath)
+			return nil, fmt.Errorf("failed to convert .doc to .docx: %w", err)
+		}
+		filePath = docxPath
+		fileType = "docx"
+		log.Printf("[UploadPaper] Converted .doc to .docx: %s", docxPath)
+	}
+
 	var selectedTemplateID *uuid.UUID
 	if formatStandardID != uuid.Nil {
 		selectedTemplateID = &formatStandardID
@@ -1000,4 +1013,30 @@ func normalizeReportType(reportType string) string {
 		return "correction-report"
 	}
 	return "report"
+}
+
+// convertDocToDocx uses LibreOffice (soffice) to convert a .doc file to .docx.
+// Returns the path to the converted .docx file.
+func convertDocToDocx(docPath string) (string, error) {
+	absPath, err := filepath.Abs(docPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve path: %w", err)
+	}
+	outDir := filepath.Dir(absPath)
+
+	cmd := exec.Command("soffice", "--headless", "--convert-to", "docx", "--outdir", outDir, absPath)
+	cmd.Env = append(os.Environ(), "HOME=/tmp")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("soffice conversion failed: %w, output: %s", err, string(output))
+	}
+
+	base := strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
+	docxPath := filepath.Join(outDir, base+".docx")
+	if _, err := os.Stat(docxPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("conversion produced no output file, soffice output: %s", string(output))
+	}
+
+	os.Remove(absPath)
+	return docxPath, nil
 }

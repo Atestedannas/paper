@@ -270,41 +270,6 @@ func ParseRequirementsToStandard(parsedRequirements map[string]interface{}) Form
 		standard.AbstractStyles = parseAbstractStylesFromDirectStructure(parsedRequirements)
 	}
 
-	// 优先使用直接在parsedRequirements中的格式要求
-	// 检查是否有顶层页面设置（中文键）
-	if _, ok := parsedRequirements["页面设置"].(map[string]interface{}); ok {
-		// 如果直接有页面设置，说明是直接格式要求（中文键）
-		standard.PageSetup = parsePageSetup(parsedRequirements)
-		standard.HeadingStyles = parseHeadingStyles(parsedRequirements)
-		standard.ParagraphStyles = parseParagraphStyles(parsedRequirements)
-		standard.TableStyle = parseTableStyle(parsedRequirements)
-		standard.FigureStyle = parseFigureStyle(parsedRequirements)
-		standard.ReferenceStyle = parseReferenceStyle(parsedRequirements)
-		standard.AbstractStyles = parseAbstractStyles(parsedRequirements)
-	} else if formatReqs, ok := parsedRequirements["format_requirements"].(map[string]interface{}); ok {
-		// 否则使用嵌套的format_requirements结构
-		standard.PageSetup = parsePageSetup(formatReqs)
-		standard.HeadingStyles = parseHeadingStyles(formatReqs)
-		standard.ParagraphStyles = parseParagraphStyles(formatReqs)
-		standard.TableStyle = parseTableStyle(formatReqs)
-		standard.FigureStyle = parseFigureStyle(formatReqs)
-		standard.ReferenceStyle = parseReferenceStyle(formatReqs)
-		standard.AbstractStyles = parseAbstractStyles(formatReqs)
-	} else if basicRequirements, ok := parsedRequirements["基本要求"].(map[string]interface{}); ok {
-		// 尝试从基本要求中提取格式信息（中文键）
-		standard.PageSetup = parsePageSetup(basicRequirements)
-		standard.HeadingStyles = parseHeadingStyles(basicRequirements)
-		standard.ParagraphStyles = parseParagraphStyles(basicRequirements)
-	} else if _, ok := parsedRequirements["page_setup"].(map[string]interface{}); ok {
-		// 检查是否有顶层页面设置（英文键）
-		standard.PageSetup = parsePageSetupEnglish(parsedRequirements)
-		standard.HeadingStyles = parseHeadingStylesEnglish(parsedRequirements)
-		standard.ParagraphStyles = parseParagraphStylesEnglish(parsedRequirements)
-		standard.ReferenceStyle = parseReferenceStyleEnglish(parsedRequirements)
-		standard.TableStyle = parseTableStyleEnglish(parsedRequirements)
-		standard.FigureStyle = parseFigureStyleEnglish(parsedRequirements)
-	}
-
 	// 设置标准名称和描述
 	if name, ok := parsedRequirements["name"].(string); ok {
 		standard.Name = name
@@ -830,6 +795,32 @@ func getBool(m map[string]interface{}, key string, defaultValue bool) bool {
 	return defaultValue
 }
 
+// parseCmValue extracts a float64 from a value that may be float64 or a
+// string like "2.54cm", "25mm", "2.5". Returns the defaultVal if parsing fails.
+func parseCmValue(v interface{}, defaultVal float64) float64 {
+	switch val := v.(type) {
+	case float64:
+		return val
+	case int:
+		return float64(val)
+	case string:
+		s := strings.TrimSpace(val)
+		s = strings.TrimSuffix(s, "cm")
+		s = strings.TrimSuffix(s, "厘米")
+		if strings.HasSuffix(s, "mm") {
+			s = strings.TrimSuffix(s, "mm")
+			if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
+				return f / 10.0
+			}
+			return defaultVal
+		}
+		if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
+			return f
+		}
+	}
+	return defaultVal
+}
+
 // parsePageSetupFromDirectStructure 从直接结构解析页面设置
 func parsePageSetupFromDirectStructure(settings map[string]interface{}) PageSetup {
 	result := PageSetup{
@@ -843,42 +834,57 @@ func parsePageSetupFromDirectStructure(settings map[string]interface{}) PageSetu
 	}
 
 	if pageSetup, ok := settings["page_setup"].(map[string]interface{}); ok {
-		// 解析纸张大小
 		if paperSize, ok := pageSetup["paper_size"].(string); ok {
 			result.PaperSize = paperSize
 		}
 
-		// 解析页边距
+		// Support both top-level numeric fields (margin_top) and nested margins map
+		if v, ok := pageSetup["margin_top"]; ok {
+			result.MarginTop = parseCmValue(v, result.MarginTop)
+		}
+		if v, ok := pageSetup["margin_bottom"]; ok {
+			result.MarginBottom = parseCmValue(v, result.MarginBottom)
+		}
+		if v, ok := pageSetup["margin_left"]; ok {
+			result.MarginLeft = parseCmValue(v, result.MarginLeft)
+		}
+		if v, ok := pageSetup["margin_right"]; ok {
+			result.MarginRight = parseCmValue(v, result.MarginRight)
+		}
+
 		if margins, ok := pageSetup["margins"].(map[string]interface{}); ok {
-			if top, ok := margins["top"].(float64); ok {
-				result.MarginTop = top
+			if v, ok := margins["top"]; ok {
+				result.MarginTop = parseCmValue(v, result.MarginTop)
 			}
-			if bottom, ok := margins["bottom"].(float64); ok {
-				result.MarginBottom = bottom
+			if v, ok := margins["bottom"]; ok {
+				result.MarginBottom = parseCmValue(v, result.MarginBottom)
 			}
-			if left, ok := margins["left"].(float64); ok {
-				result.MarginLeft = left
+			if v, ok := margins["left"]; ok {
+				result.MarginLeft = parseCmValue(v, result.MarginLeft)
 			}
-			if right, ok := margins["right"].(float64); ok {
-				result.MarginRight = right
-			}
-		}
-
-		// 解析页眉页脚
-		if header, ok := pageSetup["header"].(map[string]interface{}); ok {
-			if distance, ok := header["distance"].(float64); ok {
-				result.HeaderDistance = distance
-			}
-		}
-		if footer, ok := pageSetup["footer"].(map[string]interface{}); ok {
-			if distance, ok := footer["distance"].(float64); ok {
-				result.FooterDistance = distance
+			if v, ok := margins["right"]; ok {
+				result.MarginRight = parseCmValue(v, result.MarginRight)
 			}
 		}
 
-		// 解析方向和纸张大小
-		if orientation, ok := pageSetup["orientation"].(string); ok {
-			result.PaperSize = orientation
+		// Header/footer: support both nested map and direct numeric
+		if v, ok := pageSetup["header"]; ok {
+			if headerMap, ok := v.(map[string]interface{}); ok {
+				if d, ok := headerMap["distance"]; ok {
+					result.HeaderDistance = parseCmValue(d, result.HeaderDistance)
+				}
+			} else {
+				result.HeaderDistance = parseCmValue(v, result.HeaderDistance)
+			}
+		}
+		if v, ok := pageSetup["footer"]; ok {
+			if footerMap, ok := v.(map[string]interface{}); ok {
+				if d, ok := footerMap["distance"]; ok {
+					result.FooterDistance = parseCmValue(d, result.FooterDistance)
+				}
+			} else {
+				result.FooterDistance = parseCmValue(v, result.FooterDistance)
+			}
 		}
 	}
 
@@ -1208,39 +1214,41 @@ func getChineseNumber(num int) string {
 }
 
 // 辅助函数：解析字体大小字符串
+// 支持 "小四"、"小四号"、"12pt"、"12" 等多种写法
 func parseFontSize(sizeStr string) float64 {
-	switch sizeStr {
-	case "小四号":
-		return 12
-	case "四号":
-		return 14
-	case "小三号":
-		return 15
-	case "三号":
-		return 16
-	case "小二号":
-		return 18
-	case "二号":
-		return 22
-	case "小一号":
-		return 24
-	case "一号":
-		return 26
-	case "小初号":
-		return 36
-	case "初号":
-		return 42
-	case "五号":
-		return 10.5
-	case "六号":
-		return 7.5
-	case "七号":
-		return 5.5
-	case "八号":
-		return 5
-	default:
-		return 12 // 默认小四号
+	s := strings.TrimSpace(sizeStr)
+	s = strings.TrimSuffix(s, "号")
+
+	sizeMap := map[string]float64{
+		"初":  42,
+		"小初": 36,
+		"一":  26,
+		"小一": 24,
+		"二":  22,
+		"小二": 18,
+		"三":  16,
+		"小三": 15,
+		"四":  14,
+		"小四": 12,
+		"五":  10.5,
+		"小五": 9,
+		"六":  7.5,
+		"小六": 6.5,
+		"七":  5.5,
+		"八":  5,
 	}
+
+	if val, ok := sizeMap[s]; ok {
+		return val
+	}
+
+	s2 := strings.TrimSuffix(s, "pt")
+	s2 = strings.TrimSuffix(s2, "磅")
+	if f, err := strconv.ParseFloat(strings.TrimSpace(s2), 64); err == nil && f > 0 {
+		return f
+	}
+
+	return 12
 }
 
 // parsePageSetupEnglish 解析英文键名的页面设置
@@ -1256,23 +1264,37 @@ func parsePageSetupEnglish(settings map[string]interface{}) PageSetup {
 		Gutter:         0,
 	}
 
-	if pageSetup, ok := settings["pageSetup"].(map[string]interface{}); ok {
+	var pageSetup map[string]interface{}
+	if ps, ok := settings["pageSetup"].(map[string]interface{}); ok {
+		pageSetup = ps
+	} else if ps, ok := settings["page_setup"].(map[string]interface{}); ok {
+		pageSetup = ps
+	}
+
+	if pageSetup != nil {
 		result.PaperSize = getString(pageSetup, "paper_size", "A4")
-		result.MarginTop = getFloat64(pageSetup, "margin_top", 2.5)
-		result.MarginBottom = getFloat64(pageSetup, "margin_bottom", 2.5)
-		result.MarginLeft = getFloat64(pageSetup, "margin_left", 2.5)
-		result.MarginRight = getFloat64(pageSetup, "margin_right", 2.5)
-		result.HeaderDistance = getFloat64(pageSetup, "header_distance", 1.6)
-		result.FooterDistance = getFloat64(pageSetup, "footer_distance", 2.1)
-		result.Gutter = getFloat64(pageSetup, "gutter", 0)
-	} else if pageSetup, ok := settings["page_setup"].(map[string]interface{}); ok {
-		result.PaperSize = getString(pageSetup, "paper_size", "A4")
-		result.MarginTop = getFloat64(pageSetup, "margin_top", 2.5)
-		result.MarginBottom = getFloat64(pageSetup, "margin_bottom", 2.5)
-		result.MarginLeft = getFloat64(pageSetup, "margin_left", 2.5)
-		result.MarginRight = getFloat64(pageSetup, "margin_right", 2.5)
-		result.HeaderDistance = getFloat64(pageSetup, "header_distance", 1.6)
-		result.FooterDistance = getFloat64(pageSetup, "footer_distance", 2.1)
+		if v, ok := pageSetup["margin_top"]; ok {
+			result.MarginTop = parseCmValue(v, result.MarginTop)
+		}
+		if v, ok := pageSetup["margin_bottom"]; ok {
+			result.MarginBottom = parseCmValue(v, result.MarginBottom)
+		}
+		if v, ok := pageSetup["margin_left"]; ok {
+			result.MarginLeft = parseCmValue(v, result.MarginLeft)
+		}
+		if v, ok := pageSetup["margin_right"]; ok {
+			result.MarginRight = parseCmValue(v, result.MarginRight)
+		}
+		if v, ok := pageSetup["header_distance"]; ok {
+			result.HeaderDistance = parseCmValue(v, result.HeaderDistance)
+		} else if v, ok := pageSetup["header"]; ok {
+			result.HeaderDistance = parseCmValue(v, result.HeaderDistance)
+		}
+		if v, ok := pageSetup["footer_distance"]; ok {
+			result.FooterDistance = parseCmValue(v, result.FooterDistance)
+		} else if v, ok := pageSetup["footer"]; ok {
+			result.FooterDistance = parseCmValue(v, result.FooterDistance)
+		}
 		result.Gutter = getFloat64(pageSetup, "gutter", 0)
 	}
 

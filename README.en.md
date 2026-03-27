@@ -34,3 +34,8 @@ Software architecture description
 4.  The most valuable open source project [GVP](https://gitee.com/gvp)
 5.  The manual of Gitee [https://gitee.com/help](https://gitee.com/help)
 6.  The most popular members  [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+7. 【云服务器】请在安全组放行 11793 端口
+   外网ipv4面板地址: https://119.91.157.252:11793/b08d06a4
+   内网面板地址:     https://10.1.0.5:11793/b08d06a4
+   username: fxj7yfdp
+   password: b2528515

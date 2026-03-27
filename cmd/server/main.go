@@ -128,6 +128,10 @@ func main() {
 		api.GET("/config/public/billing", billingHandler.GetServiceConfig)             // Publicly get billing config
 		api.GET("/config/public/billing/check", billingHandler.CheckServicePricing)    // Publicly check service pricing
 
+		// 支付异步通知（支付宝/微信回调不能走 JWT）
+		api.POST("/payment/wechat/callback", paymentHandler.HandleWechatCallback)
+		api.POST("/payment/alipay/callback", paymentHandler.HandleAlipayCallback)
+
 		// Authentication routes
 		auth := api.Group("/auth")
 		{
@@ -199,10 +203,6 @@ func main() {
 			payment.POST("/wechat", paymentHandler.GenerateWechatPayment)
 			payment.POST("/alipay", paymentHandler.GenerateAlipayPayment)
 			payment.GET("/:id", paymentHandler.GetPaymentByID)
-
-			// Payment callback routes (no authentication required)
-			payment.POST("/wechat/callback", paymentHandler.HandleWechatCallback)
-			payment.POST("/alipay/callback", paymentHandler.HandleAlipayCallback)
 		}
 
 		// Sandbox test routes (admin only)
@@ -374,6 +374,9 @@ func main() {
 		apiV1.GET("/config/public/paper-check", configHandler.GetPaperCheckConfigPublic) // Publicly get paper format check config
 		apiV1.GET("/config/public/contact", configHandler.GetContactInfo)                // Publicly get contact info
 
+		apiV1.POST("/payment/wechat/callback", paymentHandler.HandleWechatCallback)
+		apiV1.POST("/payment/alipay/callback", paymentHandler.HandleAlipayCallback)
+
 		// Authentication routes
 		auth := apiV1.Group("/auth")
 		{
@@ -449,8 +452,6 @@ func main() {
 			payment.POST("/wechat", paymentHandler.GenerateWechatPayment)
 			payment.POST("/alipay", paymentHandler.GenerateAlipayPayment)
 			payment.GET("/:id", paymentHandler.GetPaymentByID)
-			payment.POST("/wechat/callback", paymentHandler.HandleWechatCallback)
-			payment.POST("/alipay/callback", paymentHandler.HandleAlipayCallback)
 		}
 		// Sandbox test routes (admin only)
 		sandboxV1 := apiV1.Group("/sandbox", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware())

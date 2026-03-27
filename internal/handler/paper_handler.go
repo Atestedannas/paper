@@ -100,19 +100,33 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 		isCheckFree = true // 默认免费
 	}
 
-	// 如果需要付费，检查当前用户是否为免费用户
+	// 如果需要付费，检查用户是否有权限
 	if !isCheckFree {
-		// 检查登录用户是否为免费用户（IsFreeUser 或 admin）
-		userBypass := false
+		canUpload := false
+
+		// 1. 免费用户或管理员直接放行
 		if userObj, exists := c.Get("user"); exists {
 			if u, ok := userObj.(*model.User); ok {
 				if u.IsFreeUser || u.Role == "admin" {
-					userBypass = true
+					canUpload = true
 				}
 			}
 		}
 
-		if !userBypass {
+		// 2. 检查用户是否有已支付的订单（payment_status=paid 且未过期）
+		if !canUpload {
+			if userID, exists := c.Get("user_id"); exists {
+				var paidCount int64
+				database.DB.Model(&model.Order{}).
+					Where("user_id = ? AND payment_status = ?", userID, "paid").
+					Count(&paidCount)
+				if paidCount > 0 {
+					canUpload = true
+				}
+			}
+		}
+
+		if !canUpload {
 			formatCheckPrice, _ := paymentConfig["format_check"].(float64)
 			formatFixPrice, _ := paymentConfig["format_fix"].(float64)
 
@@ -174,8 +188,10 @@ func (h *PaperHandler) validateUploadRequest(c *gin.Context) (interface{}, Uploa
 		fileType = "pdf"
 	case ".docx":
 		fileType = "docx"
+	case ".doc":
+		fileType = "doc"
 	default:
-		utils.BadRequest(c, "invalid file type, only pdf and docx are allowed")
+		utils.BadRequest(c, "invalid file type, only pdf, doc and docx are allowed")
 		return nil, UploadPaperRequest{}, nil, "", fmt.Errorf("invalid file type")
 	}
 
@@ -765,13 +781,15 @@ func (h *PaperHandler) GetPaperFile(c *gin.Context) {
 	switch fileExt {
 	case ".docx":
 		c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+	case ".doc":
+		c.Header("Content-Type", "application/msword")
 	case ".pdf":
 		c.Header("Content-Type", "application/pdf")
 	default:
 		c.Header("Content-Type", "application/octet-stream")
 	}
 
-	// 返回文件
+	// 返回文件（第一处已支持 .doc）
 	c.File(cleanPath)
 }
 
@@ -812,6 +830,8 @@ func (h *PaperHandler) GetCorrectedPaperFile(c *gin.Context) {
 	switch fileExt {
 	case ".docx":
 		c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+	case ".doc":
+		c.Header("Content-Type", "application/msword")
 	case ".pdf":
 		c.Header("Content-Type", "application/pdf")
 	default:
@@ -2369,6 +2389,7 @@ func (h *PaperHandler) applyCorrectionsAndGenerateFile(originalPath string, issu
 
 // UploadTemplate 上传高校论文格式模板
 // 支持格式：.docx .doc .pdf .txt .md .rtf .html .htm
+// 表单字段 parse_mode: "auto"（默认）/ "sample"（格式范例）/ "description"（格式说明）
 func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 	var formatText string
 
@@ -2385,6 +2406,11 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusBadRequest, "请提供格式文本或上传文件", "")
 		return
+	}
+
+	parseMode := strings.TrimSpace(c.PostForm("parse_mode"))
+	if parseMode == "" {
+		parseMode = "auto"
 	}
 
 	// 支持的扩展名
@@ -2420,7 +2446,6 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 	// 通过文件魔数检测真实格式，不只依赖扩展名
 	realType, detectErr := h.detectFileType(tempFilePath)
 	if detectErr == nil && realType != "" && realType != ext {
-		// 扩展名与实际格式不符，使用真实格式
 		ext = realType
 	}
 
@@ -2461,7 +2486,209 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 		return
 	}
 
+	// ── 格式范例模式检测 ──────────────────────────────────────────
+	isSampleMode := false
+	switch parseMode {
+	case "sample":
+		isSampleMode = true
+	case "description":
+		isSampleMode = false
+	default:
+		if (ext == ".docx" || ext == ".doc") && formatchecker.IsSampleDocument(formatText) {
+			isSampleMode = true
+			log.Printf("[上传模板] 自动检测：文件为格式范例（缺少格式描述关键词）")
+		}
+	}
+
+	if isSampleMode && (ext == ".docx" || ext == ".doc") {
+		h.processTemplateSample(c, tempFilePath, ext, formatText)
+		return
+	}
+
 	h.processTemplateText(c, formatText)
+}
+
+// processTemplateSample 处理格式范例文档：直接从DOCX解析格式属性，
+// 与AI/正则解析结果合并后保存。
+func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extractedText string) {
+	docxPath := filePath
+
+	// .doc 需要先转为 .docx
+	if ext == ".doc" {
+		converted := h.trySofficeConvertToDocx(filePath)
+		if converted == "" {
+			log.Printf("[格式范例] .doc转.docx失败，回退到文本解析模式")
+			h.processTemplateText(c, extractedText)
+			return
+		}
+		docxPath = converted
+		defer os.Remove(converted)
+	}
+
+	parser := formatchecker.NewTemplateParser()
+	docxRules, err := parser.ParseTemplateToFormatRules(docxPath)
+	if err != nil {
+		log.Printf("[格式范例] DOCX格式解析失败: %v，回退到文本解析模式", err)
+		h.processTemplateText(c, extractedText)
+		return
+	}
+
+	log.Printf("[格式范例] DOCX直接解析成功，提取到 %d 个顶层规则", len(docxRules))
+
+	universityName := c.PostForm("university_name")
+	documentType := c.PostForm("document_type")
+	subject := c.PostForm("subject")
+	description := c.PostForm("description")
+
+	// 从 DOCX 解析结果中提取大学名称
+	if universityName == "" {
+		if uniName, ok := docxRules["_university_name"].(string); ok && uniName != "" {
+			universityName = uniName
+		}
+	}
+	delete(docxRules, "_university_name")
+
+	// 仍然尝试从文本中提取大学名称
+	if universityName == "" {
+		universityInfo := h.formatParserService.ExtractUniversityInfo(extractedText)
+		if name, ok := universityInfo["name"]; ok {
+			universityName = name
+		}
+		if docType, ok := universityInfo["document_type"]; ok && documentType == "" {
+			documentType = docType
+		}
+	}
+	if universityName == "" {
+		aiInfo := h.formatParserService.ExtractUniversityInfoWithAI(extractedText)
+		if name, ok := aiInfo["name"]; ok && name != "" {
+			universityName = name
+		}
+		if docType, ok := aiInfo["document_type"]; ok && docType != "" && documentType == "" {
+			documentType = docType
+		}
+	}
+
+	if universityName == "" {
+		utils.ErrorResponse(c, http.StatusBadRequest, "高校名称不能为空，请通过 university_name 参数提供", "")
+		return
+	}
+	if documentType == "" {
+		documentType = "本科论文"
+	}
+	if subject == "" {
+		subject = "综合"
+	}
+
+	// 也尝试文本解析（正则+AI），将可测量属性用DOCX解析结果覆盖
+	textRulesJSON, textErr := h.formatParserService.ParseFormatFromTextSmart(extractedText)
+	if textErr == nil && strings.TrimSpace(textRulesJSON) != "" {
+		var textRules map[string]interface{}
+		if json.Unmarshal([]byte(textRulesJSON), &textRules) == nil {
+			merged := service.MergeFormatRules(docxRules, textRules)
+			docxRules = merged
+			log.Printf("[格式范例] DOCX规则与文本规则合并完成")
+		}
+	}
+
+	formatRulesJSON, err := json.Marshal(docxRules)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "序列化格式规则失败", err.Error())
+		return
+	}
+
+	var university model.University
+	if res := database.DB.Where("name = ?", universityName).First(&university); res.Error != nil {
+		university = model.University{
+			Name:        universityName,
+			Abbr:        universityName,
+			Description: description,
+			Tags:        "[]",
+		}
+		if err := database.DB.Create(&university).Error; err != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "创建高校记录失败", err.Error())
+			return
+		}
+	} else if description != "" {
+		database.DB.Model(&university).Update("description", description)
+	}
+
+	var existingTemplate model.FormatTemplate
+	err = database.DB.Where("university_id = ? AND document_type = ? AND subject = ?",
+		university.ID, documentType, subject).First(&existingTemplate).Error
+	if err == nil {
+		existingTemplate.FormatRules = string(formatRulesJSON)
+		existingTemplate.UpdatedAt = time.Now()
+		if description != "" {
+			existingTemplate.Description = description
+		}
+		if err := database.DB.Save(&existingTemplate).Error; err != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式模板失败", err.Error())
+			return
+		}
+		utils.Success(c, gin.H{"message": "格式模板已更新（格式范例模式）", "id": existingTemplate.ID, "parse_mode": "sample"})
+		return
+	}
+
+	newTemplate := model.FormatTemplate{
+		TemplateID:   uuid.New().String(),
+		Name:         fmt.Sprintf("%s%s格式标准", universityName, documentType),
+		UniversityID: &university.ID,
+		DocumentType: documentType,
+		Subject:      subject,
+		Source:       "sample_upload",
+		IsActive:     true,
+		IsPublic:     true,
+		FormatRules:  string(formatRulesJSON),
+		Description:  description,
+	}
+	if err := database.DB.Create(&newTemplate).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())
+		return
+	}
+
+	utils.Created(c, gin.H{"message": "格式模板已创建（格式范例模式）", "id": newTemplate.ID, "parse_mode": "sample"})
+}
+
+// trySofficeConvertToDocx converts a .doc file to .docx using soffice,
+// returning the path to the generated .docx or empty string on failure.
+func (h *PaperHandler) trySofficeConvertToDocx(filePath string) string {
+	sofficePaths := []string{
+		"soffice",
+		`C:\Program Files\LibreOffice\program\soffice.exe`,
+		`C:\Program Files (x86)\LibreOffice\program\soffice.exe`,
+		"/usr/bin/soffice",
+		"/usr/local/bin/soffice",
+	}
+
+	var sofficeBin string
+	for _, p := range sofficePaths {
+		if _, err := exec.LookPath(p); err == nil {
+			sofficeBin = p
+			break
+		}
+	}
+	if sofficeBin == "" {
+		return ""
+	}
+
+	absPath, _ := filepath.Abs(filePath)
+	outDir := filepath.Dir(absPath)
+	baseName := strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
+
+	cmd := exec.Command(sofficeBin,
+		"--headless", "--convert-to", "docx",
+		"--outdir", outDir, absPath,
+	)
+	if err := cmd.Run(); err != nil {
+		log.Printf("[格式范例] soffice转换失败: %v", err)
+		return ""
+	}
+
+	docxPath := filepath.Join(outDir, baseName+".docx")
+	if _, err := os.Stat(docxPath); err != nil {
+		return ""
+	}
+	return docxPath
 }
 
 // processTemplateText 用提取的文本解析并保存格式模板（公共逻辑）

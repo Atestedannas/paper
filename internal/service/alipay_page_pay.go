@@ -82,10 +82,26 @@ type AlipayTradePrecreateResponse struct {
 	AlipayTradePrecreateResponse struct {
 		Code       string `json:"code"`
 		Msg        string `json:"msg"`
+		SubMsg     string `json:"sub_msg"`
 		OutTradeNo string `json:"out_trade_no"`
 		QrCode     string `json:"qr_code"`
 	} `json:"alipay_trade_precreate_response"`
 	Sign string `json:"sign"`
+}
+
+func parseAlipayPrecreateResponse(body []byte) (*AlipayTradePrecreateResponse, error) {
+	s := strings.TrimSpace(string(body))
+	if s == "" {
+		return nil, fmt.Errorf("alipay 返回空响应")
+	}
+	if strings.HasPrefix(s, "<") {
+		return nil, fmt.Errorf("alipay 返回 HTML 而非 JSON（请确认网关为 openapi.alipay.com 且请求含 format=JSON）")
+	}
+	var result AlipayTradePrecreateResponse
+	if err := json.Unmarshal([]byte(s), &result); err != nil {
+		return nil, fmt.Errorf("解析支付宝 JSON 失败: %w; 片段: %.240s", err, s)
+	}
+	return &result, nil
 }
 
 type AlipayTradeQueryResponse struct {
@@ -401,37 +417,67 @@ func (s *AlipayPagePayService) readPublicKeyFileContent(filePath string) (string
 	return "", fmt.Errorf("failed to read public key from any path, filePath: %s", filePath)
 }
 
-func (s *AlipayPagePayService) VerifySign(params map[string]string, sign string) error {
-	// 检查公钥是否是文件路径
-	publicKeyData := s.config.Alipay.AlipayPublicKey
-
-	// 如果公钥看起来像文件路径（包含/或\且不是PEM格式），则从文件读取
-	if (strings.Contains(publicKeyData, "/") || strings.Contains(publicKeyData, "\\")) &&
-		!strings.Contains(publicKeyData, "-----BEGIN") {
-		log.Printf("[VerifySign] Public key is a file path, reading from file: %s", publicKeyData)
-		data, err := s.readPublicKeyFileContent(publicKeyData)
+// parseAlipayRSAPublicKey 解析支付宝公钥：支持 PEM（PKIX/PKCS1）与开放平台常见的单行 Base64（PKIX）
+func parseAlipayRSAPublicKey(raw string, s *AlipayPagePayService) (*rsa.PublicKey, error) {
+	keyStr := strings.TrimSpace(raw)
+	if keyStr == "" {
+		return nil, fmt.Errorf("empty alipay public key")
+	}
+	if (strings.Contains(keyStr, "/") || strings.Contains(keyStr, "\\")) &&
+		!strings.Contains(keyStr, "-----BEGIN") {
+		data, err := s.readPublicKeyFileContent(keyStr)
 		if err != nil {
-			return fmt.Errorf("failed to read public key file: %w", err)
+			return nil, fmt.Errorf("read public key file: %w", err)
 		}
-		publicKeyData = data
+		keyStr = strings.TrimSpace(data)
 	}
-
-	block, _ := pem.Decode([]byte(publicKeyData))
-	if block == nil {
-		return fmt.Errorf("failed to decode public key")
+	if strings.Contains(keyStr, "-----BEGIN") {
+		block, _ := pem.Decode([]byte(keyStr))
+		if block == nil {
+			return nil, fmt.Errorf("pem decode failed")
+		}
+		if pub, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
+			if rk, ok := pub.(*rsa.PublicKey); ok {
+				return rk, nil
+			}
+		}
+		if pub, err := x509.ParsePKCS1PublicKey(block.Bytes); err == nil {
+			return pub, nil
+		}
+		return nil, fmt.Errorf("unsupported PEM public key")
 	}
-
-	key, err := x509.ParsePKCS1PublicKey(block.Bytes)
+	der, err := base64.StdEncoding.DecodeString(keyStr)
 	if err != nil {
-		return fmt.Errorf("failed to parse public key: %w", err)
+		return nil, fmt.Errorf("base64 public key: %w", err)
+	}
+	pub, err := x509.ParsePKIXPublicKey(der)
+	if err != nil {
+		return nil, fmt.Errorf("parse PKIX: %w", err)
+	}
+	rk, ok := pub.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("not RSA public key")
+	}
+	return rk, nil
+}
+
+func (s *AlipayPagePayService) VerifySign(params map[string]string, sign string) error {
+	key, err := parseAlipayRSAPublicKey(s.config.Alipay.AlipayPublicKey, s)
+	if err != nil {
+		return fmt.Errorf("load alipay public key: %w", err)
 	}
 
-	delete(params, "sign")
-	var keys []string
-	for k := range params {
-		if params[k] != "" {
-			keys = append(keys, k)
+	// 异步通知/同步返回验签：参与签名的参数不含 sign、sign_type，且空值不参与
+	verify := make(map[string]string)
+	for k, v := range params {
+		if k == "sign" || k == "sign_type" || v == "" {
+			continue
 		}
+		verify[k] = v
+	}
+	var keys []string
+	for k := range verify {
+		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
@@ -442,14 +488,23 @@ func (s *AlipayPagePayService) VerifySign(params map[string]string, sign string)
 		}
 		signStr.WriteString(k)
 		signStr.WriteString("=")
-		signStr.WriteString(params[k])
+		signStr.WriteString(verify[k])
 	}
 
 	decodedSign, err := base64.StdEncoding.DecodeString(sign)
 	if err != nil {
-		return fmt.Errorf("failed to decode sign: %w", err)
+		return fmt.Errorf("decode sign: %w", err)
 	}
 
+	st := strings.ToUpper(strings.TrimSpace(params["sign_type"]))
+	if st == "" {
+		st = s.effectiveSignType()
+	}
+	if st == "RSA" {
+		h := sha1.New()
+		h.Write(signStr.Bytes())
+		return rsa.VerifyPKCS1v15(key, crypto.SHA1, h.Sum(nil), decodedSign)
+	}
 	h := sha256.New()
 	h.Write(signStr.Bytes())
 	return rsa.VerifyPKCS1v15(key, crypto.SHA256, h.Sum(nil), decodedSign)
@@ -526,6 +581,79 @@ func (s *AlipayPagePayService) CreateTradePagePay(order *model.Order, paymentAmo
 	paymentURL := fmt.Sprintf("%s?%s", s.GetGatewayURL(), strings.Join(queryParts, "&"))
 	log.Printf("[CreateTradePagePay] Final payment URL length: %d", len(paymentURL))
 	log.Printf("[CreateTradePagePay] Payment URL (first 500 chars): %s", paymentURL[:minInt(500, len(paymentURL))])
+
+	return paymentURL, nil
+}
+
+// CreateTradeWapPay 手机网站支付 (alipay.trade.wap.pay)，返回可跳转的支付 URL
+func (s *AlipayPagePayService) CreateTradeWapPay(order *model.Order, paymentAmount float64) (string, error) {
+	log.Printf("[CreateTradeWapPay] 开始生成手机网站支付 - AppID: %s, Amount: %.2f", s.effectiveAppID(), paymentAmount)
+	log.Printf("[CreateTradeWapPay] NotifyURL: %s", s.effectiveNotifyURL())
+	log.Printf("[CreateTradeWapPay] ReturnURL: %s", s.effectiveReturnURL())
+	log.Printf("[CreateTradeWapPay] GatewayURL: %s", s.GetGatewayURL())
+
+	if !s.isAlipayConfigComplete() {
+		demo := s.demoAlipayQrContent(order, paymentAmount)
+		log.Printf("[CreateTradeWapPay] 配置不完整，返回演示 URL: %s", demo)
+		return demo, nil
+	}
+
+	subject := "论文格式检查服务"
+	body := "论文格式检查服务"
+	if order.MemberLevel != nil {
+		subject = fmt.Sprintf("购买%s会员", order.MemberLevel.LevelName)
+		body = fmt.Sprintf("购买%s会员，有效期%d天", order.MemberLevel.LevelName, order.MemberLevel.DurationDays)
+		if order.MemberLevel.Description != "" {
+			body = order.MemberLevel.Description
+		}
+	}
+
+	amount := paymentAmount
+	if amount <= 0 {
+		amount = 0.01
+	}
+
+	bizContent := map[string]string{
+		"out_trade_no":    order.OrderNo,
+		"product_code":    "QUICK_WAP_WAY",
+		"total_amount":    fmt.Sprintf("%.2f", amount),
+		"subject":         subject,
+		"body":            body,
+		"timeout_express": "30m",
+	}
+
+	bizContentJSON, err := json.Marshal(bizContent)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal biz_content: %w", err)
+	}
+
+	params := map[string]string{
+		"app_id":      s.effectiveAppID(),
+		"method":      "alipay.trade.wap.pay",
+		"charset":     "utf-8",
+		"sign_type":   s.effectiveSignType(),
+		"timestamp":   time.Now().Format("2006-01-02 15:04:05"),
+		"version":     "1.0",
+		"notify_url":  s.effectiveNotifyURL(),
+		"return_url":  s.effectiveReturnURL(),
+		"biz_content": string(bizContentJSON),
+	}
+
+	sign, err := s.GenerateSign(params)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate sign: %w", err)
+	}
+	params["sign"] = sign
+	log.Printf("[CreateTradeWapPay] Sign generated successfully, sign length: %d", len(sign))
+
+	var queryParts []string
+	for k, v := range params {
+		queryParts = append(queryParts, fmt.Sprintf("%s=%s", url.QueryEscape(k), url.QueryEscape(v)))
+	}
+
+	paymentURL := fmt.Sprintf("%s?%s", s.GetGatewayURL(), strings.Join(queryParts, "&"))
+	log.Printf("[CreateTradeWapPay] Final URL length: %d", len(paymentURL))
+	log.Printf("[CreateTradeWapPay] URL (first 500 chars): %s", paymentURL[:minInt(500, len(paymentURL))])
 
 	return paymentURL, nil
 }
@@ -637,14 +765,21 @@ func (s *AlipayPagePayService) CreateTradePrecreate(order *model.Order, paymentA
 		return "", fmt.Errorf("failed to marshal biz_content: %w", err)
 	}
 
+	notifyURL := strings.TrimSpace(s.effectiveNotifyURL())
+	if notifyURL == "" {
+		return "", fmt.Errorf("未配置支付宝异步通知地址：请设置环境变量 ALIPAY_NOTIFY_URL（须公网 HTTPS，与开放平台一致）")
+	}
+
+	// format=JSON 必填，否则网关可能返回非 JSON，本地 json.Unmarshal 会失败并表现为 500
 	params := map[string]string{
 		"app_id":      s.effectiveAppID(),
 		"method":      "alipay.trade.precreate",
+		"format":      "JSON",
 		"charset":     "utf-8",
 		"sign_type":   s.effectiveSignType(),
 		"timestamp":   time.Now().Format("2006-01-02 15:04:05"),
 		"version":     "1.0",
-		"notify_url":  s.effectiveNotifyURL(),
+		"notify_url":  notifyURL,
 		"biz_content": string(bizContentJSON),
 	}
 
@@ -677,15 +812,16 @@ func (s *AlipayPagePayService) CreateTradePrecreate(order *model.Order, paymentA
 
 	log.Printf("[CreateTradePrecreate] Alipay response: %s", string(bodyBytes))
 
-	result := &AlipayTradePrecreateResponse{}
-	if err := json.Unmarshal(bodyBytes, result); err != nil {
-		return "", fmt.Errorf("failed to unmarshal response: %w", err)
+	result, err := parseAlipayPrecreateResponse(bodyBytes)
+	if err != nil {
+		return "", err
 	}
 
 	if result.AlipayTradePrecreateResponse.Code != "10000" {
-		return "", fmt.Errorf("alipay precreate failed: code=%s, msg=%s",
+		return "", fmt.Errorf("alipay precreate failed: code=%s, msg=%s, sub_msg=%s",
 			result.AlipayTradePrecreateResponse.Code,
-			result.AlipayTradePrecreateResponse.Msg)
+			result.AlipayTradePrecreateResponse.Msg,
+			result.AlipayTradePrecreateResponse.SubMsg)
 	}
 
 	log.Printf("[CreateTradePrecreate] 成功获取二维码: %s", result.AlipayTradePrecreateResponse.QrCode)
