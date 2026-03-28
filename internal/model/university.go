@@ -55,6 +55,8 @@ type FormatTemplate struct {
 	UsageCount  int     `gorm:"default:0" json:"usage_count"`    // 使用次数
 	SuccessRate float64 `gorm:"default:0.0" json:"success_rate"` // 成功率
 
+	GoldenTemplatePath string `gorm:"size:500" json:"golden_template_path"` // 黄金模板文件路径
+
 	Description string    `gorm:"type:text" json:"description"`
 	CreatedAt   time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt   time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`

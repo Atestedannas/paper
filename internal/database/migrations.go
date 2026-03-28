@@ -66,6 +66,20 @@ func RunMigrations() error {
 		&Migration20260315FixCQUTFormatV2{},
 		// 创建重庆人文科技学院本科论文格式模板
 		&Migration20260327CreateCQRWSTFormat{},
+		// V2: 根据完整格式规范强制更新重庆人文科技学院模板
+		&Migration20260327FixCQRWSTFormatV2{},
+		// V3: 基于模板文件 XML 分析校正（致谢字号、标签补全、标题/注释/附录内容）
+		&Migration20260327FixCQRWSTFormatV3{},
+		// V4: 修复页眉页脚不生效（处理器支持顶层 header/page_number + 总页数格式）
+		&Migration20260327FixCQRWSTFormatV4{},
+		// V5: 修复段落分类准确率（(n)长文本→body）+ 所有内容区域显式 bold:false
+		&Migration20260327FixCQRWSTFormatV5{},
+		// 添加 golden_template_path 字段 + 为重庆人文科技学院设置黄金模板路径
+		&Migration20260327AddGoldenTemplatePath{},
+		// 将 golden_template_path 更新为真实模板文件（cqrwst_real.docx，414KB，格式学习效果最佳）
+		&Migration20260327UpdateGoldenTemplateToReal{},
+		// 为 check_results 表增加 diff_report jsonb 字段
+		&Migration20260327AddDiffReport{},
 	}
 
 	// 按顺序执行迁移（单个失败不阻止后续，仅记录 warning）

@@ -261,6 +261,8 @@ func main() {
 			papers.GET("/:id/export-report", middleware.PaymentMiddleware(cfg, middleware.ServiceReportDownload), paperHandler.DownloadCheckReport)
 			papers.GET("/:id/export-report-html", middleware.PaymentMiddleware(cfg, middleware.ServiceReportDownload), paperHandler.DownloadCheckReportHTML)
 			papers.GET("/:id/corrected-file", middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetCorrectedPaperFile)
+			papers.GET("/:id/review-diffs", paperHandler.ReviewDiffs)
+			papers.POST("/:id/apply-diffs", paperHandler.ApplySelectedDiffs)
 		}
 
 		// Contact form routes
@@ -517,6 +519,8 @@ func main() {
 			papers.GET("/:id/file", middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetPaperFile)
 			papers.GET("/:id/corrected-file", middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetCorrectedPaperFile)
 			papers.POST("/:id/fix/by-template", paperHandler.FixByTemplate)
+			papers.GET("/:id/review-diffs", paperHandler.ReviewDiffs)
+			papers.POST("/:id/apply-diffs", paperHandler.ApplySelectedDiffs)
 		}
 
 		// Template import route (for admin template library)

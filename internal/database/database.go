@@ -17,7 +17,7 @@ var DB *gorm.DB
 // InitDatabase 初始化数据库连接
 func InitDatabase(config *config.Config) error {
 	// 构建数据库连接字符串
-	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s client_encoding=UTF8",
 		config.Database.Host,
 		config.Database.Port,
 		config.Database.User,
@@ -26,13 +26,11 @@ func InitDatabase(config *config.Config) error {
 		config.Database.SSLMode,
 	)
 
-	// 设置日志级别
 	logLevel := logger.Info
 	if config.Server.Env == "production" {
 		logLevel = logger.Error
 	}
 
-	// 连接数据库
 	var err error
 	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logLevel),

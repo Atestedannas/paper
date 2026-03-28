@@ -22,6 +22,19 @@ type EnhancedProcessor struct {
 	debug           bool
 	fontNameMap     map[string]*string            // 缓存字体名，避免悬空指针
 	smartClassifier *aiclassifier.SmartClassifier // 智能段落分类器（三级路由）
+	templatePath    string                        // 黄金模板路径（由 SetTemplatePath 设置）
+	lastDiffReport  *DocDiffReport                // 最近一次格式修正的差异报告
+}
+
+// GetLastDiffReport 返回最近一次格式修正的差异报告
+func (p *EnhancedProcessor) GetLastDiffReport() *DocDiffReport {
+	return p.lastDiffReport
+}
+
+// SetTemplatePath 设置黄金模板路径，调用 ApplyCorrections 前先设置
+func (p *EnhancedProcessor) SetTemplatePath(path string) {
+	p.templatePath = path
+	log.Printf("[模板路径] 已设置黄金模板: %s", path)
 }
 
 // NewEnhancedProcessor 创建增强处理器
@@ -239,17 +252,85 @@ func (p *EnhancedProcessor) ApplyCorrections(ctx context.Context, docPath string
 	defer doc.Close()
 	log.Printf("[文档打开] ✅ 成功，段落总数: %d", len(doc.Paragraphs()))
 
-	// 执行精确格式修正
+	// ── 尝试AI模板直读方案（精确，无JSON误差）──────────────────────────
 	log.Println("[格式修正] ================= 开始应用格式 =================")
-	if err := p.applyPreciseFormatting(doc, formatRules); err != nil {
-		log.Printf("[格式修正] ❌ 失败: %v", err)
-		log.Println("++++++++++++ 格式修正流程 结束（修正失败） ++++++++++++")
-		return "", fmt.Errorf("格式修正失败: %w", err)
+	var templateSpecs map[string]ParagraphFormatSpec
+
+	// 模板路径三级查找：① SetTemplatePath字段 → ② corrections map → ③ 自动扫描目录
+	activeTplPath := p.templatePath
+	if activeTplPath == "" {
+		activeTplPath = getStringFromCorrectionsList(corrections, "template_path")
+	}
+	if activeTplPath == "" {
+		// 自动扫描 golden_templates 目录（按优先级：*_real.docx > *_prepared.docx > *.docx）
+		for _, pattern := range []string{
+			"uploads/golden_templates/*_real.docx",
+			"uploads/golden_templates/*_prepared.docx",
+			"uploads/golden_templates/*.docx",
+		} {
+			if matches, _ := filepath.Glob(pattern); len(matches) > 0 {
+				for _, m := range matches {
+					if info, err2 := os.Stat(m); err2 == nil && info.Size() > 50000 {
+						activeTplPath = m
+						log.Printf("[格式修正] 自动发现模板: %s (%.1fKB)", m, float64(info.Size())/1024)
+						break
+					}
+				}
+			}
+			if activeTplPath != "" {
+				break
+			}
+		}
+	}
+	log.Printf("[格式修正] 最终模板路径: %q", activeTplPath)
+
+	if activeTplPath != "" {
+		loader := NewTemplateFormatLoader(p)
+		if specs, loadErr := loader.LoadFromFile(activeTplPath); loadErr == nil && len(specs) > 0 {
+			templateSpecs = specs
+			log.Printf("[格式修正] ✅ 模板直读方案：成功加载 %d 种格式规范", len(specs))
+		} else {
+			log.Printf("[格式修正] ⚠️  模板直读加载失败(%v)，回退到JSON规则方案", loadErr)
+		}
+	}
+
+	if templateSpecs != nil {
+		// 新方案：直接从模板OOXML格式规范应用，精确复制模板格式
+		if err := p.applyTemplateFormatting(doc, formatRules, templateSpecs); err != nil {
+			log.Printf("[格式修正] ❌ 模板格式应用失败: %v", err)
+			log.Println("++++++++++++ 格式修正流程 结束（修正失败） ++++++++++++")
+			return "", fmt.Errorf("格式修正失败: %w", err)
+		}
+	} else {
+		// 旧方案：JSON规则（兼容回退）
+		if err := p.applyPreciseFormatting(doc, formatRules); err != nil {
+			log.Printf("[格式修正] ❌ JSON规则应用失败: %v", err)
+			log.Println("++++++++++++ 格式修正流程 结束（修正失败） ++++++++++++")
+			return "", fmt.Errorf("格式修正失败: %w", err)
+		}
 	}
 	log.Println("[格式修正] ================= 格式应用完成 =================")
 
 	// 验证：输出修正后前5个正文段落的实际格式
 	p.verifyFormattingResults(doc)
+
+	// 自动验证+自纠正循环
+	var dsClient *aiclassifier.DeepSeekWebClient
+	if p.smartClassifier != nil {
+		dsClient = p.smartClassifier.GetDeepSeekClient()
+	}
+	verifier := NewFormatVerifier(p, dsClient)
+	var fixCount int
+	if templateSpecs != nil {
+		// 新方案：用模板规范验证（高精度）
+		fixCount = verifier.VerifyAndFixWithSpecs(doc, templateSpecs)
+	} else {
+		// 旧方案：JSON规则验证
+		fixCount = verifier.VerifyAndFix(doc, formatRules)
+	}
+	if fixCount > 0 {
+		log.Printf("[自动纠正] 共修正 %d 处格式偏差", fixCount)
+	}
 
 	// 生成输出文件路径
 	outputPath := p.generateOutputPath(docPath)
@@ -313,8 +394,8 @@ func (p *EnhancedProcessor) applyPreciseFormatting(doc *document.Document, rules
 		p.applyTitleFormatting(titleParas, rules)
 	}
 
-	// 步骤 4: 各级标题
-	for level := 1; level <= 3; level++ {
+	// 步骤 4: 各级标题（1-4级）
+	for level := 1; level <= 4; level++ {
 		key := fmt.Sprintf("heading_%d", level)
 		if headings, exists := classifiedParagraphs[key]; exists && len(headings) > 0 {
 			log.Printf("[步骤4] ---- 应用 %s 格式 (%d段) ----", key, len(headings))
@@ -394,17 +475,197 @@ func (p *EnhancedProcessor) applyPreciseFormatting(doc *document.Document, rules
 		p.applyAcknowledgementsContentFormatting(ackContentParas, rules)
 	}
 
-	// 步骤 10: 封面 & 原创性声明跳过（不修改格式）
-	if coverParas, exists := classifiedParagraphs["cover"]; exists && len(coverParas) > 0 {
-		log.Printf("[步骤9] 跳过封面段落: %d 段（保持原样）", len(coverParas))
+	// 步骤 10: 附录
+	if appendixTitleParas, exists := classifiedParagraphs["appendix_title"]; exists && len(appendixTitleParas) > 0 {
+		log.Printf("[步骤10a] ---- 附录标题 (%d段) ----", len(appendixTitleParas))
+		p.applyAppendixTitleFormatting(appendixTitleParas, rules)
 	}
-	if origParas, exists := classifiedParagraphs["originality_declaration"]; exists && len(origParas) > 0 {
-		log.Printf("[步骤9] 跳过原创性声明段落: %d 段（保持原样）", len(origParas))
+	if appendixContentParas, exists := classifiedParagraphs["appendix_content"]; exists && len(appendixContentParas) > 0 {
+		log.Printf("[步骤10b] ---- 附录正文 (%d段) ----", len(appendixContentParas))
+		p.applyAppendixContentFormatting(appendixContentParas, rules)
 	}
 
-	// 步骤 10: 表格
-	log.Println("[步骤10] ---- 应用表格内格式 ----")
-	p.applyTableFormatting(doc, rules)
+	// 步骤 11: 注释
+	if notesTitleParas, exists := classifiedParagraphs["notes_title"]; exists && len(notesTitleParas) > 0 {
+		log.Printf("[步骤11a] ---- 注释标题 (%d段) ----", len(notesTitleParas))
+		p.applyNotesTitleFormatting(notesTitleParas, rules)
+	}
+	if notesContentParas, exists := classifiedParagraphs["notes_content"]; exists && len(notesContentParas) > 0 {
+		log.Printf("[步骤11b] ---- 注释正文 (%d段) ----", len(notesContentParas))
+		p.applyNotesContentFormatting(notesContentParas, rules)
+	}
+
+	// 步骤 12: 图表标题
+	if figCaptionParas, exists := classifiedParagraphs["figure_caption"]; exists && len(figCaptionParas) > 0 {
+		log.Printf("[步骤12a] ---- 图标题 (%d段) ----", len(figCaptionParas))
+		p.applyFigureCaptionFormatting(figCaptionParas, rules)
+	}
+	if tblCaptionParas, exists := classifiedParagraphs["table_caption"]; exists && len(tblCaptionParas) > 0 {
+		log.Printf("[步骤12b] ---- 表标题 (%d段) ----", len(tblCaptionParas))
+		p.applyTableCaptionFormatting(tblCaptionParas, rules)
+	}
+
+	// 步骤 13: 封面 & 原创性声明跳过（不修改格式）
+	if coverParas, exists := classifiedParagraphs["cover"]; exists && len(coverParas) > 0 {
+		log.Printf("[步骤13] 跳过封面段落: %d 段（保持原样）", len(coverParas))
+	}
+	if origParas, exists := classifiedParagraphs["originality_declaration"]; exists && len(origParas) > 0 {
+		log.Printf("[步骤13] 跳过原创性声明段落: %d 段（保持原样）", len(origParas))
+	}
+
+	// 步骤 14: 表格内文字（排除封面和原创性声明的表格）
+	log.Println("[步骤14] ---- 应用表格内格式 ----")
+	coverParaSet := make(map[*wml.CT_P]bool)
+	if cps, ok := classifiedParagraphs["cover"]; ok {
+		for _, cp := range cps {
+			coverParaSet[cp.X()] = true
+		}
+	}
+	if ops, ok := classifiedParagraphs["originality_declaration"]; ok {
+		for _, op := range ops {
+			coverParaSet[op.X()] = true
+		}
+	}
+	p.applyTableFormatting(doc, rules, coverParaSet)
+
+	return nil
+}
+
+// getStringFromCorrectionsList 从corrections列表中按key提取字符串值
+func getStringFromCorrectionsList(corrections []map[string]interface{}, key string) string {
+	for _, c := range corrections {
+		if val, ok := c[key]; ok {
+			if s, ok := val.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// applyTemplateFormatting 新方案：直接从模板OOXML格式规范应用格式
+// 步骤：页面设置/页眉页脚（保留JSON规则）→ AI分类 → 直接应用模板格式规范 → 表格格式
+func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rules map[string]interface{}, specs map[string]ParagraphFormatSpec) error {
+	// 注意：模板模式下不调用 applyStyleDefinitions——该函数会全局修改 docDefaults/Named Styles，
+	// 导致封面等跳过段落的字体被意外修改。模板模式通过 AIFormatApplier 直接写入 run-level rPr，
+	// 无需再改 styles.xml 层。
+
+	// 步骤 1: 页面设置（仍使用JSON规则）
+	log.Println("[模板方案][步骤1] 应用页面设置")
+	if err := p.applyPageSetup(doc, rules); err != nil {
+		log.Printf("[模板方案][步骤1] ⚠️  页面设置失败: %v", err)
+	}
+
+	// 步骤 1b: 页眉页脚&页码（仍使用JSON规则）
+	log.Println("[模板方案][步骤1b] 应用页眉页脚和页码")
+	if err := p.applyHeaderFooter(doc, rules); err != nil {
+		log.Printf("[模板方案][步骤1b] ⚠️  页眉页脚设置失败: %v", err)
+	}
+
+	// 步骤 2: 段落分类
+	log.Println("[模板方案][步骤2] 段落分类")
+	paragraphs := doc.Paragraphs()
+	log.Printf("[模板方案][步骤2] 文档总段落数: %d", len(paragraphs))
+	classified := p.classifyParagraphs(paragraphs)
+
+	// 输出分类详情
+	for category, paras := range classified {
+		sampleText := ""
+		if len(paras) > 0 {
+			t := p.extractParagraphText(paras[0])
+			if len(t) > 50 {
+				t = t[:50] + "..."
+			}
+			sampleText = t
+		}
+		log.Printf("[模板方案][步骤2]   %s: %d 个段落, 首段: %q", category, len(paras), sampleText)
+	}
+
+	// 步骤 3: 使用AI格式应用器直接按模板规范修正
+	log.Printf("[模板方案][步骤3] 应用模板格式规范（%d种类型）", len(specs))
+	skipCategories := map[string]bool{
+		"cover":                   true,
+		"originality_declaration": true,
+	}
+	applier := NewAIFormatApplier(p)
+	totalFixed := applier.Apply(classified, specs, skipCategories)
+	log.Printf("[模板方案][步骤3] 共修正 %d 个段落", totalFixed)
+
+	// 步骤 3.5: 生成差异报告（修正后重新扫描，找出仍有偏差的段落）
+	diffReport := &DocDiffReport{}
+	paraIdx := 0
+	for category, paras := range classified {
+		if skipCategories[category] {
+			continue
+		}
+		spec, ok := specs[category]
+		if !ok || spec.IsEmpty() {
+			continue
+		}
+		for _, para := range paras {
+			text := strings.TrimSpace(p.extractParagraphText(para))
+			if text == "" {
+				paraIdx++
+				continue
+			}
+			actualSpec := extractParaFormatSpec(para)
+			diffs := DiffSpec(spec, actualSpec)
+			if len(diffs) > 0 {
+				preview := []rune(text)
+				if len(preview) > 30 {
+					preview = preview[:30]
+				}
+				pd := ParaDiff{
+					ParaIndex: paraIdx,
+					Category:  category,
+					Text:      string(preview) + "...",
+					Diffs:     diffs,
+				}
+				diffReport.ParaDiffs = append(diffReport.ParaDiffs, pd)
+				for _, d := range diffs {
+					if d.Severity == "error" {
+						diffReport.ErrorCount++
+					} else {
+						diffReport.WarningCount++
+					}
+				}
+			}
+			paraIdx++
+			diffReport.TotalParas++
+		}
+	}
+	log.Printf("[差异报告] 扫描 %d 段，发现 %d 错误 %d 警告",
+		diffReport.TotalParas, diffReport.ErrorCount, diffReport.WarningCount)
+	p.lastDiffReport = diffReport
+
+	// 步骤 4: 参考文献"另起页"处理
+	// 如果模板规范中 references_title 有 PageBreak，已由applier处理
+	// 但为安全起见，仍从JSON规则中读取 new_page/page_break 标志
+	for _, category := range []string{"references_title", "acknowledgements_title", "appendix_title", "notes_title"} {
+		if paras, ok := classified[category]; ok && len(paras) > 0 {
+			// 从规范中获取 PageBreak 设置
+			if spec, ok := specs[category]; ok && spec.PageBreak {
+				p.setPageBreakBefore(paras[0])
+			}
+		}
+	}
+
+	// 步骤 5: 表格内文字格式（排除封面和原创性声明的表格）
+	log.Println("[模板方案][步骤5] 应用表格内格式")
+	skipParaSet := make(map[*wml.CT_P]bool)
+	for _, cat := range []string{"cover", "originality_declaration"} {
+		if cps, ok := classified[cat]; ok {
+			for _, cp := range cps {
+				skipParaSet[cp.X()] = true
+			}
+		}
+	}
+	// 如果有模板规范，用模板中 body 字体/字号覆盖表格内文字（保证一致性）
+	if bodySpec, ok := specs["body"]; ok && !bodySpec.IsEmpty() {
+		p.applyTableFormattingWithSpec(doc, bodySpec, skipParaSet)
+	} else {
+		p.applyTableFormatting(doc, rules, skipParaSet)
+	}
 
 	return nil
 }
@@ -839,27 +1100,35 @@ type fallbackParaInfo struct {
 	text string
 }
 
+// classifiedInfo 段落分类结果
+type classifiedInfo struct {
+	para     document.Paragraph
+	paraType string
+}
+
 // classifyParagraphsFallback 原始分类逻辑（回退路径）
 func (p *EnhancedProcessor) classifyParagraphsFallback(paraInfos []fallbackParaInfo) map[string][]document.Paragraph {
 	classified := make(map[string][]document.Paragraph)
 
-	type classifiedInfo struct {
-		para     document.Paragraph
-		paraType string
-	}
 	var infos []classifiedInfo
 	for _, info := range paraInfos {
-		paraType, _ := p.intelligentClassifyParagraphWithLevel(info.text)
+		// 优先使用 Word 样式名称（100% 可靠信号）
+		paraType := p.classifyByWordStyle(info.para)
+		if paraType == "" {
+			paraType, _ = p.intelligentClassifyParagraphWithLevel(info.text)
+		}
 		infos = append(infos, classifiedInfo{para: info.para, paraType: paraType})
 	}
 
-	inEnAbstract := false
-	inAbstract := false
+	// 有序状态机替代手工布尔标志（cover/abstract/en_abstract/toc/body/references 区段）
+	sm := aiclassifier.NewThesisStateMachine()
 	inOriginalityDecl := false
 	inAcknowledgements := false
-	coverZoneEnded := false
-	for _, info := range infos {
+	inAppendix := false
+	inNotes := false
+	for i, info := range infos {
 		pt := info.paraType
+		text := paraInfos[i].text
 
 		// 原创性声明：标题段及后续同页段落都归入 originality_declaration
 		if pt == "originality_declaration" {
@@ -881,61 +1150,161 @@ func (p *EnhancedProcessor) classifyParagraphsFallback(paraInfos []fallbackParaI
 			}
 		}
 
-		if !coverZoneEnded {
-			isContentStart := pt == "abstract_title" || pt == "abstract" ||
-				pt == "en_abstract_title" || pt == "keywords" || pt == "en_keywords" ||
-				pt == "references_title" || pt == "table_of_contents" ||
-				pt == "table_of_contents_title" ||
-				strings.HasPrefix(pt, "heading_")
-			if isContentStart {
-				coverZoneEnded = true
-			} else if pt == "body" || pt == "title" || pt == "cover" {
-				classified["cover"] = append(classified["cover"], info.para)
-				continue
-			}
+		// 专项区段触发（致谢/附录/注释使用独立标志，状态机不覆盖这些子类型）
+		switch pt {
+		case "acknowledgements_title":
+			inAcknowledgements = true
+			inAppendix = false
+			inNotes = false
+			classified["acknowledgements_title"] = append(classified["acknowledgements_title"], info.para)
+			continue
+		case "appendix_title":
+			inAppendix = true
+			inAcknowledgements = false
+			inNotes = false
+			classified["appendix_title"] = append(classified["appendix_title"], info.para)
+			continue
+		case "notes_title":
+			inNotes = true
+			inAppendix = false
+			inAcknowledgements = false
+			classified["notes_title"] = append(classified["notes_title"], info.para)
+			continue
 		}
 
-		switch {
-		case pt == "abstract_title":
-			inAbstract = true
-			inEnAbstract = false
-			inAcknowledgements = false
-			classified["abstract_title"] = append(classified["abstract_title"], info.para)
-		case pt == "en_abstract_title":
-			inEnAbstract = true
-			inAbstract = false
-			inAcknowledgements = false
-			classified["en_abstract_title"] = append(classified["en_abstract_title"], info.para)
-		case pt == "en_keywords":
-			inEnAbstract = false
-			classified["en_keywords"] = append(classified["en_keywords"], info.para)
-		case pt == "keywords":
-			inAbstract = false
-			classified["keywords"] = append(classified["keywords"], info.para)
-		case pt == "acknowledgements_title":
-			inAcknowledgements = true
-			inAbstract = false
-			inEnAbstract = false
-			classified["acknowledgements_title"] = append(classified["acknowledgements_title"], info.para)
-		case inAcknowledgements && pt == "body":
-			classified["acknowledgements_content"] = append(classified["acknowledgements_content"], info.para)
-		case inEnAbstract && (pt == "body" || pt == "abstract" || pt == "en_abstract"):
-			classified["en_abstract"] = append(classified["en_abstract"], info.para)
-		case inAbstract && (pt == "body" || pt == "abstract"):
-			classified["abstract"] = append(classified["abstract"], info.para)
-		default:
-			if strings.HasPrefix(pt, "heading_") || pt == "references_title" ||
-				pt == "table_of_contents_title" || pt == "table_of_contents" {
-				inEnAbstract = false
-				inAbstract = false
-				inAcknowledgements = false
-			}
-			classified[pt] = append(classified[pt], info.para)
+		// 专项区段内容
+		if inNotes && (pt == "body" || pt == "references") {
+			classified["notes_content"] = append(classified["notes_content"], info.para)
+			continue
 		}
+		if inAppendix && pt == "body" {
+			classified["appendix_content"] = append(classified["appendix_content"], info.para)
+			continue
+		}
+		if inAcknowledgements && pt == "body" {
+			classified["acknowledgements_content"] = append(classified["acknowledgements_content"], info.para)
+			continue
+		}
+
+		// 结构边界重置专项区段标志
+		if strings.HasPrefix(pt, "heading_") || pt == "references_title" ||
+			pt == "table_of_contents_title" || pt == "table_of_contents" {
+			inAcknowledgements = false
+			inAppendix = false
+			inNotes = false
+		}
+
+		// 状态机负责主干区段（封面→摘要→英文摘要→目录→正文→参考文献）
+		corrected := sm.Reclassify(pt, text)
+		if corrected != pt {
+			log.Printf("[回退分类器状态机] para#%d: %s → %s", i, pt, corrected)
+		}
+		classified[corrected] = append(classified[corrected], info.para)
 	}
+
+	// 结构顺序约束纠错：利用论文固定结构顺序修正误分类
+	classified = p.applyStructureOrderConstraints(classified, infos)
 
 	logClassifiedStats(classified)
 	return classified
+}
+
+// applyStructureOrderConstraints 利用论文结构顺序约束修正分类错误
+// 论文结构固定顺序：封面 -> 摘要 -> 目录 -> 正文 -> 参考文献 -> 致谢 -> 附录
+// 如果 body 段落出现在参考文献标题之后，应该被重新分类为 references
+func (p *EnhancedProcessor) applyStructureOrderConstraints(classified map[string][]document.Paragraph, infos []classifiedInfo) map[string][]document.Paragraph {
+	sectionOrder := []string{
+		"cover", "originality_declaration",
+		"abstract_title", "abstract", "keywords",
+		"en_abstract_title", "en_abstract", "en_keywords",
+		"table_of_contents_title", "table_of_contents",
+		"body",
+		"references_title", "references",
+		"notes_title", "notes_content",
+		"acknowledgements_title", "acknowledgements_content",
+		"appendix_title", "appendix_content",
+	}
+
+	sectionIndex := make(map[string]int)
+	for i, s := range sectionOrder {
+		sectionIndex[s] = i
+	}
+
+	// 找到关键锚点段落的位置
+	refTitleIdx := -1
+	ackTitleIdx := -1
+	appendixTitleIdx := -1
+	for i, info := range infos {
+		switch info.paraType {
+		case "references_title":
+			if refTitleIdx < 0 {
+				refTitleIdx = i
+			}
+		case "acknowledgements_title":
+			if ackTitleIdx < 0 {
+				ackTitleIdx = i
+			}
+		case "appendix_title":
+			if appendixTitleIdx < 0 {
+				appendixTitleIdx = i
+			}
+		}
+	}
+
+	// 纠正逻辑：参考文献标题之后的 body 段落（且在致谢之前）应归为 references
+	if refTitleIdx >= 0 {
+		var newBody []document.Paragraph
+		for _, bodyPara := range classified["body"] {
+			reclassified := false
+			for i, info := range infos {
+				if info.para.X() == bodyPara.X() {
+					if i > refTitleIdx && (ackTitleIdx < 0 || i < ackTitleIdx) {
+						classified["references"] = append(classified["references"], bodyPara)
+						reclassified = true
+						log.Printf("[顺序约束] 段落 %d 从 body 纠正为 references", i)
+					}
+					break
+				}
+			}
+			if !reclassified {
+				newBody = append(newBody, bodyPara)
+			}
+		}
+		classified["body"] = newBody
+	}
+
+	return classified
+}
+
+// classifyByWordStyle 利用 Word 内建样式名称进行 100% 可靠分类
+func (p *EnhancedProcessor) classifyByWordStyle(para document.Paragraph) string {
+	pPr := para.X().PPr
+	if pPr == nil || pPr.PStyle == nil {
+		return ""
+	}
+	style := strings.ToLower(strings.TrimSpace(pPr.PStyle.ValAttr))
+
+	switch {
+	case style == "heading1" || style == "heading 1" || style == "标题 1" || style == "标题1":
+		return "heading_1"
+	case style == "heading2" || style == "heading 2" || style == "标题 2" || style == "标题2":
+		return "heading_2"
+	case style == "heading3" || style == "heading 3" || style == "标题 3" || style == "标题3":
+		return "heading_3"
+	case style == "heading4" || style == "heading 4" || style == "标题 4" || style == "标题4":
+		return "heading_4"
+	case style == "title" || style == "论文标题":
+		return "title"
+	case style == "toc1" || style == "toc 1":
+		return "table_of_contents"
+	case style == "toc2" || style == "toc 2":
+		return "table_of_contents"
+	case style == "toc3" || style == "toc 3":
+		return "table_of_contents"
+	case style == "tocheading" || style == "toc heading":
+		return "table_of_contents_title"
+	}
+	return ""
 }
 
 // extractRunFormatInfo 提取段落第一个 Run 的格式信息（字号/加粗/对齐）
@@ -1083,6 +1452,24 @@ func (p *EnhancedProcessor) intelligentClassifyParagraphWithLevel(text string) (
 		return "title", 0
 	}
 
+	// 副标题识别（以"——"或"—"开头，且较短）
+	trimmed := strings.TrimSpace(text)
+	if (strings.HasPrefix(trimmed, "——") || strings.HasPrefix(trimmed, "—")) && len([]rune(trimmed)) < 50 {
+		return "title", 0
+	}
+
+	// 附录识别
+	if strings.Contains(normalizedLower, "附录") && len([]rune(normalized)) < 20 {
+		return "appendix_title", 0
+	}
+
+	// 注释标题识别
+	normalizedNoSpace := strings.ReplaceAll(normalized, " ", "")
+	normalizedNoSpace = strings.ReplaceAll(normalizedNoSpace, "\u3000", "")
+	if (normalizedNoSpace == "注释" || normalizedNoSpace == "注释：" || normalizedNoSpace == "注释:") && len([]rune(normalized)) < 15 {
+		return "notes_title", 0
+	}
+
 	// 致谢识别
 	if strings.Contains(normalizedLower, "致谢") || strings.Contains(normalizedLower, "致  谢") {
 		if len([]rune(normalized)) < 10 {
@@ -1106,6 +1493,22 @@ func (p *EnhancedProcessor) intelligentClassifyParagraphWithLevel(text string) (
 	// 参考文献条目识别（以 [数字] 或 数字. 开头的参考文献条目）
 	if p.isReferenceItem(text) {
 		return "references", 0
+	}
+
+	// 图标题识别（"图1.1 xxx" 或 "图 1-1 xxx"）
+	if matched, _ := regexp.MatchString(`^图\s*[\d]+[.\-][\d]+`, trimmed); matched {
+		return "figure_caption", 0
+	}
+	if matched, _ := regexp.MatchString(`^Figure\s*[\d]+[.\-][\d]+`, trimmed); matched {
+		return "figure_caption", 0
+	}
+
+	// 表标题识别（"表2.1 xxx" 或 "表 2-1 xxx"）
+	if matched, _ := regexp.MatchString(`^表\s*[\d]+[.\-][\d]+`, trimmed); matched {
+		return "table_caption", 0
+	}
+	if matched, _ := regexp.MatchString(`^Table\s*[\d]+[.\-][\d]+`, trimmed); matched {
+		return "table_caption", 0
 	}
 
 	// 默认为正文
@@ -1247,33 +1650,34 @@ func (p *EnhancedProcessor) isOriginalityDeclaration(text string) bool {
 
 // detectHeadingLevel 检测标题级别
 func (p *EnhancedProcessor) detectHeadingLevel(text string) int {
-	// 一级标题模式（修复：只匹配单个数字后跟标点，且不能是 X.X 格式）
 	level1Patterns := []string{
-		`^[一二三四五六七八九十]+[、.]`, // 一、 或 一. （必须是中文数字）
-		`^[0-9]+[、.]`, // 1、 或 1. （单个数字 + 标点）
-		`^第[一二三四五六七八九十]+[章节]`, // 第一章
-		`^[0-9]+\s+[^\d]`, // 数字 + 空格 + 非数字（如 "1 绪论"）
+		`^[一二三四五六七八九十]+[、.]`,
+		`^[0-9]+[、.]`,
+		`^第[一二三四五六七八九十]+[章节]`,
+		`^[0-9]+\s+[^\d]`,
 	}
 
-	// 二级标题模式（必须先于一级标题检查，因为 1.1 也会匹配一级的 1.）
 	level2Patterns := []string{
-		`^[0-9]+\.[0-9]`, // 1.1 或 1.1 （X.X 格式，必须先于一级检查）
-		`^[（(][一二三四五六七八九十]+[)）]`, // （一）
+		`^[0-9]+\.[0-9]`,
+		`^[（(][一二三四五六七八九十]+[)）]`,
 	}
 
-	// 三级标题模式
-	level3Patterns := []string{
-		`^[0-9]+\.[0-9]+\.[0-9]+\s*`, // 1.1.1 或 1.1.1 （可能有空格）
-		`^[（(][0-9]+[)）]`,            // （1）
+	reL4Num := regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\s*`)
+	reL3Num := regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\s*`)
+	reL3Paren := regexp.MustCompile(`^[（(][0-9]+[)）]`)
+
+	if reL4Num.MatchString(text) {
+		return 4
 	}
-
-	// 检查各级标题
-
-	//fixme  先判断3及标题  2 及标题 1 及标题
-	for _, pattern := range level3Patterns {
-		if matched, _ := regexp.MatchString(pattern, text); matched {
+	if reL3Num.MatchString(text) {
+		return 3
+	}
+	if loc := reL3Paren.FindStringIndex(text); loc != nil {
+		rest := []rune(strings.TrimSpace(text[loc[1]:]))
+		if len(rest) <= 20 {
 			return 3
 		}
+		return 0
 	}
 
 	for _, pattern := range level2Patterns {
@@ -1287,26 +1691,6 @@ func (p *EnhancedProcessor) detectHeadingLevel(text string) int {
 			return 1
 		}
 	}
-	//for _, pattern := range level1Patterns {
-	//	if matched, _ := regexp.MatchString(pattern, text); matched {
-	//
-	//		return 1
-	//	}
-	//}
-	//
-	//for _, pattern := range level2Patterns {
-	//	if matched, _ := regexp.MatchString(pattern, text); matched {
-	//
-	//		return 2
-	//	}
-	//}
-	//
-	//for _, pattern := range level3Patterns {
-	//	if matched, _ := regexp.MatchString(pattern, text); matched {
-	//
-	//		return 3
-	//	}
-	//}
 
 	return 0
 }
@@ -1367,12 +1751,17 @@ func (p *EnhancedProcessor) applyPageSetup(doc *document.Document, rules map[str
 
 	log.Printf("[页面设置] 页边距: 上=%.2fcm 下=%.2fcm 左=%.2fcm 右=%.2fcm", marginTop, marginBottom, marginLeft, marginRight)
 
-	// 解析页眉页脚距离
+	// 解析页眉页脚距离，兼容多种结构：
+	// a) page_setup.header = { "distance": 1.5 }
+	// b) page_setup.header_distance = 1.5
+	// c) page_setup.header = 1.5 (直接数值)
 	if header, ok := pageSetupRules["header"].(map[string]interface{}); ok {
 		if v := parseCmValue(header["distance"]); v > 0 {
 			headerDistance = v
 		}
 	} else if v := parseCmValue(pageSetupRules["header_distance"]); v > 0 {
+		headerDistance = v
+	} else if v := parseCmValue(pageSetupRules["header"]); v > 0 {
 		headerDistance = v
 	}
 	if footer, ok := pageSetupRules["footer"].(map[string]interface{}); ok {
@@ -1380,6 +1769,8 @@ func (p *EnhancedProcessor) applyPageSetup(doc *document.Document, rules map[str
 			footerDistance = v
 		}
 	} else if v := parseCmValue(pageSetupRules["footer_distance"]); v > 0 {
+		footerDistance = v
+	} else if v := parseCmValue(pageSetupRules["footer"]); v > 0 {
 		footerDistance = v
 	}
 
@@ -1416,30 +1807,152 @@ func (p *EnhancedProcessor) applyPageSetup(doc *document.Document, rules map[str
 	return nil
 }
 
+// extractCoverInfo 从封面表格中提取学院、专业、论文标题等信息
+// 返回 map，key 可能有 "学院"、"专业"、"标题"、"题目" 等
+func (p *EnhancedProcessor) extractCoverInfo(doc *document.Document) map[string]string {
+	info := make(map[string]string)
+	// 仅扫描前 5 张表格（封面一般是第 1 张）
+	for ti, tbl := range doc.Tables() {
+		if ti >= 5 {
+			break
+		}
+		for _, row := range tbl.Rows() {
+			cells := row.Cells()
+			// 常见格式：label 单元格 | value 单元格
+			if len(cells) >= 2 {
+				label := strings.TrimSpace(p.extractCellText(cells[0]))
+				value := strings.TrimSpace(p.extractCellText(cells[1]))
+				if value == "" {
+					continue
+				}
+				for _, key := range []string{"学院", "专业", "题目", "标题", "姓名", "学号", "班级"} {
+					if strings.Contains(label, key) {
+						info[key] = value
+						log.Printf("[封面解析] %s → %q", key, value)
+					}
+				}
+			}
+			// 也处理单列合并行：整行只有一格且很长（可能是题目）
+			if len(cells) == 1 {
+				text := strings.TrimSpace(p.extractCellText(cells[0]))
+				if len([]rune(text)) >= 6 && len([]rune(text)) <= 60 && !strings.ContainsAny(text, "：:") {
+					if _, exists := info["题目"]; !exists {
+						info["题目候选"] = text
+					}
+				}
+			}
+		}
+	}
+	return info
+}
+
+// extractCellText 提取表格单元格内所有段落文本
+func (p *EnhancedProcessor) extractCellText(cell document.Cell) string {
+	var sb strings.Builder
+	for _, para := range cell.Paragraphs() {
+		sb.WriteString(p.extractParagraphText(para))
+	}
+	return sb.String()
+}
+
 // applyHeaderFooter 应用页眉、页脚和页码设置
 func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[string]interface{}) error {
-	pageSetupRules, ok := rules["page_setup"].(map[string]interface{})
-	if !ok {
-		log.Println("[页眉页脚] 未找到 page_setup 规则，跳过")
-		return nil
-	}
+	pageSetupRules, _ := rules["page_setup"].(map[string]interface{})
 
 	section := doc.BodySection()
 
-	// 先清除已有的 section 级别 header/footer 引用
 	sectPr := section.X()
 	if sectPr != nil {
 		sectPr.EG_HdrFtrReferences = nil
 	}
 
 	// ── 页眉 ──
-	if headerRules, ok := pageSetupRules["header"].(map[string]interface{}); ok {
-		p.setupHeader(doc, section, headerRules)
+	// 优先从 page_setup.header 取，其次从顶层 header 取
+	headerRules, _ := pageSetupRules["header"].(map[string]interface{})
+	if headerRules == nil {
+		headerRules, _ = rules["header"].(map[string]interface{})
 	}
+	if headerRules == nil {
+		headerRules = make(map[string]interface{})
+	}
+	// 自动从封面解析学院/专业并注入页眉内容
+	coverInfo := p.extractCoverInfo(doc)
+	// 从班级字段提取入学年份（如"2022级护理学5班" → "2022"）
+	gradeYear := ""
+	if banJi, ok := coverInfo["班级"]; ok && banJi != "" {
+		for i, r := range banJi {
+			if r >= '0' && r <= '9' {
+				end := i + 4
+				if end <= len(banJi) {
+					candidate := banJi[i:end]
+					valid := true
+					for _, c := range candidate {
+						if c < '0' || c > '9' {
+							valid = false
+							break
+						}
+					}
+					if valid {
+						gradeYear = candidate
+						log.Printf("[页眉] 从班级 %q 提取年级: %s", banJi, gradeYear)
+						break
+					}
+				}
+			}
+		}
+	}
+	if _, hasContent := headerRules["content"]; !hasContent || headerRules["content"] == "" {
+		// 规则中无页眉内容时，用封面信息自动构建完整页眉
+		major, _ := coverInfo["专业"]
+		college, _ := coverInfo["学院"]
+		if college == "" {
+			college = "重庆人文科技学院"
+		}
+		if major != "" {
+			headerText := college
+			if gradeYear != "" {
+				headerText += gradeYear + "届"
+			}
+			headerText += major + "专业本科毕业论文（设计）"
+			headerRules["content"] = headerText
+			log.Printf("[页眉] 自动构建页眉: %q", headerText)
+		}
+	} else {
+		// 规则中有页眉内容时，替换所有占位符
+		content, _ := headerRules["content"].(string)
+		if college, ok := coverInfo["学院"]; ok && college != "" {
+			content = strings.ReplaceAll(content, "{学院}", college)
+			content = strings.ReplaceAll(content, "xx学院", college)
+			content = strings.ReplaceAll(content, "XX学院", college)
+		}
+		if major, ok := coverInfo["专业"]; ok && major != "" {
+			content = strings.ReplaceAll(content, "{专业}", major)
+			content = strings.ReplaceAll(content, "xx专业", major)
+			content = strings.ReplaceAll(content, "XX专业", major)
+		}
+		// 替换届/年级占位符
+		if gradeYear != "" {
+			content = strings.ReplaceAll(content, "{届}", gradeYear+"届")
+			content = strings.ReplaceAll(content, "XX届", gradeYear+"届")
+			content = strings.ReplaceAll(content, "xx届", gradeYear+"届")
+		}
+		if title, ok := coverInfo["题目"]; ok && title != "" {
+			content = strings.ReplaceAll(content, "{题目}", title)
+			content = strings.ReplaceAll(content, "{论文题目}", title)
+		}
+		if content != headerRules["content"] {
+			log.Printf("[页眉] 占位符替换: %q → %q", headerRules["content"], content)
+		}
+		headerRules["content"] = content
+	}
+	p.setupHeader(doc, section, headerRules)
 
 	// ── 页脚 & 页码 ──
-	// 合并 footer 和 page_number 规则：page_number 中未指定的字段从 footer 中继承
+	// 优先从 page_setup 取，其次从顶层取
 	pageNumRules, _ := pageSetupRules["page_number"].(map[string]interface{})
+	if pageNumRules == nil {
+		pageNumRules, _ = rules["page_number"].(map[string]interface{})
+	}
 	footerRules, _ := pageSetupRules["footer"].(map[string]interface{})
 
 	merged := make(map[string]interface{})
@@ -1634,6 +2147,7 @@ func (p *EnhancedProcessor) enableEvenOddHeaders(doc *document.Document) {
 }
 
 // setupFooterWithPageNumber 设置页脚（含页码）
+// applyHeaderFooter 会先清除 sectPr.EG_HdrFtrReferences，所以这里直接创建新页脚
 func (p *EnhancedProcessor) setupFooterWithPageNumber(doc *document.Document, section document.Section, pageNumRules map[string]interface{}) {
 	fontName := "宋体"
 	fontSize := 10.5 // 五号
@@ -1657,13 +2171,11 @@ func (p *EnhancedProcessor) setupFooterWithPageNumber(doc *document.Document, se
 		}
 	}
 
-	// 解析页码格式中的前后缀，如 "-1-"、"— 1 —"、"第1页"
-	prefix, suffix := p.parsePageNumberFormat(format)
-
 	ftr := doc.AddFooter()
+	section.SetFooter(ftr, wml.ST_HdrFtrDefault)
+
 	para := ftr.AddParagraph()
 
-	// 对齐方式
 	switch position {
 	case "bottom_center", "center":
 		para.Properties().SetAlignment(wml.ST_JcCenter)
@@ -1675,26 +2187,22 @@ func (p *EnhancedProcessor) setupFooterWithPageNumber(doc *document.Document, se
 		para.Properties().SetAlignment(wml.ST_JcCenter)
 	}
 
-	// 前缀 run
-	if prefix != "" {
-		prefixRun := para.AddRun()
-		prefixRun.AddText(prefix)
-		p.setRunFont(prefixRun, fontName, fontSize, false)
+	parts := p.parsePageNumberFormatParts(format)
+	for _, part := range parts {
+		switch part.fieldType {
+		case "PAGE":
+			p.addPageFieldToParagraph(para, fontName, fontSize)
+		case "NUMPAGES":
+			p.addNumPagesFieldToParagraph(para, fontName, fontSize)
+		default:
+			if part.text != "" {
+				r := para.AddRun()
+				r.AddText(part.text)
+				p.setRunFont(r, fontName, fontSize, false)
+			}
+		}
 	}
 
-	// PAGE 域字段（自动页码）
-	p.addPageFieldToParagraph(para, fontName, fontSize)
-
-	// 后缀 run
-	if suffix != "" {
-		suffixRun := para.AddRun()
-		suffixRun.AddText(suffix)
-		p.setRunFont(suffixRun, fontName, fontSize, false)
-	}
-
-	section.SetFooter(ftr, wml.ST_HdrFtrDefault)
-
-	// 页码起始值
 	sectPr := section.X()
 	if sectPr.PgNumType == nil {
 		sectPr.PgNumType = wml.NewCT_PageNumber()
@@ -1702,7 +2210,7 @@ func (p *EnhancedProcessor) setupFooterWithPageNumber(doc *document.Document, se
 	startVal := int64(1)
 	sectPr.PgNumType.StartAttr = &startVal
 
-	log.Printf("[页脚] 已设置页码: font=%s size=%.1fpt position=%s prefix=%q suffix=%q", fontName, fontSize, position, prefix, suffix)
+	log.Printf("[页脚] 已设置页码: font=%s size=%.1fpt position=%s format=%q", fontName, fontSize, position, format)
 }
 
 // addPageFieldToParagraph 在段落中插入 PAGE 域字段
@@ -1737,28 +2245,104 @@ func (p *EnhancedProcessor) addPageFieldToParagraph(para document.Paragraph, fon
 	para.X().EG_PContent = append(para.X().EG_PContent, &wml.EG_PContent{FldSimple: []*wml.CT_SimpleField{pageField}})
 }
 
-// parsePageNumberFormat 解析页码格式字符串，提取前缀和后缀
-// 例如："-1-" → prefix="-", suffix="-"
-//
-//	"— 1 —" → prefix="— ", suffix=" —"
-//	"第1页" → prefix="第", suffix="页"
-//	"1" → prefix="", suffix=""
+// addNumPagesFieldToParagraph 在段落中插入 NUMPAGES 域字段（总页数）
+func (p *EnhancedProcessor) addNumPagesFieldToParagraph(para document.Paragraph, fontName string, fontSize float64) {
+	numField := wml.NewCT_SimpleField()
+	numField.InstrAttr = " NUMPAGES "
+
+	pContent := wml.NewEG_PContent()
+	rContent := wml.NewEG_ContentRunContent()
+	numRun := wml.NewCT_R()
+	numText := wml.NewCT_Text()
+	numText.Content = "1"
+	numRun.EG_RunInnerContent = append(numRun.EG_RunInnerContent, &wml.EG_RunInnerContent{T: numText})
+
+	numRPr := wml.NewCT_RPr()
+	numRPr.RFonts = wml.NewCT_Fonts()
+	fontPtr := p.getCachedFontName(fontName)
+	numRPr.RFonts.AsciiAttr = fontPtr
+	numRPr.RFonts.EastAsiaAttr = fontPtr
+	numRPr.RFonts.HAnsiAttr = fontPtr
+	halfPt := uint64(fontSize * 2)
+	numRPr.Sz = wml.NewCT_HpsMeasure()
+	numRPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPt
+	numRPr.SzCs = wml.NewCT_HpsMeasure()
+	numRPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &halfPt
+	numRun.RPr = numRPr
+
+	rContent.R = numRun
+	pContent.EG_ContentRunContent = append(pContent.EG_ContentRunContent, rContent)
+	numField.EG_PContent = append(numField.EG_PContent, pContent)
+
+	para.X().EG_PContent = append(para.X().EG_PContent, &wml.EG_PContent{FldSimple: []*wml.CT_SimpleField{numField}})
+}
+
+type pageFormatPart struct {
+	fieldType string // "PAGE", "NUMPAGES", or "" for literal text
+	text      string
+}
+
+// parsePageNumberFormatParts 将页码格式字符串拆分为文本和域字段部分。
+// 支持格式如：
+//   - "第×页 共×页" → [text:"第", PAGE, text:"页 共", NUMPAGES, text:"页"]
+//   - "-1-"        → [text:"-", PAGE, text:"-"]
+//   - "第1页"      → [text:"第", PAGE, text:"页"]
+//   - "1"          → [PAGE]
+func (p *EnhancedProcessor) parsePageNumberFormatParts(format string) []pageFormatPart {
+	f := strings.TrimSpace(format)
+	if f == "" {
+		return []pageFormatPart{{fieldType: "PAGE"}}
+	}
+
+	// 占位符正则：匹配 ×、数字序列 或 PAGE/NUMPAGES 关键词
+	re := regexp.MustCompile(`×+|\d+|(?i:NUMPAGES)|(?i:PAGE)`)
+	matches := re.FindAllStringIndex(f, -1)
+	if len(matches) == 0 {
+		return []pageFormatPart{{fieldType: "PAGE"}}
+	}
+
+	var parts []pageFormatPart
+	cursor := 0
+	pageFieldCount := 0
+
+	for _, m := range matches {
+		if m[0] > cursor {
+			parts = append(parts, pageFormatPart{text: f[cursor:m[0]]})
+		}
+		token := f[m[0]:m[1]]
+		upper := strings.ToUpper(token)
+
+		if upper == "NUMPAGES" {
+			parts = append(parts, pageFormatPart{fieldType: "NUMPAGES"})
+		} else {
+			// ×、digits、PAGE → treat as PAGE; the second occurrence is NUMPAGES
+			pageFieldCount++
+			if pageFieldCount <= 1 {
+				parts = append(parts, pageFormatPart{fieldType: "PAGE"})
+			} else {
+				parts = append(parts, pageFormatPart{fieldType: "NUMPAGES"})
+			}
+		}
+		cursor = m[1]
+	}
+	if cursor < len(f) {
+		parts = append(parts, pageFormatPart{text: f[cursor:]})
+	}
+
+	return parts
+}
+
+// parsePageNumberFormat 解析页码格式字符串，提取前缀和后缀（向后兼容）
 func (p *EnhancedProcessor) parsePageNumberFormat(format string) (string, string) {
 	f := strings.TrimSpace(format)
 	if f == "" {
 		return "", ""
 	}
 
-	// 查找数字部分的位置
-	re := regexp.MustCompile(`\d+`)
+	re := regexp.MustCompile(`×+|\d+|(?i)PAGE`)
 	loc := re.FindStringIndex(f)
 	if loc == nil {
-		// 没有数字, 检查是否包含 PAGE 关键词
-		rePage := regexp.MustCompile(`(?i)PAGE`)
-		loc = rePage.FindStringIndex(f)
-		if loc == nil {
-			return "-", "-"
-		}
+		return "-", "-"
 	}
 
 	prefix := f[:loc[0]]
@@ -1833,15 +2417,26 @@ func (p *EnhancedProcessor) parseMargin(margin string) float64 {
 	return 0
 }
 
-// applyTitleFormatting 应用标题格式
+// applyTitleFormatting 应用标题格式（区分正标题和副标题）
 func (p *EnhancedProcessor) applyTitleFormatting(paragraphs []document.Paragraph, rules map[string]interface{}) error {
 	titleRules, ok := rules["title"].(map[string]interface{})
 	if !ok {
 		return nil
 	}
 
+	subtitleRules := titleRules
+	if sub, ok := titleRules["subtitle"].(map[string]interface{}); ok {
+		subtitleRules = sub
+	}
+
 	for _, para := range paragraphs {
-		p.applyParagraphFormatting(para, titleRules)
+		text := strings.TrimSpace(p.extractParagraphText(para))
+		if strings.HasPrefix(text, "——") || strings.HasPrefix(text, "--") || strings.HasPrefix(text, "—") {
+			log.Printf("[标题] 副标题: %s → 使用 subtitle 规则", text[:min(20, len(text))])
+			p.applyParagraphFormatting(para, subtitleRules)
+		} else {
+			p.applyParagraphFormatting(para, titleRules)
+		}
 	}
 
 	return nil
@@ -1943,26 +2538,51 @@ func (p *EnhancedProcessor) getRunFontInfo(para document.Paragraph) (font string
 
 // (resolveAbstractLabelRules / resolveAbstractContentRules / old apply functions 已被新版本替代)
 
+// setPageBreakBefore 设置段落的"另起页"属性
+func (p *EnhancedProcessor) setPageBreakBefore(para document.Paragraph) {
+	pPr := para.X().PPr
+	if pPr == nil {
+		pPr = wml.NewCT_PPr()
+		para.X().PPr = pPr
+	}
+	pPr.PageBreakBefore = wml.NewCT_OnOff()
+}
+
 // applyReferencesTitleFormatting 应用参考文献标题格式（"参考文献"四个字）
 func (p *EnhancedProcessor) applyReferencesTitleFormatting(paragraphs []document.Paragraph, rules map[string]interface{}) error {
 	titleRules := map[string]interface{}{
 		"font_name": "黑体",
-		"font_size": "三号",
+		"font_size": "小三",
 		"bold":      true,
 		"alignment": "center",
 	}
 	for _, key := range []string{"references", "reference"} {
 		if refRules, ok := rules[key].(map[string]interface{}); ok {
-			if t, ok := refRules["title"].(map[string]interface{}); ok {
-				for k, v := range t {
-					titleRules[k] = v
+			// 兼容 label 和 title 两种键名
+			for _, subKey := range []string{"label", "title"} {
+				if t, ok := refRules[subKey].(map[string]interface{}); ok {
+					for k, v := range t {
+						titleRules[k] = v
+					}
+					break
 				}
-				break
 			}
+			break
 		}
 	}
-	log.Printf("[参考文献标题] 规则: font=%v size=%v align=%v bold=%v", titleRules["font_name"], titleRules["font_size"], titleRules["alignment"], titleRules["bold"])
-	for _, para := range paragraphs {
+
+	needPageBreak := true
+	if pb, ok := titleRules["new_page"].(bool); ok {
+		needPageBreak = pb
+	} else if pb, ok := titleRules["page_break"].(bool); ok {
+		needPageBreak = pb
+	}
+
+	log.Printf("[参考文献标题] 规则: font=%v size=%v align=%v bold=%v page_break=%v", titleRules["font_name"], titleRules["font_size"], titleRules["alignment"], titleRules["bold"], needPageBreak)
+	for i, para := range paragraphs {
+		if i == 0 && needPageBreak {
+			p.setPageBreakBefore(para)
+		}
 		p.applyParagraphFormatting(para, titleRules)
 	}
 	return nil
@@ -2009,14 +2629,29 @@ func (p *EnhancedProcessor) applyAcknowledgementsTitleFormatting(paragraphs []do
 		"line_space": 1.5,
 	}
 	if ack, ok := rules["acknowledgements"].(map[string]interface{}); ok {
-		if t, ok := ack["title"].(map[string]interface{}); ok {
-			for k, v := range t {
-				titleRules[k] = v
+		// 兼容 label 和 title 两种键名
+		for _, subKey := range []string{"label", "title"} {
+			if t, ok := ack[subKey].(map[string]interface{}); ok {
+				for k, v := range t {
+					titleRules[k] = v
+				}
+				break
 			}
 		}
 	}
-	log.Printf("[致谢标题] 规则: font=%v size=%v align=%v bold=%v", titleRules["font_name"], titleRules["font_size"], titleRules["alignment"], titleRules["bold"])
-	for _, para := range paragraphs {
+
+	needPageBreak := true
+	if pb, ok := titleRules["new_page"].(bool); ok {
+		needPageBreak = pb
+	} else if pb, ok := titleRules["page_break"].(bool); ok {
+		needPageBreak = pb
+	}
+
+	log.Printf("[致谢标题] 规则: font=%v size=%v align=%v bold=%v page_break=%v", titleRules["font_name"], titleRules["font_size"], titleRules["alignment"], titleRules["bold"], needPageBreak)
+	for i, para := range paragraphs {
+		if i == 0 && needPageBreak {
+			p.setPageBreakBefore(para)
+		}
 		p.applyParagraphFormatting(para, titleRules)
 	}
 	return nil
@@ -2045,25 +2680,342 @@ func (p *EnhancedProcessor) applyAcknowledgementsContentFormatting(paragraphs []
 	return nil
 }
 
-// applyTableFormatting 对文档中所有表格内的段落应用正文格式
-func (p *EnhancedProcessor) applyTableFormatting(doc *document.Document, rules map[string]interface{}) {
-	bodyRules, ok := rules["body"].(map[string]interface{})
-	if !ok {
-		return
+// applyAppendixTitleFormatting 应用附录标题格式
+func (p *EnhancedProcessor) applyAppendixTitleFormatting(paragraphs []document.Paragraph, rules map[string]interface{}) error {
+	titleRules := map[string]interface{}{
+		"font_name":  "黑体",
+		"font_size":  "小三",
+		"bold":       true,
+		"alignment":  "center",
+		"page_break": true,
 	}
+	if appendix, ok := rules["appendix"].(map[string]interface{}); ok {
+		// 兼容 label 和 title 两种键名
+		for _, subKey := range []string{"label", "title"} {
+			if t, ok := appendix[subKey].(map[string]interface{}); ok {
+				for k, v := range t {
+					titleRules[k] = v
+				}
+				break
+			}
+		}
+	}
+
+	needPageBreak := true
+	if pb, ok := titleRules["new_page"].(bool); ok {
+		needPageBreak = pb
+	} else if pb, ok := titleRules["page_break"].(bool); ok {
+		needPageBreak = pb
+	}
+
+	log.Printf("[附录标题] 规则: font=%v size=%v bold=%v page_break=%v", titleRules["font_name"], titleRules["font_size"], titleRules["bold"], needPageBreak)
+	for i, para := range paragraphs {
+		if i == 0 && needPageBreak {
+			p.setPageBreakBefore(para)
+		}
+		p.applyParagraphFormatting(para, titleRules)
+	}
+	return nil
+}
+
+// applyAppendixContentFormatting 应用附录正文格式
+func (p *EnhancedProcessor) applyAppendixContentFormatting(paragraphs []document.Paragraph, rules map[string]interface{}) error {
+	contentRules := map[string]interface{}{
+		"font_name":         "宋体",
+		"font_size":         "五号",
+		"alignment":         "justify",
+		"first_line_indent": "2",
+		"line_space":        1.5,
+	}
+	if appendix, ok := rules["appendix"].(map[string]interface{}); ok {
+		if content, ok := appendix["content"].(map[string]interface{}); ok {
+			for k, v := range content {
+				contentRules[k] = v
+			}
+		}
+	}
+	log.Printf("[附录正文] 规则: font=%v size=%v", contentRules["font_name"], contentRules["font_size"])
+	for _, para := range paragraphs {
+		p.applyParagraphFormatting(para, contentRules)
+	}
+	return nil
+}
+
+// applyNotesTitleFormatting 应用注释标题格式
+func (p *EnhancedProcessor) applyNotesTitleFormatting(paragraphs []document.Paragraph, rules map[string]interface{}) error {
+	titleRules := map[string]interface{}{
+		"font_name":  "黑体",
+		"font_size":  "小三",
+		"bold":       true,
+		"alignment":  "center",
+		"page_break": true,
+	}
+	if notes, ok := rules["notes"].(map[string]interface{}); ok {
+		// 兼容 label 和 title 两种键名
+		for _, subKey := range []string{"label", "title"} {
+			if t, ok := notes[subKey].(map[string]interface{}); ok {
+				for k, v := range t {
+					titleRules[k] = v
+				}
+				break
+			}
+		}
+	}
+
+	needPageBreak := true
+	if pb, ok := titleRules["new_page"].(bool); ok {
+		needPageBreak = pb
+	} else if pb, ok := titleRules["page_break"].(bool); ok {
+		needPageBreak = pb
+	}
+
+	log.Printf("[注释标题] 规则: font=%v size=%v bold=%v page_break=%v", titleRules["font_name"], titleRules["font_size"], titleRules["bold"], needPageBreak)
+	for i, para := range paragraphs {
+		if i == 0 && needPageBreak {
+			p.setPageBreakBefore(para)
+		}
+		p.applyParagraphFormatting(para, titleRules)
+	}
+	return nil
+}
+
+// applyNotesContentFormatting 应用注释正文格式
+func (p *EnhancedProcessor) applyNotesContentFormatting(paragraphs []document.Paragraph, rules map[string]interface{}) error {
+	contentRules := map[string]interface{}{
+		"font_name":  "宋体",
+		"font_size":  "五号",
+		"alignment":  "left",
+		"line_space": 1.5,
+	}
+	if notes, ok := rules["notes"].(map[string]interface{}); ok {
+		if content, ok := notes["content"].(map[string]interface{}); ok {
+			for k, v := range content {
+				contentRules[k] = v
+			}
+		}
+	}
+	log.Printf("[注释正文] 规则: font=%v size=%v", contentRules["font_name"], contentRules["font_size"])
+	for _, para := range paragraphs {
+		p.applyParagraphFormatting(para, contentRules)
+	}
+	return nil
+}
+
+// applyFigureCaptionFormatting 应用图标题格式
+func (p *EnhancedProcessor) applyFigureCaptionFormatting(paragraphs []document.Paragraph, rules map[string]interface{}) error {
+	captionRules := map[string]interface{}{
+		"font_name": "宋体",
+		"font_size": "五号",
+		"alignment": "center",
+	}
+	if figure, ok := rules["figure"].(map[string]interface{}); ok {
+		if caption, ok := figure["caption"].(map[string]interface{}); ok {
+			for k, v := range caption {
+				captionRules[k] = v
+			}
+		}
+	}
+	log.Printf("[图标题] 规则: font=%v size=%v align=%v", captionRules["font_name"], captionRules["font_size"], captionRules["alignment"])
+	for _, para := range paragraphs {
+		p.applyParagraphFormatting(para, captionRules)
+	}
+	return nil
+}
+
+// applyTableCaptionFormatting 应用表标题格式
+func (p *EnhancedProcessor) applyTableCaptionFormatting(paragraphs []document.Paragraph, rules map[string]interface{}) error {
+	captionRules := map[string]interface{}{
+		"font_name": "宋体",
+		"font_size": "五号",
+		"alignment": "center",
+	}
+	if table, ok := rules["table"].(map[string]interface{}); ok {
+		if caption, ok := table["caption"].(map[string]interface{}); ok {
+			for k, v := range caption {
+				captionRules[k] = v
+			}
+		}
+	}
+	log.Printf("[表标题] 规则: font=%v size=%v align=%v", captionRules["font_name"], captionRules["font_size"], captionRules["alignment"])
+	for _, para := range paragraphs {
+		p.applyParagraphFormatting(para, captionRules)
+	}
+	return nil
+}
+
+// applyTableFormatting 对文档中数据表格内的段落应用格式
+// 跳过：封面/原创性声明中的表格、流程图/装饰表格
+func (p *EnhancedProcessor) applyTableFormatting(doc *document.Document, rules map[string]interface{}, skipParas map[*wml.CT_P]bool) {
+	tableRules, _ := rules["table"].(map[string]interface{})
+	innerRules := map[string]interface{}{
+		"font_name": "宋体",
+		"font_size": "五号",
+	}
+	if tableRules != nil {
+		if inner, ok := tableRules["inner_text"].(map[string]interface{}); ok {
+			for k, v := range inner {
+				innerRules[k] = v
+			}
+		}
+	}
+
 	for _, table := range doc.Tables() {
-		for _, row := range table.Rows() {
+		rows := table.Rows()
+		if len(rows) < 2 {
+			continue
+		}
+
+		// 检查表格是否属于封面/原创性声明区域：如果任一单元格段落在跳过集合中，整个表格跳过
+		isCoverTable := false
+		if len(skipParas) > 0 {
+			for _, row := range rows {
+				for _, cell := range row.Cells() {
+					for _, para := range cell.Paragraphs() {
+						if skipParas[para.X()] {
+							isCoverTable = true
+							break
+						}
+					}
+					if isCoverTable {
+						break
+					}
+				}
+				if isCoverTable {
+					break
+				}
+			}
+		}
+		if isCoverTable {
+			log.Printf("[表格] 跳过封面/声明区域表格")
+			continue
+		}
+
+		// 启发式判断：检查是否为数据表格
+		totalCells := 0
+		nonEmptyCells := 0
+		longTextCells := 0
+		for _, row := range rows {
+			for _, cell := range row.Cells() {
+				totalCells++
+				cellText := ""
+				for _, para := range cell.Paragraphs() {
+					cellText += p.extractParagraphText(para)
+				}
+				cellText = strings.TrimSpace(cellText)
+				if cellText != "" {
+					nonEmptyCells++
+				}
+				if len([]rune(cellText)) > 10 {
+					longTextCells++
+				}
+			}
+		}
+
+		if totalCells > 0 {
+			fillRate := float64(nonEmptyCells) / float64(totalCells)
+			longRate := float64(longTextCells) / float64(totalCells)
+			if fillRate < 0.3 || (fillRate < 0.5 && longRate < 0.1) {
+				log.Printf("[表格] 跳过疑似流程图/装饰表格 (cells=%d, filled=%.0f%%, long=%.0f%%)", totalCells, fillRate*100, longRate*100)
+				continue
+			}
+		}
+
+		for _, row := range rows {
 			for _, cell := range row.Cells() {
 				for _, para := range cell.Paragraphs() {
 					text := strings.TrimSpace(p.extractParagraphText(para))
 					if text == "" {
 						continue
 					}
-					p.applyParagraphFormatting(para, bodyRules)
+					p.applyParagraphFormatting(para, innerRules)
 				}
 			}
 		}
 	}
+}
+
+// chineseFontToEnglish 中文字体名 → 英文字体名映射
+var chineseFontToEnglish = map[string]string{
+	"宋体":   "SimSun",
+	"黑体":   "SimHei",
+	"楷体":   "KaiTi",
+	"仿宋":   "FangSong",
+	"微软雅黑": "Microsoft YaHei",
+	"新宋体":  "NSimSun",
+	"隶书":   "LiSu",
+	"幼圆":   "YouYuan",
+}
+
+// getEnglishFontName 获取中文字体的英文名（如果有映射则返回英文名，否则返回原名）
+func getEnglishFontName(chineseName string) string {
+	if en, ok := chineseFontToEnglish[chineseName]; ok {
+		return en
+	}
+	return chineseName
+}
+
+// applyTableFormattingWithSpec 使用模板 ParagraphFormatSpec 修正表格内文字格式
+// 只修改字体和字号，不动对齐/行距，保持表格原有排版
+func (p *EnhancedProcessor) applyTableFormattingWithSpec(doc *document.Document, bodySpec ParagraphFormatSpec, skipParas map[*wml.CT_P]bool) {
+	applier := NewAIFormatApplier(p)
+	// 表格内格式专用规范：固定宋体小四（12pt），不加粗
+	// 不依赖 bodySpec（bodySpec 经常被模板黑体/封面段落污染）
+	tableFont := bodySpec.FontEastAsia
+	if tableFont == "" || tableFont == "黑体" || tableFont == "SimHei" {
+		tableFont = "宋体"
+	}
+	tableSize := bodySpec.FontSizeHalfPt
+	if tableSize == 0 || tableSize > 28 {
+		tableSize = uint64(24) // 小四=12pt
+	}
+	tableSpec := ParagraphFormatSpec{
+		FontEastAsia:   tableFont,
+		FontAscii:      getEnglishFontName(tableFont),
+		FontSizeHalfPt: tableSize,
+		Bold:           false,
+	}
+	tableCount := 0
+	for _, table := range doc.Tables() {
+		rows := table.Rows()
+		if len(rows) < 2 {
+			continue
+		}
+		// 检查是否为封面/原创性声明表格
+		isCoverTable := false
+		for _, row := range rows {
+			for _, cell := range row.Cells() {
+				for _, para := range cell.Paragraphs() {
+					if skipParas[para.X()] {
+						isCoverTable = true
+						break
+					}
+				}
+				if isCoverTable {
+					break
+				}
+			}
+			if isCoverTable {
+				break
+			}
+		}
+		if isCoverTable {
+			continue
+		}
+		// 应用格式
+		for _, row := range rows {
+			for _, cell := range row.Cells() {
+				for _, para := range cell.Paragraphs() {
+					text := strings.TrimSpace(p.extractParagraphText(para))
+					if text == "" {
+						continue
+					}
+					applier.ApplyFontOnlyToTableCellPara(para, tableSpec)
+					tableCount++
+				}
+			}
+		}
+	}
+	log.Printf("[模板方案][步骤5] 表格内文字修正 %d 处 (font=%q size=%.1fpt)", tableCount, tableSpec.FontEastAsia, tableSpec.FontSizePt())
 }
 
 // isChineseFont 判断字体名是否为中文字体族
@@ -2272,7 +3224,13 @@ func (p *EnhancedProcessor) applyAbstractTitleFormatting(paragraphs []document.P
 }
 
 // applyAbstractFormatting 应用中文摘要正文格式
+// 如果段落以"摘要"开头，则对"摘要："标签和内容分别应用不同格式
 func (p *EnhancedProcessor) applyAbstractFormatting(paragraphs []document.Paragraph, rules map[string]interface{}) error {
+	labelRules := map[string]interface{}{
+		"font_name": "黑体",
+		"font_size": "小三",
+		"bold":      true,
+	}
 	contentRules := map[string]interface{}{
 		"font_name":         "宋体",
 		"font_size":         "小四",
@@ -2280,13 +3238,27 @@ func (p *EnhancedProcessor) applyAbstractFormatting(paragraphs []document.Paragr
 		"first_line_indent": "2",
 	}
 	if abstract, ok := rules["abstract"].(map[string]interface{}); ok {
+		if label, ok := abstract["label"].(map[string]interface{}); ok {
+			for k, v := range label {
+				labelRules[k] = v
+			}
+		}
 		if content, ok := abstract["content"].(map[string]interface{}); ok {
-			contentRules = content
+			for k, v := range content {
+				contentRules[k] = v
+			}
 		}
 	}
-	log.Printf("[摘要正文] 规则: font=%v size=%v align=%v", contentRules["font_name"], contentRules["font_size"], contentRules["alignment"])
+	log.Printf("[摘要正文] 标签规则: font=%v size=%v bold=%v", labelRules["font_name"], labelRules["font_size"], labelRules["bold"])
+	log.Printf("[摘要正文] 内容规则: font=%v size=%v align=%v", contentRules["font_name"], contentRules["font_size"], contentRules["alignment"])
 	for _, para := range paragraphs {
-		p.applyParagraphFormatting(para, contentRules)
+		text := p.extractParagraphText(para)
+		normalized := normalizeChineseText(text)
+		if strings.HasPrefix(normalized, "摘要") {
+			p.applyLabelContentParagraphFormatting(para, "摘要", labelRules, contentRules)
+		} else {
+			p.applyParagraphFormatting(para, contentRules)
+		}
 	}
 	return nil
 }
@@ -2425,6 +3397,91 @@ func (p *EnhancedProcessor) applyKeywordsParagraphFormatting(para document.Parag
 	p.setParagraphDefaultRPr(para, contentRules)
 }
 
+// applyLabelContentParagraphFormatting 通用的标签+内容分段格式化
+// 用于摘要("摘要：xxx")、英文摘要("Abstract: xxx")等段落
+func (p *EnhancedProcessor) applyLabelContentParagraphFormatting(para document.Paragraph, labelPrefix string, labelRules, contentRules map[string]interface{}) {
+	paraProps := para.Properties()
+
+	if pPr := para.X().PPr; pPr != nil && pPr.PStyle != nil {
+		pPr.PStyle = nil
+	}
+	for _, run := range para.Runs() {
+		if rPr := run.X().RPr; rPr != nil && rPr.RStyle != nil {
+			rPr.RStyle = nil
+		}
+	}
+
+	alignment := ""
+	if a, ok := contentRules["alignment"].(string); ok {
+		alignment = a
+	}
+	if a, ok := labelRules["alignment"].(string); ok && a != "" {
+		alignment = a
+	}
+	switch alignment {
+	case "center":
+		paraProps.SetAlignment(wml.ST_JcCenter)
+	case "left":
+		paraProps.SetAlignment(wml.ST_JcLeft)
+	case "right":
+		paraProps.SetAlignment(wml.ST_JcRight)
+	case "justify":
+		paraProps.SetAlignment(wml.ST_JcBoth)
+	}
+
+	if lineSpaceRaw, ok := contentRules["line_space"]; ok {
+		p.applyLineSpacingToParagraph(para, lineSpaceRaw)
+	} else if lineSpaceRaw, ok := labelRules["line_space"]; ok {
+		p.applyLineSpacingToParagraph(para, lineSpaceRaw)
+	}
+
+	if fli := contentRules["first_line_indent"]; fli != nil {
+		var indentChars float64
+		switch v := fli.(type) {
+		case float64:
+			indentChars = v
+		case string:
+			indentChars = p.parseFirstLineIndentChars(v)
+		}
+		if indentChars > 0 {
+			fontSize := p.resolveActualFontSizePt(contentRules)
+			indentPt := indentChars * fontSize
+			paraProps.SetFirstLineIndent(measurement.Distance(indentPt) * measurement.Point)
+		}
+	}
+
+	labelEnded := false
+	for _, run := range para.Runs() {
+		text := run.Text()
+		if !labelEnded {
+			if idx := findLabelEnd(text, labelPrefix); idx >= 0 {
+				labelEnded = true
+				if idx == len(text) {
+					p.applyRunFormatting(run, labelRules)
+				} else {
+					labelPart := text[:idx]
+					if float64(len([]rune(labelPart)))/float64(len([]rune(text))) >= 0.5 {
+						p.applyRunFormatting(run, labelRules)
+					} else {
+						p.applyRunFormatting(run, contentRules)
+					}
+				}
+			} else {
+				normalizedText := normalizeChineseText(text)
+				if strings.Contains(normalizedText, labelPrefix) || strings.Contains(strings.ToLower(normalizedText), strings.ToLower(labelPrefix)) {
+					p.applyRunFormatting(run, labelRules)
+				} else {
+					p.applyRunFormatting(run, labelRules)
+				}
+			}
+		} else {
+			p.applyRunFormatting(run, contentRules)
+		}
+	}
+
+	p.setParagraphDefaultRPr(para, contentRules)
+}
+
 // findLabelEnd 查找标签结束位置（含冒号），返回内容开始的 byte 索引，-1 表示未找到
 func findLabelEnd(text string, labelPrefix string) int {
 	idx := strings.Index(text, labelPrefix)
@@ -2550,11 +3607,19 @@ func (p *EnhancedProcessor) applyEnglishAbstractTitleFormatting(paragraphs []doc
 }
 
 // applyEnglishAbstractFormatting 应用英文摘要正文格式
+// 如果段落以"Abstract"开头，则对标签和内容分别应用不同格式
 func (p *EnhancedProcessor) applyEnglishAbstractFormatting(paragraphs []document.Paragraph, rules map[string]interface{}) error {
-	_, contentRules := resolveEnglishAbstractRules(rules)
-	log.Printf("[英文摘要正文] 规则: font=%v size=%v align=%v", contentRules["font_name"], contentRules["font_size"], contentRules["alignment"])
+	labelRules, contentRules := resolveEnglishAbstractRules(rules)
+	log.Printf("[英文摘要正文] 标签规则: font=%v size=%v bold=%v", labelRules["font_name"], labelRules["font_size"], labelRules["bold"])
+	log.Printf("[英文摘要正文] 内容规则: font=%v size=%v align=%v", contentRules["font_name"], contentRules["font_size"], contentRules["alignment"])
 	for _, para := range paragraphs {
-		p.applyParagraphFormatting(para, contentRules)
+		text := p.extractParagraphText(para)
+		textLower := strings.ToLower(strings.TrimSpace(text))
+		if strings.HasPrefix(textLower, "abstract") {
+			p.applyLabelContentParagraphFormatting(para, "Abstract", labelRules, contentRules)
+		} else {
+			p.applyParagraphFormatting(para, contentRules)
+		}
 	}
 	return nil
 }
@@ -2674,6 +3739,13 @@ func (p *EnhancedProcessor) applyParagraphFormatting(para document.Paragraph, ru
 	_ = p.extractParagraphText(para)
 
 	paraProps := para.Properties()
+
+	// 统一处理 new_page / page_break 属性 → w:pageBreakBefore
+	if np, ok := rules["new_page"].(bool); ok && np {
+		p.setPageBreakBefore(para)
+	} else if pb, ok := rules["page_break"].(bool); ok && pb {
+		p.setPageBreakBefore(para)
+	}
 
 	// 清除段落的 Word 内建样式引用（如 "Normal"、"Heading1" 等），
 	// 避免样式定义覆盖我们直接设置的格式。
@@ -2837,16 +3909,18 @@ applyOtherFormatting:
 		}
 		paraRPr := pPr.RPr
 
-		// 段落默认字体（全部四个字体槽，与 Run 级别保持一致）
+		// 段落默认字体：EastAsia 用中文名，Ascii/HAnsi/Cs 用英文名
 		if fontName, ok := rules["font_name"].(string); ok {
 			if paraRPr.RFonts == nil {
 				paraRPr.RFonts = wml.NewCT_Fonts()
 			}
-			fontNamePtr := p.getCachedFontName(fontName)
-			paraRPr.RFonts.EastAsiaAttr = fontNamePtr
-			paraRPr.RFonts.AsciiAttr = fontNamePtr
-			paraRPr.RFonts.HAnsiAttr = fontNamePtr
-			paraRPr.RFonts.CsAttr = fontNamePtr
+			eastAsiaPtr := p.getCachedFontName(fontName)
+			englishName := getEnglishFontName(fontName)
+			asciiPtr := p.getCachedFontName(englishName)
+			paraRPr.RFonts.EastAsiaAttr = eastAsiaPtr
+			paraRPr.RFonts.AsciiAttr = asciiPtr
+			paraRPr.RFonts.HAnsiAttr = asciiPtr
+			paraRPr.RFonts.CsAttr = asciiPtr
 		}
 		if latinFont, ok := rules["font_name_latin"].(string); ok && latinFont != "" {
 			if paraRPr.RFonts == nil {
@@ -2901,13 +3975,14 @@ func (p *EnhancedProcessor) applyRunFormatting(run document.Run, rules map[strin
 		if rPr.RFonts == nil {
 			rPr.RFonts = wml.NewCT_Fonts()
 		}
-		fontNamePtr := p.getCachedFontName(fontName)
-
-		// 直接操作 XML 属性，不走 SetFontFamily（后者在某些 unioffice 版本对中文字体处理不完善）
-		rPr.RFonts.EastAsiaAttr = fontNamePtr
-		rPr.RFonts.AsciiAttr = fontNamePtr
-		rPr.RFonts.HAnsiAttr = fontNamePtr
-		rPr.RFonts.CsAttr = fontNamePtr
+		// EastAsia 用中文名，Ascii/HAnsi/Cs 用英文名，避免 WPS 显示 "黑体;SimHei"
+		eastAsiaPtr := p.getCachedFontName(fontName)
+		englishName := getEnglishFontName(fontName)
+		asciiPtr := p.getCachedFontName(englishName)
+		rPr.RFonts.EastAsiaAttr = eastAsiaPtr
+		rPr.RFonts.AsciiAttr = asciiPtr
+		rPr.RFonts.HAnsiAttr = asciiPtr
+		rPr.RFonts.CsAttr = asciiPtr
 	}
 
 	// 可选：单独指定西文字体（如正文中"宋体+Times New Roman"双字体方案）
@@ -3252,4 +4327,197 @@ func (p *EnhancedProcessor) ExtractHeadings(ctx context.Context, docPath string)
 func (p *EnhancedProcessor) ExtractParagraphs(ctx context.Context, docPath string) ([]map[string]interface{}, error) {
 	// 基本实现，可以根据需要扩展
 	return []map[string]interface{}{}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Exported wrappers for template filler integration
+// ---------------------------------------------------------------------------
+
+// OpenDocument opens a DOCX file and returns the unioffice document.
+func OpenDocument(docPath string) (*document.Document, error) {
+	return document.Open(docPath)
+}
+
+// ClassifyParagraphsExport exposes the classification logic for external callers.
+func (p *EnhancedProcessor) ClassifyParagraphsExport(paragraphs []document.Paragraph) map[string][]document.Paragraph {
+	return p.classifyParagraphs(paragraphs)
+}
+
+// ExtractParagraphTextExport exposes paragraph text extraction for external callers.
+func (p *EnhancedProcessor) ExtractParagraphTextExport(para document.Paragraph) string {
+	return p.extractParagraphText(para)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 自动验证 + 自纠正循环
+// ═══════════════════════════════════════════════════════════════════════
+
+// verifyAndAutoFix 在格式修正完成后，逐段检查关键格式属性，发现偏差自动修正
+func (p *EnhancedProcessor) verifyAndAutoFix(doc *document.Document, rules map[string]interface{}) int {
+	log.Println("[验证] ================= 开始自动验证+纠正 =================")
+
+	classified := p.classifyParagraphs(doc.Paragraphs())
+	totalFixes := 0
+
+	type verifyTarget struct {
+		category string
+		getRules func() map[string]interface{}
+	}
+
+	// 定义需要验证的段落类别和对应规则的提取方式
+	targets := []verifyTarget{
+		{"body", func() map[string]interface{} {
+			if r, ok := rules["body"].(map[string]interface{}); ok {
+				return r
+			}
+			return nil
+		}},
+		{"title", func() map[string]interface{} {
+			if r, ok := rules["title"].(map[string]interface{}); ok {
+				return r
+			}
+			return nil
+		}},
+		{"references_title", func() map[string]interface{} {
+			for _, key := range []string{"references", "reference"} {
+				if ref, ok := rules[key].(map[string]interface{}); ok {
+					for _, sub := range []string{"label", "title"} {
+						if t, ok := ref[sub].(map[string]interface{}); ok {
+							return t
+						}
+					}
+				}
+			}
+			return nil
+		}},
+		{"acknowledgements_title", func() map[string]interface{} {
+			if ack, ok := rules["acknowledgements"].(map[string]interface{}); ok {
+				for _, sub := range []string{"label", "title"} {
+					if t, ok := ack[sub].(map[string]interface{}); ok {
+						return t
+					}
+				}
+			}
+			return nil
+		}},
+	}
+
+	for _, target := range targets {
+		paras, exists := classified[target.category]
+		if !exists || len(paras) == 0 {
+			continue
+		}
+		expectedRules := target.getRules()
+		if expectedRules == nil {
+			continue
+		}
+
+		for _, para := range paras {
+			fixes := p.verifyParagraphFormat(para, expectedRules, target.category)
+			totalFixes += fixes
+		}
+	}
+
+	log.Printf("[验证] ================= 验证完成，共纠正 %d 处 =================", totalFixes)
+	return totalFixes
+}
+
+// verifyParagraphFormat 验证单个段落的格式，发现偏差自动修正，返回修正数
+func (p *EnhancedProcessor) verifyParagraphFormat(para document.Paragraph, expectedRules map[string]interface{}, category string) int {
+	fixes := 0
+
+	// 跳过封面段落
+	text := strings.TrimSpace(p.extractParagraphText(para))
+	if text == "" {
+		return 0
+	}
+
+	// 检查每个 Run 的字体和字号
+	expectedFont, _ := expectedRules["font_name"].(string)
+	expectedSizePt := p.resolveActualFontSizePt(expectedRules)
+	expectedBold, hasBoldRule := expectedRules["bold"].(bool)
+
+	for _, run := range para.Runs() {
+		runText := run.Text()
+		if strings.TrimSpace(runText) == "" {
+			continue
+		}
+
+		rPr := run.X().RPr
+		if rPr == nil {
+			rPr = wml.NewCT_RPr()
+			run.X().RPr = rPr
+		}
+
+		// 验证字体
+		if expectedFont != "" {
+			actualEastAsia := ""
+			if rPr.RFonts != nil && rPr.RFonts.EastAsiaAttr != nil {
+				actualEastAsia = *rPr.RFonts.EastAsiaAttr
+			}
+			if actualEastAsia != expectedFont {
+				eastAsiaPtr := p.getCachedFontName(expectedFont)
+				englishName := getEnglishFontName(expectedFont)
+				asciiPtr := p.getCachedFontName(englishName)
+				if rPr.RFonts == nil {
+					rPr.RFonts = wml.NewCT_Fonts()
+				}
+				rPr.RFonts.EastAsiaAttr = eastAsiaPtr
+				rPr.RFonts.AsciiAttr = asciiPtr
+				rPr.RFonts.HAnsiAttr = asciiPtr
+				rPr.RFonts.CsAttr = asciiPtr
+				fixes++
+				if fixes <= 3 {
+					log.Printf("[验证修正] %s: 字体 %q→%q (text=%q)", category, actualEastAsia, expectedFont, truncText(runText, 20))
+				}
+			}
+		}
+
+		// 验证字号
+		if expectedSizePt > 0 {
+			expectedHalfPt := uint64(expectedSizePt * 2)
+			actualHalfPt := uint64(0)
+			if rPr.Sz != nil && rPr.Sz.ValAttr.ST_UnsignedDecimalNumber != nil {
+				actualHalfPt = *rPr.Sz.ValAttr.ST_UnsignedDecimalNumber
+			}
+			if actualHalfPt != expectedHalfPt {
+				rPr.Sz = wml.NewCT_HpsMeasure()
+				rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &expectedHalfPt
+				rPr.SzCs = wml.NewCT_HpsMeasure()
+				rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &expectedHalfPt
+				fixes++
+				if fixes <= 3 {
+					log.Printf("[验证修正] %s: 字号 %d→%d half-pt (text=%q)", category, actualHalfPt, expectedHalfPt, truncText(runText, 20))
+				}
+			}
+		}
+
+		// 验证加粗
+		if hasBoldRule {
+			actualBold := rPr.B != nil
+			if actualBold != expectedBold {
+				if expectedBold {
+					rPr.B = wml.NewCT_OnOff()
+					rPr.BCs = wml.NewCT_OnOff()
+				} else {
+					rPr.B = nil
+					rPr.BCs = nil
+				}
+				fixes++
+				if fixes <= 3 {
+					log.Printf("[验证修正] %s: 加粗 %v→%v (text=%q)", category, actualBold, expectedBold, truncText(runText, 20))
+				}
+			}
+		}
+	}
+
+	return fixes
+}
+
+func truncText(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes]) + "..."
+	}
+	return s
 }

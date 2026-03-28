@@ -22,6 +22,7 @@ import (
 	"github.com/paper-format-checker/backend/pkg/aiclassifier"
 	"github.com/paper-format-checker/backend/pkg/fileprocessor"
 	"github.com/paper-format-checker/backend/pkg/formatchecker"
+	"github.com/paper-format-checker/backend/pkg/templatefiller"
 	"gorm.io/gorm"
 )
 
@@ -271,20 +272,26 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 		}
 	}
 
-	processor := s.createSmartProcessor()
-
-	// 4. 淇鏂囨。
 	ctx := context.Background()
 	var fixedPath string
 	var fixErr error
 
-	// 浣跨敤澧炲己澶勭悊鍣ㄨ繘琛岀簿纭牸寮忎慨姝?
+	// 使用 EnhancedProcessor 修正格式
+	// 若模板有 golden_template_path，则使用AI模板直读方案（精确复制模板格式）
+	log.Printf("[FixFormat] templateID=%s GoldenTemplatePath=%q", template.ID, template.GoldenTemplatePath)
+	processor := s.createSmartProcessor()
+	if template.GoldenTemplatePath != "" {
+		processor.SetTemplatePath(template.GoldenTemplatePath)
+	} else {
+		log.Printf("[FixFormat] ⚠️  GoldenTemplatePath为空，将使用JSON规则方案")
+	}
+	correctionMap := map[string]interface{}{
+		"format_rules":       rulesMap,
+		"selected_issue_ids": selectedIssueIDs,
+		"fix_all":            options.FixAll || len(options.IssueIDs) == 0,
+	}
 	fixedPath, fixErr = processor.ApplyCorrections(ctx, paper.FilePath, []map[string]interface{}{
-		{
-			"format_rules":       rulesMap,
-			"selected_issue_ids": selectedIssueIDs,
-			"fix_all":            options.FixAll || len(options.IssueIDs) == 0,
-		},
+		correctionMap,
 	})
 	if fixErr != nil {
 		return nil, fmt.Errorf("failed to fix document: %v", fixErr)
@@ -292,12 +299,21 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 	if fixedPath == "" {
 		return nil, fmt.Errorf("failed to fix document: empty corrected file path")
 	}
-
-	// 5. 鏇存柊璁烘枃璁板綍
 	paper.CorrectedFilePath = fixedPath
 	paper.Status = "corrected"
 	if err := database.DB.Save(paper).Error; err != nil {
 		return nil, fmt.Errorf("failed to update paper record: %v", err)
+	}
+
+	// 保存差异报告到数据库
+	if report := processor.GetLastDiffReport(); report != nil {
+		if b, err2 := json.Marshal(report); err2 == nil {
+			database.DB.Model(&model.CheckResult{}).
+				Where("id = ?", checkResult.ID).
+				Update("diff_report", string(b))
+			log.Printf("[差异报告] 已保存到数据库，错误: %d 警告: %d",
+				report.ErrorCount, report.WarningCount)
+		}
 	}
 
 	return map[string]interface{}{
@@ -307,6 +323,189 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 		"applied_issue_count": len(selectedIssueIDs),
 		"fix_all":             options.FixAll || len(options.IssueIDs) == 0,
 	}, nil
+}
+
+// tryTemplateFill uses the Go OOXML template filling engine for high-accuracy correction.
+// Falls back to the legacy Python script if the Go engine fails.
+func (s PaperService) tryTemplateFill(ctx context.Context, inputPath, goldenTemplatePath string, rulesMap map[string]interface{}) (string, error) {
+	tf := templatefiller.NewTemplateFiller()
+
+	// Inject DeepSeek client for precise refinement
+	if s.config != nil && s.config.DeepSeek.Enabled && s.config.DeepSeek.Cookie != "" {
+		dsClient := aiclassifier.NewDeepSeekWebClient(s.config.DeepSeek.Cookie, s.config.DeepSeek.Bearer)
+		tf.DeepSeekClient = dsClient
+		log.Printf("[FixFormat] DeepSeek精确替换已启用")
+	}
+
+	// Prefer the prepared real-template-based golden template for maximum accuracy
+	preparedPath, prepErr := tf.EnsureGoldenTemplate("cqrwst")
+	if prepErr == nil && preparedPath != "" {
+		log.Printf("[FixFormat] using prepared golden template: %s", preparedPath)
+		goldenTemplatePath = preparedPath
+	} else if _, err := os.Stat(goldenTemplatePath); os.IsNotExist(err) {
+		log.Printf("[FixFormat] golden template not found at %s and no prepared template: %v", goldenTemplatePath, prepErr)
+		return "", fmt.Errorf("golden template not found: %s", goldenTemplatePath)
+	}
+
+	classification, err := s.classifyForTemplateFill(inputPath)
+	if err != nil {
+		return "", fmt.Errorf("classification failed: %w", err)
+	}
+
+	outputDir := filepath.Dir(inputPath)
+	return tf.Fill(ctx, inputPath, goldenTemplatePath, classification, outputDir)
+}
+
+// classifyForTemplateFill runs the SmartClassifier and produces a classification
+// result suitable for the OOXML template filler.
+//
+// Improvements over the legacy version:
+//   - Uses paragraph index (position) for matching, not text equality
+//   - Validates structural ordering (abstract before body, body before references)
+//   - Includes all paragraphs (even empty) to preserve accurate indices
+func (s PaperService) classifyForTemplateFill(docPath string) (templatefiller.ClassificationResult, error) {
+	result := templatefiller.ClassificationResult{}
+
+	processor := s.createSmartProcessor()
+	doc, err := fileprocessor.OpenDocument(docPath)
+	if err != nil {
+		return result, fmt.Errorf("failed to open document: %w", err)
+	}
+
+	paras := doc.Paragraphs()
+	classified := processor.ClassifyParagraphsExport(paras)
+
+	// Build an index-based lookup: paragraph index -> label.
+	// ClassifyParagraphsExport returns map[label][]Paragraph — we need to
+	// invert this to map[paragraphPointer]label for O(1) lookup.
+	type paraKey struct {
+		text  string
+		index int
+	}
+	paraLabels := make(map[int]string)
+
+	// First pass: build a text→indices map for the source paragraphs
+	paraTexts := make([]string, len(paras))
+	for i, para := range paras {
+		paraTexts[i] = processor.ExtractParagraphTextExport(para)
+	}
+
+	// For each classified label, find the matching paragraph indices
+	for label, labelParas := range classified {
+		for _, lp := range labelParas {
+			lpText := processor.ExtractParagraphTextExport(lp)
+			// Match by finding the paragraph in the original list at the same position
+			for i, para := range paras {
+				if &para == &lp {
+					paraLabels[i] = label
+					break
+				}
+			}
+			// Fallback: match by text + position (first unmatched occurrence)
+			if _, found := findByLabel(paraLabels, label); !found {
+				for i, t := range paraTexts {
+					if t == lpText && paraLabels[i] == "" {
+						paraLabels[i] = label
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Build result with all paragraphs, preserving indices
+	for i, para := range paras {
+		text := processor.ExtractParagraphTextExport(para)
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+
+		paraType := paraLabels[i]
+		if paraType == "" {
+			paraType = "body"
+		}
+
+		result.Paragraphs = append(result.Paragraphs, templatefiller.ClassificationParagraph{
+			Index: i,
+			Type:  paraType,
+			Text:  text,
+		})
+	}
+
+	// Structural validation: ensure correct ordering
+	result = validateClassificationOrder(result)
+
+	log.Printf("[ClassifyForTemplateFill] classified %d paragraphs from %s", len(result.Paragraphs), docPath)
+	return result, nil
+}
+
+// findByLabel checks if any entry in the map has the given label value.
+func findByLabel(m map[int]string, label string) (int, bool) {
+	for k, v := range m {
+		if v == label {
+			return k, true
+		}
+	}
+	return 0, false
+}
+
+// validateClassificationOrder ensures structural ordering is correct.
+// For example, abstract_title must come before body, references_title must come after body.
+func validateClassificationOrder(cls templatefiller.ClassificationResult) templatefiller.ClassificationResult {
+	type sectionBound struct {
+		firstIdx int
+		lastIdx  int
+	}
+	sections := make(map[string]*sectionBound)
+
+	for i, p := range cls.Paragraphs {
+		sType := mapToSectionGroup(p.Type)
+		if b, ok := sections[sType]; ok {
+			if i < b.firstIdx {
+				b.firstIdx = i
+			}
+			if i > b.lastIdx {
+				b.lastIdx = i
+			}
+		} else {
+			sections[sType] = &sectionBound{firstIdx: i, lastIdx: i}
+		}
+	}
+
+	// Expected order: cover < abstract < body < references < acknowledgements
+	expectedOrder := []string{"cover", "abstract", "body", "references", "acknowledgements"}
+	prevEnd := -1
+	for _, section := range expectedOrder {
+		b, ok := sections[section]
+		if !ok {
+			continue
+		}
+		if b.firstIdx < prevEnd {
+			log.Printf("[ClassifyValidation] warning: section '%s' starts at %d but previous section ended at %d — possible misclassification", section, b.firstIdx, prevEnd)
+		}
+		prevEnd = b.lastIdx
+	}
+
+	return cls
+}
+
+// mapToSectionGroup maps paragraph types to high-level section groups for validation.
+func mapToSectionGroup(paraType string) string {
+	switch paraType {
+	case "cover", "cover_title", "cover_subtitle", "cover_college", "cover_major",
+		"cover_grade", "cover_student_name", "cover_student_id", "cover_advisor", "cover_date":
+		return "cover"
+	case "abstract_title", "abstract", "keywords", "en_abstract_title", "en_abstract", "en_keywords":
+		return "abstract"
+	case "heading_1", "heading_2", "heading_3", "body":
+		return "body"
+	case "references_title", "references":
+		return "references"
+	case "acknowledgements_title", "acknowledgements":
+		return "acknowledgements"
+	default:
+		return "other"
+	}
 }
 
 func validateFixPaperFormatOptions(options FixPaperFormatOptions) error {
@@ -569,17 +768,20 @@ func (s PaperService) UploadPaper(userID uuid.UUID, title, description string, f
 			} else {
 
 				// 濡傛灉鏄洿鎺ョ粨鏋勶紝浣跨敤 ParseRequirementsToStandard 鍑芥暟
-				//standard := formatchecker.ParseRequirementsToStandard(rulesMap) // 浣跨敤鏍囧噯瑙ｆ瀽锛屼絾鐩存帴浣跨敤rulesMap
-				processor := s.createSmartProcessor()
-
 				ctx := context.Background()
-				// 浣跨敤澧炲己澶勭悊鍣ㄧ洿鎺ュ簲鐢ㄦ牸寮忚鍒?
-				correctedPath, err := processor.ApplyCorrections(ctx, filePath, []map[string]interface{}{
-					{"format_rules": rulesMap},
+				var correctedPath string
+				var corrErr error
+
+				// 使用 EnhancedProcessor 进行格式修正（模板直读方案）
+				processor := s.createSmartProcessor()
+				if template.GoldenTemplatePath != "" {
+					processor.SetTemplatePath(template.GoldenTemplatePath)
+				}
+				batchCorrMap := map[string]interface{}{"format_rules": rulesMap}
+				correctedPath, corrErr = processor.ApplyCorrections(ctx, filePath, []map[string]interface{}{
+					batchCorrMap,
 				})
-				if err != nil {
-				} else if correctedPath != "" {
-					// 鏇存柊璁烘枃璁板綍锛屼娇鐢ㄤ慨姝ｅ悗鐨勬枃浠?
+				if corrErr == nil && correctedPath != "" {
 					paper.FilePath = correctedPath
 					paper.Status = "corrected"
 					database.DB.Save(paper)
@@ -713,8 +915,12 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 				log.Println("========================================")
 
 				fp := s.createSmartProcessor()
+				if template.GoldenTemplatePath != "" {
+					fp.SetTemplatePath(template.GoldenTemplatePath)
+				}
+				retryCorrMap := map[string]interface{}{"format_rules": rulesMap}
 				newFilePath, err := fp.ApplyCorrections(context.Background(), paper.FilePath, []map[string]interface{}{
-					{"format_rules": rulesMap},
+					retryCorrMap,
 				})
 				if err == nil && newFilePath != "" {
 					paper.CorrectedFilePath = newFilePath

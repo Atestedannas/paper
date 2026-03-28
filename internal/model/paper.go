@@ -65,8 +65,9 @@ type CheckResult struct {
 	InfoCount    int `gorm:"not null;default:0" json:"info_count"`
 
 	// 详细结果（JSON格式存储）
-	Issues      string `gorm:"type:jsonb" json:"issues"`      // 问题详情JSON
-	Differences string `gorm:"type:jsonb" json:"differences"` // 格式差异JSON（用于生成差异对比）
+	Issues      string `gorm:"type:jsonb" json:"issues"`                   // 问题详情JSON
+	Differences string `gorm:"type:jsonb" json:"differences"`              // 格式差异JSON（用于生成差异对比）
+	DiffReport  string `gorm:"type:jsonb;default:'{}'" json:"diff_report"` // OOXML全量属性差异报告
 
 	Status    string    `gorm:"size:20;default:pending" json:"status"` // pending, processing, completed, failed
 	CreatedAt time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`

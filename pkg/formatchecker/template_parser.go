@@ -481,41 +481,129 @@ func (p *TemplateParser) ParseTemplateToFormatRules(templatePath string) (map[st
 	allParas := doc.Paragraphs()
 	classified := p.classifyParagraphs(allParas, sc)
 
+	// 标题
 	if info := classified["title"]; len(info) > 0 {
-		rules["title"] = p.paraInfoToRuleMap(info[0])
-	}
-	if info := classified["abstract"]; len(info) > 0 {
-		rules["abstract"] = p.paraInfoToRuleMap(info[0])
-	}
-	if info := classified["abstract_title"]; len(info) > 0 {
-		rules["abstract_title"] = p.paraInfoToRuleMap(info[0])
-	}
-	if info := classified["body"]; len(info) > 0 {
-		rules["body"] = p.paraInfoToRuleMap(info[0])
-	}
-	if info := classified["references"]; len(info) > 0 {
-		rules["references"] = p.paraInfoToRuleMap(info[0])
-	}
-	if info := classified["reference_title"]; len(info) > 0 {
-		rules["reference_title"] = p.paraInfoToRuleMap(info[0])
+		titleRules := p.paraInfoToRuleMap(info[0])
+		if sub := classified["subtitle"]; len(sub) > 0 {
+			titleRules["subtitle"] = p.paraInfoToRuleMap(sub[0])
+		}
+		rules["title"] = titleRules
 	}
 
+	// 各级标题
 	headingsMap := make(map[string]interface{})
-	for _, h := range classified["heading1"] {
-		headingsMap["level1"] = p.paraInfoToRuleMap(h)
-		break
-	}
-	for _, h := range classified["heading2"] {
-		headingsMap["level2"] = p.paraInfoToRuleMap(h)
-		break
-	}
-	for _, h := range classified["heading3"] {
-		headingsMap["level3"] = p.paraInfoToRuleMap(h)
-		break
+	for level := 1; level <= 4; level++ {
+		key := fmt.Sprintf("heading%d", level)
+		if h := classified[key]; len(h) > 0 {
+			headingsMap[fmt.Sprintf("level%d", level)] = p.paraInfoToRuleMap(h[0])
+		}
 	}
 	if len(headingsMap) > 0 {
 		rules["headings"] = headingsMap
 	}
+
+	// 摘要（标签+内容 run 级别提取）
+	if info := classified["abstract_title"]; len(info) > 0 {
+		abstractRules := map[string]interface{}{
+			"label": p.paraInfoToRuleMap(info[0]),
+		}
+		if content := classified["abstract"]; len(content) > 0 {
+			abstractRules["content"] = p.paraInfoToRuleMap(content[0])
+		}
+		rules["abstract"] = abstractRules
+	} else if info := classified["abstract"]; len(info) > 0 {
+		rules["abstract"] = map[string]interface{}{
+			"content": p.paraInfoToRuleMap(info[0]),
+		}
+	}
+
+	// 英文摘要
+	if info := classified["en_abstract_title"]; len(info) > 0 {
+		eaRules := map[string]interface{}{
+			"label": p.paraInfoToRuleMap(info[0]),
+		}
+		if content := classified["en_abstract"]; len(content) > 0 {
+			eaRules["content"] = p.paraInfoToRuleMap(content[0])
+		}
+		rules["english_abstract"] = eaRules
+	}
+
+	// 关键词
+	if info := classified["keywords"]; len(info) > 0 {
+		rules["keywords"] = map[string]interface{}{
+			"label": p.paraInfoToRuleMap(info[0]),
+		}
+	}
+	if info := classified["en_keywords"]; len(info) > 0 {
+		rules["english_keywords"] = map[string]interface{}{
+			"label": p.paraInfoToRuleMap(info[0]),
+		}
+	}
+
+	// 正文
+	if info := classified["body"]; len(info) > 0 {
+		rules["body"] = p.paraInfoToRuleMap(info[0])
+	}
+
+	// 参考文献
+	refRules := map[string]interface{}{}
+	if info := classified["reference_title"]; len(info) > 0 {
+		refRules["label"] = p.paraInfoToRuleMap(info[0])
+	}
+	if info := classified["references"]; len(info) > 0 {
+		refRules["content"] = p.paraInfoToRuleMap(info[0])
+	}
+	if len(refRules) > 0 {
+		rules["references"] = refRules
+	}
+
+	// 致谢
+	if info := classified["acknowledgements_title"]; len(info) > 0 {
+		rules["acknowledgements"] = map[string]interface{}{
+			"label": p.paraInfoToRuleMap(info[0]),
+		}
+	}
+
+	// 附录
+	if info := classified["appendix_title"]; len(info) > 0 {
+		rules["appendix"] = map[string]interface{}{
+			"label": p.paraInfoToRuleMap(info[0]),
+		}
+	}
+
+	// 注释
+	if info := classified["notes_title"]; len(info) > 0 {
+		rules["notes"] = map[string]interface{}{
+			"label": p.paraInfoToRuleMap(info[0]),
+		}
+	}
+
+	// 目录
+	tocRules := map[string]interface{}{}
+	if info := classified["toc_title"]; len(info) > 0 {
+		tocRules["title"] = p.paraInfoToRuleMap(info[0])
+	}
+	if info := classified["table_of_contents"]; len(info) > 0 {
+		tocRules["content"] = p.paraInfoToRuleMap(info[0])
+	}
+	if len(tocRules) > 0 {
+		rules["table_of_contents"] = tocRules
+	}
+
+	// 图表标题
+	if info := classified["figure_caption"]; len(info) > 0 {
+		rules["figure"] = map[string]interface{}{
+			"caption": p.paraInfoToRuleMap(info[0]),
+		}
+	}
+	if info := classified["table_caption"]; len(info) > 0 {
+		rules["table"] = map[string]interface{}{
+			"caption": p.paraInfoToRuleMap(info[0]),
+		}
+	}
+
+	// 页眉页脚内容提取
+	p.extractHeaderFooterRules(doc, sc, rules)
 
 	uniName := p.extractUniversityNameFromDoc(doc)
 	if uniName != "" {
@@ -589,6 +677,11 @@ func (p *TemplateParser) classifyParagraphs(paras []document.Paragraph, sc *docx
 	result := make(map[string][]paraInfo)
 	foundCategories := make(map[string]bool)
 
+	repeatableCategories := map[string]bool{
+		"body": true, "references": true, "table_of_contents": true,
+		"en_abstract": true, "abstract": true,
+	}
+
 	for i, para := range paras {
 		styleName := strings.TrimSpace(para.Style())
 		text := ""
@@ -605,7 +698,7 @@ func (p *TemplateParser) classifyParagraphs(paras []document.Paragraph, sc *docx
 			continue
 		}
 
-		if foundCategories[category] && category != "body" {
+		if foundCategories[category] && !repeatableCategories[category] {
 			continue
 		}
 		foundCategories[category] = true
@@ -620,23 +713,85 @@ func (p *TemplateParser) classifyParagraphs(paras []document.Paragraph, sc *docx
 func (p *TemplateParser) classifyParagraphCategory(styleName, text string, index, total int) string {
 	sn := strings.ToLower(styleName)
 	textLower := strings.ToLower(text)
+	normalized := normalizeChineseTextForParser(text)
 
+	// Word 样式名称优先（100% 可靠信号）
 	if sn == "title" || sn == "论文标题" {
 		return "title"
 	}
+	if sn == "heading 1" || sn == "标题 1" || sn == "heading1" {
+		return "heading1"
+	}
+	if sn == "heading 2" || sn == "标题 2" || sn == "heading2" {
+		return "heading2"
+	}
+	if sn == "heading 3" || sn == "标题 3" || sn == "heading3" {
+		return "heading3"
+	}
+	if sn == "heading 4" || sn == "标题 4" || sn == "heading4" {
+		return "heading4"
+	}
+	if sn == "toc 1" || sn == "toc 2" || sn == "toc 3" || strings.HasPrefix(sn, "目录") {
+		return "table_of_contents"
+	}
+
+	// 首段通常是标题
 	if index == 0 && len(text) > 2 && len(text) < 80 {
 		return "title"
 	}
 
-	if strings.Contains(textLower, "摘要") || strings.Contains(textLower, "abstract") {
-		if len(text) < 10 {
+	// 副标题（以——开头）
+	trimmed := strings.TrimSpace(text)
+	if (strings.HasPrefix(trimmed, "——") || strings.HasPrefix(trimmed, "—")) && len([]rune(trimmed)) < 50 {
+		return "subtitle"
+	}
+
+	// 目录标题
+	if (normalized == "目录" || normalized == "目  录") && len([]rune(text)) < 10 {
+		return "toc_title"
+	}
+
+	// 摘要
+	if strings.Contains(normalized, "摘要") {
+		if len([]rune(normalized)) < 20 {
 			return "abstract_title"
 		}
 		return "abstract"
 	}
 
+	// 英文摘要
+	hasChinese := false
+	for _, r := range text {
+		if r >= 0x4e00 && r <= 0x9fff {
+			hasChinese = true
+			break
+		}
+	}
+	if strings.Contains(textLower, "abstract") && !hasChinese {
+		if len(text) < 30 {
+			return "en_abstract_title"
+		}
+		return "en_abstract"
+	}
+
+	// 关键词
+	if strings.Contains(normalized, "关键词") || strings.Contains(normalized, "关键字") {
+		return "keywords"
+	}
+	if (strings.Contains(textLower, "keywords") || strings.Contains(textLower, "key words")) && !hasChinese {
+		return "en_keywords"
+	}
+
+	// 致谢
+	noSpaceNorm := strings.ReplaceAll(normalized, " ", "")
+	noSpaceNorm = strings.ReplaceAll(noSpaceNorm, "\u3000", "")
+	if (noSpaceNorm == "致谢" || strings.Contains(normalized, "致谢")) && len([]rune(normalized)) < 10 {
+		return "acknowledgements_title"
+	}
+
+	// 参考文献
 	if strings.Contains(textLower, "参考文献") || strings.Contains(textLower, "references") {
-		if len(text) < 15 {
+		if len(text) < 20 {
 			return "reference_title"
 		}
 	}
@@ -644,17 +799,32 @@ func (p *TemplateParser) classifyParagraphCategory(styleName, text string, index
 		return "references"
 	}
 
-	level := classifyHeadingLevel(styleName, text)
-	if level == 1 {
-		return "heading1"
-	}
-	if level == 2 {
-		return "heading2"
-	}
-	if level == 3 {
-		return "heading3"
+	// 注释
+	if (noSpaceNorm == "注释" || noSpaceNorm == "注释：" || noSpaceNorm == "注释:") && len([]rune(normalized)) < 15 {
+		return "notes_title"
 	}
 
+	// 附录
+	if strings.Contains(normalized, "附录") && len([]rune(normalized)) < 20 {
+		return "appendix_title"
+	}
+
+	// 图标题
+	if matched, _ := regexp.MatchString(`^图\s*[\d]+[.\-][\d]+`, trimmed); matched {
+		return "figure_caption"
+	}
+	// 表标题
+	if matched, _ := regexp.MatchString(`^表\s*[\d]+[.\-][\d]+`, trimmed); matched {
+		return "table_caption"
+	}
+
+	// 标题级别
+	level := classifyHeadingLevel(styleName, text)
+	if level >= 1 && level <= 4 {
+		return fmt.Sprintf("heading%d", level)
+	}
+
+	// 正文
 	if sn == "normal" || sn == "正文" || sn == "" {
 		if len(text) > 30 {
 			return "body"
@@ -665,6 +835,15 @@ func (p *TemplateParser) classifyParagraphCategory(styleName, text string, index
 	}
 
 	return "unknown"
+}
+
+func normalizeChineseTextForParser(text string) string {
+	text = strings.TrimSpace(text)
+	if len([]rune(text)) < 30 {
+		text = strings.ReplaceAll(text, " ", "")
+		text = strings.ReplaceAll(text, "\u3000", "")
+	}
+	return text
 }
 
 // extractPageSetupRules builds the page_setup section of the rules map.
@@ -720,6 +899,67 @@ func (p *TemplateParser) extractPageSetupRules(doc *document.Document) map[strin
 	}
 
 	return setup
+}
+
+// extractHeaderFooterRules extracts header/footer text and formatting from the document.
+func (p *TemplateParser) extractHeaderFooterRules(doc *document.Document, sc *docxStyleCache, rules map[string]interface{}) {
+	for _, header := range doc.Headers() {
+		for _, hp := range header.Paragraphs() {
+			text := ""
+			for _, run := range hp.Runs() {
+				text += run.Text()
+			}
+			text = strings.TrimSpace(text)
+			if text == "" {
+				continue
+			}
+			headerRules := map[string]interface{}{
+				"content": text,
+			}
+			info := p.extractParaInfo(hp, sc)
+			if info.FontName != "" {
+				headerRules["font_name"] = info.FontName
+			}
+			if info.FontSize > 0 {
+				headerRules["font_size"] = fontPointsToChineseName(info.FontSize)
+			}
+			if info.Alignment != "" {
+				headerRules["alignment"] = info.Alignment
+			}
+			rules["header"] = headerRules
+			break
+		}
+		break
+	}
+
+	for _, footer := range doc.Footers() {
+		for _, fp := range footer.Paragraphs() {
+			text := ""
+			for _, run := range fp.Runs() {
+				text += run.Text()
+			}
+			text = strings.TrimSpace(text)
+			if text == "" {
+				continue
+			}
+			footerRules := map[string]interface{}{
+				"content": text,
+			}
+			info := p.extractParaInfo(fp, sc)
+			if info.FontName != "" {
+				footerRules["font_name"] = info.FontName
+			}
+			if info.FontSize > 0 {
+				footerRules["font_size"] = fontPointsToChineseName(info.FontSize)
+			}
+			if info.Alignment != "" {
+				footerRules["alignment"] = info.Alignment
+			}
+			rules["page_number"] = footerRules
+			break
+		}
+		break
+	}
 }
 
 // extractUniversityNameFromDoc tries to find a university name from headers and first-page text.
