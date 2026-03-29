@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"sync"
+
 	"rsc.io/pdf"
 
 	"gitee.com/greatmusicians/unioffice/document"
@@ -40,6 +42,12 @@ type PaperHandler struct {
 	settingService          service.SystemSettingService
 	config                  *config.Config
 }
+
+var (
+	processingQueue = make(chan struct{}, 1) // DeepSeek 单 cookie 限制并发为 1
+	queueMu         sync.Mutex
+	queueSize       int // 当前排队等待的数量
+)
 
 // NewPaperHandler 创建论文处理器实例
 func NewPaperHandler(config *config.Config) *PaperHandler {
@@ -157,15 +165,79 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 		return
 	}
 
-	// 执行后续处理（格式检查、修正等）
-	response, err := h.handlePostUploadProcessing(c, userID, paper, req)
-	if err != nil {
-		// 错误已经在handlePostUploadProcessing中处理
-		return
+	// 将论文状态标记为"处理中"，后台异步执行格式检查+修正
+	database.DB.Model(paper).Update("status", "processing")
+
+	// 异步排队处理格式检查和修正
+	queueMu.Lock()
+	queueSize++
+	pos := queueSize
+	queueMu.Unlock()
+	if pos > 1 {
+		log.Printf("[处理队列] paper %s 排队中（前方 %d 个任务）", paper.ID, pos-1)
 	}
 
-	// 返回统一的响应
-	utils.Created(c, response)
+	go func(uid interface{}, p *model.Paper, r UploadPaperRequest) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[异步处理] paper %s panic: %v", p.ID, rec)
+				database.DB.Model(p).Updates(map[string]interface{}{
+					"status":      "uploaded",
+					"parsed_info": fmt.Sprintf(`{"async_error":"%v"}`, rec),
+				})
+			}
+			<-processingQueue
+			queueMu.Lock()
+			queueSize--
+			queueMu.Unlock()
+		}()
+
+		processingQueue <- struct{}{}
+		log.Printf("[处理队列] paper %s 开始处理", p.ID)
+
+		// ── 快速路径：直接运行 V2 引擎（~200ms，跳过 5min+ 的 CheckPaperFormat）──
+		if r.TemplateID != 0 {
+			fixedPath, err := h.paperService.QuickV2Fix(p.FilePath, r.TemplateID)
+			if err == nil && fixedPath != "" {
+				database.DB.Model(p).Updates(map[string]interface{}{
+					"status":              "corrected",
+					"corrected_file_path": fixedPath,
+				})
+				log.Printf("[V2快速修正] paper %s 完成: %s", p.ID, fixedPath)
+				return
+			}
+			log.Printf("[V2快速修正] paper %s 失败: %v, 走传统流程", p.ID, err)
+		}
+
+		// ── 慢速回退：传统 Check+Fix 流程 ──
+		response, _ := h.handlePostUploadProcessing(nil, uid, p, r)
+		if response != nil {
+			if corrPath, ok := response["corrected_file_path"]; ok {
+				if pathStr, ok := corrPath.(string); ok && pathStr != "" {
+					database.DB.Model(p).Updates(map[string]interface{}{
+						"status":              "corrected",
+						"corrected_file_path": pathStr,
+					})
+					log.Printf("[处理队列] paper %s 处理完成（已修正）", p.ID)
+					return
+				}
+			}
+			if _, ok := response["check_result"]; ok {
+				database.DB.Model(p).Update("status", "checked")
+				log.Printf("[处理队列] paper %s 处理完成（已检查）", p.ID)
+				return
+			}
+		}
+		database.DB.Model(p).Update("status", "uploaded")
+		log.Printf("[处理队列] paper %s 处理完成（无结果）", p.ID)
+	}(userID, paper, req)
+
+	// 立即返回上传成功响应，前端轮询 GET /api/paper/:id 获取处理进度
+	utils.Created(c, gin.H{
+		"paper":   paper,
+		"message": "paper uploaded successfully, format processing started in background",
+		"status":  "processing",
+	})
 }
 
 // validateUploadRequest 验证上传请求参数
@@ -3503,29 +3575,20 @@ func (h *PaperHandler) FixByTemplate(c *gin.Context) {
 
 	// 如果有TemplateID，使用模板进行修正
 	if req.TemplateID != 0 {
-		// 查找该高校下的第一个激活模板
-		var template model.FormatTemplate
-		if err := database.DB.Where("university_id = ? AND is_active = ?", req.TemplateID, true).First(&template).Error; err != nil {
-			utils.BadRequest(c, "未找到该高校的格式模板: "+err.Error())
-			return
-		}
-
-		// 执行格式检查
-		checkResult, err = h.paperService.CheckPaperFormat(userID.(uuid.UUID), paper.ID, template.ID)
+		// 直接运行 V2 引擎（快速路径，~200ms）
+		fixedPath, err := h.paperService.QuickV2Fix(paper.FilePath, req.TemplateID)
 		if err != nil {
-			utils.InternalServerError(c, "格式检查失败: "+err.Error())
+			utils.InternalServerError(c, "V2格式修正失败: "+err.Error())
 			return
 		}
 
-		// 执行自动修正
-		fixResult, err = h.paperService.FixPaperFormat(userID.(uuid.UUID), paper.ID, checkResult.ID)
-		if err != nil {
-			utils.InternalServerError(c, "格式修正失败: "+err.Error())
-			return
-		}
+		paper.CorrectedFilePath = fixedPath
+		paper.Status = "corrected"
+		database.DB.Save(paper)
 
-		// 更新论文状态
-		database.DB.Model(&paper).Update("selected_template_id", template.ID)
+		fixResult = map[string]interface{}{
+			"corrected_file_path": fixedPath,
+		}
 	} else if req.FormatConfigJSON != "" {
 		// 如果没有TemplateID但有格式配置，使用配置进行修正
 		var requirements map[string]interface{}

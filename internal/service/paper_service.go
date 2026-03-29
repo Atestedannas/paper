@@ -161,6 +161,37 @@ func (s PaperService) CheckPaperFormat(userID, paperID, templateID uuid.UUID) (*
 	return result, nil
 }
 
+// QuickV2Fix 直接运行 V2 引擎修正格式（跳过 CheckPaperFormat，~200ms）
+func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (string, error) {
+	start := time.Now()
+	log.Printf("[QuickV2Fix] 开始: file=%s, universityID=%d", paperFilePath, universityID)
+
+	var template model.FormatTemplate
+	if err := database.DB.Preload("University").Where("university_id = ? AND is_active = ?", universityID, true).
+		First(&template).Error; err != nil {
+		return "", fmt.Errorf("no active template for university %d: %v", universityID, err)
+	}
+	log.Printf("[QuickV2Fix] 模板: %s, goldenPath=%q", template.Name, template.GoldenTemplatePath)
+
+	processor := s.createSmartProcessor()
+	if template.GoldenTemplatePath != "" {
+		processor.SetTemplatePath(template.GoldenTemplatePath)
+	}
+
+	var corrections []map[string]interface{}
+	if template.ID != uuid.Nil && template.University != nil {
+		if sid := fileprocessor.SchoolIDFromUniversityName(template.University.Name, template.University.Abbr); sid != "" {
+			corrections = []map[string]interface{}{{"school_id": sid}}
+			log.Printf("[QuickV2Fix] school_id=%s (StyleFormatter school spec)", sid)
+		}
+	}
+
+	ctx := context.Background()
+	result, err := processor.ApplyCorrectionsV2(ctx, paperFilePath, corrections)
+	log.Printf("[QuickV2Fix] 完成: result=%q, err=%v, 耗时=%v", result, err, time.Since(start))
+	return result, err
+}
+
 // FixPaperFormatByParsedRequirements 鏍规嵁瑙ｆ瀽鐨勮姹備慨澶嶈鏂囨牸寮?
 func (s PaperService) FixPaperFormatByParsedRequirements(userID, paperID uuid.UUID, requirements map[string]interface{}) (interface{}, error) {
 	// 鑾峰彇璁烘枃淇℃伅
@@ -250,9 +281,9 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 		return nil, fmt.Errorf("failed to update correction selection: %v", err)
 	}
 
-	// 2. 鑾峰彇鏍煎紡妯℃澘
+	// 2. 格式模板（需 University，以便 StyleFormatter 解析高校 *.spec.json / style_candidate_overrides）
 	var template model.FormatTemplate
-	if err := database.DB.Where("id = ?", checkResult.TemplateID).First(&template).Error; err != nil {
+	if err := database.DB.Preload("University").Where("id = ?", checkResult.TemplateID).First(&template).Error; err != nil {
 		return nil, fmt.Errorf("failed to get format template: %v", err)
 	}
 
@@ -290,7 +321,16 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 		"selected_issue_ids": selectedIssueIDs,
 		"fix_all":            options.FixAll || len(options.IssueIDs) == 0,
 	}
-	fixedPath, fixErr = processor.ApplyCorrections(ctx, paper.FilePath, []map[string]interface{}{
+	if template.ID != uuid.Nil {
+		if u := template.University; u != nil {
+			if sid := fileprocessor.SchoolIDFromUniversityName(u.Name, u.Abbr); sid != "" {
+				correctionMap["school_id"] = sid
+				log.Printf("[FixFormat] school_id=%s (for StyleFormatter school spec)", sid)
+			}
+		}
+	}
+	// V2引擎：确定性分类 + XML节点克隆（无AI调用，速度快，准确率高）
+	fixedPath, fixErr = processor.ApplyCorrectionsV2(ctx, paper.FilePath, []map[string]interface{}{
 		correctionMap,
 	})
 	if fixErr != nil {
@@ -748,47 +788,7 @@ func (s PaperService) UploadPaper(userID uuid.UUID, title, description string, f
 		return nil, fmt.Errorf("failed to save paper to database: %w", err)
 	}
 
-	// 濡傛灉鎻愪緵浜嗘牸寮忔爣鍑咺D锛屽垯绔嬪嵆搴旂敤鏍煎紡淇
-	if formatStandardID != uuid.Nil {
-		// 鑾峰彇鏍煎紡妯℃澘
-		var template model.FormatTemplate
-		if err := database.DB.Where("id = ?", formatStandardID).First(&template).Error; err != nil {
-		} else {
-			// 瑙ｆ瀽鏍煎紡瑙勫垯
-			var rulesMap map[string]interface{}
-			if err := json.Unmarshal([]byte(template.FormatRules), &rulesMap); err != nil {
-				// 灏濊瘯鍏堣В鏋愪负瀛楃涓诧紙澶勭悊鍙岄噸搴忓垪鍖栫殑鎯呭喌锛?
-				var jsonString string
-				if err2 := json.Unmarshal([]byte(template.FormatRules), &jsonString); err2 == nil {
-					if err3 := json.Unmarshal([]byte(jsonString), &rulesMap); err3 != nil {
-					} else {
-					}
-				} else {
-				}
-			} else {
-
-				// 濡傛灉鏄洿鎺ョ粨鏋勶紝浣跨敤 ParseRequirementsToStandard 鍑芥暟
-				ctx := context.Background()
-				var correctedPath string
-				var corrErr error
-
-				// 使用 EnhancedProcessor 进行格式修正（模板直读方案）
-				processor := s.createSmartProcessor()
-				if template.GoldenTemplatePath != "" {
-					processor.SetTemplatePath(template.GoldenTemplatePath)
-				}
-				batchCorrMap := map[string]interface{}{"format_rules": rulesMap}
-				correctedPath, corrErr = processor.ApplyCorrections(ctx, filePath, []map[string]interface{}{
-					batchCorrMap,
-				})
-				if corrErr == nil && correctedPath != "" {
-					paper.FilePath = correctedPath
-					paper.Status = "corrected"
-					database.DB.Save(paper)
-				}
-			}
-		}
-	}
+	// Format correction is handled asynchronously by the HTTP handler goroutine.
 
 	return paper, nil
 }
@@ -876,6 +876,14 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 		return standardPath, nil
 	}
 
+	// 优先检查 V2 corrected 文件
+	v2Path := filepath.Join(dir, "corrected", baseNoExt+"_v2_corrected"+ext)
+	if _, err := os.Stat(filepath.Clean(v2Path)); err == nil {
+		paper.CorrectedFilePath = v2Path
+		_ = database.DB.Save(paper).Error
+		return v2Path, nil
+	}
+
 	pattern := filepath.Join(dir, baseNoExt+"_corrected_*"+ext)
 	matches, _ := filepath.Glob(pattern)
 	if len(matches) > 0 {
@@ -900,7 +908,7 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 
 	if paper.SelectedTemplateID != nil {
 		var template model.FormatTemplate
-		if err := database.DB.Where("id = ?", *paper.SelectedTemplateID).First(&template).Error; err == nil {
+		if err := database.DB.Preload("University").Where("id = ?", *paper.SelectedTemplateID).First(&template).Error; err == nil {
 			var rulesMap map[string]interface{}
 			if err := json.Unmarshal([]byte(template.FormatRules), &rulesMap); err != nil {
 				var jsonString string
@@ -919,7 +927,14 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 					fp.SetTemplatePath(template.GoldenTemplatePath)
 				}
 				retryCorrMap := map[string]interface{}{"format_rules": rulesMap}
-				newFilePath, err := fp.ApplyCorrections(context.Background(), paper.FilePath, []map[string]interface{}{
+				if template.ID != uuid.Nil {
+					if u := template.University; u != nil {
+						if sid := fileprocessor.SchoolIDFromUniversityName(u.Name, u.Abbr); sid != "" {
+							retryCorrMap["school_id"] = sid
+						}
+					}
+				}
+				newFilePath, err := fp.ApplyCorrectionsV2(context.Background(), paper.FilePath, []map[string]interface{}{
 					retryCorrMap,
 				})
 				if err == nil && newFilePath != "" {
@@ -1230,7 +1245,12 @@ func convertDocToDocx(docPath string) (string, error) {
 	}
 	outDir := filepath.Dir(absPath)
 
-	cmd := exec.Command("soffice", "--headless", "--convert-to", "docx", "--outdir", outDir, absPath)
+	sofficePath, err := resolveSofficeBinary()
+	if err != nil {
+		return "", err
+	}
+
+	cmd := exec.Command(sofficePath, "--headless", "--convert-to", "docx", "--outdir", outDir, absPath)
 	cmd.Env = append(os.Environ(), "HOME=/tmp")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1245,4 +1265,38 @@ func convertDocToDocx(docPath string) (string, error) {
 
 	os.Remove(absPath)
 	return docxPath, nil
+}
+
+func resolveSofficeBinary() (string, error) {
+	// Highest priority: explicit override.
+	if custom := strings.TrimSpace(os.Getenv("SOFFICE_PATH")); custom != "" {
+		if _, err := os.Stat(custom); err == nil {
+			return custom, nil
+		}
+		return "", fmt.Errorf("SOFFICE_PATH is set but file does not exist: %s", custom)
+	}
+
+	// PATH lookup first (Linux/macOS/Windows if configured).
+	for _, candidate := range []string{"soffice", "soffice.exe"} {
+		if p, err := exec.LookPath(candidate); err == nil {
+			return p, nil
+		}
+	}
+
+	// Common Windows install paths (for local dev without PATH config).
+	commonWindowsPaths := []string{
+		`C:\Program Files\LibreOffice\program\soffice.exe`,
+		`C:\Program Files (x86)\LibreOffice\program\soffice.exe`,
+	}
+	for _, p := range commonWindowsPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+
+	return "", fmt.Errorf(
+		`soffice executable not found.
+Install LibreOffice and ensure soffice is available in PATH,
+or set SOFFICE_PATH to full executable path (e.g. C:\Program Files\LibreOffice\program\soffice.exe)`,
+	)
 }

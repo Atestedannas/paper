@@ -634,7 +634,7 @@ func (s *formatComparisonService) GetCheckResult(checkResultID uuid.UUID) (*mode
 func (s *formatComparisonService) GenerateCorrectedDocument(checkResultID uuid.UUID) (string, error) {
 	// 获取检查结果和模板
 	var checkResult model.CheckResult
-	if err := database.DB.Preload("Paper").Preload("Template").First(&checkResult, "id = ?", checkResultID).Error; err != nil {
+	if err := database.DB.Preload("Paper").Preload("Template.University").First(&checkResult, "id = ?", checkResultID).Error; err != nil {
 		return "", fmt.Errorf("检查结果不存在: %w", err)
 	}
 
@@ -650,9 +650,16 @@ func (s *formatComparisonService) GenerateCorrectedDocument(checkResultID uuid.U
 			"format_rules": rulesMap,
 		},
 	}
+	if checkResult.Template.ID != uuid.Nil {
+		if u := checkResult.Template.University; u != nil {
+			if sid := fileprocessor.SchoolIDFromUniversityName(u.Name, u.Abbr); sid != "" {
+				corrections[0]["school_id"] = sid
+			}
+		}
+	}
 
-	// 调用文件处理器应用修正
-	newFilePath, err := s.fileProcessor.ApplyCorrections(context.Background(), checkResult.Paper.FilePath, corrections)
+	// V2引擎：确定性分类 + XML节点克隆
+	newFilePath, err := s.fileProcessor.ApplyCorrectionsV2(context.Background(), checkResult.Paper.FilePath, corrections)
 	if err != nil {
 		return "", fmt.Errorf("生成修正文档失败: %w", err)
 	}

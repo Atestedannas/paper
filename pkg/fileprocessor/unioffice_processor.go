@@ -201,6 +201,11 @@ func (p *FourStageProcessor) ApplyCorrections(ctx context.Context, docPath strin
 	return finalOutputPath, nil
 }
 
+// ApplyCorrectionsV2 V2引擎入口（FourStageProcessor回退到普通ApplyCorrections）
+func (p *FourStageProcessor) ApplyCorrectionsV2(ctx context.Context, docPath string, corrections []map[string]interface{}) (string, error) {
+	return p.ApplyCorrections(ctx, docPath, corrections)
+}
+
 // stage1RequirementAnalysis 阶段1: 需求分析
 func (p *FourStageProcessor) stage1RequirementAnalysis(ctx context.Context, docPath string) StageResult {
 	stageStartTime := time.Now()

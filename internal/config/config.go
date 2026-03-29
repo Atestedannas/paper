@@ -24,6 +24,16 @@ type DeepSeekConfig struct {
 	RetrainThreshold    int    `mapstructure:"retrain_threshold"` // 累积多少样本后触发重训练
 }
 
+// FormatterConfig 格式修正引擎配置（python-docx 样式引用引擎）
+type FormatterConfig struct {
+	Enabled           bool   `mapstructure:"enabled"`
+	PythonBin         string `mapstructure:"python_bin"`
+	ScriptPath        string `mapstructure:"script_path"`
+	TimeoutSec        int    `mapstructure:"timeout"`
+	ValidateMaxRepair int    `mapstructure:"validate_max_repair"` // 验收失败后的自我修复轮数（0=只校验不修复）
+	SchoolSpecPath    string `mapstructure:"school_spec_path"`    // 可选：高校 *.spec.json 绝对路径
+}
+
 // Config 应用配置结构体
 type Config struct {
 	Server        ServerConfig        `mapstructure:"server"`
@@ -37,6 +47,7 @@ type Config struct {
 	Alipay        AlipayConfig        `mapstructure:"alipay"`
 	Payment       PaymentConfig       `mapstructure:"payment"`
 	DeepSeek      DeepSeekConfig      `mapstructure:"deepseek"`
+	Formatter     FormatterConfig     `mapstructure:"formatter"`
 }
 
 // RBACConfig RBAC 配置
@@ -439,6 +450,37 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 	if config.DeepSeek.RetrainThreshold == 0 {
 		config.DeepSeek.RetrainThreshold = 200
+	}
+
+	// 从环境变量加载 Formatter 配置
+	config.Formatter.Enabled = true // 默认启用
+	if formatterEnabled := os.Getenv("FORMATTER_ENABLED"); formatterEnabled != "" {
+		if v, err := strconv.ParseBool(formatterEnabled); err == nil {
+			config.Formatter.Enabled = v
+		}
+	}
+	if pythonBin := os.Getenv("FORMATTER_PYTHON_BIN"); pythonBin != "" {
+		config.Formatter.PythonBin = pythonBin
+	}
+	if scriptPath := os.Getenv("FORMATTER_SCRIPT_PATH"); scriptPath != "" {
+		config.Formatter.ScriptPath = scriptPath
+	}
+	if timeout := os.Getenv("FORMATTER_TIMEOUT"); timeout != "" {
+		if v, err := strconv.Atoi(timeout); err == nil {
+			config.Formatter.TimeoutSec = v
+		}
+	}
+	if config.Formatter.TimeoutSec == 0 {
+		config.Formatter.TimeoutSec = 120
+	}
+	config.Formatter.ValidateMaxRepair = 3
+	if vmr := os.Getenv("FORMATTER_VALIDATE_MAX_REPAIR"); vmr != "" {
+		if v, err := strconv.Atoi(vmr); err == nil {
+			config.Formatter.ValidateMaxRepair = v
+		}
+	}
+	if sp := os.Getenv("FORMATTER_SCHOOL_SPEC"); sp != "" {
+		config.Formatter.SchoolSpecPath = sp
 	}
 
 	return config, nil

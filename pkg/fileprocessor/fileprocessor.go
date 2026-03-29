@@ -20,6 +20,9 @@ type FileProcessor interface {
 
 	// ApplyCorrections 应用修正到文档
 	ApplyCorrections(ctx context.Context, docPath string, corrections []map[string]interface{}) (string, error)
+
+	// ApplyCorrectionsV2 V2引擎：确定性分类 + XML节点克隆
+	ApplyCorrectionsV2(ctx context.Context, docPath string, corrections []map[string]interface{}) (string, error)
 }
 
 // FileInfo 文档基本信息
@@ -73,6 +76,10 @@ func (p *BasicFileProcessor) ExtractParagraphs(ctx context.Context, docPath stri
 
 // ApplyCorrections 应用修正到文档
 func (p *BasicFileProcessor) ApplyCorrections(ctx context.Context, docPath string, corrections []map[string]interface{}) (string, error) {
-	// 委托给内部处理器实现
 	return p.processor.ApplyCorrections(ctx, docPath, corrections)
+}
+
+// ApplyCorrectionsV2 V2引擎
+func (p *BasicFileProcessor) ApplyCorrectionsV2(ctx context.Context, docPath string, corrections []map[string]interface{}) (string, error) {
+	return p.processor.ApplyCorrectionsV2(ctx, docPath, corrections)
 }

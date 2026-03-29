@@ -352,18 +352,22 @@ func (p *EnhancedProcessor) ApplyCorrections(ctx context.Context, docPath string
 // applyPreciseFormatting 应用精确格式修正
 func (p *EnhancedProcessor) applyPreciseFormatting(doc *document.Document, rules map[string]interface{}) error {
 
-	// 步骤 0: 修改样式定义
-	log.Println("[步骤0] ---- 修改 styles.xml 样式定义 ----")
-	p.applyStyleDefinitions(doc, rules)
-	log.Println("[步骤0] ---- 样式定义修改完成 ----")
+	// 步骤 0a: Section 级别格式（A4纸张、标准边距、双线页眉、页脚页码、三线表、上标等）
+	log.Println("[步骤0a] ---- 应用 Section 级别格式 ----")
+	p.ApplySectionLevelFormatting(doc)
 
-	// 步骤 1: 页面设置
+	// 步骤 0b: 修改样式定义
+	log.Println("[步骤0b] ---- 修改 styles.xml 样式定义 ----")
+	p.applyStyleDefinitions(doc, rules)
+	log.Println("[步骤0b] ---- 样式定义修改完成 ----")
+
+	// 步骤 1: 页面设置 (JSON覆盖)
 	log.Println("[步骤1] ---- 应用页面设置 ----")
 	if err := p.applyPageSetup(doc, rules); err != nil {
 		log.Printf("[步骤1] ⚠️  页面设置失败: %v", err)
 	}
 
-	// 步骤 1b: 页眉页脚 & 页码
+	// 步骤 1b: 页眉页脚 & 页码 (JSON覆盖)
 	log.Println("[步骤1b] ---- 应用页眉页脚和页码 ----")
 	if err := p.applyHeaderFooter(doc, rules); err != nil {
 		log.Printf("[步骤1b] ⚠️  页眉页脚设置失败: %v", err)
@@ -505,28 +509,9 @@ func (p *EnhancedProcessor) applyPreciseFormatting(doc *document.Document, rules
 		p.applyTableCaptionFormatting(tblCaptionParas, rules)
 	}
 
-	// 步骤 13: 封面 & 原创性声明跳过（不修改格式）
-	if coverParas, exists := classifiedParagraphs["cover"]; exists && len(coverParas) > 0 {
-		log.Printf("[步骤13] 跳过封面段落: %d 段（保持原样）", len(coverParas))
-	}
-	if origParas, exists := classifiedParagraphs["originality_declaration"]; exists && len(origParas) > 0 {
-		log.Printf("[步骤13] 跳过原创性声明段落: %d 段（保持原样）", len(origParas))
-	}
-
-	// 步骤 14: 表格内文字（排除封面和原创性声明的表格）
+	// 步骤 13: 表格内文字（全文应用，不再跳过封面/声明）
 	log.Println("[步骤14] ---- 应用表格内格式 ----")
-	coverParaSet := make(map[*wml.CT_P]bool)
-	if cps, ok := classifiedParagraphs["cover"]; ok {
-		for _, cp := range cps {
-			coverParaSet[cp.X()] = true
-		}
-	}
-	if ops, ok := classifiedParagraphs["originality_declaration"]; ok {
-		for _, op := range ops {
-			coverParaSet[op.X()] = true
-		}
-	}
-	p.applyTableFormatting(doc, rules, coverParaSet)
+	p.applyTableFormatting(doc, rules, map[*wml.CT_P]bool{})
 
 	return nil
 }
@@ -550,14 +535,18 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 	// 导致封面等跳过段落的字体被意外修改。模板模式通过 AIFormatApplier 直接写入 run-level rPr，
 	// 无需再改 styles.xml 层。
 
-	// 步骤 1: 页面设置（仍使用JSON规则）
-	log.Println("[模板方案][步骤1] 应用页面设置")
+	// 步骤 0: Section 级别格式（A4纸张、标准边距、双线页眉、页脚页码、三线表、上标等）
+	log.Println("[模板方案][步骤0] 应用 Section 级别格式")
+	p.ApplySectionLevelFormatting(doc)
+
+	// 步骤 1: 页面设置（JSON规则覆盖，如果有的话）
+	log.Println("[模板方案][步骤1] 应用页面设置(JSON覆盖)")
 	if err := p.applyPageSetup(doc, rules); err != nil {
 		log.Printf("[模板方案][步骤1] ⚠️  页面设置失败: %v", err)
 	}
 
-	// 步骤 1b: 页眉页脚&页码（仍使用JSON规则）
-	log.Println("[模板方案][步骤1b] 应用页眉页脚和页码")
+	// 步骤 1b: 页眉页脚&页码（JSON覆盖）
+	log.Println("[模板方案][步骤1b] 应用页眉页脚和页码(JSON覆盖)")
 	if err := p.applyHeaderFooter(doc, rules); err != nil {
 		log.Printf("[模板方案][步骤1b] ⚠️  页眉页脚设置失败: %v", err)
 	}
@@ -582,11 +571,8 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 	}
 
 	// 步骤 3: 使用AI格式应用器直接按模板规范修正
-	log.Printf("[模板方案][步骤3] 应用模板格式规范（%d种类型）", len(specs))
-	skipCategories := map[string]bool{
-		"cover":                   true,
-		"originality_declaration": true,
-	}
+	log.Printf("[模板方案][步骤3] 应用模板格式规范（%d种类型，全文含封面/声明）", len(specs))
+	skipCategories := map[string]bool{}
 	applier := NewAIFormatApplier(p)
 	totalFixed := applier.Apply(classified, specs, skipCategories)
 	log.Printf("[模板方案][步骤3] 共修正 %d 个段落", totalFixed)
@@ -650,16 +636,9 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 		}
 	}
 
-	// 步骤 5: 表格内文字格式（排除封面和原创性声明的表格）
+	// 步骤 5: 表格内文字格式（全文应用）
 	log.Println("[模板方案][步骤5] 应用表格内格式")
-	skipParaSet := make(map[*wml.CT_P]bool)
-	for _, cat := range []string{"cover", "originality_declaration"} {
-		if cps, ok := classified[cat]; ok {
-			for _, cp := range cps {
-				skipParaSet[cp.X()] = true
-			}
-		}
-	}
+	skipParaSet := map[*wml.CT_P]bool{}
 	// 如果有模板规范，用模板中 body 字体/字号覆盖表格内文字（保证一致性）
 	if bodySpec, ok := specs["body"]; ok && !bodySpec.IsEmpty() {
 		p.applyTableFormattingWithSpec(doc, bodySpec, skipParaSet)

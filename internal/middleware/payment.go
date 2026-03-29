@@ -62,6 +62,19 @@ func PaymentMiddleware(config *config.Config, serviceType ServiceType) gin.Handl
 		} else if price <= 0 {
 			isFree = true
 		}
+		if !isFree {
+			keyMap := map[ServiceType]string{
+				ServiceFormatFix:      "format_fix",
+				ServiceReportDownload: "report_download",
+				ServiceCompare:        "compare",
+				ServicePaperDownload:  "paper_download",
+			}
+			if k, ok := keyMap[serviceType]; ok {
+				if sp, ok2 := paymentConfig[k].(float64); ok2 && sp == 0 {
+					isFree = true
+				}
+			}
+		}
 
 		// 从上下文获取用户ID
 		userIDInterface, exists := c.Get("user_id")
@@ -140,12 +153,11 @@ func CheckUserPaymentStatus(userID uuid.UUID, serviceType ServiceType, price flo
 				isPaid = true // 管理员设置格式检查免费
 			}
 		}
-	case ServicePaperDownload:
-		fallthrough
-	case ServiceReportDownload:
-		fallthrough
-	case ServiceCompare:
-		// 对于这些服务，如果价格为0则免费
+	case ServiceFormatFix:
+		if servicePrice, ok := config["format_fix"].(float64); ok && servicePrice == 0 {
+			isPaid = true
+		}
+	case ServicePaperDownload, ServiceReportDownload, ServiceCompare:
 		var priceKey string
 		switch serviceType {
 		case ServicePaperDownload:
@@ -155,10 +167,8 @@ func CheckUserPaymentStatus(userID uuid.UUID, serviceType ServiceType, price flo
 		case ServiceCompare:
 			priceKey = "compare"
 		}
-		if servicePrice, ok := config[priceKey].(float64); ok {
-			if servicePrice == 0 {
-				isPaid = true // 价格为0则免费
-			}
+		if servicePrice, ok := config[priceKey].(float64); ok && servicePrice == 0 {
+			isPaid = true
 		}
 	}
 
