@@ -8,7 +8,6 @@ import (
 	"log"
 	"mime/multipart"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/pkg/aiclassifier"
+	"github.com/paper-format-checker/backend/pkg/docconvert"
 	"github.com/paper-format-checker/backend/pkg/fileprocessor"
 	"github.com/paper-format-checker/backend/pkg/formatchecker"
 	"github.com/paper-format-checker/backend/pkg/templatefiller"
@@ -750,9 +750,9 @@ func (s PaperService) UploadPaper(userID uuid.UUID, title, description string, f
 		return nil, fmt.Errorf("failed to save file: %w", err)
 	}
 
-	// .doc → .docx conversion via LibreOffice
+	// .doc → .docx (LibreOffice soffice, or Microsoft Word COM on Windows)
 	if fileType == "doc" {
-		docxPath, err := convertDocToDocx(filePath)
+		docxPath, err := docconvert.ConvertDocToDocx(filePath, true)
 		if err != nil {
 			os.Remove(filePath)
 			return nil, fmt.Errorf("failed to convert .doc to .docx: %w", err)
@@ -1234,69 +1234,4 @@ func normalizeReportType(reportType string) string {
 		return "correction-report"
 	}
 	return "report"
-}
-
-// convertDocToDocx uses LibreOffice (soffice) to convert a .doc file to .docx.
-// Returns the path to the converted .docx file.
-func convertDocToDocx(docPath string) (string, error) {
-	absPath, err := filepath.Abs(docPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve path: %w", err)
-	}
-	outDir := filepath.Dir(absPath)
-
-	sofficePath, err := resolveSofficeBinary()
-	if err != nil {
-		return "", err
-	}
-
-	cmd := exec.Command(sofficePath, "--headless", "--convert-to", "docx", "--outdir", outDir, absPath)
-	cmd.Env = append(os.Environ(), "HOME=/tmp")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("soffice conversion failed: %w, output: %s", err, string(output))
-	}
-
-	base := strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
-	docxPath := filepath.Join(outDir, base+".docx")
-	if _, err := os.Stat(docxPath); os.IsNotExist(err) {
-		return "", fmt.Errorf("conversion produced no output file, soffice output: %s", string(output))
-	}
-
-	os.Remove(absPath)
-	return docxPath, nil
-}
-
-func resolveSofficeBinary() (string, error) {
-	// Highest priority: explicit override.
-	if custom := strings.TrimSpace(os.Getenv("SOFFICE_PATH")); custom != "" {
-		if _, err := os.Stat(custom); err == nil {
-			return custom, nil
-		}
-		return "", fmt.Errorf("SOFFICE_PATH is set but file does not exist: %s", custom)
-	}
-
-	// PATH lookup first (Linux/macOS/Windows if configured).
-	for _, candidate := range []string{"soffice", "soffice.exe"} {
-		if p, err := exec.LookPath(candidate); err == nil {
-			return p, nil
-		}
-	}
-
-	// Common Windows install paths (for local dev without PATH config).
-	commonWindowsPaths := []string{
-		`C:\Program Files\LibreOffice\program\soffice.exe`,
-		`C:\Program Files (x86)\LibreOffice\program\soffice.exe`,
-	}
-	for _, p := range commonWindowsPaths {
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-
-	return "", fmt.Errorf(
-		`soffice executable not found.
-Install LibreOffice and ensure soffice is available in PATH,
-or set SOFFICE_PATH to full executable path (e.g. C:\Program Files\LibreOffice\program\soffice.exe)`,
-	)
 }

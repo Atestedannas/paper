@@ -528,6 +528,22 @@ func getStringFromCorrectionsList(corrections []map[string]interface{}, key stri
 	return ""
 }
 
+func getSchoolIDFromCorrectionsList(corrections []map[string]interface{}) string {
+	for _, c := range corrections {
+		if c == nil {
+			continue
+		}
+		if val, ok := c["school_id"]; ok {
+			if s, ok := val.(string); ok {
+				if t := strings.TrimSpace(s); t != "" {
+					return t
+				}
+			}
+		}
+	}
+	return ""
+}
+
 // applyTemplateFormatting 新方案：直接从模板OOXML格式规范应用格式
 // 步骤：页面设置/页眉页脚（保留JSON规则）→ AI分类 → 直接应用模板格式规范 → 表格格式
 func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rules map[string]interface{}, specs map[string]ParagraphFormatSpec) error {
