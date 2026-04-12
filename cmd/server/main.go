@@ -14,6 +14,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/config"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/handler"
+	"github.com/paper-format-checker/backend/internal/logger"
 	"github.com/paper-format-checker/backend/internal/middleware"
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
@@ -25,6 +26,9 @@ func main() {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
+	}
+	if err := logger.InitLogrusJSONFile(""); err != nil {
+		log.Printf("Warning: logrus JSON file init failed: %v", err)
 	}
 	log.Printf("RBAC model: %s", cfg.RBAC.Model)
 
@@ -233,6 +237,7 @@ func main() {
 			paper.POST("/upload-template", paperHandler.UploadTemplate)
 
 			// Paper upload and management
+			// POST /upload → PaperHandler.UploadPaper：multipart 上传论文文件，付费门闸、校验、落库后异步格式检查/修正
 			paper.POST("/upload", paperHandler.UploadPaper)
 
 			paper.GET("", paperHandler.GetPapers)
@@ -479,6 +484,7 @@ func main() {
 			paper.POST("/upload-template", paperHandler.UploadTemplate)
 
 			// Paper upload and management
+			// POST /upload → PaperHandler.UploadPaper：multipart 上传论文文件，付费门闸、校验、落库后异步格式检查/修正
 			paper.POST("/upload", paperHandler.UploadPaper)
 			paper.GET("", paperHandler.GetPapers)
 			paper.GET("/:id", paperHandler.GetPaper)
@@ -508,6 +514,7 @@ func main() {
 		// Compatible with frontend plural form paper routes
 		papers := apiV1.Group("/papers", middleware.AuthMiddleware(cfg, database.DB))
 		{
+			// POST /papers/upload → 与 /paper/upload 相同处理函数 UploadPaper
 			papers.POST("/upload", paperHandler.UploadPaper)
 			papers.GET("", paperHandler.GetPapers)
 			papers.GET("/:id", paperHandler.GetPaper)

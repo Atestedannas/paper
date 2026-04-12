@@ -41,4 +41,18 @@ fixme
 7.    使用unioffice   存在 摘要  目录 部分不能很好的识别 ！  然后 修改过后的存在 多行的空格！
 8.  使用go -> python  不能  好像没有修改格式！
 9. 二级标题  不能设置字体  大小  小四 小三   对齐方式 
-10. 
+10. MathJax
+    //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
+
+//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
+
+//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
+
+
+
+模态识别 + 规则引擎
+视觉感知（Computer Vision）： 将文档页面转为图片，利用布局分析模型（如 LayoutLM）识别出哪里是页眉、哪里是正文、哪里是参考文献。这模拟了人的“视觉识别”。
+
+语义理解（NLP）： 利用大模型（GPT-4o 或 DeepSeek）提取学校要求文档中的关键约束（如：一级标题黑体三号居中）。
+
+精确执行（DOM 操作）： 根据识别结果，定位到对应的 XML 节点进行参数强制重写。

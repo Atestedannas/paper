@@ -1872,6 +1872,7 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 	}
 	// 自动从封面解析学院/专业并注入页眉内容
 	coverInfo := p.extractCoverInfo(doc)
+
 	// 从班级字段提取入学年份（如"2022级护理学5班" → "2022"）
 	gradeYear := ""
 	if banJi, ok := coverInfo["班级"]; ok && banJi != "" {

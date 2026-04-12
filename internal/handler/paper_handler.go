@@ -1,36 +1,30 @@
 package handler
 
 import (
-	"archive/zip"
 	"encoding/json"
 	"fmt"
-	"io"
+	"gitee.com/greatmusicians/unioffice/document"
 	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"sync"
 
-	"rsc.io/pdf"
-
-	"gitee.com/greatmusicians/unioffice/document"
-	"github.com/EndFirstCorp/doc2txt"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/nguyenthenguyen/docx"
+	wzdoc "github.com/nineya/wordZero/pkg/document"
 	"github.com/paper-format-checker/backend/internal/config"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
 	"github.com/paper-format-checker/backend/internal/utils"
 	"github.com/paper-format-checker/backend/pkg/formatchecker"
+	"gorm.io/gorm"
 )
 
 // PaperHandler 论文处理器
@@ -90,238 +84,635 @@ type FormatFixRequest struct {
 	IssueIDs    []string  `json:"issue_ids" binding:"omitempty"`
 }
 
+// fixByTemplateRequest FixByTemplate 入参（支持 multipart 与 JSON）
+type fixByTemplateRequest struct {
+	TemplateID       int64  `form:"template_id" json:"template_id"`
+	FormatConfigJSON string `form:"format_config_json" json:"format_config_json"`
+}
+
 const maxIssueIDsPerRequest = 500
 
-// UploadPaper 上传论文
+// uploadPaperExposeDeepSeekRaw 为 true 时，上传成功响应里会多一个字段 deepseek_raw（模型去掉 ``` 围栏后的完整字符串），便于在浏览器 Network → 响应里查看。
+// 开启方式：环境变量 DEEPSEEK_DEBUG_RESPONSE=1/true，或 multipart 表单字段 debug_deepseek=1/true。长文 JSON 体积大，勿在生产长期开启。
+func uploadPaperExposeDeepSeekRaw(c *gin.Context) bool {
+	v := strings.TrimSpace(os.Getenv("DEEPSEEK_DEBUG_RESPONSE"))
+	if v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes") {
+		return true
+	}
+	d := strings.TrimSpace(c.PostForm("debug_deepseek"))
+	return d == "1" || strings.EqualFold(d, "true")
+}
+
+// formatTemplateGoldenOrFilePath 返回高校格式模板关联的范例 docx 路径（优先黄金模板），供与 DeepSeek 分段结果对照。
+func (h *PaperHandler) formatTemplateGoldenOrFilePath(paper *model.Paper, req UploadPaperRequest) string {
+	var tid uuid.UUID
+	if paper.SelectedTemplateID != nil {
+		tid = *paper.SelectedTemplateID
+	} else if req.FormatStandardID != uuid.Nil {
+		tid = req.FormatStandardID
+	} else {
+		return ""
+	}
+	var t model.FormatTemplate
+	if err := database.DB.Where("id = ?", tid).First(&t).Error; err != nil {
+		return ""
+	}
+	if p := strings.TrimSpace(t.GoldenTemplatePath); p != "" {
+		return p
+	}
+	return strings.TrimSpace(t.FilePath)
+}
+
+// UploadPaper 上传论文；后台异步格式修正经 paperService → ApplyCorrectionsV2，引擎由 pkg/formatengine 编译期常量控制（与 Handler 无直接耦合）。
 func (h *PaperHandler) UploadPaper(c *gin.Context) {
-	// 获取支付配置
 
-	paymentConfig, err := h.settingService.GetPaymentConfig()
-	if err != nil {
-		utils.InternalServerError(c, fmt.Sprintf("获取支付配置失败: %v", err))
+	// 付费/白名单校验；不通过时已写 HTTP 响应，此处直接返回
+	if !h.uploadPaperPaymentGateAllows(c) {
 		return
 	}
 
-	// 检查是否需要付费
-	isCheckFree, ok := paymentConfig["is_check_free"].(bool)
-	if !ok {
-		isCheckFree = true // 默认免费
-	}
-
-	// 如果需要付费，检查用户是否有权限
-	if !isCheckFree {
-		canUpload := false
-
-		// 1. 免费用户或管理员直接放行
-		if userObj, exists := c.Get("user"); exists {
-			if u, ok := userObj.(*model.User); ok {
-				if u.IsFreeUser || u.Role == "admin" {
-					canUpload = true
-				}
-			}
-		}
-
-		// 2. 检查用户是否有已支付的订单（payment_status=paid 且未过期）
-		if !canUpload {
-			if userID, exists := c.Get("user_id"); exists {
-				var paidCount int64
-				database.DB.Model(&model.Order{}).
-					Where("user_id = ? AND payment_status = ?", userID, "paid").
-					Count(&paidCount)
-				if paidCount > 0 {
-					canUpload = true
-				}
-			}
-		}
-
-		if !canUpload {
-			formatCheckPrice, _ := paymentConfig["format_check"].(float64)
-			formatFixPrice, _ := paymentConfig["format_fix"].(float64)
-
-			paymentInfo := gin.H{
-				"is_check_free":    isCheckFree,
-				"format_check":     formatCheckPrice,
-				"format_fix":       formatFixPrice,
-				"total_amount":     formatCheckPrice + formatFixPrice,
-				"payment_required": true,
-			}
-			paymentInfoJSON, _ := json.Marshal(paymentInfo)
-			utils.ErrorResponse(c, http.StatusPaymentRequired, "论文格式检查和修正需要付费", string(paymentInfoJSON))
-			return
-		}
-	}
-
-	// 验证和解析请求参数
+	// 解析表单、校验文件类型与大小，组装 UploadPaperRequest
 	userID, req, file, fileType, err := h.validateUploadRequest(c)
+	// 校验失败时 parseAndValidateUploadFile 等已写错误响应
 	if err != nil {
-		// 错误已经在validateUploadRequest中处理
 		return
 	}
 
-	// 处理文件上传
+	// 落盘文件并创建 paper 记录（multipart：file + title/description 等表单字段，不是 JSON 里的 paper 对象）
 	paper, err := h.performFileUpload(c, userID, req, file, fileType)
 	if err != nil {
-		// 错误已经在performFileUpload中处理
 		return
 	}
+	// 绑定高校模板，便于解析 GoldenTemplatePath / 格式标准
+	req = h.applyUniversityTemplateToUploadRequest(paper, req)
 
-	// 将论文状态标记为"处理中"，后台异步执行格式检查+修正
+	// 仅 doc/docx 可抽文本做结构分析；PDF 等跳过
+	var (
+		paperSections          []service.PaperSectionSegment
+		paperSectionsReady     bool
+		deepseekRawBody        string
+		segmentFormatHints     []service.PaperSegmentFormatHint
+		templateFormatsRawBody string
+		wordzeroOutPath        string
+	)
+	if fileType == "docx" || fileType == "doc" {
+		paperpath := filepath.Clean(paper.FilePath)
+		doc, derr := document.Open(paperpath)
+		if derr != nil {
+			log.Printf("[上传论文] 打开 docx 做章节抽取失败（不阻断上传）: %v", derr)
+		} else {
+			func() {
+				defer doc.Close()
+				var builder strings.Builder
+				for _, para := range doc.Paragraphs() {
+					var paraText string
+					for _, run := range para.Runs() {
+						paraText += run.Text()
+					}
+					if paraText != "" {
+						builder.WriteString(paraText)
+						builder.WriteString("\n")
+					}
+				}
+				for _, table := range doc.Tables() {
+					for _, row := range table.Rows() {
+						for _, cell := range row.Cells() {
+							for _, cellPara := range cell.Paragraphs() {
+								var cellText string
+								for _, run := range cellPara.Runs() {
+									cellText += run.Text()
+								}
+								if cellText != "" {
+									builder.WriteString(cellText)
+									builder.WriteString(" ")
+								}
+							}
+						}
+						builder.WriteString("\n")
+					}
+				}
+				formatSpecText := strings.TrimSpace(builder.String())
+				if formatSpecText == "" {
+					formatSpecText = strings.TrimSpace(req.Requirements)
+				}
+				if formatSpecText != "" {
+					sections, rawBody, aiErr := h.formatParserService.ParseFormatWithAI(formatSpecText, service.FormatAIPromptKindPaperSections)
+					deepseekRawBody = rawBody
+					if aiErr != nil {
+						log.Printf("[上传论文] 论文章节抽取未执行或失败（不阻断上传）: %v", aiErr)
+					} else if sections != nil {
+						if segs, ok := sections["segments"].([]service.PaperSectionSegment); ok {
+							paperSections = segs
+							paperSectionsReady = true
+							log.Printf("[上传论文] 论文章节抽取完成，segments %d 条", len(paperSections))
+						}
+					}
+				} else {
+					log.Printf("[上传论文] docx 提取与 requirements 均为空，跳过论文章节抽取")
+				}
+			}()
+		}
+	}
+
+	//  DeepSeek：对照模板论文版式，得到与学生稿 segments 一一对齐的 segment_formats（再交给 WordZero）
+	if paperSectionsReady && len(paperSections) > 0 {
+		tmplPath := h.formatTemplateGoldenOrFilePath(paper, req)
+		var tmplPlain string
+		if tmplPath != "" {
+			if t, err := h.extractTextFromDOCXRobust(tmplPath); err != nil {
+				log.Printf("[上传论文] 模板 docx 抽取文本失败（仍可用默认格式对齐）: %v", err)
+			} else {
+				tmplPlain = t
+			}
+		} else {
+			log.Printf("[上传论文] 未解析到模板文件路径（golden/file），segment_formats 使用按 key 默认对齐")
+		}
+		hints, rawTF, tfErr := h.formatParserService.ParseTemplateSegmentFormatsAI(tmplPlain, paperSections)
+		segmentFormatHints = hints
+		templateFormatsRawBody = rawTF
+		if tfErr != nil {
+			log.Printf("[上传论文] 模板分段格式 DeepSeek: %v", tfErr)
+		}
+	}
+
+	//  使用wordzero  和规则  和设计对应的规则来实现新的符合格式的.docx
+	//  按学生稿 segments 顺序写段；每段样式与 segment_formats 同下标一一对应（来自模板 DeepSeek 或默认）。
+	if paperSectionsReady && len(paperSections) > 0 && len(segmentFormatHints) == len(paperSections) {
+		doc := wzdoc.New()
+		if err := doc.SetPageMargins(25.4, 25.4, 25.4, 31.7); err != nil {
+			log.Printf("[上传论文] WordZero SetPageMargins: %v", err)
+		}
+		if err := doc.SetPageSize(wzdoc.PageSizeA4); err != nil {
+			log.Printf("[上传论文] WordZero SetPageSize: %v", err)
+		}
+		for _, seg := range paperSections {
+
+			switch seg.Key {
+			case "cover":
+				fullText := seg.Text
+				para := doc.AddParagraph(fullText)
+				para.AddFormattedText(fullText, &wzdoc.TextFormat{
+					FontFamily: "宋体",
+					FontSize:   18,
+					Bold:       false,
+					Italic:     false,
+					FontColor:  "000000",
+				})
+
+			case "abstract_cn":
+				// 处理中文摘要
+				para := doc.AddParagraph(seg.Text)
+				// 设置段落格式：首行缩进2字符、段后两行、1.5倍行距、两端对齐
+				para.SetSpacing(&wzdoc.SpacingConfig{
+					FirstLineIndent: 24,  // 小四号2字符≈24pt
+					AfterPara:       36,  // 段后两行（1.5倍行距下，两行=36pt）
+					LineSpacing:     1.5, // 1.5倍行距
+				})
+				para.SetAlignment(wzdoc.AlignJustify) // 两端对齐
+
+				// 添加“Abstract:”部分（Times New Roman 小三加粗）
+				para.AddFormattedText("Abstract: ", &wzdoc.TextFormat{
+					FontFamily: "Times New Roman",
+					FontSize:   15, // 小三号 = 15pt
+					Bold:       true,
+					FontColor:  "000000",
+				})
+
+				// 添加英文摘要内容（Times New Roman 小四号）
+				para.AddFormattedText(seg.Text, &wzdoc.TextFormat{
+					FontFamily: "Times New Roman",
+					FontSize:   12, // 小四号 = 12pt
+					Bold:       false,
+					FontColor:  "000000",
+				})
+			case "keywords_cn":
+				para := doc.AddParagraph(seg.Text)
+				// 设置段落格式：首行缩进2字符、1.5倍行距、段后两行
+				para.SetSpacing(&wzdoc.SpacingConfig{
+					FirstLineIndent: 24,  // 首行缩进2字符（小四号≈24pt）
+					LineSpacing:     1.5, // 1.5倍行距
+					AfterPara:       36,  // 段后两行（1.5倍行距下，两行=36pt）
+				})
+
+				// 添加“关键词：”标签（黑体小三加粗）
+				para.AddFormattedText("关键词：", &wzdoc.TextFormat{
+					FontFamily: "黑体", // 或 "SimHei"
+					FontSize:   15,   // 小三号 = 15pt
+					Bold:       true,
+					FontColor:  "000000",
+				})
+
+				// 添加关键词内容（宋体小四号，假设 seg.Text 已用中文分号分隔）
+				para.AddFormattedText(seg.Text, &wzdoc.TextFormat{
+					FontFamily: "宋体", // 或 "SimSun"
+					FontSize:   12,   // 小四号 = 12pt
+					Bold:       false,
+					FontColor:  "000000",
+				})
+
+			case "toc":
+				// 1. 添加“目录”标题
+				titlePara := doc.AddParagraph(seg.Text)
+				titlePara.AddFormattedText("目录", &wzdoc.TextFormat{
+					FontFamily: "黑体",
+					FontSize:   16, // 三号 = 16pt
+					Bold:       true,
+					FontColor:  "000000",
+				})
+				titlePara.SetAlignment(wzdoc.AlignCenter) // 居中
+				titlePara.SetSpacing(&wzdoc.SpacingConfig{
+					AfterPara: 24, // 段后2行（三号字下2行约48pt？此处取24pt合适，可按需调整）
+				})
+
+				// 2. 添加目录内容（自动生成 TOC 字段）
+				tocPara := doc.AddParagraph(seg.Text)
+				// 设置目录段落样式：宋体五号、1.5倍行距、两端对齐
+				tocPara.SetSpacing(&wzdoc.SpacingConfig{
+					LineSpacing: 1.5, // 1.5倍行距
+				})
+				tocPara.SetAlignment(wzdoc.AlignJustify) // 两端对齐
+
+			case "heading_1":
+				para := doc.AddParagraph(seg.Text)
+				// 设置段落对齐：顶格（左对齐）
+				para.SetAlignment(wzdoc.AlignLeft)
+
+				// 设置段落间距：段前24pt、段后24pt、1.5倍行距
+				para.SetSpacing(&wzdoc.SpacingConfig{
+					BeforePara:  24,  // 段前1行 ≈ 24pt
+					AfterPara:   24,  // 段后1行 ≈ 24pt
+					LineSpacing: 1.5, // 1.5倍行距
+				})
+
+				// 添加文本并应用字体格式
+				para.AddFormattedText(seg.Text, &wzdoc.TextFormat{
+					FontFamily: "宋体", // 或 "SimSun"
+					FontSize:   16,   // 三号 = 16pt
+					Bold:       true,
+					FontColor:  "000000", // 黑色
+				})
+			case "heading_2":
+				para := doc.AddParagraph(seg.Text)
+				// 左对齐（顶格）
+				para.SetAlignment(wzdoc.AlignLeft)
+
+				// 设置段落间距：1.5倍行距，段前段后均为0
+				para.SetSpacing(&wzdoc.SpacingConfig{
+					LineSpacing: 1.5, // 1.5倍行距
+					// BeforePara 和 AfterPara 不设置或设为0即无空行
+				})
+
+				// 添加文本并应用字体格式
+				para.AddFormattedText(seg.Text, &wzdoc.TextFormat{
+					FontFamily: "宋体", // 或 "SimSun"
+					FontSize:   15,   // 小三号 = 15pt
+					Bold:       true,
+					FontColor:  "000000",
+				})
+			case "heading_3":
+				para := doc.AddParagraph(seg.Text)
+
+				// 左对齐（顶格）
+				para.SetAlignment(wzdoc.AlignLeft)
+
+				// 设置段落间距：1.5倍行距，段前段后均为0（不设置即默认为0）
+				para.SetSpacing(&wzdoc.SpacingConfig{
+					LineSpacing: 1.5, // 1.5倍行距
+					// BeforePara 和 AfterPara 不写或写0均可
+				})
+
+				// 添加文本并应用字体格式
+				para.AddFormattedText(seg.Text, &wzdoc.TextFormat{
+					FontFamily: "宋体", // 或 "SimSun"
+					FontSize:   14,   // 四号 = 14pt
+					Bold:       true,
+					FontColor:  "000000",
+				})
+			case "body":
+				// 处理正文
+				para := doc.AddParagraph(seg.Text)
+				para.SetSpacing(&wzdoc.SpacingConfig{
+					FirstLineIndent: 24,
+					LineSpacing:     1.5,
+				})
+				para.SetAlignment(wzdoc.AlignJustify)
+
+				// 添加正文示例（带注释和引用）
+
+			}
+
+			//txt := strings.TrimSpace(seg.Text)
+			//if txt == "" {
+			//	continue
+			//}
+			//h := segmentFormatHints[k]
+			//tf := &wzdoc.TextFormat{
+			//	FontFamily: h.FontFamily,
+			//	FontSize:   h.FontSizePt,
+			//	Bold:       h.Bold,
+			//}
+			//para := doc.AddFormattedParagraph(txt, tf)
+			//para.SetSpacing(&wzdoc.SpacingConfig{
+			//	FirstLineIndent: h.FirstLineIndentPt,
+			//	LineSpacing:     h.LineSpacingMultiple,
+			//	BeforePara:      h.BeforeParaPt,
+			//	AfterPara:       h.AfterParaPt,
+			//})
+
+		}
+
+		// 与配置 UploadPath 一致（默认 ./uploads），勿用 \uploads\... —— 在 Windows 上会落到「当前盘符根目录」如 C:\uploads\...，不在项目里
+		dir := filepath.Join(filepath.Clean(h.config.File.UploadPath), "papers", "update")
+		outPath := filepath.Join(dir, fmt.Sprintf("thesis_wz_formatted_%s.docx", paper.ID.String()))
+		absOut, _ := filepath.Abs(outPath)
+		log.Printf("[上传论文] WordZero 将保存到: %s（相对: %s）", absOut, filepath.ToSlash(outPath))
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Printf("[上传论文] WordZero 创建输出目录失败: %v", err)
+		} else if err := doc.Save(outPath); err != nil {
+			log.Printf("[上传论文] WordZero Save 失败: %v", err)
+		} else {
+			wordzeroOutPath = filepath.ToSlash(outPath)
+			log.Printf("[上传论文] WordZero 已生成（segments+模板格式对齐）: %s", absOut)
+		}
+	} else if fileType == "docx" || fileType == "doc" {
+		// 便于排查：未进 WordZero 时也能在控制台看到原因（成功时不会走这里）
+		switch {
+		case !paperSectionsReady:
+			log.Printf("[上传论文] WordZero 未执行：学生稿 DeepSeek 分段未成功（paperSectionsReady=false）")
+		case len(paperSections) == 0:
+			log.Printf("[上传论文] WordZero 未执行：segments 为空")
+		case len(segmentFormatHints) != len(paperSections):
+			log.Printf("[上传论文] WordZero 未执行：section_formats 条数 %d 与 segments %d 不一致", len(segmentFormatHints), len(paperSections))
+		}
+	}
+
 	database.DB.Model(paper).Update("status", "processing")
 
-	// 异步排队处理格式检查和修正
-	queueMu.Lock()
-	queueSize++
-	pos := queueSize
-	queueMu.Unlock()
+	pos := h.bumpUploadPaperQueue()
 	if pos > 1 {
 		log.Printf("[处理队列] paper %s 排队中（前方 %d 个任务）", paper.ID, pos-1)
 	}
 
-	go func(uid interface{}, p *model.Paper, r UploadPaperRequest) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				log.Printf("[异步处理] paper %s panic: %v", p.ID, rec)
-				database.DB.Model(p).Updates(map[string]interface{}{
-					"status":      "uploaded",
-					"parsed_info": fmt.Sprintf(`{"async_error":"%v"}`, rec),
-				})
-			}
-			<-processingQueue
-			queueMu.Lock()
-			queueSize--
-			queueMu.Unlock()
-		}()
+	go h.runUploadPaperAsyncJob(userID, paper, req)
 
-		processingQueue <- struct{}{}
-		log.Printf("[处理队列] paper %s 开始处理", p.ID)
+	// 前端应使用 file_download_url + Authorization 下载原件；paper.file_path 为服务端相对路径，勿当地址栏直接打开
+	resp := gin.H{
+		"paper":             paper,
+		"file_download_url": fmt.Sprintf("/api/v1/papers/%s/file", paper.ID.String()),
+		"message":           "paper uploaded successfully, format processing started in background",
+		"status":            "processing",
+	}
+	if paperSectionsReady {
+		// 按论文阅读顺序的片段数组，便于客户端顺序拼接
+		resp["sections"] = paperSections
+	}
+	if len(segmentFormatHints) > 0 && len(segmentFormatHints) == len(paperSections) {
+		// 与 sections 按下标一一对应，供前端/WordZero 对照
+		resp["section_formats"] = segmentFormatHints
+	}
+	if uploadPaperExposeDeepSeekRaw(c) && deepseekRawBody != "" {
+		resp["deepseek_raw"] = deepseekRawBody
+	}
+	if uploadPaperExposeDeepSeekRaw(c) && templateFormatsRawBody != "" {
+		resp["template_formats_raw"] = templateFormatsRawBody
+	}
+	if wordzeroOutPath != "" {
+		resp["formatted_wz_docx"] = wordzeroOutPath
+	}
+	utils.Created(c, resp)
+}
 
-		// ── 快速路径：直接运行 V2 引擎（~200ms，跳过 5min+ 的 CheckPaperFormat）──
-		if r.TemplateID != 0 {
-			fixedPath, err := h.paperService.QuickV2Fix(p.FilePath, r.TemplateID)
-			if err == nil && fixedPath != "" {
-				database.DB.Model(p).Updates(map[string]interface{}{
-					"status":              "corrected",
-					"corrected_file_path": fixedPath,
-				})
-				log.Printf("[V2快速修正] paper %s 完成: %s", p.ID, fixedPath)
-				return
-			}
-			log.Printf("[V2快速修正] paper %s 失败: %v, 走传统流程", p.ID, err)
+// uploadPaperPaymentGateAllows 在已写响应时返回 false（调用方应直接 return）。
+func (h *PaperHandler) uploadPaperPaymentGateAllows(c *gin.Context) bool {
+	// 读取系统「是否免费检查」等支付相关配置
+	paymentConfig, err := h.settingService.GetPaymentConfig()
+	if err != nil {
+		utils.InternalServerError(c, fmt.Sprintf("获取支付配置失败: %v", err))
+		return false
+	}
+	// 配置项可能缺失或非 bool，缺省视为免费
+	isCheckFree, ok := paymentConfig["is_check_free"].(bool)
+	if !ok {
+		isCheckFree = true
+	}
+	// 免费开放则直接允许上传
+	if isCheckFree {
+		return true
+	}
+	// 收费模式下：免费用户/管理员/已有支付订单则放行
+	if h.uploadPaperUserHasPaidAccess(c) {
+		return true
+	}
+	// 否则返回 402 及价格信息 JSON
+	h.respondUploadPaperPaymentRequired(c, paymentConfig, isCheckFree)
+	return false
+}
+
+func (h *PaperHandler) uploadPaperUserHasPaidAccess(c *gin.Context) bool {
+	// 从 JWT/会话注入的 user 对象判断白名单角色
+	if userObj, exists := c.Get("user"); exists {
+		if u, ok := userObj.(*model.User); ok && (u.IsFreeUser || u.Role == "admin") {
+			return true // 免费用户或管理员免付费校验
 		}
+	}
+	// 无白名单则查是否有过已支付订单
+	if userID, exists := c.Get("user_id"); exists {
+		var paidCount int64
+		database.DB.Model(&model.Order{}).
+			Where("user_id = ? AND payment_status = ?", userID, "paid").
+			Count(&paidCount)
+		return paidCount > 0 // 至少一笔已支付即可上传
+	}
+	return false
+}
 
-		// ── 慢速回退：传统 Check+Fix 流程 ──
-		response, _ := h.handlePostUploadProcessing(nil, uid, p, r)
-		if response != nil {
-			if corrPath, ok := response["corrected_file_path"]; ok {
-				if pathStr, ok := corrPath.(string); ok && pathStr != "" {
-					database.DB.Model(p).Updates(map[string]interface{}{
-						"status":              "corrected",
-						"corrected_file_path": pathStr,
-					})
-					log.Printf("[处理队列] paper %s 处理完成（已修正）", p.ID)
-					return
-				}
-			}
-			if _, ok := response["check_result"]; ok {
-				database.DB.Model(p).Update("status", "checked")
-				log.Printf("[处理队列] paper %s 处理完成（已检查）", p.ID)
-				return
-			}
+func (h *PaperHandler) respondUploadPaperPaymentRequired(c *gin.Context, paymentConfig map[string]interface{}, isCheckFree bool) {
+	// 从配置读出检查价、修正价（类型断言失败时为 0）
+	formatCheckPrice, _ := paymentConfig["format_check"].(float64)
+	formatFixPrice, _ := paymentConfig["format_fix"].(float64)
+	// 前端可据此展示应付金额
+	paymentInfo := gin.H{
+		"is_check_free":    isCheckFree,                       // 与当前配置一致回传
+		"format_check":     formatCheckPrice,                  // 单项：格式检查
+		"format_fix":       formatFixPrice,                    // 单项：格式修正
+		"total_amount":     formatCheckPrice + formatFixPrice, // 合计参考价
+		"payment_required": true,                              // 明确需先付费
+	}
+	paymentInfoJSON, _ := json.Marshal(paymentInfo)
+	utils.ErrorResponse(c, http.StatusPaymentRequired, "论文格式检查和修正需要付费", string(paymentInfoJSON))
+}
+
+func (h *PaperHandler) bumpUploadPaperQueue() int {
+	queueMu.Lock()         // 保护全局 queueSize
+	defer queueMu.Unlock() // 函数任意返回路径都解锁
+	queueSize++            // 当前处于「已接受上传、可能排队/处理中」的任务数 +1
+	return queueSize       // 返回递增后的队列深度（含当前任务）
+}
+
+func (h *PaperHandler) runUploadPaperAsyncJob(uid interface{}, p *model.Paper, r UploadPaperRequest) {
+	defer func() {
+		// panic 时回写状态与错误摘要，避免记录永远卡在 processing
+		if rec := recover(); rec != nil {
+			log.Printf("[异步处理] paper %s panic: %v", p.ID, rec)
+			database.DB.Model(p).Updates(map[string]interface{}{
+				"status":      "uploaded",
+				"parsed_info": fmt.Sprintf(`{"async_error":"%v"}`, rec),
+			})
 		}
-		database.DB.Model(p).Update("status", "uploaded")
-		log.Printf("[处理队列] paper %s 处理完成（无结果）", p.ID)
-	}(userID, paper, req)
+		// 释放并发槽位并减小队列计数
+		<-processingQueue
+		queueMu.Lock()
+		queueSize--
+		queueMu.Unlock()
+	}()
 
-	// 立即返回上传成功响应，前端轮询 GET /api/paper/:id 获取处理进度
-	utils.Created(c, gin.H{
-		"paper":   paper,
-		"message": "paper uploaded successfully, format processing started in background",
-		"status":  "processing",
-	})
+	// 占用信号量，限制同时处理的论文数
+	processingQueue <- struct{}{}
+	log.Printf("[处理队列] paper %s 开始处理", p.ID)
+
+	// 有高校模板且 V2 快速修正成功则直接结束，不再走完整后处理
+	if r.TemplateID != 0 && h.tryQuickV2FixAfterUpload(p, r) {
+		return
+	}
+
+	// 格式检查、自动修正、对比报告等（c 传 nil 表示非 HTTP 请求上下文）
+	response, _ := h.handlePostUploadProcessing(nil, uid, p, r)
+	h.finalizeUploadPaperAsyncFromResponse(p, response)
+}
+
+func (h *PaperHandler) tryQuickV2FixAfterUpload(p *model.Paper, r UploadPaperRequest) bool {
+	// 尝试基于模板一键出修正稿路径
+	fixedPath, err := h.paperService.QuickV2Fix(p.FilePath, r.TemplateID)
+	if err == nil && fixedPath != "" {
+		database.DB.Model(p).Updates(map[string]interface{}{
+			"status":              "corrected",
+			"corrected_file_path": fixedPath,
+		})
+		return true
+	}
+
+	return false
+}
+
+func (h *PaperHandler) finalizeUploadPaperAsyncFromResponse(p *model.Paper, response gin.H) {
+	// 后处理未返回有效 map
+	if response == nil {
+		h.markUploadAsyncFinishedNoResult(p)
+		return
+	}
+	// 若响应里已有修正文件路径，标记为已修正
+	if corrPath, ok := response["corrected_file_path"]; ok {
+		if pathStr, ok := corrPath.(string); ok && pathStr != "" {
+			database.DB.Model(p).Updates(map[string]interface{}{
+				"status":              "corrected",
+				"corrected_file_path": pathStr,
+			})
+			log.Printf("[处理队列] paper %s 处理完成（已修正）", p.ID)
+			return
+		}
+	}
+	// 仅有检查结果无修正稿时标记为已检查
+	if _, ok := response["check_result"]; ok {
+		database.DB.Model(p).Update("status", "checked")
+		log.Printf("[处理队列] paper %s 处理完成（已检查）", p.ID)
+		return
+	}
+	h.markUploadAsyncFinishedNoResult(p)
+}
+
+func (h *PaperHandler) markUploadAsyncFinishedNoResult(p *model.Paper) {
+	database.DB.Model(p).Update("status", "uploaded")
+	log.Printf("[处理队列] paper %s 处理完成（无结果）", p.ID)
 }
 
 // validateUploadRequest 验证上传请求参数
 func (h *PaperHandler) validateUploadRequest(c *gin.Context) (interface{}, UploadPaperRequest, *multipart.FileHeader, string, error) {
-	// 从上下文获取用户ID
+	// 上传接口依赖鉴权中间件写入的 user_id
 	userID, _ := c.Get("user_id")
+	file, fileType, err := h.parseAndValidateUploadFile(c)
+	if err != nil {
+		return nil, UploadPaperRequest{}, nil, "", err
+	}
+	req := h.uploadRequestFromForm(c)
+	// 根据 template_id 或 format_standard_id 补全 FormatStandardID
+	h.attachUploadFormatStandardID(c, &req)
+	return userID, req, file, fileType, nil
+}
 
-	// 获取上传文件
+func (h *PaperHandler) parseAndValidateUploadFile(c *gin.Context) (*multipart.FileHeader, string, error) {
+	// multipart 中名为 file 的字段
 	file, err := c.FormFile("file")
 	if err != nil {
 		utils.BadRequest(c, "file is required")
-		return nil, UploadPaperRequest{}, nil, "", err
+		return nil, "", err
 	}
-
-	// 验证文件类型
+	// 统一小写扩展名便于分支判断
 	fileExt := strings.ToLower(filepath.Ext(file.Filename))
-	fileType := ""
+	var fileType string
 	switch fileExt {
 	case ".pdf":
-		fileType = "pdf"
+		fileType = "pdf" // PDF 仅检查/预览类流程
 	case ".docx":
-		fileType = "docx"
+		fileType = "docx" // 优先支持的 Word 格式
 	case ".doc":
-		fileType = "doc"
+		fileType = "doc" // 旧版 Word
 	default:
 		utils.BadRequest(c, "invalid file type, only pdf, doc and docx are allowed")
-		return nil, UploadPaperRequest{}, nil, "", fmt.Errorf("invalid file type")
+		return nil, "", fmt.Errorf("invalid file type")
 	}
-
-	// 验证文件大小
+	// 与配置中的 MaxSize 比较，超限则拒绝
 	if file.Size > h.config.File.MaxSize {
 		utils.BadRequest(c, "file size exceeds limit")
-		return nil, UploadPaperRequest{}, nil, "", fmt.Errorf("file size exceeds limit")
+		return nil, "", fmt.Errorf("file size exceeds limit")
 	}
+	return file, fileType, nil
+}
 
-	// 手动解析表单字段
-	req := UploadPaperRequest{
-		Title:        c.PostForm("title"),
-		Description:  c.PostForm("description"),
-		TemplateID:   parseInt64OrZero(c.PostForm("template_id")),
-		DocumentType: c.PostForm("document_type"),
-		Subject:      c.PostForm("subject"),
-		Requirements: c.PostForm("requirements"),
+func (h *PaperHandler) uploadRequestFromForm(c *gin.Context) UploadPaperRequest {
+	return UploadPaperRequest{
+		Title:        c.PostForm("title"),                         // 论文标题
+		Description:  c.PostForm("description"),                   // 说明
+		TemplateID:   parseInt64OrZero(c.PostForm("template_id")), // 高校/模板侧 ID（数字）
+		DocumentType: c.PostForm("document_type"),                 // 文档类型，如本科论文
+		Subject:      c.PostForm("subject"),                       // 学科
+		Requirements: c.PostForm("requirements"),                  // 原始格式要求文本（若有）
 	}
+}
 
-	// 如果提供了template_id，查找对应的格式标准ID
+func (h *PaperHandler) attachUploadFormatStandardID(c *gin.Context, req *UploadPaperRequest) {
 	if req.TemplateID != 0 {
 		var template model.FormatTemplate
-		if err := database.DB.Where("university_id = ? AND is_active = ? AND document_type = ?",
-			req.TemplateID, true,
-			func(dt string) string {
-				if dt == "" {
-					return "本科论文"
-				}
-				return dt
-			}(req.DocumentType)).First(&template).Error; err == nil {
-			req.FormatStandardID = template.ID
+		docType := req.DocumentType
+		if docType == "" {
+			docType = "本科论文" // 与模板查询默认文档类型一致
 		}
-	} else {
-		// 尝试解析format_standard_id
-		if formatStandardIDStr := c.PostForm("format_standard_id"); formatStandardIDStr != "" {
-			if formatStandardID, err := uuid.Parse(formatStandardIDStr); err == nil {
-				req.FormatStandardID = formatStandardID
-			}
+		if err := database.DB.Where("university_id = ? AND is_active = ? AND document_type = ?",
+			req.TemplateID, true, docType).First(&template).Error; err == nil {
+			req.FormatStandardID = template.ID // 后续检查/修正用标准 UUID
+		}
+		return // 已按 template 解析则不再读 format_standard_id
+	}
+	if formatStandardIDStr := c.PostForm("format_standard_id"); formatStandardIDStr != "" {
+		if formatStandardID, err := uuid.Parse(formatStandardIDStr); err == nil {
+			req.FormatStandardID = formatStandardID
 		}
 	}
-
-	return userID, req, file, fileType, nil
 }
 
 // 辅助函数：安全地解析int64
 func parseInt64OrZero(s string) int64 {
 	if s == "" {
-		return 0
+		return 0 // 缺省表单项视为 0
 	}
 	if val, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return val
 	}
-	return 0
+	return 0 // 非数字字符串不报错，避免上传因模板 ID 填错而整体失败
 }
 
 // performFileUpload 执行文件上传操作
 func (h *PaperHandler) performFileUpload(c *gin.Context, userID interface{}, req UploadPaperRequest, file *multipart.FileHeader, fileType string) (*model.Paper, error) {
-	// 处理文件上传
+	// Service 层负责存储路径、哈希与 DB 插入
 	paper, err := h.paperService.UploadPaper(
 		userID.(uuid.UUID),
 		req.Title,
@@ -336,142 +727,144 @@ func (h *PaperHandler) performFileUpload(c *gin.Context, userID interface{}, req
 		return nil, err
 	}
 
-	return paper, nil
+	return paper, nil // 成功则返回已持久化的 Paper 模型
 }
 
 // handlePostUploadProcessing 处理上传后的后续操作
 func (h *PaperHandler) handlePostUploadProcessing(c *gin.Context, userID interface{}, paper *model.Paper, req UploadPaperRequest) (gin.H, error) {
+	// 若带了高校 template_id，解析对应活跃模板并绑定到 paper
+	req = h.applyUniversityTemplateToUploadRequest(paper, req)
 
-	var checkResult *model.CheckResult
-	var err error
-
-	// 优先使用用户提供的FormatStandardID，如果没有则根据TemplateID查找
-	if req.TemplateID != 0 {
-		// 如果前端传递了高校ID但没有FormatStandardID，尝试根据高校ID查找对应的模板
-		var template model.FormatTemplate
-
-		query := database.DB.Where("university_id = ? AND is_active = ?", req.TemplateID, true)
-
-		// 如果指定了文档类型，增加过滤条件
-		if req.DocumentType != "" {
-			query = query.Where("document_type = ?", req.DocumentType)
-		} else {
-			// 默认查找本科论文
-			query = query.Where("document_type = ?", "本科论文")
-		}
-
-		// 如果指定了学科类别，增加过滤条件
-		if req.Subject != "" {
-			query = query.Where("subject = ?", req.Subject)
-		}
-
-		// 查找该高校下的符合条件的模板
-		if err := query.First(&template).Error; err == nil {
-			req.FormatStandardID = template.ID
-			// 更新paper记录中的SelectedTemplateID
-			paper.SelectedTemplateID = &template.ID
-			database.DB.Model(paper).Update("selected_template_id", template.ID)
-		} else {
-			// 如果带具体条件的没找到，尝试只按高校ID找一个兜底
-			if err := database.DB.Where("university_id = ? AND is_active = ?", req.TemplateID, true).First(&template).Error; err == nil {
-				req.FormatStandardID = template.ID
-				paper.SelectedTemplateID = &template.ID
-				database.DB.Model(paper).Update("selected_template_id", template.ID)
-			} else {
-				fmt.Printf("Warning: Could not find active template for university ID %d: %v\n", req.TemplateID, err)
-			}
-		}
-	}
-
-	// 根据是否有格式要求决定是否执行格式检查
 	if req.FormatStandardID != uuid.Nil {
-
-		// 使用标准模板进行格式检查
-		checkResult, err = h.paperService.CheckPaperFormat(userID.(uuid.UUID), paper.ID, req.FormatStandardID)
-		if err != nil {
-			// 格式检查失败，但仍返回上传成功的响应
-			response := gin.H{
-				"paper":   paper,
-				"message": "paper uploaded successfully, but format check failed",
-				"error":   fmt.Sprintf("failed to perform automatic format check: %v", err),
-			}
-			return response, nil
+		checkResult, early := h.checkPaperFormatForPostUpload(userID, paper, req.FormatStandardID)
+		// 检查失败时 early 非 nil，仍返回「上传成功」语义的结构体
+		if early != nil {
+			return early, nil
 		}
-	} else if req.ParsedRequirements != nil && len(req.ParsedRequirements) > 0 {
-		// 如果没有FormatStandardID但有ParsedRequirements，则使用解析的格式要求
-		fixResult, err := h.paperService.FixPaperFormatByParsedRequirements(userID.(uuid.UUID), paper.ID, req.ParsedRequirements)
-		if err != nil {
-			fmt.Printf("Fix by parsed requirements failed: %v\n", err)
-		}
-		// 返回修正结果，但不执行格式检查
-		response := gin.H{
-			"paper":   paper,
-			"message": "paper uploaded and format fix completed successfully",
-		}
-		if result, ok := fixResult.(map[string]interface{}); ok {
-			if path, exists := result["corrected_file_path"]; exists {
-				response["corrected_file_path"] = path
-				response["download_url"] = fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String())
-			}
-		}
-		return response, nil
+		return h.buildPostUploadResponseAfterCheck(userID, paper, checkResult), nil // 有格式标准：检查 + 可能自动修正
 	}
 
-	// 构建包含上传信息和格式检查结果的综合响应
+	if req.ParsedRequirements != nil && len(req.ParsedRequirements) > 0 {
+		return h.buildPostUploadResponseFromParsedRequirements(userID, paper, req), nil // 无标准 UUID 但有解析后的规则 JSON
+	}
+
+	return h.buildPostUploadResponseAfterCheck(userID, paper, nil), nil // 无标准也无解析规则：仅基础响应
+}
+
+// applyUniversityTemplateToUploadRequest 按高校 TemplateID 解析格式标准并写回 paper.selected_template_id。
+func (h *PaperHandler) applyUniversityTemplateToUploadRequest(paper *model.Paper, req UploadPaperRequest) UploadPaperRequest {
+	if req.TemplateID == 0 {
+		return req // 未选高校模板则跳过
+	}
+
+	var template model.FormatTemplate
+	query := database.DB.Where("university_id = ? AND is_active = ?", req.TemplateID, true)
+	if req.DocumentType != "" {
+		query = query.Where("document_type = ?", req.DocumentType)
+	} else {
+		query = query.Where("document_type = ?", "本科论文")
+	}
+	if req.Subject != "" {
+		query = query.Where("subject = ?", req.Subject)
+	}
+
+	if err := query.First(&template).Error; err == nil {
+		h.bindPaperToFormatTemplate(paper, &req, template)
+		return req
+	}
+
+	fallbackErr := database.DB.Where("university_id = ? AND is_active = ?", req.TemplateID, true).First(&template).Error
+	if fallbackErr == nil {
+		h.bindPaperToFormatTemplate(paper, &req, template) // 放宽学科/文档类型后的兜底模板
+		return req
+	}
+	fmt.Printf("Warning: Could not find active template for university ID %d: %v\n", req.TemplateID, fallbackErr)
+	return req
+}
+
+func (h *PaperHandler) bindPaperToFormatTemplate(paper *model.Paper, req *UploadPaperRequest, template model.FormatTemplate) {
+	req.FormatStandardID = template.ID
+	paper.SelectedTemplateID = &template.ID
+	database.DB.Model(paper).Update("selected_template_id", template.ID) // 持久化用户选用的模板
+}
+
+// checkPaperFormatForPostUpload 成功时返回 (result, nil)；检查失败时返回 (nil, 仍视为上传成功的 gin.H)。
+func (h *PaperHandler) checkPaperFormatForPostUpload(userID interface{}, paper *model.Paper, formatStandardID uuid.UUID) (*model.CheckResult, gin.H) {
+	checkResult, err := h.paperService.CheckPaperFormat(userID.(uuid.UUID), paper.ID, formatStandardID)
+	if err != nil {
+		// 检查异常不抛给客户端为 500，而是附带在 JSON 里说明上传已成功
+		return nil, gin.H{
+			"paper":   paper,
+			"message": "paper uploaded successfully, but format check failed",
+			"error":   fmt.Sprintf("failed to perform automatic format check: %v", err),
+		}
+	}
+	return checkResult, nil
+}
+
+func (h *PaperHandler) buildPostUploadResponseFromParsedRequirements(userID interface{}, paper *model.Paper, req UploadPaperRequest) gin.H {
+	fixResult, err := h.paperService.FixPaperFormatByParsedRequirements(userID.(uuid.UUID), paper.ID, req.ParsedRequirements)
+	if err != nil {
+		fmt.Printf("Fix by parsed requirements failed: %v\n", err)
+	}
+	response := gin.H{
+		"paper":   paper,
+		"message": "paper uploaded and format fix completed successfully",
+	}
+	if result, ok := fixResult.(map[string]interface{}); ok {
+		if path, exists := result["corrected_file_path"]; exists {
+			response["corrected_file_path"] = path
+			response["download_url"] = fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String()) // 供前端拉修正稿
+		}
+	}
+	return response
+}
+
+func (h *PaperHandler) buildPostUploadResponseAfterCheck(userID interface{}, paper *model.Paper, checkResult *model.CheckResult) gin.H {
 	response := gin.H{
 		"paper":        paper,
 		"check_result": checkResult,
 		"message":      "paper uploaded and format check completed successfully",
 	}
-
 	if checkResult != nil {
 		response["comparison_url"] = fmt.Sprintf("/api/v1/papers/%s/comparison/%s", paper.ID.String(), checkResult.ID.String())
 	} else {
-		response["comparison_url"] = ""
+		response["comparison_url"] = "" // 无检查记录则对比链接为空
 	}
+	h.appendPostUploadAutoFixAndComparison(response, userID, paper, checkResult)
+	return response
+}
 
-	// 自动修正并生成下载链接（只有在有检查结果且尚未修复时才进行修正）
-	if checkResult != nil {
-		// 检查论文是否已经被格式修复（状态为 "corrected" 表示已在上传时完成修复）
-		if paper.Status != "corrected" {
-			// 执行自动修正
-			fixResult, err := h.paperService.FixPaperFormat(userID.(uuid.UUID), paper.ID, checkResult.ID)
-			if err == nil {
-				// 如果修正成功，添加修正结果和下载链接
-				response["fix_result"] = fixResult
-				response["download_url"] = fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String())
+func (h *PaperHandler) appendPostUploadAutoFixAndComparison(response gin.H, userID interface{}, paper *model.Paper, checkResult *model.CheckResult) {
+	if checkResult == nil {
+		return
+	}
+	if paper.Status != "corrected" {
+		h.appendPostUploadAutoFixResult(response, userID, paper, checkResult)
+	} else {
+		fmt.Printf("Paper %s already corrected during upload, skipping duplicate fix\n", paper.ID.String())
+	}
+	if diffReport, err := h.formatComparisonService.GenerateFormatDifferences(checkResult.ID); err == nil {
+		response["format_comparison"] = diffReport // 结构化差异，供前端展示
+	}
+}
 
-				// 尝试获取修正后的文件路径
-				if result, ok := fixResult.(*service.CorrectionResult); ok && result != nil {
-					response["corrected_file_path"] = result.CorrectedFilePath
-				} else if resultMap, ok := fixResult.(map[string]interface{}); ok {
-					if path, exists := resultMap["corrected_file_path"]; exists {
-						response["corrected_file_path"] = path
-					}
-				}
-			} else {
-				// 记录修正错误
-				fmt.Printf("Auto fix failed: %v\n", err)
-				response["fix_error"] = err.Error()
-			}
-
-			// 生成格式差异报告
-			diffReport, err := h.formatComparisonService.GenerateFormatDifferences(checkResult.ID)
-			if err == nil {
-				response["format_comparison"] = diffReport
-			}
-		} else {
-			// 论文状态已经是 "corrected"，说明已在上传时完成修复，跳过重复修复
-			fmt.Printf("Paper %s already corrected during upload, skipping duplicate fix\n", paper.ID.String())
-			// 仍然生成格式差异报告
-			diffReport, err := h.formatComparisonService.GenerateFormatDifferences(checkResult.ID)
-			if err == nil {
-				response["format_comparison"] = diffReport
-			}
+func (h *PaperHandler) appendPostUploadAutoFixResult(response gin.H, userID interface{}, paper *model.Paper, checkResult *model.CheckResult) {
+	fixResult, err := h.paperService.FixPaperFormat(userID.(uuid.UUID), paper.ID, checkResult.ID)
+	if err != nil {
+		fmt.Printf("Auto fix failed: %v\n", err)
+		response["fix_error"] = err.Error()
+		return
+	}
+	response["fix_result"] = fixResult
+	response["download_url"] = fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String())
+	if result, ok := fixResult.(*service.CorrectionResult); ok && result != nil {
+		response["corrected_file_path"] = result.CorrectedFilePath
+	} else if resultMap, ok := fixResult.(map[string]interface{}); ok {
+		if path, exists := resultMap["corrected_file_path"]; exists {
+			response["corrected_file_path"] = path // 与 finalizeUploadPaperAsyncFromResponse 联动更新 DB
 		}
 	}
-
-	return response, nil
 }
 
 // GetPapers 获取用户的论文列表
@@ -583,50 +976,27 @@ func (h *PaperHandler) CheckFormat(c *gin.Context) {
 
 // FixFormat 修复论文格式
 func (h *PaperHandler) FixFormat(c *gin.Context) {
-	// 从上下文获取用户ID
 	userID, _ := c.Get("user_id")
-
-	// 获取论文ID
 	paperID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		utils.BadRequest(c, "invalid paper id")
 		return
 	}
-
-	// 解析请求参数
-	var req FormatFixRequest
-	// 设置默认值
-	req.PaperID = paperID
-	if err := c.ShouldBindJSON(&req); err != nil {
+	req, err := bindFormatFixRequest(c, paperID)
+	if err != nil {
 		utils.BadRequest(c, err.Error())
 		return
 	}
-
-	// 如果请求中没有指定论文ID，使用URL中的ID
-	if req.PaperID == uuid.Nil {
-		req.PaperID = paperID
-	}
-	if req.PaperID != paperID {
-		utils.BadRequest(c, "paper_id in body must match url id")
-		return
-	}
-
 	normalizedIssueIDs, err := normalizeIssueIDs(req.IssueIDs)
 	if err != nil {
 		utils.BadRequest(c, err.Error())
 		return
 	}
-
-	if req.FixAll && len(normalizedIssueIDs) > 0 {
-		utils.BadRequest(c, "fix_all and issue_ids cannot be provided at the same time")
-		return
-	}
-	if !req.FixAll && len(normalizedIssueIDs) == 0 {
-		utils.BadRequest(c, "issue_ids is required when fix_all is false")
+	if err := validateFormatFixMode(req.FixAll, normalizedIssueIDs); err != nil {
+		utils.BadRequest(c, err.Error())
 		return
 	}
 
-	// 修复论文格式（支持按 issue 粒度）
 	fixResult, err := h.paperService.FixPaperFormatWithOptions(
 		userID.(uuid.UUID),
 		req.PaperID,
@@ -645,101 +1015,47 @@ func (h *PaperHandler) FixFormat(c *gin.Context) {
 		return
 	}
 
-	// 返回响应
 	utils.Success(c, gin.H{
 		"message": "格式修复成功",
 		"result":  fixResult,
 	})
 }
 
+func bindFormatFixRequest(c *gin.Context, paperID uuid.UUID) (FormatFixRequest, error) {
+	var req FormatFixRequest
+	req.PaperID = paperID
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return FormatFixRequest{}, err
+	}
+	if req.PaperID == uuid.Nil {
+		req.PaperID = paperID
+	}
+	if req.PaperID != paperID {
+		return FormatFixRequest{}, fmt.Errorf("paper_id in body must match url id")
+	}
+	return req, nil
+}
+
+func validateFormatFixMode(fixAll bool, normalizedIssueIDs []string) error {
+	if fixAll && len(normalizedIssueIDs) > 0 {
+		return fmt.Errorf("fix_all and issue_ids cannot be provided at the same time")
+	}
+	if !fixAll && len(normalizedIssueIDs) == 0 {
+		return fmt.Errorf("issue_ids is required when fix_all is false")
+	}
+	return nil
+}
+
 // GetFormatStandards 获取格式标准列表，支持按机构和文档类型过滤
 func (h *PaperHandler) GetFormatStandards(c *gin.Context) {
-	// 解析分页参数
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	if page < 1 {
-		page = 1
+	page, pageSize := readFormatStandardsPagination(c)
+	query := formatStandardsBaseQuery(c)
+	var ok bool
+	query, ok = applyFormatStandardsFilters(c, query)
+	if !ok {
+		return
 	}
-	if pageSize < 1 {
-		pageSize = 20
-	}
-	if pageSize > 100 {
-		pageSize = 100
-	}
-
-	// 构建查询
-	query := database.DB.Model(&model.FormatTemplate{}).Preload("University")
-	isAdminRoute := strings.Contains(c.FullPath(), "/admin/")
-
-	// 非管理员路由默认仅返回已激活且公开模板
-	if !isAdminRoute {
-		query = query.Where("is_active = ? AND is_public = ?", true, true)
-	}
-
-	// 过滤条件
-	if universityID := c.Query("university_id"); universityID != "" {
-		uid, err := strconv.ParseInt(universityID, 10, 64)
-		if err != nil {
-			utils.BadRequest(c, "invalid university_id")
-			return
-		}
-		query = query.Where("university_id = ?", uid)
-	}
-
-	if documentType := strings.TrimSpace(c.Query("document_type")); documentType != "" {
-		query = query.Where("document_type = ?", documentType)
-	}
-
-	if subject := strings.TrimSpace(c.Query("subject")); subject != "" {
-		query = query.Where("subject = ?", subject)
-	}
-
-	if source := strings.TrimSpace(c.Query("source")); source != "" {
-		query = query.Where("source = ?", source)
-	}
-
-	if isActiveStr := c.Query("is_active"); isActiveStr != "" {
-		isActive, err := strconv.ParseBool(isActiveStr)
-		if err != nil {
-			utils.BadRequest(c, "invalid is_active")
-			return
-		}
-		query = query.Where("is_active = ?", isActive)
-	}
-
-	if isPublicStr := c.Query("is_public"); isPublicStr != "" {
-		isPublic, err := strconv.ParseBool(isPublicStr)
-		if err != nil {
-			utils.BadRequest(c, "invalid is_public")
-			return
-		}
-		query = query.Where("is_public = ?", isPublic)
-	}
-
-	if keyword := strings.TrimSpace(c.Query("keyword")); keyword != "" {
-		like := "%" + keyword + "%"
-		query = query.Where(
-			"name ILIKE ? OR description ILIKE ? OR template_id ILIKE ?",
-			like, like, like,
-		)
-	}
-
-	// 排序
-	sortBy := c.DefaultQuery("sort_by", "created_at")
-	order := strings.ToLower(c.DefaultQuery("order", "desc"))
-	if order != "asc" {
-		order = "desc"
-	}
-	allowedSortFields := map[string]bool{
-		"created_at":  true,
-		"updated_at":  true,
-		"name":        true,
-		"version":     true,
-		"usage_count": true,
-	}
-	if !allowedSortFields[sortBy] {
-		sortBy = "created_at"
-	}
+	sortBy, order := resolveFormatStandardsSort(c)
 
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -754,14 +1070,108 @@ func (h *PaperHandler) GetFormatStandards(c *gin.Context) {
 		return
 	}
 
-	// 前端友好的列表结构（兼容 admin/templates 的 items 读取）
+	utils.Success(c, gin.H{
+		"items":     formatTemplatesToListItems(templates),
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
+}
+
+func readFormatStandardsPagination(c *gin.Context) (page, pageSize int) {
+	page, _ = strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ = strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return page, pageSize
+}
+
+func formatStandardsBaseQuery(c *gin.Context) *gorm.DB {
+	q := database.DB.Model(&model.FormatTemplate{}).Preload("University")
+	if !strings.Contains(c.FullPath(), "/admin/") {
+		q = q.Where("is_active = ? AND is_public = ?", true, true)
+	}
+	return q
+}
+
+// applyFormatStandardsFilters 应用查询参数；若已写 400 响应则返回 ok=false。
+func applyFormatStandardsFilters(c *gin.Context, query *gorm.DB) (*gorm.DB, bool) {
+	if universityID := c.Query("university_id"); universityID != "" {
+		uid, err := strconv.ParseInt(universityID, 10, 64)
+		if err != nil {
+			utils.BadRequest(c, "invalid university_id")
+			return query, false
+		}
+		query = query.Where("university_id = ?", uid)
+	}
+	if documentType := strings.TrimSpace(c.Query("document_type")); documentType != "" {
+		query = query.Where("document_type = ?", documentType)
+	}
+	if subject := strings.TrimSpace(c.Query("subject")); subject != "" {
+		query = query.Where("subject = ?", subject)
+	}
+	if source := strings.TrimSpace(c.Query("source")); source != "" {
+		query = query.Where("source = ?", source)
+	}
+	if isActiveStr := c.Query("is_active"); isActiveStr != "" {
+		isActive, err := strconv.ParseBool(isActiveStr)
+		if err != nil {
+			utils.BadRequest(c, "invalid is_active")
+			return query, false
+		}
+		query = query.Where("is_active = ?", isActive)
+	}
+	if isPublicStr := c.Query("is_public"); isPublicStr != "" {
+		isPublic, err := strconv.ParseBool(isPublicStr)
+		if err != nil {
+			utils.BadRequest(c, "invalid is_public")
+			return query, false
+		}
+		query = query.Where("is_public = ?", isPublic)
+	}
+	if keyword := strings.TrimSpace(c.Query("keyword")); keyword != "" {
+		like := "%" + keyword + "%"
+		query = query.Where(
+			"name ILIKE ? OR description ILIKE ? OR template_id ILIKE ?",
+			like, like, like,
+		)
+	}
+	return query, true
+}
+
+func resolveFormatStandardsSort(c *gin.Context) (sortBy, order string) {
+	sortBy = c.DefaultQuery("sort_by", "created_at")
+	order = strings.ToLower(c.DefaultQuery("order", "desc"))
+	if order != "asc" {
+		order = "desc"
+	}
+	allowed := map[string]bool{
+		"created_at":  true,
+		"updated_at":  true,
+		"name":        true,
+		"version":     true,
+		"usage_count": true,
+	}
+	if !allowed[sortBy] {
+		sortBy = "created_at"
+	}
+	return sortBy, order
+}
+
+func formatTemplatesToListItems(templates []model.FormatTemplate) []gin.H {
 	items := make([]gin.H, 0, len(templates))
 	for _, t := range templates {
 		universityName := ""
 		if t.University != nil {
 			universityName = t.University.Name
 		}
-
 		items = append(items, gin.H{
 			"id":            t.ID,
 			"template_id":   t.TemplateID,
@@ -782,13 +1192,7 @@ func (h *PaperHandler) GetFormatStandards(c *gin.Context) {
 			"updated_at":    t.UpdatedAt,
 		})
 	}
-
-	utils.Success(c, gin.H{
-		"items":     items,
-		"total":     total,
-		"page":      page,
-		"page_size": pageSize,
-	})
+	return items
 }
 
 // GetPaperCheckResults 获取论文的检查结果列表
@@ -814,104 +1218,78 @@ func (h *PaperHandler) GetPaperCheckResults(c *gin.Context) {
 	utils.Success(c, results)
 }
 
+func logPaperFileDownload(label string, paperID uuid.UUID, cleanPath string) {
+	absPath, _ := filepath.Abs(cleanPath)
+	fmt.Printf("%s: ID=%s, Path=%s, AbsPath=%s\n", label, paperID, cleanPath, absPath)
+}
+
+func ensurePaperFileExistsForDownload(c *gin.Context, cleanPath string, notFoundMsg string) bool {
+	if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
+		utils.ErrorResponse(c, http.StatusNotFound, notFoundMsg, fmt.Sprintf("Path: %s, Error: %v", cleanPath, err))
+		return false
+	}
+	return true
+}
+
+func setLocalPaperAttachmentHeaders(c *gin.Context, cleanPath string) {
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filepath.Base(cleanPath)))
+	switch strings.ToLower(filepath.Ext(cleanPath)) {
+	case ".docx":
+		c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+	case ".doc":
+		c.Header("Content-Type", "application/msword")
+	case ".pdf":
+		c.Header("Content-Type", "application/pdf")
+	default:
+		c.Header("Content-Type", "application/octet-stream")
+	}
+}
+
+func sendLocalPaperFileAttachment(c *gin.Context, cleanPath string) {
+	setLocalPaperAttachmentHeaders(c, cleanPath)
+	c.File(cleanPath)
+}
+
 // GetPaperFile 获取论文文件
 func (h *PaperHandler) GetPaperFile(c *gin.Context) {
-	// 从上下文获取用户ID
 	userID, _ := c.Get("user_id")
-
-	// 获取论文ID
 	paperID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		utils.BadRequest(c, "invalid paper id")
 		return
 	}
-
-	// 获取论文信息
 	paper, err := h.paperService.GetPaperByID(userID.(uuid.UUID), paperID)
 	if err != nil {
 		utils.InternalServerError(c, err.Error())
 		return
 	}
-
-	// 设置下载响应头
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filepath.Base(paper.FilePath)))
-
-	// 规范化路径，处理 \ 和 / 的问题
 	cleanPath := filepath.Clean(paper.FilePath)
-	// 获取绝对路径日志，方便排查
-	absPath, _ := filepath.Abs(cleanPath)
-	fmt.Printf("Download Paper: ID=%s, Path=%s, AbsPath=%s\n", paperID, cleanPath, absPath)
-
-	// 检查文件是否存在
-	if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
-		utils.ErrorResponse(c, http.StatusNotFound, "文件在服务器上不存在", fmt.Sprintf("Path: %s, Error: %v", cleanPath, err))
+	logPaperFileDownload("Download Paper", paperID, cleanPath)
+	if !ensurePaperFileExistsForDownload(c, cleanPath, "文件在服务器上不存在") {
 		return
 	}
-
-	// 根据文件类型设置正确的Content-Type
-	fileExt := strings.ToLower(filepath.Ext(cleanPath))
-	switch fileExt {
-	case ".docx":
-		c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-	case ".doc":
-		c.Header("Content-Type", "application/msword")
-	case ".pdf":
-		c.Header("Content-Type", "application/pdf")
-	default:
-		c.Header("Content-Type", "application/octet-stream")
-	}
-
-	// 返回文件（第一处已支持 .doc）
-	c.File(cleanPath)
+	sendLocalPaperFileAttachment(c, cleanPath)
 }
 
 // GetCorrectedPaperFile 获取修正后的论文文件
 func (h *PaperHandler) GetCorrectedPaperFile(c *gin.Context) {
-	// 从上下文获取用户ID
 	userID, _ := c.Get("user_id")
-
-	// 获取论文ID
 	paperID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		utils.BadRequest(c, "invalid paper id")
 		return
 	}
-
-	// 获取修正后的文件路径
 	filePath, err := h.paperService.ExportCorrectedPaper(userID.(uuid.UUID), paperID)
 	if err != nil {
 		utils.InternalServerError(c, err.Error())
 		return
 	}
-
-	// 检查文件是否存在
 	cleanPath := filepath.Clean(filePath)
-	absPath, _ := filepath.Abs(cleanPath)
-	fmt.Printf("Download Corrected Paper: ID=%s, Path=%s, AbsPath=%s\n", paperID, cleanPath, absPath)
-
-	if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
-		utils.ErrorResponse(c, http.StatusNotFound, "修正后的文件在服务器上不存在", fmt.Sprintf("Path: %s, Error: %v", cleanPath, err))
+	logPaperFileDownload("Download Corrected Paper", paperID, cleanPath)
+	if !ensurePaperFileExistsForDownload(c, cleanPath, "修正后的文件在服务器上不存在") {
 		return
 	}
-
-	// 设置下载响应头
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filepath.Base(cleanPath)))
-
-	// 根据文件类型设置正确的Content-Type
-	fileExt := strings.ToLower(filepath.Ext(cleanPath))
-	switch fileExt {
-	case ".docx":
-		c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-	case ".doc":
-		c.Header("Content-Type", "application/msword")
-	case ".pdf":
-		c.Header("Content-Type", "application/pdf")
-	default:
-		c.Header("Content-Type", "application/octet-stream")
-	}
-
-	// 返回文件
-	c.File(cleanPath)
+	sendLocalPaperFileAttachment(c, cleanPath)
 }
 
 // ComparePaperFormats 对比论文格式
@@ -982,14 +1360,8 @@ func (h *PaperHandler) ExportCheckReport(c *gin.Context) {
 		return
 	}
 
-	format := strings.ToLower(strings.TrimSpace(c.DefaultQuery("format", "txt")))
-	reportType := strings.ToLower(strings.TrimSpace(c.DefaultQuery("type", "report")))
-	if !isAllowedReportFormat(format) {
-		utils.BadRequest(c, "invalid report format, allowed: txt, html, json")
-		return
-	}
-	if !isAllowedReportType(reportType) {
-		utils.BadRequest(c, "invalid report type, allowed: report, correction-report")
+	format, reportType, ok := parseCheckReportQuery(c)
+	if !ok {
 		return
 	}
 
@@ -1030,48 +1402,12 @@ func (h *PaperHandler) DownloadCheckReport(c *gin.Context) {
 		return
 	}
 
-	// 导出检查报告
-	reportType := strings.ToLower(strings.TrimSpace(c.DefaultQuery("type", "report")))
-	format := strings.ToLower(strings.TrimSpace(c.DefaultQuery("format", "txt")))
-	if !isAllowedReportFormat(format) {
-		utils.BadRequest(c, "invalid report format, allowed: txt, html, json")
+	format, reportType, ok := parseCheckReportQuery(c)
+	if !ok {
 		return
 	}
-	if !isAllowedReportType(reportType) {
-		utils.BadRequest(c, "invalid report type, allowed: report, correction-report")
-		return
-	}
-
-	var report string
-	switch format {
-	case "json":
-		report, err = h.paperService.ExportCheckReportJSON(userID.(uuid.UUID), checkResultID, reportType)
-		if err == nil {
-			c.Header("Content-Disposition", "attachment; filename=check_report.json")
-			c.Header("Content-Type", "application/json; charset=utf-8")
-			c.String(200, report)
-			return
-		}
-	case "html":
-		report, err = h.paperService.ExportCheckReportHTML(userID.(uuid.UUID), checkResultID, reportType)
-		if err == nil {
-			c.Header("Content-Disposition", "attachment; filename=check_report.html")
-			c.Header("Content-Type", "text/html; charset=utf-8")
-			c.String(200, report)
-			return
-		}
-	default:
-		report, err = h.paperService.ExportCheckReport(userID.(uuid.UUID), checkResultID)
-		if err == nil {
-			c.Header("Content-Disposition", "attachment; filename=check_report.txt")
-			c.Header("Content-Type", "text/plain; charset=utf-8")
-			c.String(200, report)
-			return
-		}
-	}
-	if err != nil {
+	if err := h.streamCheckReportAsAttachment(c, userID.(uuid.UUID), checkResultID, format, reportType); err != nil {
 		utils.InternalServerError(c, err.Error())
-		return
 	}
 }
 
@@ -1176,1148 +1512,53 @@ func isAllowedReportFormat(v string) bool {
 	return v == "txt" || v == "html" || v == "json"
 }
 
-// ParseFormatRequirementsRequest 解析格式要求请求结构体
-type ParseFormatRequirementsRequest struct {
-	FormatText string `json:"format_text" binding:"required"`
-}
-
-// DeepSeek客户端配置
-type DeepSeekClient struct {
-	baseURL    string
-	httpClient *http.Client
-	cookies    []*http.Cookie
-}
-
-// 创建新的DeepSeek客户端
-func NewDeepSeekClient() *DeepSeekClient {
-	return &DeepSeekClient{
-		baseURL: "https://chat.deepseek.com",
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+// parseCheckReportQuery 解析 format / type 查询参数；非法时已写 BadRequest，返回 ok=false。
+func parseCheckReportQuery(c *gin.Context) (format string, reportType string, ok bool) {
+	format = strings.ToLower(strings.TrimSpace(c.DefaultQuery("format", "txt")))
+	reportType = strings.ToLower(strings.TrimSpace(c.DefaultQuery("type", "report")))
+	if !isAllowedReportFormat(format) {
+		utils.BadRequest(c, "invalid report format, allowed: txt, html, json")
+		return "", "", false
 	}
-}
-
-// 调用DeepSeek API提取论文格式要求
-func (d *DeepSeekClient) ExtractFormatRequirements(text string) (string, error) {
-	// 构建请求体
-	//todo  ai
-	return "", nil
-}
-
-// ParseFormatRequirements 解析论文格式要求，集成DeepSeek API
-func (h *PaperHandler) ParseFormatRequirements(c *gin.Context) {
-	// 解析请求数据
-	var req ParseFormatRequirementsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		utils.BadRequest(c, err.Error())
-		return
+	if !isAllowedReportType(reportType) {
+		utils.BadRequest(c, "invalid report type, allowed: report, correction-report")
+		return "", "", false
 	}
-	// 初始化解析结果
-	var parsedFormat *ParsedFormatRequirements
-	var parseErr error
-	if parsedFormat == nil {
-		parsedFormat = h.parseDetailedFormatText(req.FormatText)
-	}
-
-	// 将解析结果转换为汉字键值对结构
-	chineseFormat := h.convertToChineseFormat(parsedFormat)
-
-	// 将汉字键值对结构转换为JSON字符串，以便保存到数据库
-	settingsJSON, err := json.Marshal(chineseFormat)
-	if err != nil {
-		utils.InternalServerError(c, fmt.Sprintf("failed to marshal format settings: %v", err))
-		return
-	}
-
-	// 创建格式模板记录
-	// 确保TemplateID是唯一的
-	// 注意：错误提示 invalid input syntax for type uuid 表明某个期望 UUID 的字段接收到了非 UUID 格式的字符串
-	// 检查 ParseFormatRequirements 函数中 TemplateID 的生成方式
-	// 可能是 CreateFormatStandard 中的 TemplateID 或者是 ParseFormatRequirements 中的 TemplateID
-	// 这里是 ParseFormatRequirements 函数
-
-	newTemplateID := uuid.New().String()
-
-	formatTemplate := model.FormatTemplate{
-		TemplateID:   newTemplateID, // 使用标准UUID字符串，不带前缀
-		Name:         fmt.Sprintf("%s格式标准", parsedFormat.Institution),
-		DocumentType: "本科论文",
-		Source:       "auto_parsed",
-		Version:      "1.0",
-		IsPublic:     false,
-		IsActive:     true,
-		FormatRules:  string(settingsJSON),
-		Description:  fmt.Sprintf("从文本解析生成的格式标准: %s", parsedFormat.Institution),
-	}
-
-	// 保存到数据库
-	if err := database.DB.Create(&formatTemplate).Error; err != nil {
-		utils.InternalServerError(c, fmt.Sprintf("failed to create format template: %v", err))
-		return
-	}
-
-	// 返回响应，使用汉字键值对结构
-	response := map[string]interface{}{
-		"id":                  formatTemplate.ID,
-		"name":                formatTemplate.Name,
-		"description":         formatTemplate.Description,
-		"is_public":           formatTemplate.IsPublic,
-		"format_requirements": chineseFormat,
-		"parse_warning":       parseErr,
-	}
-
-	utils.Created(c, response)
+	return format, reportType, true
 }
 
-// convertToChineseFormat 将解析后的格式要求转换为汉字键值对结构
-func (h *PaperHandler) convertToChineseFormat(parsedFormat *ParsedFormatRequirements) map[string]interface{} {
-	chineseFormat := make(map[string]interface{})
-
-	// 基本信息
-	chineseFormat["学校名称"] = parsedFormat.Institution
-	chineseFormat["文档类型"] = parsedFormat.DocumentType
-
-	// 基本要求
-	if len(parsedFormat.BasicRequirements) > 0 {
-		chineseFormat["基本要求"] = parsedFormat.BasicRequirements
-	}
-
-	// 页面设置
-	pageSetup := make(map[string]interface{})
-	pageSetup["纸张大小"] = parsedFormat.PageSetup.PaperSize
-	pageSetup["页面方向"] = parsedFormat.PageSetup.Orientation
-
-	// 页边距
-	margins := make(map[string]interface{})
-	margins["上边距"] = parsedFormat.PageSetup.Margins.Top
-	margins["下边距"] = parsedFormat.PageSetup.Margins.Bottom
-	margins["左边距"] = parsedFormat.PageSetup.Margins.Left
-	margins["右边距"] = parsedFormat.PageSetup.Margins.Right
-	pageSetup["页边距"] = margins
-
-	// 页眉页脚
-	headerFooter := make(map[string]interface{})
-	headerFooter["页眉高度"] = parsedFormat.PageSetup.HeaderFooter.HeaderHeight
-	headerFooter["页脚高度"] = parsedFormat.PageSetup.HeaderFooter.FooterHeight
-	headerFooter["页眉左侧内容"] = parsedFormat.PageSetup.HeaderFooter.HeaderLeft
-	headerFooter["页眉右侧内容"] = parsedFormat.PageSetup.HeaderFooter.HeaderRight
-	headerFooter["页眉居中内容"] = parsedFormat.PageSetup.HeaderFooter.HeaderCenter
-	pageSetup["页眉页脚"] = headerFooter
-
-	pageSetup["打印方式"] = parsedFormat.PageSetup.PrintingSide
-	chineseFormat["页面设置"] = pageSetup
-
-	// 字体设置
-	fontSettings := make(map[string]interface{})
-
-	// 正文字体
-	mainFont := make(map[string]interface{})
-	mainFont["字体名称"] = parsedFormat.FontSettings.MainFont.FontName
-	mainFont["字体大小"] = parsedFormat.FontSettings.MainFont.FontSize
-	mainFont["行间距"] = parsedFormat.FontSettings.MainFont.LineSpacing
-	fontSettings["正文字体"] = mainFont
-
-	// 标题字体
-	titleFont := make(map[string]interface{})
-
-	// 章标题
-	chapterTitle := make(map[string]interface{})
-	chapterTitle["字体名称"] = parsedFormat.FontSettings.TitleFont.ChapterTitle.FontName
-	chapterTitle["字体大小"] = parsedFormat.FontSettings.TitleFont.ChapterTitle.FontSize
-	chapterTitle["对齐方式"] = parsedFormat.FontSettings.TitleFont.ChapterTitle.Alignment
-	titleFont["章标题"] = chapterTitle
-
-	// 节标题
-	sectionTitle := make(map[string]interface{})
-	sectionTitle["字体名称"] = parsedFormat.FontSettings.TitleFont.SectionTitle.FontName
-	sectionTitle["字体大小"] = parsedFormat.FontSettings.TitleFont.SectionTitle.FontSize
-	sectionTitle["对齐方式"] = parsedFormat.FontSettings.TitleFont.SectionTitle.Alignment
-	titleFont["节标题"] = sectionTitle
-
-	// 小节标题
-	subsectionTitle := make(map[string]interface{})
-	subsectionTitle["字体名称"] = parsedFormat.FontSettings.TitleFont.SubsectionTitle.FontName
-	subsectionTitle["字体大小"] = parsedFormat.FontSettings.TitleFont.SubsectionTitle.FontSize
-	subsectionTitle["对齐方式"] = parsedFormat.FontSettings.TitleFont.SubsectionTitle.Alignment
-	titleFont["小节标题"] = subsectionTitle
-
-	fontSettings["标题字体"] = titleFont
-
-	// 其他字体设置
-	abstractFont := make(map[string]interface{})
-	abstractFont["字体名称"] = parsedFormat.FontSettings.AbstractFont.FontName
-	abstractFont["字体大小"] = parsedFormat.FontSettings.AbstractFont.FontSize
-	fontSettings["摘要字体"] = abstractFont
-
-	directoryFont := make(map[string]interface{})
-	directoryFont["字体名称"] = parsedFormat.FontSettings.DirectoryFont.FontName
-	directoryFont["字体大小"] = parsedFormat.FontSettings.DirectoryFont.FontSize
-	fontSettings["目录字体"] = directoryFont
-
-	tableFont := make(map[string]interface{})
-	tableFont["字体名称"] = parsedFormat.FontSettings.TableFont.FontName
-	tableFont["字体大小"] = parsedFormat.FontSettings.TableFont.FontSize
-	fontSettings["表格字体"] = tableFont
-
-	figureFont := make(map[string]interface{})
-	figureFont["字体名称"] = parsedFormat.FontSettings.FigureFont.FontName
-	figureFont["字体大小"] = parsedFormat.FontSettings.FigureFont.FontSize
-	fontSettings["图片字体"] = figureFont
-
-	chineseFormat["字体设置"] = fontSettings
-
-	// 文档结构
-	structure := make(map[string]interface{})
-
-	// 前置部分
-	frontMatter := make(map[string]interface{})
-	frontMatter["封面"] = parsedFormat.Structure.FrontMatter.CoverPage
-	frontMatter["版权声明"] = parsedFormat.Structure.FrontMatter.CopyrightStatement
-	frontMatter["摘要"] = parsedFormat.Structure.FrontMatter.Abstract
-	frontMatter["目录"] = parsedFormat.Structure.FrontMatter.TableOfContents
-	frontMatter["插图清单"] = parsedFormat.Structure.FrontMatter.ListOfFigures
-	frontMatter["表格清单"] = parsedFormat.Structure.FrontMatter.ListOfTables
-	structure["前置部分"] = frontMatter
-
-	// 主体部分
-	mainBody := make(map[string]interface{})
-	mainBody["引言"] = parsedFormat.Structure.MainBody.Introduction
-	mainBody["正文"] = parsedFormat.Structure.MainBody.MainContent
-	mainBody["结论"] = parsedFormat.Structure.MainBody.Conclusion
-	structure["主体部分"] = mainBody
-
-	// 后置部分
-	backMatter := make(map[string]interface{})
-	backMatter["参考文献"] = parsedFormat.Structure.BackMatter.References
-	backMatter["致谢"] = parsedFormat.Structure.BackMatter.Acknowledgements
-	backMatter["附录"] = parsedFormat.Structure.BackMatter.Appendices
-	structure["后置部分"] = backMatter
-
-	chineseFormat["文档结构"] = structure
-
-	// 引用规则
-	citationRules := make(map[string]interface{})
-	citationRules["参考文献格式"] = parsedFormat.CitationRules.ReferenceFormat
-	if len(parsedFormat.CitationRules.ReferenceTypes) > 0 {
-		citationRules["参考文献类型"] = parsedFormat.CitationRules.ReferenceTypes
-	}
-	chineseFormat["引用规则"] = citationRules
-
-	// 附录规则
-	appendixRules := make(map[string]interface{})
-	appendixRules["附录格式"] = parsedFormat.AppendixRules.AppendixFormat
-	if len(parsedFormat.AppendixRules.AttachmentList) > 0 {
-		appendixRules["附件列表"] = parsedFormat.AppendixRules.AttachmentList
-	}
-	chineseFormat["附录规则"] = appendixRules
-
-	return chineseFormat
-}
-
-// ParsedFormatRequirements 解析后的格式要求
-type ParsedFormatRequirements struct {
-	Institution       string            `json:"institution"`        // 学校名称
-	DocumentType      string            `json:"document_type"`      // 文档类型
-	BasicRequirements []string          `json:"basic_requirements"` // 基本要求
-	PageSetup         PageSetup         `json:"page_setup"`         // 页面设置
-	FontSettings      FontSettings      `json:"font_settings"`      // 字体设置
-	Structure         DocumentStructure `json:"structure"`          // 文档结构
-	CitationRules     CitationRules     `json:"citation_rules"`     // 引用规则
-	AppendixRules     AppendixRules     `json:"appendix_rules"`     // 附录规则
-}
-
-// PageSetup 页面设置
-type PageSetup struct {
-	PaperSize    string       `json:"paper_size"`    // 纸张大小
-	Orientation  string       `json:"orientation"`   // 页面方向
-	Margins      Margins      `json:"margins"`       // 页边距
-	HeaderFooter HeaderFooter `json:"header_footer"` // 页眉页脚
-	PrintingSide string       `json:"printing_side"` // 打印面
-}
-
-// Margins 页边距
-type Margins struct {
-	Top    float64 `json:"top"`
-	Bottom float64 `json:"bottom"`
-	Left   float64 `json:"left"`
-	Right  float64 `json:"right"`
-}
-
-// HeaderFooter 页眉页脚
-type HeaderFooter struct {
-	HeaderHeight float64 `json:"header_height"` // 页眉高度
-	FooterHeight float64 `json:"footer_height"` // 页脚高度
-	HeaderLeft   string  `json:"header_left"`   // 页眉左侧内容
-	HeaderRight  string  `json:"header_right"`  // 页眉右侧内容
-	HeaderCenter string  `json:"header_center"` // 页眉居中内容
-}
-
-// FontSettings 字体设置
-type FontSettings struct {
-	MainFont      MainFont      `json:"main_font"`      // 正文字体
-	TitleFont     TitleFont     `json:"title_font"`     // 标题字体
-	AbstractFont  AbstractFont  `json:"abstract_font"`  // 摘要字体
-	DirectoryFont DirectoryFont `json:"directory_font"` // 目录字体
-	TableFont     TableFont     `json:"table_font"`     // 表格字体
-	FigureFont    FigureFont    `json:"figure_font"`    // 图片字体
-}
-
-// MainFont 正文字体
-type MainFont struct {
-	FontName    string  `json:"font_name"`
-	FontSize    float64 `json:"font_size"`
-	LineSpacing float64 `json:"line_spacing"`
-}
-
-// TitleFont 标题字体
-type TitleFont struct {
-	ChapterTitle    ChapterTitle    `json:"chapter_title"`    // 章标题
-	SectionTitle    SectionTitle    `json:"section_title"`    // 节标题
-	SubsectionTitle SubsectionTitle `json:"subsection_title"` // 小节标题
-}
-
-// ChapterTitle 章标题
-type ChapterTitle struct {
-	FontName  string  `json:"font_name"`
-	FontSize  float64 `json:"font_size"`
-	Alignment string  `json:"alignment"`
-}
-
-// SectionTitle 节标题
-type SectionTitle struct {
-	FontName  string  `json:"font_name"`
-	FontSize  float64 `json:"font_size"`
-	Alignment string  `json:"alignment"`
-}
-
-// SubsectionTitle 小节标题
-type SubsectionTitle struct {
-	FontName  string  `json:"font_name"`
-	FontSize  float64 `json:"font_size"`
-	Alignment string  `json:"alignment"`
-}
-
-// AbstractFont 摘要字体
-type AbstractFont struct {
-	FontName string  `json:"font_name"`
-	FontSize float64 `json:"font_size"`
-}
-
-// DirectoryFont 目录字体
-type DirectoryFont struct {
-	FontName string  `json:"font_name"`
-	FontSize float64 `json:"font_size"`
-}
-
-// TableFont 表格字体
-type TableFont struct {
-	FontName string  `json:"font_name"`
-	FontSize float64 `json:"font_size"`
-}
-
-// FigureFont 图片字体
-type FigureFont struct {
-	FontName string  `json:"font_name"`
-	FontSize float64 `json:"font_size"`
-}
-
-// DocumentStructure 文档结构
-type DocumentStructure struct {
-	FrontMatter FrontMatter `json:"front_matter"` // 前置部分
-	MainBody    MainBody    `json:"main_body"`    // 主体部分
-	BackMatter  BackMatter  `json:"back_matter"`  // 后置部分
-}
-
-// FrontMatter 前置部分
-type FrontMatter struct {
-	CoverPage          bool `json:"cover_page"`          // 封面
-	CopyrightStatement bool `json:"copyright_statement"` // 版权声明
-	Abstract           bool `json:"abstract"`            // 摘要
-	TableOfContents    bool `json:"table_of_contents"`   // 目录
-	ListOfFigures      bool `json:"list_of_figures"`     // 插图清单
-	ListOfTables       bool `json:"list_of_tables"`      // 表格清单
-}
-
-// MainBody 主体部分
-type MainBody struct {
-	Introduction bool `json:"introduction"` // 引言
-	MainContent  bool `json:"main_content"` // 正文
-	Conclusion   bool `json:"conclusion"`   // 结论
-}
-
-// BackMatter 后置部分
-type BackMatter struct {
-	References       bool `json:"references"`       // 参考文献
-	Acknowledgements bool `json:"acknowledgements"` // 致谢
-	Appendices       bool `json:"appendices"`       // 附录
-}
-
-// CitationRules 引用规则
-type CitationRules struct {
-	ReferenceFormat string   `json:"reference_format"` // 参考文献格式
-	ReferenceTypes  []string `json:"reference_types"`  // 参考文献类型
-}
-
-// AppendixRules 附录规则
-type AppendixRules struct {
-	AppendixFormat string   `json:"appendix_format"` // 附录格式
-	AttachmentList []string `json:"attachment_list"` // 附件列表
-}
-
-// isSpecialFormat 检查是否是特殊格式
-func (h *PaperHandler) isSpecialFormat(text string) bool {
-	// 检查是否包含特定的关键字
-	keywords := []string{"中文摘要", "英文摘要", "关键词", "目录", "主体部分", "标题序号与格式"}
-	matchCount := 0
-	for _, keyword := range keywords {
-		if strings.Contains(text, keyword) {
-			matchCount++
+func (h *PaperHandler) streamCheckReportAsAttachment(c *gin.Context, userID, checkResultID uuid.UUID, format, reportType string) error {
+	switch format {
+	case "json":
+		report, err := h.paperService.ExportCheckReportJSON(userID, checkResultID, reportType)
+		if err != nil {
+			return err
 		}
-	}
-	// 如果匹配到超过一半的关键字，则认为是特殊格式
-	return matchCount >= len(keywords)/2
-}
-
-// parseSpecialFormat 解析特殊格式
-func (h *PaperHandler) parseSpecialFormat(text string, format *ParsedFormatRequirements) {
-	// 解析摘要部分
-	h.parseAbstractSection(text, format)
-
-	// 解析目录部分
-	h.parseDirectorySection(text, format)
-
-	// 解析主体部分
-	h.parseMainBodySection(text, format)
-
-	// 解析标题格式
-	h.parseTitleFormat(text, format)
-
-	// 解析字体要求
-	h.parseFontRequirements(text, format)
-}
-
-// parseAbstractSection 解析摘要部分
-func (h *PaperHandler) parseAbstractSection(text string, format *ParsedFormatRequirements) {
-	// 查找中文摘要部分
-	cnAbstractRegex := regexp.MustCompile(`中文摘要[：:]([^。]+)`)
-
-	cnMatches := cnAbstractRegex.FindStringSubmatch(text)
-
-	if len(cnMatches) > 1 {
-		// 提取摘要要求
-
-		abstractReq := cnMatches[1]
-		if strings.Contains(abstractReq, "300汉字") {
-			format.BasicRequirements = append(format.BasicRequirements, "中文摘要约300汉字")
+		c.Header("Content-Disposition", "attachment; filename=check_report.json")
+		c.Header("Content-Type", "application/json; charset=utf-8")
+		c.String(http.StatusOK, report)
+		return nil
+	case "html":
+		report, err := h.paperService.ExportCheckReportHTML(userID, checkResultID, reportType)
+		if err != nil {
+			return err
 		}
-		if strings.Contains(abstractReq, "第三人称") {
-			format.BasicRequirements = append(format.BasicRequirements, "中文摘要以第三人称陈述")
+		c.Header("Content-Disposition", "attachment; filename=check_report.html")
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusOK, report)
+		return nil
+	default:
+		report, err := h.paperService.ExportCheckReport(userID, checkResultID)
+		if err != nil {
+			return err
 		}
-		if strings.Contains(abstractReq, "目的") && strings.Contains(abstractReq, "方法") &&
-			strings.Contains(abstractReq, "结果") && strings.Contains(abstractReq, "结论") {
-			format.BasicRequirements = append(format.BasicRequirements, "中文摘要包含目的、方法、结果、结论")
-		}
-		if strings.Contains(abstractReq, "重点在结果和结论") {
-			format.BasicRequirements = append(format.BasicRequirements, "中文摘要重点在结果和结论")
-		}
-	}
-
-	// 查找英文摘要部分
-	if strings.Contains(text, "英文摘要") {
-		format.BasicRequirements = append(format.BasicRequirements, "包含英文摘要")
-	}
-
-	// 查找关键词部分
-	keywordRegex := regexp.MustCompile(`关键词[：:]([^。]+)`)
-	keywordMatches := keywordRegex.FindStringSubmatch(text)
-	if len(keywordMatches) > 1 {
-		keywordsReq := keywordMatches[1]
-		if strings.Contains(keywordsReq, "3-5个") {
-			format.BasicRequirements = append(format.BasicRequirements, "关键词3-5个")
-		}
-		if strings.Contains(keywordsReq, "左对齐") {
-			format.BasicRequirements = append(format.BasicRequirements, "关键词左对齐")
-		}
-		if strings.Contains(keywordsReq, "中英文关键词间用分号分隔") {
-			format.BasicRequirements = append(format.BasicRequirements, "中英文关键词间用分号分隔")
-		}
-	}
-
-}
-
-// parseDirectorySection 解析目录部分
-func (h *PaperHandler) parseDirectorySection(text string, format *ParsedFormatRequirements) {
-	if strings.Contains(text, "目录") && strings.Contains(text, "另起一页") {
-		format.Structure.FrontMatter.TableOfContents = true
-		format.BasicRequirements = append(format.BasicRequirements, "目录另起一页，排在摘要之后")
-	}
-
-	if strings.Contains(text, "包含章、节、条、附录的序号、名称和页码") {
-		format.BasicRequirements = append(format.BasicRequirements, "目录包含章、节、条、附录的序号、名称和页码")
-	}
-
-	if strings.Contains(text, "目录层次为2-4级") {
-		format.BasicRequirements = append(format.BasicRequirements, "目录层次为2-4级")
-	}
-
-	if strings.Contains(text, "下级依次右缩进两个字符") {
-		format.BasicRequirements = append(format.BasicRequirements, "下级目录依次右缩进两个字符")
-	}
-
-	if strings.Contains(text, "小四号宋体") {
-		format.FontSettings.DirectoryFont.FontName = "宋体"
-		format.FontSettings.DirectoryFont.FontSize = 12.0 // 小四号
+		c.Header("Content-Disposition", "attachment; filename=check_report.txt")
+		c.Header("Content-Type", "text/plain; charset=utf-8")
+		c.String(http.StatusOK, report)
+		return nil
 	}
 }
 
-// parseMainBodySection 解析主体部分
-func (h *PaperHandler) parseMainBodySection(text string, format *ParsedFormatRequirements) {
-	if strings.Contains(text, "主体部分") && strings.Contains(text, "必须从右页") {
-		format.BasicRequirements = append(format.BasicRequirements, "主体部分必须从右页（奇数页）开始")
-	}
-
-	if strings.Contains(text, "一级标题（章）之间应换页") {
-		format.BasicRequirements = append(format.BasicRequirements, "一级标题（章）之间应换页")
-	}
-
-	// 标记主体部分内容结构
-	format.Structure.MainBody.Introduction = true
-	format.Structure.MainBody.MainContent = true
-	format.Structure.MainBody.Conclusion = true
-}
-
-// parseTitleFormat 解析标题格式
-func (h *PaperHandler) parseTitleFormat(text string, format *ParsedFormatRequirements) {
-	if strings.Contains(text, "标题序号与格式") {
-		format.BasicRequirements = append(format.BasicRequirements, "遵循标题序号与格式要求")
-	}
-
-	// 理工类格式
-	if strings.Contains(text, "理工类") {
-		format.BasicRequirements = append(format.BasicRequirements, "使用理工类标题序号格式: 1 → 1.1 → 1.1.1 → ① → 1） → a．")
-	}
-
-	// 文科类格式
-	if strings.Contains(text, "文科类") {
-		format.BasicRequirements = append(format.BasicRequirements, "使用文科类标题序号格式: 一 → (一） → 1. → (1) → 第一")
-	}
-}
-
-// parseFontRequirements 解析字体要求
-func (h *PaperHandler) parseFontRequirements(text string, format *ParsedFormatRequirements) {
-	// 一级标题（章）
-	if strings.Contains(text, "一级标题（章）") && strings.Contains(text, "三号黑体") && strings.Contains(text, "居中") {
-		format.FontSettings.TitleFont.ChapterTitle.FontName = "黑体"
-		format.FontSettings.TitleFont.ChapterTitle.FontSize = 16.0 // 三号
-		format.FontSettings.TitleFont.ChapterTitle.Alignment = "center"
-	}
-
-	// 二级标题（节）
-	if strings.Contains(text, "二级标题（节）") && strings.Contains(text, "小三号黑体") && strings.Contains(text, "居左") {
-		format.FontSettings.TitleFont.SectionTitle.FontName = "黑体"
-		format.FontSettings.TitleFont.SectionTitle.FontSize = 15.0 // 小三号
-		format.FontSettings.TitleFont.SectionTitle.Alignment = "left"
-	}
-
-	// 三级标题（条）
-	if strings.Contains(text, "三级标题（条）") && strings.Contains(text, "四号黑体") && strings.Contains(text, "居左") && strings.Contains(text, "右缩进两字") {
-		format.FontSettings.TitleFont.SubsectionTitle.FontName = "黑体"
-		format.FontSettings.TitleFont.SubsectionTitle.FontSize = 14.0 // 四号
-		format.FontSettings.TitleFont.SubsectionTitle.Alignment = "left"
-	}
-
-	// 更下级标题
-	if strings.Contains(text, "更下级标题") && strings.Contains(text, "与正文同大小宋体") && strings.Contains(text, "右缩进两字") {
-		format.BasicRequirements = append(format.BasicRequirements, "更下级标题与正文同大小宋体，右缩进两字")
-	}
-}
-
-// cleanText 清理文本，去除多余空格和换行符
-func (h *PaperHandler) cleanText(text string) string {
-	// 替换多个连续的空白字符为单个空格
-	re := regexp.MustCompile(`\s+`)
-	cleaned := re.ReplaceAllString(text, " ")
-	return strings.TrimSpace(cleaned)
-}
-
-// extractInstitution 提取学校名称
-func (h *PaperHandler) extractInstitution(text string, format *ParsedFormatRequirements) {
-	// 使用更智能的方式匹配学校名称，结合分词结果
-	institutionRegex := regexp.MustCompile(`([\x{4e00}-\x{9fa5}]+大学|[^\s]+学院)`)
-	matches := institutionRegex.FindStringSubmatch(text)
-	if len(matches) > 1 {
-		format.Institution = matches[1]
-	} else {
-		// 如果正则表达式没有匹配到，尝试从分词结果中查找
-		institutionKeywords := []string{"大学", "学院"}
-		words := strings.Split(text, " ")
-		for i, word := range words {
-			for _, keyword := range institutionKeywords {
-				if strings.Contains(word, keyword) && i > 0 {
-					// 找到可能的学校名称
-					format.Institution = words[i-1] + word
-					return
-				}
-			}
-		}
-	}
-}
-
-// extractBasicRequirements 提取基本要求
-func (h *PaperHandler) extractBasicRequirements(text string, format *ParsedFormatRequirements) {
-	// 查找基本要求部分
-	basicReqRegex := regexp.MustCompile(`一、基本要求\\s*([\\s\\S]*?)\\s*二、`)
-	matches := basicReqRegex.FindStringSubmatch(text)
-
-	if len(matches) > 1 {
-		// 分割成要点
-		points := strings.Split(matches[1], "\n")
-		for _, point := range points {
-			trimmed := strings.TrimSpace(point)
-			if trimmed != "" && !strings.HasPrefix(trimmed, "一、") {
-				format.BasicRequirements = append(format.BasicRequirements, trimmed)
-			}
-		}
-	} else {
-		// 如果正则表达式没有匹配到，尝试从分词结果中查找基本要求
-		words := strings.Split(text, " ")
-		startIndex := -1
-		endIndex := -1
-		for i, word := range words {
-			if strings.Contains(word, "基本要求") {
-				startIndex = i
-			} else if startIndex != -1 && strings.Contains(word, "要求") && i > startIndex {
-				endIndex = i
-				break
-			}
-		}
-
-		//fmt.Println(111)
-		//fmt.Println(words)
-		//fmt.Println(222)
-
-		if startIndex != -1 && endIndex != -1 {
-			// 提取基本要求内容
-			for i := startIndex; i < endIndex; i++ {
-				if len(words[i]) > 3 { // 过滤掉太短的词语
-					format.BasicRequirements = append(format.BasicRequirements, words[i])
-				}
-			}
-		}
-	}
-}
-
-// extractPageSetup 提取页面设置
-func (h *PaperHandler) extractPageSetup(text string, format *ParsedFormatRequirements) {
-	// 设置默认值
-
-	format.PageSetup.Orientation = "portrait"
-
-	// 提取纸张尺寸
-	pattern := `([A-Za-z0-9]+)\(([0-9.]+)[×x]([0-9.]+)([a-z]+)\)`
-	re := regexp.MustCompile(pattern)
-
-	if re.MatchString(text) {
-		matches := re.FindStringSubmatch(text)
-		if len(matches) >= 5 {
-			paperType := matches[1] // A4
-			width := matches[2]     // 21
-			height := matches[3]    // 29.7
-			unit := matches[4]      // cm
-			format.PageSetup.PaperSize = paperType + width + height + unit
-		}
-	} else {
-		format.PageSetup.PaperSize = "A4"
-
-	}
-
-	// 提取页边距
-	result := make(map[string]float64)
-
-	// 先找到页边距设置的整个段落
-	marginSectionPattern := `页边距设置[：:]\s*([^。\n]+(?:。|$))`
-	marginSectionRe := regexp.MustCompile(marginSectionPattern)
-	marginSectionMatch := marginSectionRe.FindStringSubmatch(text)
-
-	if marginSectionMatch == nil || len(marginSectionMatch) < 2 {
-		// 如果没有找到页边距设置，使用默认值
-		format.PageSetup.Margins.Top = 2.5
-		format.PageSetup.Margins.Right = 2.5
-		format.PageSetup.Margins.Left = 2.5
-		format.PageSetup.Margins.Bottom = 2.5
-	} else {
-		// 如果找到了页边距设置，解析具体的值
-		marginText := marginSectionMatch[1]
-
-		// 处理"均为"的情况
-		if strings.Contains(marginText, "均为") {
-			commonPattern := `均为\s*(\d+(?:\.\d+)?)\s*(?:厘米|cm)`
-			commonRe := regexp.MustCompile(commonPattern)
-			commonMatch := commonRe.FindStringSubmatch(marginText)
-
-			if commonMatch != nil && len(commonMatch) >= 2 {
-				value, _ := strconv.ParseFloat(commonMatch[1], 64)
-
-				// 设置四个方向的值
-				result["上"] = value
-				result["下"] = value
-				result["左"] = value
-				result["右"] = value
-
-				format.PageSetup.Margins.Top = result["上"]
-				format.PageSetup.Margins.Right = result["下"]
-				format.PageSetup.Margins.Left = result["左"]
-				format.PageSetup.Margins.Bottom = result["右"]
-			}
-		}
-
-		// 分别提取各个方向
-		directionPattern := `([上下左右])[^，、]*?(\d+(?:\.\d+)?)\s*(?:厘米|cm)`
-		directionRe := regexp.MustCompile(directionPattern)
-		directionMatches := directionRe.FindAllStringSubmatch(marginText, -1)
-
-		for _, match := range directionMatches {
-			if len(match) >= 3 {
-				direction := match[1]
-				value, _ := strconv.ParseFloat(match[2], 64)
-
-				result[direction] = value
-			}
-		}
-
-		// 验证是否四个方向都有值
-		marginRegex := regexp.MustCompile(`([上下左右])[^，。]*?(\d+(?:\.\d+)?)\s*(?:厘米|cm)`)
-		marginMatches := marginRegex.FindAllStringSubmatch(text, -1)
-		for _, match := range marginMatches {
-			if len(match) > 2 {
-				marginValue, err := strconv.ParseFloat(match[2], 64)
-				if err == nil {
-					switch match[1] {
-					case "上":
-						format.PageSetup.Margins.Top = marginValue
-					case "下":
-						format.PageSetup.Margins.Bottom = marginValue
-					case "左":
-						format.PageSetup.Margins.Left = marginValue
-					case "右":
-						format.PageSetup.Margins.Right = marginValue
-					}
-				}
-			}
-		}
-
-		// 如果没有匹配到具体的页边距，设置默认值
-		if format.PageSetup.Margins.Top == 0 && format.PageSetup.Margins.Bottom == 0 &&
-			format.PageSetup.Margins.Left == 0 && format.PageSetup.Margins.Right == 0 {
-			format.PageSetup.Margins.Top = 2.5
-			format.PageSetup.Margins.Bottom = 2.5
-			format.PageSetup.Margins.Left = 2.5
-			format.PageSetup.Margins.Right = 2.5
-		}
-	}
-
-	// 提取页眉页脚高度
-	headerRegex := regexp.MustCompile(`页眉[：:][^，。]*?(\d+(?:\.\d+)?)\s*(?:厘米|cm)`)
-	headerMatch := headerRegex.FindStringSubmatch(text)
-
-	if len(headerMatch) > 1 {
-		headerHeight, err := strconv.ParseFloat(headerMatch[1], 64)
-		if err == nil {
-			format.PageSetup.HeaderFooter.HeaderHeight = headerHeight
-		}
-	}
-
-	footerRegex := regexp.MustCompile(`页脚[：:](\d+(?:\.\d+)?)\s*(?:厘米|cm)`)
-	footerMatch := footerRegex.FindStringSubmatch(text)
-	if len(footerMatch) > 1 {
-		footerHeight, err := strconv.ParseFloat(footerMatch[1], 64)
-		if err == nil {
-			format.PageSetup.HeaderFooter.FooterHeight = footerHeight
-		}
-	}
-
-	// 提取页眉内容和格式
-	if strings.Contains(text, "单面印制") {
-		// 单面印制的页眉设置
-		if strings.Contains(text, "左对齐") && strings.Contains(text, "重庆工程学院本科生毕业设计（论文）") {
-			format.PageSetup.HeaderFooter.HeaderLeft = "重庆工程学院本科生毕业设计（论文）"
-		}
-		if strings.Contains(text, "右对齐") && strings.Contains(text, "各章章名") {
-			format.PageSetup.HeaderFooter.HeaderRight = "各章章名"
-		}
-	}
-
-	if strings.Contains(text, "双面印制") || strings.Contains(text, "双面打印") {
-		// 双面印制的页眉设置
-		if strings.Contains(text, "左页居中") && strings.Contains(text, "重庆工程学院本科生毕业设计（论文）") {
-			format.PageSetup.HeaderFooter.HeaderCenter = "重庆工程学院本科生毕业设计（论文）"
-		}
-		if strings.Contains(text, "右页居中") && strings.Contains(text, "各章章名") {
-			// 这里可以根据需要设置其他属性来表示右页居中章名
-		}
-	}
-
-	// 提取页眉字体
-	if strings.Contains(text, "页眉字号为5号宋体") {
-		format.FontSettings.TitleFont.ChapterTitle.FontName = "宋体"
-		format.FontSettings.TitleFont.ChapterTitle.FontSize = 10.5 // 5号字
-	}
-
-	// 提取打印方式规则
-	if strings.Contains(text, "50页以上") && strings.Contains(text, "双面打印") {
-		format.BasicRequirements = append(format.BasicRequirements, "总页数50页以上必须双面打印")
-		format.PageSetup.PrintingSide = "double"
-	}
-
-	if strings.Contains(text, "50页以下") && strings.Contains(text, "单面打印") {
-		format.BasicRequirements = append(format.BasicRequirements, "总页数50页以下单面打印即可")
-		if format.PageSetup.PrintingSide == "" {
-			format.PageSetup.PrintingSide = "single"
-		}
-	}
-
-	// 提取页码编排规则
-	if strings.Contains(text, "主体部分") && strings.Contains(text, "引言或绪论") {
-		format.BasicRequirements = append(format.BasicRequirements, "主体部分从引言或绪论开始用阿拉伯数字连续编页")
-	}
-
-	if strings.Contains(text, "主体之前部分") && strings.Contains(text, "中文摘要") && strings.Contains(text, "英文摘要") && strings.Contains(text, "目录") {
-		format.BasicRequirements = append(format.BasicRequirements, "主体之前部分（中文摘要、英文摘要、目录）用罗马数字单独编页")
-	}
-
-	// 如果没有明确指定打印方式，默认设置为双面打印
-	if format.PageSetup.PrintingSide == "" {
-		format.PageSetup.PrintingSide = "double"
-	}
-}
-
-// extractFontSettings 提取字体设置
-func (h *PaperHandler) extractFontSettings(text string, format *ParsedFormatRequirements) {
-	// 查找字体与间距部分
-	fontRegex := regexp.MustCompile(`\(2\)\\s*字体与间距[\\s\\S]*?(?:字体为|用)([^，。]*)`)
-	matches := fontRegex.FindStringSubmatch(text)
-	if len(matches) > 1 {
-		fontText := matches[1]
-
-		// 提取正文字体
-		if strings.Contains(fontText, "宋体") {
-			format.FontSettings.MainFont.FontName = "宋体"
-		}
-
-		// 提取字号
-		fontSizeRegex := regexp.MustCompile(`(?:(小四号|四号|小三号|三号|小二号|二号|小一号|一号)|(\\d+(?:\\.\\d+)?)\\s*(?:号|pt|磅))`)
-		fontSizeMatch := fontSizeRegex.FindStringSubmatch(fontText)
-		if len(fontSizeMatch) > 1 {
-			if fontSizeMatch[1] != "" {
-				// 中文字号转换
-				switch fontSizeMatch[1] {
-				case "小四号":
-					format.FontSettings.MainFont.FontSize = 12.0
-				case "四号":
-					format.FontSettings.MainFont.FontSize = 14.0
-				case "小三号":
-					format.FontSettings.MainFont.FontSize = 15.0
-				case "三号":
-					format.FontSettings.MainFont.FontSize = 16.0
-				case "小二号":
-					format.FontSettings.MainFont.FontSize = 18.0
-				case "二号":
-					format.FontSettings.MainFont.FontSize = 22.0
-				case "小一号":
-					format.FontSettings.MainFont.FontSize = 24.0
-				case "一号":
-					format.FontSettings.MainFont.FontSize = 26.0
-				}
-			} else if fontSizeMatch[2] != "" {
-				// 数字字号
-				fontSize, err := strconv.ParseFloat(fontSizeMatch[2], 64)
-				if err == nil {
-					format.FontSettings.MainFont.FontSize = fontSize
-				}
-			}
-		}
-
-		// 提取行间距
-		lineSpaceRegex := regexp.MustCompile(`(?:行间距|行距)[：:](\\d+(?:\\.\\d+)?)\\s*(?:磅|pt)`)
-		lineSpaceMatch := lineSpaceRegex.FindStringSubmatch(fontText)
-		if len(lineSpaceMatch) > 1 {
-			lineSpace, err := strconv.ParseFloat(lineSpaceMatch[1], 64)
-			if err == nil {
-				format.FontSettings.MainFont.LineSpacing = lineSpace
-			}
-		}
-	}
-}
-
-// extractDocumentStructure 提取文档结构要求
-func (h *PaperHandler) extractDocumentStructure(text string, format *ParsedFormatRequirements) {
-	// 查找前置部分要求
-	frontMatterRegex := regexp.MustCompile(`\(1\)\\s*前置部分\\s*([\\s\\S]*?)\\s*\(?2\)?`)
-	frontMatches := frontMatterRegex.FindStringSubmatch(text)
-	if len(frontMatches) > 1 {
-		frontText := frontMatches[1]
-
-		if strings.Contains(frontText, "封面") {
-			format.Structure.FrontMatter.CoverPage = true
-		}
-		if strings.Contains(frontText, "原创性声明") || strings.Contains(frontText, "版权声明") {
-			format.Structure.FrontMatter.CopyrightStatement = true
-		}
-		if strings.Contains(frontText, "摘要") {
-			format.Structure.FrontMatter.Abstract = true
-		}
-		if strings.Contains(frontText, "目次页") || strings.Contains(frontText, "目录") {
-			format.Structure.FrontMatter.TableOfContents = true
-		}
-		if strings.Contains(frontText, "插图") && strings.Contains(frontText, "清单") {
-			format.Structure.FrontMatter.ListOfFigures = true
-		}
-		if strings.Contains(frontText, "表格") && strings.Contains(frontText, "清单") {
-			format.Structure.FrontMatter.ListOfTables = true
-		}
-	}
-
-	// 查找主体部分要求
-	mainBodyRegex := regexp.MustCompile(`\(2\)\\s*主体部分\\s*([\\s\\S]*?)\\s*\(?3\)?`)
-	mainMatches := mainBodyRegex.FindStringSubmatch(text)
-	if len(mainMatches) > 1 {
-		mainText := mainMatches[1]
-
-		if strings.Contains(mainText, "引言") || strings.Contains(mainText, "绪论") {
-			format.Structure.MainBody.Introduction = true
-		}
-		if strings.Contains(mainText, "正文") {
-			format.Structure.MainBody.MainContent = true
-		}
-		if strings.Contains(mainText, "结论") {
-			format.Structure.MainBody.Conclusion = true
-		}
-	}
-
-	// 查找后置部分要求
-	// 修复正则表达式，使其正确匹配参考文献部分
-	backMatterRegex := regexp.MustCompile(`(?:\(3\)|5\))\\s*参考文献`)
-	backMatches := backMatterRegex.FindStringSubmatch(text)
-	if len(backMatches) > 0 {
-		format.Structure.BackMatter.References = true
-	}
-
-	if strings.Contains(text, "致谢") {
-		format.Structure.BackMatter.Acknowledgements = true
-	}
-
-	if strings.Contains(text, "附录") {
-		format.Structure.BackMatter.Appendices = true
-	}
-}
-
-// extractCitationRules 提取引用规则
-func (h *PaperHandler) extractCitationRules(text string, format *ParsedFormatRequirements) {
-	// 查找参考文献部分
-	citationRegex := regexp.MustCompile(`\(3\)\\s*参考文献\\s*([\\s\\S]*?)\\s*\(?4\)?`)
-	matches := citationRegex.FindStringSubmatch(text)
-	if len(matches) > 1 {
-		citationText := matches[1]
-
-		// 提取参考文献格式
-		formatRegex := regexp.MustCompile(`(?:格式为|格式：|格式[：:])([^。]*)`)
-		formatMatches := formatRegex.FindStringSubmatch(citationText)
-		if len(formatMatches) > 1 {
-			format.CitationRules.ReferenceFormat = strings.TrimSpace(formatMatches[1])
-		}
-
-		// 提取常见的文献类型
-		refTypes := []string{"专著", "期刊", "论文集", "学位论文", "报告", "标准", "专利", "报纸", "电子公告"}
-		for _, refType := range refTypes {
-			if strings.Contains(citationText, refType) {
-				// 简化处理，实际应该提取完整的标识符
-				format.CitationRules.ReferenceTypes = append(format.CitationRules.ReferenceTypes, refType)
-			}
-		}
-	}
-}
-
-// extractAppendixRules 提取附录规则
-func (h *PaperHandler) extractAppendixRules(text string, format *ParsedFormatRequirements) {
-	// 查找附录部分
-	appendixRegex := regexp.MustCompile(`\(4\)\\s*附录\\s*([\\s\\S]*?)\\s*$`)
-	matches := appendixRegex.FindStringSubmatch(text)
-	if len(matches) > 1 {
-		appendixText := matches[1]
-
-		// 提取附录格式要求
-		formatRegex := regexp.MustCompile(`(?:格式为|格式：|格式[：:])([^。]*)`)
-		formatMatches := formatRegex.FindStringSubmatch(appendixText)
-		if len(formatMatches) > 1 {
-			format.AppendixRules.AppendixFormat = strings.TrimSpace(formatMatches[1])
-		}
-
-		// 提取附件列表
-		attachmentRegex := regexp.MustCompile(`(?:包括|包含)([^。]*)`)
-		attachmentMatches := attachmentRegex.FindStringSubmatch(appendixText)
-		if len(attachmentMatches) > 1 {
-			attachments := strings.Split(attachmentMatches[1], "、")
-			for _, attachment := range attachments {
-				trimmed := strings.TrimSpace(attachment)
-				if trimmed != "" {
-					format.AppendixRules.AttachmentList = append(format.AppendixRules.AttachmentList, trimmed)
-				}
-			}
-		}
-	}
-}
-
-// ParseDetailedFormatText 公共方法用于解析详细的格式文本内容并提取格式要求
-func (h *PaperHandler) ParseDetailedFormatText(formatText string) *ParsedFormatRequirements {
-	return h.parseDetailedFormatText(formatText)
-}
-
-// parseDetailedFormatText 解析详细的格式文本内容并提取格式要求
-func (h *PaperHandler) parseDetailedFormatText(formatText string) *ParsedFormatRequirements {
-	// 初始化默认格式要求
-	format := &ParsedFormatRequirements{
-		Institution:       "重庆工程学院",     //学校名称
-		DocumentType:      "本科毕业设计（论文）", // 文档类型
-		BasicRequirements: []string{},   // 存储各种基本格式要求的字符串数组
-		PageSetup: PageSetup{ // 页面设置
-			PaperSize:   "A4",       // 纸张大小
-			Orientation: "portrait", // 页面方向（纵向）
-			Margins: Margins{ // 页边距设置
-				Top:    2.5, // 上边距2.5厘米
-				Bottom: 2.5, // 下边距2.5厘米
-				Left:   2.5, // 左边距2.5厘米
-				Right:  2.5, // 右边距2.5厘米
-			},
-
-			HeaderFooter: HeaderFooter{ // 页眉页脚设置
-				HeaderHeight: 1.6,                 // 页眉高度1.6厘米
-				FooterHeight: 2.1,                 // 页脚高度2.1厘米
-				HeaderLeft:   "重庆工程学院本科生毕业设计（论文）", // 页眉左侧内容
-				HeaderRight:  "",                  // 页眉右侧内容
-				HeaderCenter: "",                  // 页眉居中内容
-			},
-			PrintingSide: "single", // 打印面（单面打印）
-		},
-		FontSettings: FontSettings{ // 字体设置
-			MainFont: MainFont{ // 正文字体
-				FontName:    "宋体", // 字体名称
-				FontSize:    12.0, // 字体大小（小四号）
-				LineSpacing: 20.0, // 20磅  // 行间距20磅
-			},
-			TitleFont: TitleFont{ // 标题字体设置
-				ChapterTitle: ChapterTitle{ // 章标题
-					FontName:  "黑体",     // 黑体
-					FontSize:  16.0,     // 三号
-					Alignment: "center", // 居中对齐
-				},
-				SectionTitle: SectionTitle{ // 节标题
-					FontName:  "黑体",   // 黑体
-					FontSize:  15.0,   // 小三号
-					Alignment: "left", // 左对齐
-				},
-				SubsectionTitle: SubsectionTitle{ // 小节标题
-					FontName:  "黑体",   // 黑体
-					FontSize:  14.0,   // 四号
-					Alignment: "left", // 左对齐
-				},
-			},
-			AbstractFont: AbstractFont{ // 摘要字体
-				FontName: "宋体", // 字体名称
-				FontSize: 12.0, // 小四号
-			},
-			DirectoryFont: DirectoryFont{ // 目录字体
-				FontName: "宋体", // 字体名称
-				FontSize: 12.0, // 小四号
-			},
-			TableFont: TableFont{ // 表格字体
-				FontName: "宋体", // 字体名称
-				FontSize: 10.5, // 五号
-			},
-			FigureFont: FigureFont{ // 图片说明字体
-				FontName: "宋体", // 字体名称
-				FontSize: 10.5, // 五号
-			},
-		},
-		Structure: DocumentStructure{ // 文档结构
-			FrontMatter: FrontMatter{ // 前置部分
-				CoverPage:          true, // 需要封面
-				CopyrightStatement: true, // 需要版权声明
-				Abstract:           true, // 需要摘要
-				TableOfContents:    true, // 需要目录
-				ListOfFigures:      true, // 需要插图清单
-				ListOfTables:       true, // 需要表格清单
-			},
-			MainBody: MainBody{ // 主体部分
-				Introduction: true, // 需要引言
-				MainContent:  true, // 需要正文
-				Conclusion:   true, // 需要结论
-			},
-			BackMatter: BackMatter{ // 后置部分
-				References:       true, // 需要参考文献
-				Acknowledgements: true, // 需要致谢
-				Appendices:       true, // 需要附录
-			},
-		},
-		CitationRules: CitationRules{ // 引用规则
-			ReferenceFormat: "[序号] 作者.题名[文献类型标识].出版地:出版者,出版年.",                                                                  // 参考文献格式
-			ReferenceTypes:  []string{"专著(M)", "期刊(J)", "论文集(C)", "学位论文(D)", "报告(R)", "标准(S)", "专利(P)", "报纸(N)", "电子公告(EB/OL)"}, // 支持的文献类型
-		},
-		AppendixRules: AppendixRules{ // 附录规则
-			AppendixFormat: "附录+字母编号",                                // 附录格式
-			AttachmentList: []string{"任务书", "开题报告", "相关图纸", "光盘等资料"}, // 需要提交的附件列表
-		},
-	}
-
-	// 检查是否是您提供的特定格式
-	//if h.isSpecialFormat(formatText) {
-	//	// 使用特殊格式解析函数
-	//	h.parseSpecialFormat(formatText, format)
-	//} else {
-	// 使用更智能的文本处理方式来提取格式要求
-	// 清理文本，去除多余空格和换行符
-
-	cleanText := h.cleanText(formatText)
-
-	// 从清理后的文本中提取学校名称
-	h.extractInstitution(cleanText, format)
-
-	// 提取基本要求
-	h.extractBasicRequirements(cleanText, format)
-
-	// 提取页面设置
-	h.extractPageSetup(cleanText, format)
-
-	// 提取字体设置
-	h.extractFontSettings(cleanText, format)
-
-	// 提取文档结构要求
-	h.extractDocumentStructure(cleanText, format)
-
-	// 提取引用规则
-	h.extractCitationRules(cleanText, format)
-
-	// 提取附录规则
-	h.extractAppendixRules(cleanText, format)
-
-	return format
-}
-
-// CQCECFormatRequest 重庆工程学院格式处理请求结构体
-type CQCECFormatRequest struct {
-	File *multipart.FileHeader `form:"file" binding:"required"`
-}
-
-// CQCECFormatResponse 重庆工程学院格式处理响应结构体
-type CQCECFormatResponse struct {
-	Success       bool                        `json:"success"`
-	Message       string                      `json:"message"`
-	Issues        []formatchecker.FormatIssue `json:"issues,omitempty"`
-	Corrections   []formatchecker.Correction  `json:"corrections,omitempty"`
-	CorrectedFile string                      `json:"corrected_file,omitempty"`
-}
-
-// HandleCQCECFormat 处理重庆工程学院格式要求
 func (h *PaperHandler) HandleCQCECFormat(c *gin.Context) {
 	// 从上下文获取用户ID
 	userID, _ := c.Get("user_id")
@@ -2419,1224 +1660,6 @@ func (h *PaperHandler) HandleCQCECFormat(c *gin.Context) {
 	utils.Success(c, response)
 }
 
-// saveUploadedFile 保存上传的文件
-func (h *PaperHandler) saveUploadedFile(c *gin.Context, file *multipart.FileHeader, paperID string) (string, error) {
-	// 创建上传目录
-	uploadDir := filepath.Join(h.config.File.UploadPath, paperID)
-	if err := utils.CreateDirIfNotExists(uploadDir); err != nil {
-		return "", err
-	}
-
-	// 保存文件
-	filePath := filepath.Join(uploadDir, file.Filename)
-	if err := c.SaveUploadedFile(file, filePath); err != nil {
-		return "", err
-	}
-
-	return filePath, nil
-}
-
-// applyCorrectionsAndGenerateFile 应用修正并生成修正后的文件
-func (h *PaperHandler) applyCorrectionsAndGenerateFile(originalPath string, issues []formatchecker.FormatIssue, corrections []formatchecker.Correction) (string, error) {
-	// 这里应该实现具体的修正逻辑
-	// 由于时间关系，暂时返回原始文件路径作为占位符
-	// 实际实现应该使用unioffice库来修改文档格式
-
-	// 创建修正后的文件路径
-	correctedPath := strings.Replace(originalPath, ".docx", "_corrected.docx", 1)
-
-	// 复制原始文件到修正路径（临时实现）
-	// 实际应该使用unioffice库来应用修正
-	originalContent, err := os.ReadFile(originalPath)
-	if err != nil {
-		return "", err
-	}
-
-	if err := os.WriteFile(correctedPath, originalContent, 0644); err != nil {
-		return "", err
-	}
-
-	return correctedPath, nil
-}
-
-// UploadTemplate 上传高校论文格式模板
-// 支持格式：.docx .doc .pdf .txt .md .rtf .html .htm
-// 表单字段 parse_mode: "auto"（默认）/ "sample"（格式范例）/ "description"（格式说明）
-func (h *PaperHandler) UploadTemplate(c *gin.Context) {
-	var formatText string
-
-	// 优先从表单文本字段获取（纯文本模式）
-	formatText = c.PostForm("format_text")
-	if strings.TrimSpace(formatText) != "" {
-		// 直接使用文本，跳过文件处理
-		h.processTemplateText(c, formatText)
-		return
-	}
-
-	// ── 文件上传模式 ──────────────────────────────────────────────
-	file, err := c.FormFile("file")
-	if err != nil {
-		utils.ErrorResponse(c, http.StatusBadRequest, "请提供格式文本或上传文件", "")
-		return
-	}
-
-	parseMode := strings.TrimSpace(c.PostForm("parse_mode"))
-	if parseMode == "" {
-		parseMode = "auto"
-	}
-
-	// 支持的扩展名
-	ext := strings.ToLower(filepath.Ext(file.Filename))
-	allowedExts := map[string]bool{
-		".txt": true, ".md": true,
-		".doc": true, ".docx": true,
-		".pdf":  true,
-		".rtf":  true,
-		".html": true, ".htm": true,
-	}
-	if !allowedExts[ext] {
-		utils.ErrorResponse(c, http.StatusBadRequest,
-			fmt.Sprintf("不支持的文件格式 %s，支持：TXT、MD、DOC、DOCX、PDF、RTF、HTML", ext), "")
-		return
-	}
-
-	// 创建上传目录
-	uploadDir := filepath.Join("uploads", "templates")
-	if err := os.MkdirAll(uploadDir, 0755); err != nil {
-		utils.ErrorResponse(c, http.StatusInternalServerError, "创建上传目录失败", err.Error())
-		return
-	}
-
-	// 保存文件（保留原始扩展名，但用 UUID 命名避免冲突）
-	tempFileName := fmt.Sprintf("%s_%d%s", uuid.New().String(), time.Now().Unix(), ext)
-	tempFilePath := filepath.Join(uploadDir, tempFileName)
-	if err := c.SaveUploadedFile(file, tempFilePath); err != nil {
-		utils.ErrorResponse(c, http.StatusInternalServerError, "保存文件失败", err.Error())
-		return
-	}
-
-	// 通过文件魔数检测真实格式，不只依赖扩展名
-	realType, detectErr := h.detectFileType(tempFilePath)
-	if detectErr == nil && realType != "" && realType != ext {
-		ext = realType
-	}
-
-	// 根据真实格式提取文本
-	var extractErr error
-	switch ext {
-	case ".txt", ".md":
-		formatText, extractErr = h.extractTextFromTXT(tempFilePath)
-	case ".docx":
-		formatText, extractErr = h.extractTextFromDOCXRobust(tempFilePath)
-	case ".doc":
-		formatText, extractErr = h.extractTextFromDOC(tempFilePath)
-	case ".pdf":
-		formatText, extractErr = h.extractTextFromPDF(tempFilePath)
-	case ".rtf":
-		formatText, extractErr = h.extractTextFromRTF(tempFilePath)
-	case ".html", ".htm":
-		formatText, extractErr = h.extractTextFromHTML(tempFilePath)
-	default:
-		extractErr = fmt.Errorf("不支持的文件格式: %s", ext)
-	}
-
-	// 提取失败时尝试纯文本兜底
-	if extractErr != nil || strings.TrimSpace(formatText) == "" {
-		fallback, fallbackErr := h.extractTextFallback(tempFilePath)
-		if fallbackErr == nil && strings.TrimSpace(fallback) != "" {
-			formatText = fallback
-			extractErr = nil
-		} else if extractErr != nil {
-			utils.ErrorResponse(c, http.StatusInternalServerError,
-				"提取文件内容失败", fmt.Sprintf("格式: %s, 错误: %v", ext, extractErr))
-			return
-		}
-	}
-
-	if strings.TrimSpace(formatText) == "" {
-		utils.ErrorResponse(c, http.StatusBadRequest, "文件内容为空，无法解析格式规范", "")
-		return
-	}
-
-	// ── 格式范例模式检测 ──────────────────────────────────────────
-	isSampleMode := false
-	switch parseMode {
-	case "sample":
-		isSampleMode = true
-	case "description":
-		isSampleMode = false
-	default:
-		if (ext == ".docx" || ext == ".doc") && formatchecker.IsSampleDocument(formatText) {
-			isSampleMode = true
-			log.Printf("[上传模板] 自动检测：文件为格式范例（缺少格式描述关键词）")
-		}
-	}
-
-	if isSampleMode && (ext == ".docx" || ext == ".doc") {
-		h.processTemplateSample(c, tempFilePath, ext, formatText)
-		return
-	}
-
-	h.processTemplateText(c, formatText)
-}
-
-// processTemplateSample 处理格式范例文档：直接从DOCX解析格式属性，
-// 与AI/正则解析结果合并后保存。
-func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extractedText string) {
-	docxPath := filePath
-
-	// .doc 需要先转为 .docx
-	if ext == ".doc" {
-		converted := h.trySofficeConvertToDocx(filePath)
-		if converted == "" {
-			log.Printf("[格式范例] .doc转.docx失败，回退到文本解析模式")
-			h.processTemplateText(c, extractedText)
-			return
-		}
-		docxPath = converted
-		defer os.Remove(converted)
-	}
-
-	parser := formatchecker.NewTemplateParser()
-	docxRules, err := parser.ParseTemplateToFormatRules(docxPath)
-	if err != nil {
-		log.Printf("[格式范例] DOCX格式解析失败: %v，回退到文本解析模式", err)
-		h.processTemplateText(c, extractedText)
-		return
-	}
-
-	log.Printf("[格式范例] DOCX直接解析成功，提取到 %d 个顶层规则", len(docxRules))
-
-	universityName := c.PostForm("university_name")
-	documentType := c.PostForm("document_type")
-	subject := c.PostForm("subject")
-	description := c.PostForm("description")
-
-	// 从 DOCX 解析结果中提取大学名称
-	if universityName == "" {
-		if uniName, ok := docxRules["_university_name"].(string); ok && uniName != "" {
-			universityName = uniName
-		}
-	}
-	delete(docxRules, "_university_name")
-
-	// 仍然尝试从文本中提取大学名称
-	if universityName == "" {
-		universityInfo := h.formatParserService.ExtractUniversityInfo(extractedText)
-		if name, ok := universityInfo["name"]; ok {
-			universityName = name
-		}
-		if docType, ok := universityInfo["document_type"]; ok && documentType == "" {
-			documentType = docType
-		}
-	}
-	if universityName == "" {
-		aiInfo := h.formatParserService.ExtractUniversityInfoWithAI(extractedText)
-		if name, ok := aiInfo["name"]; ok && name != "" {
-			universityName = name
-		}
-		if docType, ok := aiInfo["document_type"]; ok && docType != "" && documentType == "" {
-			documentType = docType
-		}
-	}
-
-	if universityName == "" {
-		utils.ErrorResponse(c, http.StatusBadRequest, "高校名称不能为空，请通过 university_name 参数提供", "")
-		return
-	}
-	if documentType == "" {
-		documentType = "本科论文"
-	}
-	if subject == "" {
-		subject = "综合"
-	}
-
-	// 也尝试文本解析（正则+AI），将可测量属性用DOCX解析结果覆盖
-	textRulesJSON, textErr := h.formatParserService.ParseFormatFromTextSmart(extractedText)
-	if textErr == nil && strings.TrimSpace(textRulesJSON) != "" {
-		var textRules map[string]interface{}
-		if json.Unmarshal([]byte(textRulesJSON), &textRules) == nil {
-			merged := service.MergeFormatRules(docxRules, textRules)
-			docxRules = merged
-			log.Printf("[格式范例] DOCX规则与文本规则合并完成")
-		}
-	}
-
-	formatRulesJSON, err := json.Marshal(docxRules)
-	if err != nil {
-		utils.ErrorResponse(c, http.StatusInternalServerError, "序列化格式规则失败", err.Error())
-		return
-	}
-
-	var university model.University
-	if res := database.DB.Where("name = ?", universityName).First(&university); res.Error != nil {
-		university = model.University{
-			Name:        universityName,
-			Abbr:        universityName,
-			Description: description,
-			Tags:        "[]",
-		}
-		if err := database.DB.Create(&university).Error; err != nil {
-			utils.ErrorResponse(c, http.StatusInternalServerError, "创建高校记录失败", err.Error())
-			return
-		}
-	} else if description != "" {
-		database.DB.Model(&university).Update("description", description)
-	}
-
-	var existingTemplate model.FormatTemplate
-	err = database.DB.Where("university_id = ? AND document_type = ? AND subject = ?",
-		university.ID, documentType, subject).First(&existingTemplate).Error
-	if err == nil {
-		existingTemplate.FormatRules = string(formatRulesJSON)
-		existingTemplate.UpdatedAt = time.Now()
-		if description != "" {
-			existingTemplate.Description = description
-		}
-		if err := database.DB.Save(&existingTemplate).Error; err != nil {
-			utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式模板失败", err.Error())
-			return
-		}
-		utils.Success(c, gin.H{"message": "格式模板已更新（格式范例模式）", "id": existingTemplate.ID, "parse_mode": "sample"})
-		return
-	}
-
-	newTemplate := model.FormatTemplate{
-		TemplateID:   uuid.New().String(),
-		Name:         fmt.Sprintf("%s%s格式标准", universityName, documentType),
-		UniversityID: &university.ID,
-		DocumentType: documentType,
-		Subject:      subject,
-		Source:       "sample_upload",
-		IsActive:     true,
-		IsPublic:     true,
-		FormatRules:  string(formatRulesJSON),
-		Description:  description,
-	}
-	if err := database.DB.Create(&newTemplate).Error; err != nil {
-		utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())
-		return
-	}
-
-	utils.Created(c, gin.H{"message": "格式模板已创建（格式范例模式）", "id": newTemplate.ID, "parse_mode": "sample"})
-}
-
-// trySofficeConvertToDocx converts a .doc file to .docx using soffice,
-// returning the path to the generated .docx or empty string on failure.
-func (h *PaperHandler) trySofficeConvertToDocx(filePath string) string {
-	sofficePaths := []string{
-		"soffice",
-		`C:\Program Files\LibreOffice\program\soffice.exe`,
-		`C:\Program Files (x86)\LibreOffice\program\soffice.exe`,
-		"/usr/bin/soffice",
-		"/usr/local/bin/soffice",
-	}
-
-	var sofficeBin string
-	for _, p := range sofficePaths {
-		if _, err := exec.LookPath(p); err == nil {
-			sofficeBin = p
-			break
-		}
-	}
-	if sofficeBin == "" {
-		return ""
-	}
-
-	absPath, _ := filepath.Abs(filePath)
-	outDir := filepath.Dir(absPath)
-	baseName := strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
-
-	cmd := exec.Command(sofficeBin,
-		"--headless", "--convert-to", "docx",
-		"--outdir", outDir, absPath,
-	)
-	if err := cmd.Run(); err != nil {
-		log.Printf("[格式范例] soffice转换失败: %v", err)
-		return ""
-	}
-
-	docxPath := filepath.Join(outDir, baseName+".docx")
-	if _, err := os.Stat(docxPath); err != nil {
-		return ""
-	}
-	return docxPath
-}
-
-// processTemplateText 用提取的文本解析并保存格式模板（公共逻辑）
-func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string) {
-	if strings.TrimSpace(formatText) == "" {
-		utils.ErrorResponse(c, http.StatusBadRequest, "格式文本不能为空", "")
-		return
-	}
-
-	// 安全上限：防止正则/AI处理超时（200K chars → 正则 <1s）
-	const maxTemplateRunes = 200000
-	runes := []rune(formatText)
-	if len(runes) > maxTemplateRunes {
-		log.Printf("[上传模板] 文本过长 (%d 字符)，截断到 %d 字符", len(runes), maxTemplateRunes)
-		formatText = string(runes[:maxTemplateRunes])
-		runes = runes[:maxTemplateRunes]
-	}
-
-	universityName := c.PostForm("university_name")
-	documentType := c.PostForm("document_type")
-	subject := c.PostForm("subject")
-	description := c.PostForm("description")
-
-	preview := string(runes)
-	if len(runes) > 500 {
-		preview = string(runes[:500])
-	}
-	log.Printf("[上传模板] 提取文本预览 (%d 字符):\n%s", len(runes), preview)
-
-	if universityName == "" {
-		universityInfo := h.formatParserService.ExtractUniversityInfo(formatText)
-		log.Printf("[上传模板] 正则提取结果: %v", universityInfo)
-		if name, ok := universityInfo["name"]; ok {
-			universityName = name
-		}
-		if docType, ok := universityInfo["document_type"]; ok && documentType == "" {
-			documentType = docType
-		}
-	}
-
-	if universityName == "" {
-		log.Println("[上传模板] 正则未识别到高校名称，尝试 AI 提取...")
-		aiInfo := h.formatParserService.ExtractUniversityInfoWithAI(formatText)
-		if name, ok := aiInfo["name"]; ok && name != "" {
-			universityName = name
-			log.Printf("[上传模板] AI 识别到高校: %s", universityName)
-		}
-		if docType, ok := aiInfo["document_type"]; ok && docType != "" && documentType == "" {
-			documentType = docType
-		}
-	}
-
-	if universityName == "" {
-		utils.ErrorResponse(c, http.StatusBadRequest, "高校名称不能为空，请通过 university_name 参数提供", "")
-		return
-	}
-	if documentType == "" {
-		documentType = "本科论文"
-	}
-	if subject == "" {
-		subject = "综合"
-	}
-
-	formatRules, err := h.formatParserService.ParseFormatFromTextSmart(formatText)
-	if err != nil {
-		utils.ErrorResponse(c, http.StatusInternalServerError, "解析格式失败", err.Error())
-		return
-	}
-
-	formatRulesJSON, err := json.Marshal(formatRules)
-	if err != nil {
-		utils.ErrorResponse(c, http.StatusInternalServerError, "序列化格式规则失败", err.Error())
-		return
-	}
-
-	var university model.University
-	if res := database.DB.Where("name = ?", universityName).First(&university); res.Error != nil {
-		university = model.University{
-			Name:        universityName,
-			Abbr:        universityName,
-			Description: description,
-			Tags:        "[]",
-		}
-		if err := database.DB.Create(&university).Error; err != nil {
-			utils.ErrorResponse(c, http.StatusInternalServerError, "创建高校记录失败", err.Error())
-			return
-		}
-	} else if description != "" {
-		database.DB.Model(&university).Update("description", description)
-	}
-
-	var existingTemplate model.FormatTemplate
-	err = database.DB.Where("university_id = ? AND document_type = ? AND subject = ?",
-		university.ID, documentType, subject).First(&existingTemplate).Error
-	if err == nil {
-		existingTemplate.FormatRules = string(formatRulesJSON)
-		existingTemplate.UpdatedAt = time.Now()
-		if description != "" {
-			existingTemplate.Description = description
-		}
-		if err := database.DB.Save(&existingTemplate).Error; err != nil {
-			utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式模板失败", err.Error())
-			return
-		}
-		utils.Success(c, gin.H{"message": "格式模板已更新", "id": existingTemplate.ID})
-		return
-	}
-
-	newTemplate := model.FormatTemplate{
-		TemplateID:   uuid.New().String(),
-		Name:         fmt.Sprintf("%s%s格式标准", universityName, documentType),
-		UniversityID: &university.ID,
-		DocumentType: documentType,
-		Subject:      subject,
-		Source:       "university_upload",
-		IsActive:     true,
-		IsPublic:     true,
-		FormatRules:  string(formatRulesJSON),
-		Description:  description,
-	}
-	if err := database.DB.Create(&newTemplate).Error; err != nil {
-		utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())
-		return
-	}
-
-	utils.Created(c, gin.H{"message": "格式模板已创建", "id": newTemplate.ID})
-}
-
-// detectFileType 通过魔数检测文件真实类型，返回对应扩展名
-func (h *PaperHandler) detectFileType(filePath string) (string, error) {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	buf := make([]byte, 8)
-	n, err := f.Read(buf)
-	if err != nil || n < 4 {
-		return "", fmt.Errorf("文件过短")
-	}
-
-	// ZIP (DOCX/XLSX/PPTX)
-	if buf[0] == 0x50 && buf[1] == 0x4B && buf[2] == 0x03 && buf[3] == 0x04 {
-		return ".docx", nil
-	}
-	// OLE2 Compound (DOC/XLS/PPT)
-	if buf[0] == 0xD0 && buf[1] == 0xCF && buf[2] == 0x11 && buf[3] == 0xE0 {
-		return ".doc", nil
-	}
-	// PDF
-	if buf[0] == 0x25 && buf[1] == 0x50 && buf[2] == 0x44 && buf[3] == 0x46 {
-		return ".pdf", nil
-	}
-	// RTF
-	if n >= 5 && string(buf[:5]) == `{\rtf` {
-		return ".rtf", nil
-	}
-	// HTML (简单检测)
-	preview := strings.ToLower(strings.TrimSpace(string(buf[:n])))
-	if strings.HasPrefix(preview, "<!doc") || strings.HasPrefix(preview, "<html") {
-		return ".html", nil
-	}
-	return "", nil
-}
-
-// extractTextFromTXT 从TXT文件提取文本
-func (h *PaperHandler) extractTextFromTXT(filePath string) (string, error) {
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", err
-	}
-	return string(content), nil
-}
-
-// extractTextFromDOCXRobust 从DOCX文件提取文本（unioffice 优先）
-func (h *PaperHandler) extractTextFromDOCXRobust(filePath string) (string, error) {
-	// 方案1: unioffice 库 — 正确解析 OOXML 段落结构，无乱码
-	if text := h.tryUniofficeExtract(filePath); text != "" {
-		return text, nil
-	}
-	// 方案2: nguyenthenguyen/docx 库
-	if doc, err := docx.ReadDocxFile(filePath); err == nil {
-		defer doc.Close()
-		content := h.cleanDocxContent(doc.Editable().GetContent())
-		if content != "" {
-			return content, nil
-		}
-	}
-	// 方案3: ZIP 直接解析 document.xml
-	return h.extractTextFromDOCXSimple(filePath)
-}
-
-// extractTextFromDOCX 从DOCX文件提取文本（保持兼容）
-func (h *PaperHandler) extractTextFromDOCX(filePath string) (string, error) {
-	return h.extractTextFromDOCXRobust(filePath)
-}
-
-// tryUniofficeExtract 使用 unioffice 从 .docx 提取干净的段落文本
-func (h *PaperHandler) tryUniofficeExtract(filePath string) string {
-	doc, err := document.Open(filePath)
-	if err != nil {
-		return ""
-	}
-
-	var sb strings.Builder
-	for _, para := range doc.Paragraphs() {
-		var line strings.Builder
-		for _, run := range para.Runs() {
-			line.WriteString(run.Text())
-		}
-		text := strings.TrimSpace(line.String())
-		if text != "" {
-			sb.WriteString(text)
-			sb.WriteByte('\n')
-		}
-	}
-
-	result := strings.TrimSpace(sb.String())
-	if len([]rune(result)) < 10 {
-		return ""
-	}
-	log.Printf("[DOCX提取] unioffice 成功: %d 字符", len([]rune(result)))
-	return result
-}
-
-// extractTextFromDOC 从旧版DOC（OLE2 Compound）文件提取文本
-func (h *PaperHandler) extractTextFromDOC(filePath string) (string, error) {
-	// 方案 1：先尝试作为 DOCX (ZIP) 处理（有些 .doc 实际上是 DOCX）
-	if text, err := h.extractTextFromDOCXRobust(filePath); err == nil && strings.TrimSpace(text) != "" {
-		log.Println("[DOC提取] 方案1成功: 文件实际是 DOCX 格式")
-		return text, nil
-	}
-
-	// 方案 2：PowerShell COM 自动化 — 调用 WPS/Word 提取文本（Windows，最可靠）
-	if text := h.tryComDocToText(filePath); text != "" {
-		log.Printf("[DOC提取] 方案2成功: COM (WPS/Word), %d 字符", len([]rune(text)))
-		return text, nil
-	}
-
-	// 方案 3：使用 doc2txt 库解析 OLE2 .doc
-	if text := h.tryDoc2txt(filePath); text != "" {
-		log.Printf("[DOC提取] 方案3成功: doc2txt, %d 字符", len([]rune(text)))
-		return text, nil
-	}
-
-	// 方案 4：LibreOffice soffice 命令行转换
-	if text := h.trySofficeConvert(filePath); text != "" {
-		log.Printf("[DOC提取] 方案4成功: soffice, %d 字符", len([]rune(text)))
-		return text, nil
-	}
-
-	// 方案 5：扫描 OLE2 二进制中的 UTF-16LE 中文文本（宽松模式）
-	if text := h.tryBinaryUTF16Extract(filePath); text != "" {
-		log.Printf("[DOC提取] 方案5成功: 二进制UTF-16LE, %d 字符", len([]rune(text)))
-		return text, nil
-	}
-
-	return "", fmt.Errorf("DOC 文件文本提取失败，建议将文件另存为 DOCX 格式后重新上传")
-}
-
-// tryDoc2txt 尝试用 doc2txt 库提取 .doc 文本
-func (h *PaperHandler) tryDoc2txt(filePath string) string {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-
-	reader, err := doc2txt.ParseDoc(f)
-	if err != nil {
-		log.Printf("[DOC提取] doc2txt 解析失败: %v", err)
-		return ""
-	}
-
-	const maxBytes = 2 * 1024 * 1024
-	textBytes, err := io.ReadAll(io.LimitReader(reader, maxBytes))
-	if err != nil {
-		log.Printf("[DOC提取] doc2txt 读取失败: %v", err)
-		return ""
-	}
-
-	text := h.cleanExtractedText(string(textBytes))
-	chineseCount := countChinese(text)
-	log.Printf("[DOC提取] doc2txt 结果: %d 字符, 中文 %d 个", len([]rune(text)), chineseCount)
-
-	if chineseCount < 30 {
-		log.Println("[DOC提取] doc2txt 结果质量不佳，尝试其他方案")
-		return ""
-	}
-	return text
-}
-
-// tryComDocToText 使用 PowerShell COM 自动化 (WPS / Word) 提取 .doc 纯文本
-func (h *PaperHandler) tryComDocToText(filePath string) string {
-	absPath, err := filepath.Abs(filePath)
-	if err != nil {
-		return ""
-	}
-	absPath = strings.ReplaceAll(absPath, `/`, `\`)
-	escapedPath := strings.ReplaceAll(absPath, `'`, `''`)
-
-	// PowerShell 脚本：尝试多个 COM ProgID，通过 stdout 输出文本
-	psScript := fmt.Sprintf(`
-[Console]::OutputEncoding = [Text.Encoding]::UTF8
-$ErrorActionPreference = 'Stop'
-$path = '%s'
-$app = $null
-$ids = @('Word.Application','KWps.Application','wps.Application','KWPS.Application')
-foreach ($id in $ids) {
-  try { $app = New-Object -ComObject $id; break } catch {}
-}
-if (-not $app) { exit 1 }
-$app.Visible = $false
-$app.DisplayAlerts = 0
-try {
-  $doc = $app.Documents.Open($path)
-  [Console]::Out.Write($doc.Content.Text)
-  $doc.Close([ref]$false)
-} finally {
-  $app.Quit()
-}
-`, escapedPath)
-
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.Env = os.Environ()
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("[DOC提取] COM 失败: %v (output: %.200s)", err, string(output))
-		return ""
-	}
-
-	text := strings.TrimSpace(string(output))
-	chineseCount := countChinese(text)
-	log.Printf("[DOC提取] COM (WPS/Word) 结果: %d 字符, 中文 %d 个", len([]rune(text)), chineseCount)
-
-	if chineseCount < 10 {
-		return ""
-	}
-	return text
-}
-
-// trySofficeConvert 尝试使用 LibreOffice soffice 将 .doc 转为 .txt
-func (h *PaperHandler) trySofficeConvert(filePath string) string {
-	sofficePaths := []string{
-		"soffice",
-		`C:\Program Files\LibreOffice\program\soffice.exe`,
-		`C:\Program Files (x86)\LibreOffice\program\soffice.exe`,
-		"/usr/bin/soffice",
-		"/usr/local/bin/soffice",
-	}
-
-	var sofficeBin string
-	for _, p := range sofficePaths {
-		if _, err := exec.LookPath(p); err == nil {
-			sofficeBin = p
-			break
-		}
-	}
-	if sofficeBin == "" {
-		log.Println("[DOC提取] LibreOffice 未找到，跳过")
-		return ""
-	}
-
-	absPath, _ := filepath.Abs(filePath)
-	outDir := filepath.Dir(absPath)
-	baseName := strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
-	txtPath := filepath.Join(outDir, baseName+".txt")
-	defer os.Remove(txtPath)
-
-	cmd := exec.Command(sofficeBin,
-		"--headless", "--convert-to", "txt:Text (encoded):UTF8",
-		"--outdir", outDir, absPath,
-	)
-	cmd.Env = append(os.Environ(), "HOME="+os.TempDir())
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("[DOC提取] soffice 转换失败: %v, output: %s", err, string(output))
-		return ""
-	}
-
-	textBytes, err := os.ReadFile(txtPath)
-	if err != nil {
-		return ""
-	}
-
-	text := strings.TrimSpace(string(textBytes))
-	chineseCount := countChinese(text)
-	log.Printf("[DOC提取] soffice 成功: %d 字符, 中文 %d 个", len([]rune(text)), chineseCount)
-	if chineseCount < 10 {
-		return ""
-	}
-	return text
-}
-
-// tryBinaryUTF16Extract 从 OLE2 二进制中扫描 UTF-16LE 编码的中文文本
-// 这是最后的保底方案：虽然会有部分乱码，但能保证提取到关键的中文内容（如高校名称）
-func (h *PaperHandler) tryBinaryUTF16Extract(filePath string) string {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return ""
-	}
-
-	// 跳过 OLE2 文件头元数据
-	startOffset := 0
-	if len(data) > 0x900 {
-		startOffset = 0x900
-	}
-
-	var sb strings.Builder
-	const maxOutput = 500 * 1024
-
-	i := startOffset
-	for i < len(data)-1 {
-		lo, hi := data[i], data[i+1]
-		cp := uint16(lo) | uint16(hi)<<8
-
-		switch {
-		case cp >= 0x4E00 && cp <= 0x9FFF:
-			sb.WriteRune(rune(cp))
-			i += 2
-		case cp >= 0x3000 && cp <= 0x303F:
-			sb.WriteRune(rune(cp))
-			i += 2
-		case cp >= 0xFF00 && cp <= 0xFFEF:
-			sb.WriteRune(rune(cp))
-			i += 2
-		case lo >= 0x20 && lo < 0x7F:
-			sb.WriteByte(lo)
-			i++
-		case lo == 0x0D || lo == 0x0A:
-			sb.WriteByte('\n')
-			i++
-		default:
-			i++
-		}
-
-		if sb.Len() > maxOutput {
-			break
-		}
-	}
-
-	text := h.cleanExtractedText(sb.String())
-	chineseCount := countChinese(text)
-	log.Printf("[DOC提取] 二进制UTF-16LE: %d 字符, 中文 %d 个", len([]rune(text)), chineseCount)
-
-	if chineseCount < 5 {
-		return ""
-	}
-	return text
-}
-
-func countChinese(text string) int {
-	count := 0
-	for _, r := range text {
-		if r >= 0x4E00 && r <= 0x9FFF {
-			count++
-		}
-	}
-	return count
-}
-
-// extractTextFromRTF 从RTF文件提取纯文本
-func (h *PaperHandler) extractTextFromRTF(filePath string) (string, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", err
-	}
-	text := string(data)
-	// 移除RTF控制字和组
-	re := regexp.MustCompile(`\\\*[^\\{}]+|\\[a-z]+[-\d]*\s?|\{|\}`)
-	text = re.ReplaceAllString(text, " ")
-	// 处理 \uN 转义（Unicode字符）
-	uniRe := regexp.MustCompile(`\\u(\d+)\??`)
-	text = uniRe.ReplaceAllStringFunc(text, func(m string) string {
-		matches := uniRe.FindStringSubmatch(m)
-		if len(matches) < 2 {
-			return ""
-		}
-		if n, err := strconv.Atoi(matches[1]); err == nil {
-			if n < 0 {
-				n += 65536
-			}
-			return string(rune(n))
-		}
-		return ""
-	})
-	return h.cleanExtractedText(text), nil
-}
-
-// extractTextFromHTML 从HTML文件提取纯文本
-func (h *PaperHandler) extractTextFromHTML(filePath string) (string, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", err
-	}
-	text := string(data)
-	// 移除 <script> 和 <style> 块
-	text = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`).ReplaceAllString(text, " ")
-	text = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`).ReplaceAllString(text, " ")
-	// 移除所有HTML标签
-	text = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(text, " ")
-	// HTML实体解码（常见）
-	text = strings.NewReplacer(
-		"&nbsp;", " ", "&lt;", "<", "&gt;", ">",
-		"&amp;", "&", "&quot;", `"`, "&#39;", "'",
-	).Replace(text)
-	return h.cleanExtractedText(text), nil
-}
-
-// extractTextFallback 兜底：尝试将文件作为文本读取
-func (h *PaperHandler) extractTextFallback(filePath string) (string, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", err
-	}
-	// 仅保留可打印字符和中文
-	var sb strings.Builder
-	for _, r := range string(data) {
-		if r >= 0x20 && r < 0x7F || r >= 0x4E00 && r <= 0x9FFF || r == '\n' || r == '\r' {
-			sb.WriteRune(r)
-		}
-	}
-	text := h.cleanExtractedText(sb.String())
-	if len(text) < 10 {
-		return "", fmt.Errorf("文件内容无法识别")
-	}
-	return text, nil
-}
-
-// cleanDocxContent 清理DOCX内容（从原始XML中提取纯文本）
-func (h *PaperHandler) cleanDocxContent(content string) string {
-	// GetContent() 返回的是原始 XML，需要先提取 <w:t> 标签中的文本
-	if strings.Contains(content, "<w:") {
-		var sb strings.Builder
-		textRe := regexp.MustCompile(`<w:t[^>]*>([^<]*)</w:t>`)
-		// 用段落标签作为换行分隔
-		paraContent := regexp.MustCompile(`</w:p>`).ReplaceAllString(content, "</w:p>\n")
-
-		for _, line := range strings.Split(paraContent, "\n") {
-			matches := textRe.FindAllStringSubmatch(line, -1)
-			if len(matches) == 0 {
-				continue
-			}
-			var lineText strings.Builder
-			for _, m := range matches {
-				if len(m) > 1 {
-					lineText.WriteString(m[1])
-				}
-			}
-			text := strings.TrimSpace(lineText.String())
-			if text != "" {
-				sb.WriteString(text)
-				sb.WriteString("\n")
-			}
-		}
-		content = sb.String()
-	}
-
-	// XML 实体解码
-	content = strings.ReplaceAll(content, "&lt;", "<")
-	content = strings.ReplaceAll(content, "&gt;", ">")
-	content = strings.ReplaceAll(content, "&amp;", "&")
-	content = strings.ReplaceAll(content, "&quot;", "\"")
-	content = strings.ReplaceAll(content, "&#39;", "'")
-
-	// 移除残留的 XML 标签
-	content = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(content, "")
-	// 合并多个连续空行为一个
-	content = regexp.MustCompile(`\n{3,}`).ReplaceAllString(content, "\n\n")
-	content = strings.TrimSpace(content)
-	return content
-}
-
-// extractTextFromDOCXSimple DOCX文本提取的简化实现（改进版）
-func (h *PaperHandler) extractTextFromDOCXSimple(filePath string) (string, error) {
-	// DOCX 是一个 ZIP 文件，包含 word/document.xml
-	// 这里提供一个改进的实现
-
-	// 打开 ZIP 文件
-	r, err := zip.OpenReader(filePath)
-	if err != nil {
-		return "", fmt.Errorf("无法打开DOCX文件: %v", err)
-	}
-	defer r.Close()
-
-	// 查找 word/document.xml
-	var documentXML *zip.File
-	for _, f := range r.File {
-		if f.Name == "word/document.xml" {
-			documentXML = f
-			break
-		}
-	}
-
-	if documentXML == nil {
-		return "", fmt.Errorf("DOCX文件格式错误：找不到document.xml")
-	}
-
-	// 读取 XML 内容
-	rc, err := documentXML.Open()
-	if err != nil {
-		return "", err
-	}
-	defer rc.Close()
-
-	content, err := io.ReadAll(rc)
-	if err != nil {
-		return "", err
-	}
-
-	// 解析 XML 内容
-	text := string(content)
-
-	// 提取所有文本内容，不仅仅是<w:t>标签
-	// 使用更全面的正则表达式来提取文本
-	textRe := regexp.MustCompile(`<w:t[^>]*>([^<]*)</w:t>|<w:instrText[^>]*>([^<]*)</w:instrText>|<w:delText[^>]*>([^<]*)</w:delText>`)
-	matches := textRe.FindAllStringSubmatch(text, -1)
-
-	var extractedText strings.Builder
-
-	for _, match := range matches {
-		// 检查不同的捕获组
-		for i := 1; i < len(match); i++ {
-			if match[i] != "" {
-				textContent := match[i]
-				// 解码可能的XML实体
-				textContent = strings.ReplaceAll(textContent, "&lt;", "<")
-				textContent = strings.ReplaceAll(textContent, "&gt;", ">")
-				textContent = strings.ReplaceAll(textContent, "&amp;", "&")
-				textContent = strings.ReplaceAll(textContent, "&quot;", "\"")
-				textContent = strings.ReplaceAll(textContent, "&#39;", "'")
-				extractedText.WriteString(textContent)
-				break
-			}
-		}
-	}
-
-	// 另一种方法：使用更简单的正则表达式移除所有XML标签
-	cleanText := regexp.MustCompile(`<[^>]+>`).ReplaceAllString(text, " ")
-	// 清理多个空格
-	cleanText = regexp.MustCompile(`\s+`).ReplaceAllString(cleanText, " ")
-	// 如果通过标签提取的内容为空，使用清理标签的方法
-	if strings.TrimSpace(extractedText.String()) == "" {
-		return cleanText, nil
-	}
-	// 否则，使用标签提取的内容
-	text = extractedText.String()
-
-	result := extractedText.String()
-
-	// 清理结果
-	result = h.cleanExtractedText(result)
-
-	if result == "" {
-		return "", fmt.Errorf("无法从DOCX文件中提取文本内容")
-	}
-
-	return result, nil
-}
-
-// cleanExtractedText 清理提取的文本
-func (h *PaperHandler) cleanExtractedText(text string) string {
-	// 移除多余的空格
-	text = regexp.MustCompile(`[ \t]+`).ReplaceAllString(text, " ")
-	// 移除多余的换行
-	text = regexp.MustCompile(`\n{3,}`).ReplaceAllString(text, "\n\n")
-	// 移除首尾空白
-	text = strings.TrimSpace(text)
-	return text
-}
-
-// extractTextFromPDF 从PDF文件提取文本（改进版）
-func (h *PaperHandler) extractTextFromPDF(filePath string) (string, error) {
-	// 打开PDF文件
-	r, err := pdf.Open(filePath)
-	if err != nil {
-		return "", fmt.Errorf("无法打开PDF文件: %v", err)
-	}
-
-	var textBuilder strings.Builder
-	totalPages := r.NumPage()
-
-	// 限制只读取前20页（格式规范通常在前几页）
-	maxPages := min(20, totalPages)
-
-	for pageNum := 1; pageNum <= maxPages; pageNum++ {
-		page := r.Page(pageNum)
-		if page.V.IsNull() {
-			continue
-		}
-
-		// 提取页面文本内容
-		content := page.Content()
-
-		// 遍历文本对象
-		for _, text := range content.Text {
-			// 过滤空白文本
-			if strings.TrimSpace(text.S) != "" {
-				textBuilder.WriteString(text.S)
-				textBuilder.WriteString(" ")
-			}
-		}
-		textBuilder.WriteString("\n")
-	}
-
-	result := textBuilder.String()
-
-	// 清理文本
-	result = h.cleanPDFContent(result)
-
-	if result == "" {
-		return "", fmt.Errorf("无法从PDF文件中提取文本内容")
-	}
-
-	return result, nil
-}
-
-// cleanPDFContent 清理PDF提取的内容
-func (h *PaperHandler) cleanPDFContent(content string) string {
-	// 移除多余的空白字符
-	content = regexp.MustCompile(`[ \t]+`).ReplaceAllString(content, " ")
-	// 移除多余的换行
-	content = regexp.MustCompile(`\n{3,}`).ReplaceAllString(content, "\n\n")
-	// 移除首尾空白
-	content = strings.TrimSpace(content)
-	return content
-}
-
-// extractTextFromPDFSimple PDF文本提取的简化实现（备用）
-func (h *PaperHandler) extractTextFromPDFSimple(filePath string) (string, error) {
-	// 打开PDF文件
-	r, err := pdf.Open(filePath)
-	if err != nil {
-		return "", fmt.Errorf("无法打开PDF文件: %v", err)
-	}
-
-	var textBuilder strings.Builder
-	totalPages := r.NumPage()
-
-	// 限制只读取前10页（避免处理时间过长）
-	maxPages := min(10, totalPages)
-
-	for pageNum := 1; pageNum <= maxPages; pageNum++ {
-		page := r.Page(pageNum)
-		if page.V.IsNull() {
-			continue
-		}
-
-		// 提取页面文本内容
-		// rsc.io/pdf 库的文本提取比较基础
-		content := page.Content()
-
-		// 遍历文本对象
-		for _, text := range content.Text {
-			textBuilder.WriteString(text.S)
-			textBuilder.WriteString(" ")
-		}
-		textBuilder.WriteString("\n")
-	}
-
-	result := textBuilder.String()
-	if result == "" {
-		return "", fmt.Errorf("无法从PDF文件中提取文本内容")
-	}
-
-	return result, nil
-}
-
-// min 返回两个整数中的较小值
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// FixByTemplate 根据模板修复论文
-func (h *PaperHandler) FixByTemplate(c *gin.Context) {
-	// 从上下文获取用户ID
-	userID, _ := c.Get("user_id")
-
-	// 获取论文ID
-	paperID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		utils.BadRequest(c, "invalid paper id")
-		return
-	}
-
-	// 获取请求参数
-	var req struct {
-		TemplateID       int64  `form:"template_id" json:"template_id"`               // 高校ID
-		FormatConfigJSON string `form:"format_config_json" json:"format_config_json"` // 格式配置JSON
-	}
-	// 使用 ShouldBind 支持 multipart/form-data 和 json
-	if err := c.ShouldBind(&req); err != nil {
-		utils.BadRequest(c, err.Error())
-		return
-	}
-
-	// 获取论文信息
-	paper, err := h.paperService.GetPaperByID(userID.(uuid.UUID), paperID)
-	if err != nil {
-		utils.InternalServerError(c, "论文不存在或无权限访问: "+err.Error())
-		return
-	}
-
-	var checkResult *model.CheckResult
-	var fixResult interface{}
-
-	// 如果有TemplateID，使用模板进行修正
-	if req.TemplateID != 0 {
-		// 直接运行 V2 引擎（快速路径，~200ms）
-		fixedPath, err := h.paperService.QuickV2Fix(paper.FilePath, req.TemplateID)
-		if err != nil {
-			utils.InternalServerError(c, "V2格式修正失败: "+err.Error())
-			return
-		}
-
-		paper.CorrectedFilePath = fixedPath
-		paper.Status = "corrected"
-		database.DB.Save(paper)
-
-		fixResult = map[string]interface{}{
-			"corrected_file_path": fixedPath,
-		}
-	} else if req.FormatConfigJSON != "" {
-		// 如果没有TemplateID但有格式配置，使用配置进行修正
-		var requirements map[string]interface{}
-		if err := json.Unmarshal([]byte(req.FormatConfigJSON), &requirements); err != nil {
-			utils.BadRequest(c, "格式配置JSON解析失败: "+err.Error())
-			return
-		}
-
-		// 使用配置进行修正
-		fixResult, err = h.paperService.FixPaperFormatByParsedRequirements(userID.(uuid.UUID), paper.ID, requirements)
-		if err != nil {
-			utils.InternalServerError(c, "格式修正失败: "+err.Error())
-			return
-		}
-	} else {
-		utils.BadRequest(c, "必须提供template_id或format_config_json")
-		return
-	}
-
-	// 构建响应
-	response := gin.H{
-		"message":      "格式修复完成",
-		"fix_result":   fixResult,
-		"download_url": fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String()),
-	}
-
-	if checkResult != nil {
-		response["check_result"] = checkResult
-
-		// 生成格式差异报告
-		diffReport, err := h.formatComparisonService.GenerateFormatDifferences(checkResult.ID)
-		if err == nil {
-			response["format_comparison"] = diffReport
-		}
-	}
-
-	// 尝试获取修正后的文件路径
-	if result, ok := fixResult.(*service.CorrectionResult); ok && result != nil {
-		response["corrected_file_path"] = result.CorrectedFilePath
-	} else if resultMap, ok := fixResult.(map[string]interface{}); ok {
-		if path, exists := resultMap["corrected_file_path"]; exists {
-			response["corrected_file_path"] = path
-		}
-	}
-
-	utils.Success(c, response)
-}
-
 // CreateFormatStandard 创建格式标准
 func (h *PaperHandler) CreateFormatStandard(c *gin.Context) {
 	var req struct {
@@ -3696,7 +1719,7 @@ func (h *PaperHandler) GetFormatStandardForDisplay(c *gin.Context) {
 	}
 
 	// 转换为友好展示格式
-	friendlyFormat := h.convertToFriendlyFormat(formatRules)
+	friendlyFormat := friendlyConvertFormatRulesForDisplay(formatRules)
 
 	// 构建响应
 	response := gin.H{
@@ -3709,467 +1732,6 @@ func (h *PaperHandler) GetFormatStandardForDisplay(c *gin.Context) {
 	}
 
 	utils.SuccessResponse(c, "获取成功", response)
-}
-
-// convertToFriendlyFormat 将格式规则转换为友好展示格式
-func (h *PaperHandler) convertToFriendlyFormat(formatRules map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range formatRules {
-		switch key {
-		case "body":
-			if bodyMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertBodyFormat(bodyMap)
-			}
-		case "title":
-			if titleMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertTitleFormat(titleMap)
-			}
-		case "author":
-			if authorMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertAuthorFormat(authorMap)
-			}
-		case "abstract":
-			if abstractMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertAbstractFormat(abstractMap)
-			}
-		case "headings":
-			if headingsMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertHeadingsFormat(headingsMap)
-			}
-		case "keywords":
-			if keywordsMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertKeywordsFormat(keywordsMap)
-			}
-		case "page_setup":
-			if pageSetupMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertPageSetupFormat(pageSetupMap)
-			}
-		case "references":
-			if referencesMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertReferencesFormat(referencesMap)
-			}
-		default:
-			result[key] = value
-		}
-	}
-
-	return result
-}
-
-// convertBodyFormat 转换正文格式
-func (h *PaperHandler) convertBodyFormat(bodyMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range bodyMap {
-		switch key {
-		case "font_size":
-			if fontSize, ok := value.(string); ok {
-				result[key] = fontSize + "（" + h.fontSizeToChinese(fontSize) + "）"
-			} else {
-				result[key] = value
-			}
-		case "alignment":
-			if alignment, ok := value.(string); ok {
-				result[key] = alignment + "（" + h.alignmentToChinese(alignment) + "）"
-			} else {
-				result[key] = value
-			}
-		case "line_space":
-			if lineSpace, ok := value.(string); ok {
-				result[key] = lineSpace + "（" + h.lineSpaceToChinese(lineSpace) + "）"
-			} else {
-				result[key] = value
-			}
-		case "first_line_indent":
-			if indent, ok := value.(string); ok {
-				result[key] = indent + "（" + h.indentToChinese(indent) + "）"
-			} else {
-				result[key] = value
-			}
-		default:
-			result[key] = value
-		}
-	}
-
-	return result
-}
-
-// convertTitleFormat 转换标题格式
-func (h *PaperHandler) convertTitleFormat(titleMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range titleMap {
-		switch key {
-		case "font_size":
-			if fontSize, ok := value.(string); ok {
-				result[key] = fontSize + "（" + h.fontSizeToChinese(fontSize) + "）"
-			} else {
-				result[key] = value
-			}
-		case "alignment":
-			if alignment, ok := value.(string); ok {
-				result[key] = alignment + "（" + h.alignmentToChinese(alignment) + "）"
-			} else {
-				result[key] = value
-			}
-		case "font_name":
-			if fontName, ok := value.(string); ok {
-				result[key] = fontName + "（" + h.fontNameToChinese(fontName) + "）"
-			} else {
-				result[key] = value
-			}
-		default:
-			result[key] = value
-		}
-	}
-
-	return result
-}
-
-// convertAuthorFormat 转换作者格式
-func (h *PaperHandler) convertAuthorFormat(authorMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range authorMap {
-		switch key {
-		case "font_size":
-			if fontSize, ok := value.(string); ok {
-				result[key] = fontSize + "（" + h.fontSizeToChinese(fontSize) + "）"
-			} else {
-				result[key] = value
-			}
-		case "alignment":
-			if alignment, ok := value.(string); ok {
-				result[key] = alignment + "（" + h.alignmentToChinese(alignment) + "）"
-			} else {
-				result[key] = value
-			}
-		case "font_name":
-			if fontName, ok := value.(string); ok {
-				result[key] = fontName + "（" + h.fontNameToChinese(fontName) + "）"
-			} else {
-				result[key] = value
-			}
-		default:
-			result[key] = value
-		}
-	}
-
-	return result
-}
-
-// convertAbstractFormat 转换摘要格式
-func (h *PaperHandler) convertAbstractFormat(abstractMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range abstractMap {
-		switch key {
-		case "label":
-			if labelMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertLabelFormat(labelMap)
-			}
-		case "content":
-			if contentMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertContentFormat(contentMap)
-			}
-		default:
-			result[key] = value
-		}
-	}
-
-	return result
-}
-
-// convertHeadingsFormat 转换标题层级格式
-func (h *PaperHandler) convertHeadingsFormat(headingsMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range headingsMap {
-		if headingMap, ok := value.(map[string]interface{}); ok {
-			result[key] = h.convertHeadingFormat(headingMap)
-		} else {
-			result[key] = value
-		}
-	}
-
-	return result
-}
-
-// convertKeywordsFormat 转换关键词格式
-func (h *PaperHandler) convertKeywordsFormat(keywordsMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range keywordsMap {
-		switch key {
-		case "label":
-			if labelMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertLabelFormat(labelMap)
-			}
-		case "content":
-			if contentMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertContentFormat(contentMap)
-			}
-		default:
-			result[key] = value
-		}
-	}
-
-	return result
-}
-
-// convertPageSetupFormat 转换页面设置格式
-func (h *PaperHandler) convertPageSetupFormat(pageSetupMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range pageSetupMap {
-		switch key {
-		case "margins":
-			if marginsMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertMarginsFormat(marginsMap)
-			}
-		case "header":
-			if headerMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertHeaderFooterFormat(headerMap)
-			}
-		case "footer":
-			if footerMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertHeaderFooterFormat(footerMap)
-			}
-		default:
-			result[key] = value
-		}
-	}
-
-	return result
-}
-
-// convertReferencesFormat 转换参考文献格式
-func (h *PaperHandler) convertReferencesFormat(referencesMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range referencesMap {
-		switch key {
-		case "title":
-			if titleMap, ok := value.(map[string]interface{}); ok {
-				result[key] = h.convertTitleFormat(titleMap)
-			}
-		default:
-			result[key] = value
-		}
-	}
-
-	return result
-}
-
-// convertLabelFormat 转换标签格式
-func (h *PaperHandler) convertLabelFormat(labelMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range labelMap {
-		switch key {
-		case "font_size":
-			if fontSize, ok := value.(string); ok {
-				result[key] = fontSize + "（" + h.fontSizeToChinese(fontSize) + "）"
-			} else {
-				result[key] = value
-			}
-		case "font_name":
-			if fontName, ok := value.(string); ok {
-				result[key] = fontName + "（" + h.fontNameToChinese(fontName) + "）"
-			} else {
-				result[key] = value
-			}
-		default:
-			result[key] = value
-		}
-	}
-
-	return result
-}
-
-// convertContentFormat 转换内容格式
-func (h *PaperHandler) convertContentFormat(contentMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range contentMap {
-		switch key {
-		case "font_size":
-			if fontSize, ok := value.(string); ok {
-				result[key] = fontSize + "（" + h.fontSizeToChinese(fontSize) + "）"
-			} else {
-				result[key] = value
-			}
-		case "font_name":
-			if fontName, ok := value.(string); ok {
-				result[key] = fontName + "（" + h.fontNameToChinese(fontName) + "）"
-			} else {
-				result[key] = value
-			}
-		case "alignment":
-			if alignment, ok := value.(string); ok {
-				result[key] = alignment + "（" + h.alignmentToChinese(alignment) + "）"
-			} else {
-				result[key] = value
-			}
-		default:
-			result[key] = value
-		}
-	}
-
-	return result
-}
-
-// convertHeadingFormat 转换单个标题格式
-func (h *PaperHandler) convertHeadingFormat(headingMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range headingMap {
-		switch key {
-		case "font_size":
-			if fontSize, ok := value.(string); ok {
-				result[key] = fontSize + "（" + h.fontSizeToChinese(fontSize) + "）"
-			} else {
-				result[key] = value
-			}
-		case "alignment":
-			if alignment, ok := value.(string); ok {
-				result[key] = alignment + "（" + h.alignmentToChinese(alignment) + "）"
-			} else {
-				result[key] = value
-			}
-		case "font_name":
-			if fontName, ok := value.(string); ok {
-				result[key] = fontName + "（" + h.fontNameToChinese(fontName) + "）"
-			} else {
-				result[key] = value
-			}
-		default:
-			result[key] = value
-		}
-	}
-
-	return result
-}
-
-// convertMarginsFormat 转换页边距格式
-func (h *PaperHandler) convertMarginsFormat(marginsMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range marginsMap {
-		result[key] = value
-	}
-
-	return result
-}
-
-// convertHeaderFooterFormat 转换页眉页脚格式
-func (h *PaperHandler) convertHeaderFooterFormat(headerFooterMap map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	for key, value := range headerFooterMap {
-		result[key] = value
-	}
-
-	return result
-}
-
-// fontSizeToChinese 将字号转换为中文描述
-func (h *PaperHandler) fontSizeToChinese(fontSize string) string {
-	switch fontSize {
-	case "小四号":
-		return "12磅"
-	case "四号":
-		return "14磅"
-	case "三号":
-		return "16磅"
-	case "小三号":
-		return "15磅"
-	case "五号":
-		return "10.5磅"
-	case "小五号":
-		return "9磅"
-	case "二号":
-		return "22磅"
-	case "一号":
-		return "26磅"
-	default:
-		return fontSize
-	}
-}
-
-// alignmentToChinese 将对齐方式转换为中文描述
-func (h *PaperHandler) alignmentToChinese(alignment string) string {
-	switch alignment {
-	case "left":
-		return "左对齐"
-	case "center":
-		return "居中"
-	case "right":
-		return "右对齐"
-	case "justify":
-		return "两端对齐"
-	default:
-		return alignment
-	}
-}
-
-// lineSpaceToChinese 将行距转换为中文描述
-func (h *PaperHandler) lineSpaceToChinese(lineSpace string) string {
-	switch lineSpace {
-	case "1.0", "single":
-		return "单倍行距"
-	case "1.5":
-		return "1.5倍行距"
-	case "2.0", "double":
-		return "双倍行距"
-	case "multiple":
-		return "多倍行距"
-	default:
-		// 处理其他格式，如固定值格式 "fixed_20_pt"
-		if strings.HasPrefix(lineSpace, "fixed_") {
-			ptStr := strings.TrimPrefix(lineSpace, "fixed_")
-			ptStr = strings.TrimSuffix(ptStr, "_pt")
-			if _, err := strconv.ParseFloat(ptStr, 64); err == nil {
-				return ptStr + "磅固定值"
-			}
-		}
-		// 处理 "30" 这样的数值（可能是多倍行距倍数）
-		if _, err := strconv.ParseFloat(lineSpace, 64); err == nil {
-			return lineSpace + "倍行距"
-		}
-		return lineSpace
-	}
-}
-
-// indentToChinese 将缩进转换为中文描述
-func (h *PaperHandler) indentToChinese(indent string) string {
-	switch indent {
-	case "2字符":
-		return "2个字符宽度"
-	case "0字符":
-		return "无缩进"
-	default:
-		return indent
-	}
-}
-
-// fontNameToChinese 将字体名称转换为中文描述
-func (h *PaperHandler) fontNameToChinese(fontName string) string {
-	switch fontName {
-	case "宋体":
-		return "SimSun"
-	case "黑体":
-		return "SimHei"
-	case "仿宋":
-		return "FangSong"
-	case "楷体":
-		return "KaiTi"
-	case "Times New Roman":
-		return "西文字体"
-	default:
-		return fontName
-	}
 }
 
 // UpdateFormatStandard 更新格式标准
@@ -4255,86 +1817,4 @@ func (h *PaperHandler) GetFormatStandardByID(c *gin.Context) {
 	}
 
 	utils.SuccessResponse(c, "获取成功", template)
-}
-
-// ReviewDiffs GET /api/papers/:id/review-diffs
-// 返回最近一次格式修正后的差异报告（供人工审核）
-func (h *PaperHandler) ReviewDiffs(c *gin.Context) {
-	paperID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		utils.BadRequest(c, "无效的论文ID")
-		return
-	}
-	userID, ok := c.Get("user_id")
-	if !ok {
-		utils.Unauthorized(c, "未登录")
-		return
-	}
-
-	var result model.CheckResult
-	if err := database.DB.
-		Where("paper_id = ? AND user_id = ?", paperID, userID.(uuid.UUID)).
-		Order("created_at DESC").First(&result).Error; err != nil {
-		utils.NotFound(c, "未找到检查记录，请先进行格式修正")
-		return
-	}
-
-	diffReportRaw := result.DiffReport
-	if diffReportRaw == "" || diffReportRaw == "{}" {
-		utils.Success(c, gin.H{
-			"paper_id":    paperID,
-			"diff_report": nil,
-			"message":     "暂无差异报告，请先进行格式修正",
-		})
-		return
-	}
-
-	utils.Success(c, gin.H{
-		"paper_id":    paperID,
-		"diff_report": json.RawMessage(diffReportRaw),
-	})
-}
-
-// ApplySelectedDiffsRequest 请求体
-type ApplySelectedDiffsRequest struct {
-	// 用户选择"接受修改"的段落索引列表；空列表表示全部接受
-	AcceptedParaIndices []int `json:"accepted_para_indices"`
-}
-
-// ApplySelectedDiffs POST /api/papers/:id/apply-diffs
-// 对用户选中的段落重新强制应用模板格式，生成新的修正文档
-func (h *PaperHandler) ApplySelectedDiffs(c *gin.Context) {
-	paperID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		utils.BadRequest(c, "无效的论文ID")
-		return
-	}
-	userID, ok := c.Get("user_id")
-	if !ok {
-		utils.Unauthorized(c, "未登录")
-		return
-	}
-	var req ApplySelectedDiffsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		utils.BadRequest(c, "参数错误: "+err.Error())
-		return
-	}
-
-	uid := userID.(uuid.UUID)
-
-	var checkResult model.CheckResult
-	if err := database.DB.
-		Where("paper_id = ? AND user_id = ?", paperID, uid).
-		Order("created_at DESC").First(&checkResult).Error; err != nil {
-		utils.NotFound(c, "未找到检查记录，请先进行格式检查")
-		return
-	}
-
-	result, fixErr := h.paperService.FixPaperFormat(uid, paperID, checkResult.ID)
-	if fixErr != nil {
-		utils.InternalServerError(c, "应用修正失败: "+fixErr.Error())
-		return
-	}
-
-	utils.Success(c, result)
 }
