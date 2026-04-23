@@ -1,94 +1,96 @@
-# DOCX Single-Template Closed-Loop Redesign
+# DOCX 单模板闭环重构设计
 
-Date: 2026-04-23
+日期：2026-04-23
 
-## Goal
+## 目标
 
-Redesign the current paper-format system into a single deterministic production path for:
+将当前论文格式系统重构为一条唯一、确定、可复检的生产主链，服务于以下场景：
 
 - `DOCX`
-- `single school`
-- `single template`
-- `automatic check`
-- `automatic repair`
-- `automatic re-verify`
-- direct final file download
+- `单学校`
+- `单模板`
+- `自动检查`
+- `自动修复`
+- `自动复检`
+- 浏览器直接下载最终修正稿
 
-Target outcome:
+目标结果：
 
-- one main pipeline only
-- no multi-engine fallback in production
-- no preview file
-- no "best effort" export
-- browser downloads only the final verified `docx`
+- 生产环境只有一条主链
+- 不再存在多引擎回退
+- 不生成预览版文件
+- 不生成“尽力版”文件
+- 浏览器只能下载最终通过验证的 `docx`
 
-## Non-Goals
+## 非目标
 
-This redesign does not target:
+本次重构不覆盖以下范围：
 
-- multi-template matching
-- PDF primary support
-- AI-first runtime repair
-- vector database driven production decisions
-- manual diff review as a core production step
-- browser preview as a deliverable path
+- 多模板自动匹配
+- PDF 作为主输入
+- AI 优先的运行时修复
+- 向量数据库驱动的生产决策
+- 人工 diff 审核作为主生产流程
+- 浏览器内文档预览作为交付路径
 
-## Core Product Decision
+## 核心产品决策
 
-The system will no longer "repair the student document in place".
+系统不再“原地修学生稿”。
 
-The system will:
+系统改为：
 
-`parse student docx -> map content into template slots -> generate final document from template skeleton -> apply whitelisted OOXML patches -> verify independently -> download only if passed`
+`解析学生稿 docx -> 映射到模板槽位 -> 基于模板骨架生成最终稿 -> 进行白名单 OOXML 补丁 -> 独立复检 -> 通过后下载`
 
-Template order is the only structural truth.
-Student content may be reordered into template slots.
-Unclear content must not be force-fitted into normal blocks.
+核心约束：
 
-## Why The Current System Fails
+- 模板顺序是唯一结构真相
+- 学生内容允许被重排进模板槽位
+- 不能识别的内容不得强行塞入正常块
 
-The current system has multiple overlapping chains in production:
+## 当前系统为什么效果差
 
-- upload path mixes parsing, AI, repair, experiments, and generation
-- service layer mixes checking, fixing, exporting, and engine fallback
-- comparison chain exists as a parallel half-production path
-- multiple repair engines can produce incompatible outputs
+当前系统在生产路径上同时存在多条重叠链路：
 
-This causes four systemic failures:
+- 上传路径混入了解析、AI、修复、实验流程和生成流程
+- 服务层同时承担检查、修复、导出和引擎回退
+- 对比链路以半生产状态并行存在
+- 多个修复引擎会输出彼此不兼容的结果
 
-1. there is no single source of truth for final formatting
-2. check results cannot map reliably to executable repairs
-3. engine switching makes output behavior unpredictable
-4. the frontend interacts with a fragmented workflow instead of one state machine
+这会导致四类系统性问题：
 
-## Final Technical Direction
+1. 最终格式没有单一真相来源
+2. 检查结果无法稳定映射为可执行修复动作
+3. 引擎切换使输出行为不可预测
+4. 前端交互面对的是碎片化流程，而不是单一状态机
 
-The chosen technical direction is:
+## 最终技术路线
 
-`Go + single-template precompile + template skeleton transplant + block-level content mapping + native OOXML targeted patching + independent verifier`
+最终确定的技术路线为：
 
-### Technology Decisions
+`Go + 单模板预编译 + 模板骨架移植 + 块级内容映射 + 原生 OOXML 定点回写 + 独立复检器`
 
-- Service/API: `Go + Gin`
-- Package read/write truth layer: `DOCX zip package + native OOXML XML manipulation`
-- Read-only structural assistance: `unioffice`
-- XML editing: DOM-style OOXML editing library or equivalent low-level XML package
-- Runtime classification: deterministic Go rule engine
-- State management: database-backed explicit job state machine
-- Output file: verified final `docx` only
+### 技术选型
 
-### Explicitly Rejected For Production Main Path
+- 服务与 API：`Go + Gin`
+- DOCX 读写真相层：`DOCX zip 包 + 原生 OOXML XML 操作`
+- 只读结构辅助：`unioffice`
+- XML 编辑方式：DOM 风格 OOXML 编辑库，或等价低层 XML 处理方案
+- 运行时分类：纯 Go 确定性规则引擎
+- 状态管理：数据库驱动的显式任务状态机
+- 输出产物：仅最终通过验证的 `docx`
 
-- Python + OOXML as the main repair engine
-- Word COM as the main repair engine
-- vector database / RAG in the runtime decision loop
-- LLM as the final block mapper or final repair authority
-- multi-engine runtime fallback chain
-- generic style patching as the main repair model
+### 明确排除出生产主链的方案
 
-## High-Level Architecture
+- Python + OOXML 作为主修复引擎
+- Word COM 作为主修复引擎
+- 向量数据库 / RAG 进入运行时决策回路
+- LLM 作为最终块映射器或最终修复权威
+- 多引擎运行时回退链
+- 通用样式修补器作为主修复模型
 
-The new production pipeline has exactly seven core modules:
+## 总体架构
+
+新的生产主链由七个核心模块组成：
 
 1. `TemplateCompiler`
 2. `PaperParser`
@@ -98,35 +100,35 @@ The new production pipeline has exactly seven core modules:
 6. `Verifier`
 7. `LoopController`
 
-### Main Flow
+### 主流程
 
 `uploaded -> parsed -> mapped -> transplanted -> patched -> verified_pass`
 
-Failure path:
+失败路径：
 
-- if only whitelisted repairable issues exist: one more patch attempt
-- otherwise: `manual_review`
+- 若仅存在白名单内可修复问题，则允许再进行一次补丁重试
+- 其他情况直接进入 `manual_review`
 
-No engine switch is allowed inside the loop.
+主链内部不允许切换修复引擎。
 
-## Module Design
+## 模块设计
 
 ### 1. TemplateCompiler
 
-Responsibility:
+职责：
 
-- compile one official school template into a versioned template asset package
-- transform a raw template file into a stable formatting contract
+- 将一份官方学校模板编译为版本化模板资产包
+- 将原始模板转化为稳定的排版合同
 
-Input:
+输入：
 
-- official template `docx`
+- 官方模板 `docx`
 
-Output:
+输出：
 
-- compiled template package
+- 编译后的模板资产包
 
-The compiled package includes:
+模板资产包至少包含：
 
 1. `manifest`
 2. `skeleton`
@@ -138,45 +140,45 @@ The compiled package includes:
 
 ### 2. PaperParser
 
-Responsibility:
+职责：
 
-- parse the student document only
-- build a content structure tree
-- never repair
-- never apply production formatting
+- 只解析学生稿
+- 构建内容结构树
+- 不做修复
+- 不在生产路径上做格式落地
 
-Output content categories:
+输出内容类别：
 
-- cover fields
-- chinese abstract
-- chinese keywords
-- english abstract
-- english keywords
-- heading tree
-- body paragraphs
-- figure captions
-- table captions
-- body tables
-- references
-- acknowledgements
-- abnormal blocks
+- 封面字段
+- 中文摘要
+- 中文关键词
+- 英文摘要
+- 英文关键词
+- 标题树
+- 正文段落
+- 图题
+- 表题
+- 正文表格
+- 参考文献
+- 致谢
+- 异常块
 
 ### 3. BlockMapper
 
-Responsibility:
+职责：
 
-- map parsed student content into template slots
-- obey template order as the single structural truth
+- 将解析后的学生内容映射到模板槽位
+- 严格服从模板顺序这一唯一结构真相
 
-Mapping rule layers:
+映射规则分五层：
 
-1. strong anchor rules
-2. document state machine rules
-3. local context rules
-4. block capacity rules
-5. abnormal fallback rules
+1. 强锚点规则
+2. 文档状态机规则
+3. 局部上下文规则
+4. 块容量规则
+5. 异常兜底规则
 
-Output:
+输出：
 
 - `block_bindings`
 - `generated_blocks`
@@ -186,68 +188,68 @@ Output:
 
 ### 4. Transplanter
 
-Responsibility:
+职责：
 
-- generate the final paper from the compiled template skeleton
-- transplant student content into template slots in template order
+- 基于编译好的模板骨架生成最终论文
+- 按模板顺序把学生内容移植进模板槽位
 
-It does not:
+它不负责：
 
-- repair arbitrary structure
-- reclassify content
-- patch anything outside its generation scope
+- 开放式文档修复
+- 重新分类
+- 对其职责范围之外的节点做补丁
 
 ### 5. OOXMLPatchWriter
 
-Responsibility:
+职责：
 
-- apply only small whitelisted post-generation corrections
+- 仅做小范围白名单后处理修正
 
-Allowed categories:
+允许的修正类别：
 
-- paragraph spacing, indent, alignment, pagination flags
-- run font, size, bold, italic, color, superscript, subscript
-- numbering references to template numbering system
-- table cell text-bearing run/paragraph adjustments in whitelisted cells
-- directory field settings and refresh-related metadata
-- relationship patching for required media/hyperlinks
-- whitelisted section-property completions
+- 段落间距、缩进、对齐、分页控制
+- run 级字体、字号、粗斜体、颜色、上下标
+- 编号引用挂接到模板编号体系
+- 白名单表格单元格内 run 和段落修正
+- 目录字段设置与刷新相关元数据
+- 必要的媒体或超链接关系补丁
+- 白名单节属性补齐
 
-It must not become a second repair engine.
+它不能演变成第二个修复引擎。
 
 ### 6. Verifier
 
-Responsibility:
+职责：
 
-- verify output independently
-- never reuse mapping or repair decisions as truth
+- 独立验证输出质量
+- 不能把映射决策和修复决策当成真相复用
 
-Verification layers:
+验证分四层：
 
-1. block-level
-2. style-level
-3. package-level
-4. safety-level
+1. 块级验证
+2. 样式级验证
+3. 包级验证
+4. 安全级验证
 
 ### 7. LoopController
 
-Responsibility:
+职责：
 
-- orchestrate the deterministic closed loop
-- allow at most one patch retry after first verification
+- 编排确定性的自动闭环
+- 首次验证失败后，最多允许一次补丁重试
 
-Automatic loop budget:
+自动闭环预算：
 
-- first full generation
-- one patch retry only
+- 一次完整生成
+- 一次补丁重试
 
-Anything beyond that goes to `manual_review`.
+超出预算直接进入 `manual_review`。
 
-## Compiled Template Package
+## 模板资产包设计
 
 ### Manifest
 
-Fields:
+字段：
 
 - `template_id`
 - `template_version`
@@ -258,7 +260,7 @@ Fields:
 
 ### Block Catalog
 
-Each template block should contain:
+每个模板块至少包含：
 
 - `block_id`
 - `kind`
@@ -274,14 +276,14 @@ Each template block should contain:
 - `patch_policy`
 - `verify_policy`
 
-Recommended `slot_type` values:
+推荐的 `slot_type`：
 
 - `fixed`
 - `single`
 - `repeatable`
 - `generated`
 
-Recommended first-version block kinds:
+第一版推荐的 `block kind`：
 
 - `cover_title`
 - `cover_meta_label`
@@ -308,100 +310,100 @@ Recommended first-version block kinds:
 
 ### Style Profiles
 
-Each style profile stores:
+每个样式档案包含：
 
 - paragraph spec
 - run spec
 - numbering spec
-- table/cell spec where applicable
-- section constraints
+- 需要时包含 table / cell spec
+- section 约束
 - forbidden mutations
 
 ### Mapping Contract
 
-Defines:
+定义：
 
-- accepted input block types
-- multiplicity
-- whether split is allowed
-- whether merge is allowed
-- whether empty is allowed
-- overflow handling
-- ambiguous handling
+- 允许接收的输入块类型
+- 单值或多值约束
+- 是否允许拆分
+- 是否允许合并
+- 是否允许为空
+- 溢出处理方式
+- 歧义处理方式
 
 ### Verification Rules
 
-Defines:
+定义：
 
-- existence constraints
-- count constraints
-- ordering constraints
-- style constraints
-- anchor constraints
-- safety constraints
+- 必须存在约束
+- 数量约束
+- 顺序约束
+- 样式约束
+- 锚点约束
+- 安全约束
 
 ### Patch Targets
 
-Defines the only OOXML targets allowed for post-generation patching.
+定义生成后允许补丁写入的唯一 OOXML 目标集合。
 
-## Mapping Rules
+## 映射规则
 
-### Structural Truth
+### 结构真相
 
-The final document order is always the template order.
+最终文档顺序永远等于模板顺序。
 
-The student document does not control final block order.
+学生稿不控制最终块顺序。
 
-### Hard Rules
+### 硬规则
 
-- cover content maps by explicit fields, not free paragraphs
-- TOC is generated from final heading tree, not inherited from student TOC
-- heading numbering uses template numbering only
-- headers and footers come from template only
-- section properties come from template only
-- reference items are isolated from body paragraphs
-- unrecognized content goes to abnormal buckets, never to normal slots
+- 封面按显式字段映射，不按自由段落映射
+- 目录由最终标题树生成，不继承学生稿原始目录
+- 标题编号仅使用模板编号体系
+- 页眉页脚仅来自模板
+- 节属性仅来自模板
+- 参考文献与正文段落严格隔离
+- 无法识别的内容进入异常桶，不能进入正常槽位
 
-### Abnormal Buckets
+### 异常桶
 
-The mapper must emit:
+映射器必须显式输出：
 
 - `unmapped_blocks`
 - `ambiguous_blocks`
 - `overflow_blocks`
 
-These are first-class outputs, not debug leftovers.
+这些是正式输出，不是调试信息。
 
-## Generation Rules
+## 生成规则
 
-### General Rule
+### 总原则
 
-The template skeleton is the output base.
-The student document is the content source.
+模板骨架是输出基底。
+学生稿是内容来源。
 
-### Cover
+### 封面
 
-- never rebuild cover table geometry
-- replace text only in designated slots or cells
-- preserve template table layout, merge, width, border, and positioning
+- 不得重建封面表格几何结构
+- 仅允许替换指定槽位或指定单元格的文本内容
+- 必须保留模板表格布局、合并、宽度、边框和定位
 
-### Abstracts and Keywords
+### 摘要与关键词
 
-- use template-owned shell paragraphs
-- transplant content only
-- preserve template label formatting
+- 使用模板拥有的壳段落承载内容
+- 只移植内容
+- 标签格式始终保留模板原生样式
 
-### Headings
+### 标题
 
-- build heading tree from parsed student content
-- write heading text into template heading prototypes
-- use template numbering system only
+- 先从学生稿建立标题树
+- 再把标题文本写入模板标题原型段落
+- 编号体系只使用模板编号体系
 
-### Body Paragraphs
+### 正文段落
 
-Body is transplanted as content atoms, not loose text only.
+正文以“内容原子”移植，而不是只按纯文本移植。
 
-Recommended content atoms:
+推荐的内容原子：
 
 - `text_run`
 - `inline_image`
@@ -410,31 +412,31 @@ Recommended content atoms:
 - `hyperlink`
 - `inline_break`
 
-### Captions
+### 题注
 
-- figure captions and table captions are isolated block types
-- never silently mix them into body paragraphs
+- 图题和表题是独立块类型
+- 不能悄悄混入正文段落
 
-### Tables
+### 表格
 
-- preserve student table content
-- allow only whitelisted table text formatting updates
-- do not rebuild geometry in production v1
+- 保留学生表格内容
+- 只允许对白名单内表格文本格式做更新
+- 第一版生产链不重建表格几何结构
 
-### References
+### 参考文献
 
-- each reference item clones the template reference prototype
-- formatting is driven by the template profile, not student formatting
+- 每条参考文献都克隆模板参考文献原型块
+- 格式由模板档案决定，而不是学生稿格式
 
-### TOC
+### 目录
 
-- template owns the TOC container
-- service-side TOC page numbers do not need to be exact in v1
-- field structure must be correct and refreshable when opened
+- 模板拥有目录容器
+- 第一版服务端不强求目录页码完全精确
+- 必须生成结构正确、可在打开文档后刷新的目录字段
 
-## PatchWriter Boundaries
+## PatchWriter 边界
 
-### Allowed
+### 允许修改
 
 - `w:t`
 - `w:r`
@@ -443,31 +445,31 @@ Recommended content atoms:
 - `w:numPr`
 - `w:br`
 - `w:tab`
-- whitelisted `w:tc` text-bearing descendants
-- required relation entries
-- whitelisted TOC metadata
+- 白名单 `w:tc` 文本承载后代节点
+- 必要的关系项
+- 白名单目录元数据
 
-### Forbidden
+### 禁止修改
 
-- replacing the production repair engine
-- rewriting template block order
-- modifying template cover table geometry
-- rebuilding `styles.xml` as a second style system
-- open-ended section rewriting
-- arbitrary reclassification after transplant
+- 代替生产主修复引擎
+- 改写模板块顺序
+- 修改模板封面表格几何结构
+- 重建第二套 `styles.xml`
+- 开放式重写节结构
+- 生成后任意重新分类
 
-## Verifier Design
+## Verifier 设计
 
-### Verification Layers
+### 验证层次
 
-1. `Block-level`
-2. `Style-level`
-3. `Package-level`
-4. `Safety-level`
+1. `块级`
+2. `样式级`
+3. `包级`
+4. `安全级`
 
 ### Verify Result
 
-Recommended result structure:
+推荐输出结构：
 
 - `passed`
 - `score`
@@ -478,32 +480,32 @@ Recommended result structure:
 - `ambiguous_blocks`
 - `output_hash`
 
-### Fatal Issue Examples
+### Fatal Issue 示例
 
-- required template block missing
-- ambiguous single-value slot
-- heading tree invalid
-- references section boundary invalid
-- forbidden OOXML mutation detected
-- second verification still fails
+- 必填模板块缺失
+- 单值槽位出现歧义
+- 标题树不合法
+- 参考文献区边界不合法
+- 检测到禁止性 OOXML 变更
+- 第二次验证仍未通过
 
-### Repairable Issue Examples
+### Repairable Issue 示例
 
-- whitelisted paragraph spacing mismatch
-- numbering reference mismatch
-- TOC field metadata patchable
-- whitelisted run formatting mismatch
+- 白名单段落间距不一致
+- 编号引用不一致
+- 目录字段元数据可修复
+- 白名单 run 样式不一致
 
-## Loop Policy
+## 闭环策略
 
-Closed loop policy:
+闭环规则：
 
-- one full generation
-- one patch retry maximum
-- no runtime engine switching
-- no open-ended recursive retries
+- 一次完整生成
+- 最多一次补丁重试
+- 不允许运行时引擎切换
+- 不允许无限递归重试
 
-State transitions:
+状态流转：
 
 - `uploaded`
 - `template_compiled`
@@ -515,54 +517,54 @@ State transitions:
 - `verified_fail`
 - `manual_review`
 
-## Delivery Policy
+## 交付策略
 
-Only one output file is allowed in production:
+生产环境只允许一个输出文件：
 
-- final verified `docx`
+- 最终通过验证的 `docx`
 
-Rules:
+规则：
 
-- no preview file
-- no best-effort file
-- no manual-review export file
-- browser downloads only the final corrected file
+- 不生成预览版
+- 不生成尽力版
+- 不生成 manual review 导出版
+- 浏览器只能下载最终修正稿
 
-If result is `verified_pass`:
+当结果为 `verified_pass`：
 
-- return download URL
+- 返回下载地址
 
-If result is `verified_fail` or `manual_review`:
+当结果为 `verified_fail` 或 `manual_review`：
 
-- return issues only
-- do not expose any output file for download
+- 只返回问题清单
+- 不暴露任何文件下载地址
 
-## API Design
+## API 设计
 
-Production v2 API should be reduced to one workflow-oriented set:
+生产版 `v2` API 收敛为一组工作流接口：
 
 ### `POST /api/v2/templates/compile`
 
-Compiles one template.
+编译一份模板。
 
 ### `POST /api/v2/papers`
 
-Uploads one student paper and binds it to a compiled template.
+上传学生稿并绑定编译后的模板。
 
-Input:
+输入：
 
 - `paper.docx`
 - `template_id`
 
-Output:
+输出：
 
 - `job_id`
 
 ### `POST /api/v2/jobs/:job_id/run`
 
-Starts the deterministic closed loop.
+启动确定性闭环。
 
-Internal flow:
+内部固定执行：
 
 - parse
 - map
@@ -572,53 +574,53 @@ Internal flow:
 
 ### `GET /api/v2/jobs/:job_id`
 
-Returns job status and issues.
+查询任务状态和问题集合。
 
 ### `GET /api/v2/jobs/:job_id/download`
 
-Downloads only the final verified paper.
-Available only for `verified_pass`.
+下载最终通过验证的修正稿。
+仅 `verified_pass` 可用。
 
-## Frontend Workflow
+## 前端工作流
 
-Frontend should become a single straight-through workflow:
+前端收敛为一条直通工作流：
 
-1. select template
-2. upload paper
-3. create job
-4. run job
-5. poll status
-6. direct final file download if passed
+1. 选择模板
+2. 上传学生稿
+3. 创建任务
+4. 启动任务
+5. 轮询状态
+6. 成功后直接下载最终文件
 
-The frontend should stop exposing:
+前端应停止暴露：
 
-- multiple repair paths
-- manual engine selection
-- production diff-apply loop
-- preview-first workflow
+- 多条修复路径
+- 手动切换引擎
+- 生产态 diff 应用流程
+- 预览优先流程
 
-## Legacy Code Strategy
+## 旧代码处理策略
 
-The current production path must be simplified aggressively.
+当前生产路径必须显著收敛。
 
-### Must Exit Production Main Path
+### 必须退出生产主链
 
-- upload-time AI/experimental mixed processing
-- multi-engine repair fallback chain
-- comparison service as a production parallel chain
-- generic style patching as the main repair strategy
-- vector DB / RAG / LLM runtime dependency in the production loop
+- 上传时混入 AI / 实验 / 修复的复合路径
+- 多引擎回退修复链
+- comparison service 作为生产平行链
+- 通用样式修补器作为主修复策略
+- 向量数据库 / RAG / LLM 进入运行时生产回路
 
-### Can Be Archived Or Reused Selectively
+### 可以选择归档或局部复用
 
-- low-level OOXML helpers
-- existing template block detection utilities
-- useful strict formatting logic that fits the new module boundaries
-- some read-only parsing helpers
+- 底层 OOXML 工具函数
+- 现有模板块识别工具
+- 能适配新模块边界的严格格式逻辑
+- 部分只读解析辅助函数
 
-### Codebase Direction
+### 代码结构方向
 
-Recommended module layout:
+推荐模块目录：
 
 - `internal/core/templatecompile`
 - `internal/core/paperparse`
@@ -628,74 +630,77 @@ Recommended module layout:
 - `internal/core/verify`
 - `internal/core/workflow`
 
-Handlers should become thin request/response adapters.
-Workflow orchestration should move into dedicated core services.
+`handler` 应收缩为薄适配层。
+工作流编排应进入专门的核心服务。
 
-## Migration Plan
+## 迁移计划
 
-### Phase 1: Freeze and isolate
+### Phase 1：冻结并隔离
 
-- define new v2 workflow package boundaries
-- stop adding new logic to the old mixed upload/service path
-- mark old multi-engine path as legacy
+- 定义新的 v2 工作流边界
+- 停止向旧的混合上传 / 混合 service 路径继续加逻辑
+- 将旧多引擎路径标记为 legacy
 
-### Phase 2: Build template compiler
+### Phase 2：实现模板编译器
 
-- compile a single official school template
-- produce versioned template package
-- define block catalog and style profiles
+- 编译单学校官方模板
+- 生成版本化模板资产包
+- 定义块目录和样式档案
 
-### Phase 3: Build parser and mapper
+### Phase 3：实现解析器与映射器
 
-- parse student content tree
-- implement deterministic mapper
-- emit abnormal buckets explicitly
+- 解析学生内容树
+- 实现确定性映射器
+- 显式产出异常桶
 
-### Phase 4: Build transplanter and patch writer
+### Phase 4：实现移植器与补丁器
 
-- generate final document from template skeleton
-- add only whitelisted OOXML patches
+- 基于模板骨架生成最终文档
+- 增加白名单 OOXML 补丁
 
-### Phase 5: Build verifier and loop controller
+### Phase 5：实现复检器与闭环控制器
 
-- independent verification
-- one retry maximum
-- stable pass/fail/manual_review behavior
+- 独立验证
+- 最多一次重试
+- 稳定的 pass / fail / manual review 行为
 
-### Phase 6: Replace frontend path
+### Phase 6：替换前端路径
 
-- switch to single job workflow
-- remove preview-first and multi-path behavior
+- 切换为单任务工作流
+- 移除预览优先与多路径交互
 
-### Phase 7: Remove legacy production chain
+### Phase 7：移除旧生产链
 
-- disconnect old handlers/services from production routes
-- archive or delete dead code after cutover
+- 将旧 handler / service 从生产路由中断开
+- 完成切换后归档或删除死代码
 
-## Success Criteria
+## 成功标准
 
-The redesign is considered successful when:
+满足以下条件，视为重构成功：
 
-- one template can be compiled once and reused deterministically
-- one student paper produces one final output path only
-- the pipeline does not switch repair engines at runtime
-- template order is always preserved
-- required blocks are never silently skipped
-- failure is explicit and safe
-- only `verified_pass` files are downloadable
+- 一份模板编译一次后可被稳定复用
+- 一篇学生稿只有一个最终输出路径
+- 主链运行时不切换修复引擎
+- 模板顺序始终被保留
+- 必填块不会被静默跳过
+- 失败行为清晰且安全
+- 只有 `verified_pass` 文件可下载
 
-## Final Decision Summary
+## 最终结论
 
-The new system is a deterministic template-driven document assembly system, not a generic document repair system.
+新系统的本质是：
 
-Its truths are:
+一个确定性的、模板驱动的文档组装系统，
+而不是一个泛化的文档修补系统。
 
-- content truth: student paper
-- format truth: compiled official template
-- generation truth: template skeleton transplant
-- patch truth: whitelist only
-- quality truth: independent verifier
+它的真相来源是：
 
-That is the architectural basis for reaching high implementation reliability on the scoped target:
+- 内容真相：学生稿
+- 格式真相：编译后的官方模板
+- 生成真相：模板骨架移植
+- 补丁真相：白名单定点修改
+- 质量真相：独立复检器
 
-`DOCX + single school + single template + automatic check + automatic repair + automatic re-verify + direct final file download`
+这就是在目标范围内逼近高实现率的架构基础：
+
+`DOCX + 单学校 + 单模板 + 自动检查 + 自动修复 + 自动复检 + 浏览器直接下载最终修正稿`
