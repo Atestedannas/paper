@@ -228,6 +228,33 @@ func TestGenerateRepeatableBindingsJoinWithNewline(t *testing.T) {
 	}
 }
 
+func TestGenerateDoesNotRecursivelyReplaceInsertedPayload(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body>{{a}} {{b}}</w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{Bindings: []blockmap.Binding{
+			{BlockID: "a", Payload: "{{b}}"},
+			{BlockID: "b", Payload: "B"},
+		}},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	want := `<w:document><w:body>{{b}} B</w:body></w:document>`
+	if document != want {
+		t.Fatalf("document.xml = %s, want non-recursive replacement %s", document, want)
+	}
+}
+
 func TestGenerateReturnsContextError(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")

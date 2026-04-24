@@ -102,8 +102,30 @@ func buildReplacements(bindings []blockmap.Binding) map[string]string {
 }
 
 func applyReplacements(content string, replacements map[string]string) string {
-	for placeholder, payload := range replacements {
-		content = strings.ReplaceAll(content, placeholder, payload)
+	var builder strings.Builder
+	for len(content) > 0 {
+		start := strings.Index(content, "{{")
+		if start == -1 {
+			builder.WriteString(content)
+			break
+		}
+
+		builder.WriteString(content[:start])
+		remaining := content[start:]
+		end := strings.Index(remaining, "}}")
+		if end == -1 {
+			builder.WriteString(remaining)
+			break
+		}
+
+		end += len("}}")
+		token := remaining[:end]
+		if replacement, ok := replacements[token]; ok {
+			builder.WriteString(replacement)
+		} else {
+			builder.WriteString(token)
+		}
+		content = remaining[end:]
 	}
-	return content
+	return builder.String()
 }
