@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -52,6 +53,9 @@ func (h *PaperHandler) ReviewDiffs(c *gin.Context) {
 // ApplySelectedDiffs POST /api/papers/:id/apply-diffs
 // 对用户选中的段落重新强制应用模板格式，生成新的修正文档
 func (h *PaperHandler) ApplySelectedDiffs(c *gin.Context) {
+	utils.ErrorResponse(c, http.StatusGone, legacyWritePathMessage, "")
+	return
+
 	paperID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		utils.BadRequest(c, "无效的论文ID")

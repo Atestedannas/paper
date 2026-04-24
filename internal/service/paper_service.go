@@ -918,6 +918,8 @@ func (s PaperService) GetAllPapers(page, pageSize int) ([]model.Paper, int64, er
 
 // ExportCorrectedPaper 瀵煎嚭淇鍚庣殑璁烘枃
 func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, error) {
+	return "", ErrLegacyWritePathDisabled
+
 	paper, err := s.GetPaperByID(userID, paperID)
 	if err != nil {
 		return "", fmt.Errorf("failed to get paper: %v", err)

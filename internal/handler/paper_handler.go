@@ -1281,6 +1281,9 @@ func (h *PaperHandler) GetPaperFile(c *gin.Context) {
 
 // GetCorrectedPaperFile 获取修正后的论文文件
 func (h *PaperHandler) GetCorrectedPaperFile(c *gin.Context) {
+	utils.ErrorResponse(c, http.StatusGone, legacyWritePathMessage, "")
+	return
+
 	userID, _ := c.Get("user_id")
 	paperID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -1329,6 +1332,9 @@ func (h *PaperHandler) ComparePaperFormats(c *gin.Context) {
 
 // ExportCorrectedPaper 导出修正后的论文
 func (h *PaperHandler) ExportCorrectedPaper(c *gin.Context) {
+	utils.ErrorResponse(c, http.StatusGone, legacyWritePathMessage, "")
+	return
+
 	// 从上下文获取用户ID
 	userID, _ := c.Get("user_id")
 
