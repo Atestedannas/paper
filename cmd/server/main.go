@@ -108,6 +108,7 @@ func main() {
 	rbacHandler := handler.NewRBACHandler()
 	configHandler := handler.NewConfigHandler()
 	billingHandler := handler.NewBillingHandler()
+	paperWorkflowHandler := handler.NewPaperWorkflowHandler(service.NewPaperWorkflowService(database.DB))
 
 	// New handlers
 	adminOrderHandler := handler.NewAdminOrderHandler()
@@ -746,6 +747,15 @@ func main() {
 			adminUniversities.DELETE("/:id", adminUniversityHandler.DeleteUniversity)
 			adminUniversities.PUT("", adminUniversityHandler.BatchUpdateUniversities) // Batch update
 		}
+	}
+
+	apiV2 := router.Group("/api/v2")
+	{
+		apiV2.POST("/templates/compile", paperWorkflowHandler.CompileTemplate)
+		apiV2.POST("/papers", paperWorkflowHandler.CreatePaperJob)
+		apiV2.POST("/jobs/:job_id/run", paperWorkflowHandler.RunJob)
+		apiV2.GET("/jobs/:job_id", paperWorkflowHandler.GetJob)
+		apiV2.GET("/jobs/:job_id/download", paperWorkflowHandler.DownloadJob)
 	}
 
 	// Static file route - provide uploaded files
