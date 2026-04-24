@@ -758,9 +758,6 @@ func main() {
 		apiV2.GET("/jobs/:job_id/download", paperWorkflowHandler.DownloadJob)
 	}
 
-	// Static file route - provide uploaded files
-	router.Static("/uploads", "./uploads")
-
 	// Health check route
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
