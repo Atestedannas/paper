@@ -74,6 +74,26 @@ func TestWriterEscapesXMLReplacement(t *testing.T) {
 	}
 }
 
+func TestWriterDoesNotRecursivelyPatchInsertedReplacement(t *testing.T) {
+	docxPath := writePatchTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body>{{a}} {{b}}</w:body></w:document>`,
+	})
+
+	err := NewWriter([]Patch{
+		{Find: "{{a}}", Replace: "{{b}}"},
+		{Find: "{{b}}", Replace: "B"},
+	}).Apply(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	document := readPatchTestEntry(t, docxPath, "word/document.xml")
+	want := `<w:document><w:body>{{b}} B</w:body></w:document>`
+	if document != want {
+		t.Fatalf("document.xml = %s, want non-recursive replacement %s", document, want)
+	}
+}
+
 func TestWriterReturnsContextCanceled(t *testing.T) {
 	docxPath := writePatchTestDocx(t, map[string]string{
 		"word/document.xml": `<w:document>{{title}}</w:document>`,

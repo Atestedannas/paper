@@ -82,11 +82,7 @@ func (w *Writer) Apply(ctx context.Context, docxPath string) error {
 			return fmt.Errorf("patch target %q not found in docx", target)
 		}
 
-		updated := string(content)
-		for _, patch := range patches {
-			updated = strings.ReplaceAll(updated, patch.Find, html.EscapeString(patch.Replace))
-		}
-		pkg.Set(target, []byte(updated))
+		pkg.Set(target, []byte(applyPatches(string(content), patches)))
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -97,6 +93,28 @@ func (w *Writer) Apply(ctx context.Context, docxPath string) error {
 	}
 
 	return nil
+}
+
+func applyPatches(content string, patches []Patch) string {
+	var builder strings.Builder
+	for offset := 0; offset < len(content); {
+		matched := false
+		for _, patch := range patches {
+			if strings.HasPrefix(content[offset:], patch.Find) {
+				builder.WriteString(html.EscapeString(patch.Replace))
+				offset += len(patch.Find)
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+
+		builder.WriteByte(content[offset])
+		offset++
+	}
+	return builder.String()
 }
 
 func normalizeTarget(target string) string {
