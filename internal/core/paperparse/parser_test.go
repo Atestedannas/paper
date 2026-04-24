@@ -126,6 +126,33 @@ func TestParserParsesInlineSectionMarkers(t *testing.T) {
 	}
 }
 
+func TestParserParsesMarkerOnlyKeywordSection(t *testing.T) {
+	docPath := filepath.Join(t.TempDir(), "marker-only-keywords.docx")
+	createTestDocx(t, docPath, []string{
+		"摘要",
+		"摘要内容",
+		"关键词",
+		"解析、DOCX、确定性",
+		"1 绪论",
+		"正文内容",
+	})
+
+	paper, err := NewParser().Parse(context.Background(), docPath)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	wantKeywords := []string{"解析", "DOCX", "确定性"}
+	if !reflect.DeepEqual(paper.KeywordsCN, wantKeywords) {
+		t.Fatalf("KeywordsCN = %#v, want %#v", paper.KeywordsCN, wantKeywords)
+	}
+
+	wantBody := []string{"正文内容"}
+	if !reflect.DeepEqual(paper.Body, wantBody) {
+		t.Fatalf("Body = %#v, want %#v", paper.Body, wantBody)
+	}
+}
+
 func TestParserPreservesRealOOXMLParagraphText(t *testing.T) {
 	docPath := filepath.Join(t.TempDir(), "real-ooxml.docx")
 	documentXML := `<?xml version="1.0" encoding="UTF-8"?>` +

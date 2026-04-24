@@ -50,6 +50,7 @@ type section int
 const (
 	sectionCover section = iota
 	sectionAbstractCN
+	sectionKeywordsCN
 	sectionBody
 	sectionReferences
 	sectionAcknowledgements
@@ -77,8 +78,12 @@ func parseParagraphs(paragraphs []string) *ParsedPaper {
 			continue
 		}
 		if content, ok := splitSectionMarker(text, "关键词"); ok {
-			paper.KeywordsCN = parseKeywords(content)
-			current = sectionBody
+			if content == "" {
+				current = sectionKeywordsCN
+			} else {
+				paper.KeywordsCN = parseKeywords(content)
+				current = sectionBody
+			}
 			continue
 		}
 		if content, ok := splitSectionMarker(text, "参考文献"); ok {
@@ -114,6 +119,9 @@ func parseParagraphs(paragraphs []string) *ParsedPaper {
 			paper.Body = append(paper.Body, text)
 		case sectionAbstractCN:
 			paper.AbstractCN = append(paper.AbstractCN, text)
+		case sectionKeywordsCN:
+			paper.KeywordsCN = parseKeywords(text)
+			current = sectionBody
 		case sectionReferences:
 			paper.References = append(paper.References, text)
 		case sectionAcknowledgements:
