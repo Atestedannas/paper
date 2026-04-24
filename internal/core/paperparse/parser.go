@@ -69,19 +69,30 @@ func parseParagraphs(paragraphs []string) *ParsedPaper {
 			continue
 		}
 
-		switch {
-		case text == "摘要":
+		if content, ok := splitSectionMarker(text, "摘要"); ok {
 			current = sectionAbstractCN
+			if content != "" {
+				paper.AbstractCN = append(paper.AbstractCN, content)
+			}
 			continue
-		case strings.HasPrefix(text, "关键词"):
-			paper.KeywordsCN = parseKeywords(text)
+		}
+		if content, ok := splitSectionMarker(text, "关键词"); ok {
+			paper.KeywordsCN = parseKeywords(content)
 			current = sectionBody
 			continue
-		case text == "参考文献":
+		}
+		if content, ok := splitSectionMarker(text, "参考文献"); ok {
 			current = sectionReferences
+			if content != "" {
+				paper.References = append(paper.References, content)
+			}
 			continue
-		case text == "致谢":
+		}
+		if content, ok := splitSectionMarker(text, "致谢"); ok {
 			current = sectionAcknowledgements
+			if content != "" {
+				paper.Acknowledgements = append(paper.Acknowledgements, content)
+			}
 			continue
 		}
 
@@ -139,6 +150,14 @@ func extractParagraphs(ctx context.Context, content []byte) ([]string, error) {
 					if inParagraph {
 						inText = true
 					}
+				case "tab":
+					if inParagraph {
+						builder.WriteByte('\t')
+					}
+				case "br":
+					if inParagraph {
+						builder.WriteByte('\n')
+					}
 				}
 			case xml.EndElement:
 				switch value.Name.Local {
@@ -168,9 +187,8 @@ func extractParagraphs(ctx context.Context, content []byte) ([]string, error) {
 }
 
 func parseKeywords(text string) []string {
-	remainder := strings.TrimPrefix(text, "关键词")
-	remainder = strings.TrimLeft(remainder, "：: \t　")
-	fields := strings.FieldsFunc(remainder, func(r rune) bool {
+	content := strings.TrimSpace(text)
+	fields := strings.FieldsFunc(content, func(r rune) bool {
 		return r == '，' || r == '、' || r == '；' || r == ';' || r == ','
 	})
 
@@ -182,6 +200,31 @@ func parseKeywords(text string) []string {
 		}
 	}
 	return keywords
+}
+
+func splitSectionMarker(text string, marker string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == marker {
+		return "", true
+	}
+	if !strings.HasPrefix(trimmed, marker) {
+		return "", false
+	}
+
+	remainder := strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
+	if remainder == "" {
+		return "", true
+	}
+
+	remainder = strings.TrimSpace(remainder)
+	if strings.HasPrefix(remainder, "：") {
+		return strings.TrimSpace(strings.TrimPrefix(remainder, "：")), true
+	}
+	if strings.HasPrefix(remainder, ":") {
+		return strings.TrimSpace(strings.TrimPrefix(remainder, ":")), true
+	}
+
+	return "", false
 }
 
 func parseHeading(text string) (Heading, bool) {
