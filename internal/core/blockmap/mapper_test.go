@@ -57,6 +57,31 @@ func TestMapCarriesAbnormalEntriesToUnmappedBlocks(t *testing.T) {
 	}
 }
 
+func TestMapBindsCoverTitleFromParserShapedChineseKey(t *testing.T) {
+	template := &templatecompile.CompiledTemplatePackage{
+		BlockCatalog: []templatecompile.TemplateBlock{
+			{BlockID: "title", Kind: "cover_title", SlotType: "single", OrderIndex: 1},
+		},
+	}
+	paper := &paperparse.ParsedPaper{
+		CoverFields: map[string]string{
+			"\u9898\u76ee": "Parser Shaped Title",
+		},
+	}
+
+	result, err := NewMapper().Map(template, paper)
+	if err != nil {
+		t.Fatalf("Map() error = %v", err)
+	}
+
+	if len(result.Bindings) != 1 {
+		t.Fatalf("len(Bindings) = %d, want 1", len(result.Bindings))
+	}
+	if result.Bindings[0].BlockID != "title" || result.Bindings[0].Payload != "Parser Shaped Title" {
+		t.Fatalf("cover title binding = %#v, want parser-shaped title payload", result.Bindings[0])
+	}
+}
+
 func TestMapRepeatableHeadingOneProducesMultipleBindings(t *testing.T) {
 	template := &templatecompile.CompiledTemplatePackage{
 		BlockCatalog: []templatecompile.TemplateBlock{

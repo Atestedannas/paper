@@ -107,7 +107,7 @@ func payloadsForBlock(block templatecompile.TemplateBlock, paper *paperparse.Par
 	for _, key := range keys {
 		switch key {
 		case "cover_title":
-			if payload := strings.TrimSpace(paper.CoverFields["cover_title"]); payload != "" {
+			if payload := coverTitlePayload(paper.CoverFields); payload != "" {
 				payloads = append(payloads, payload)
 			}
 		case "abstract_cn_body":
@@ -135,6 +135,21 @@ func payloadsForBlock(block templatecompile.TemplateBlock, paper *paperparse.Par
 		}
 	}
 	return payloads
+}
+
+func coverTitlePayload(fields map[string]string) string {
+	for _, key := range []string{
+		"cover_title",
+		"\u9898\u76ee",
+		"\u8bba\u6587\u9898\u76ee",
+		"\u6bd5\u4e1a\u8bba\u6587\u9898\u76ee",
+		"\u6807\u9898",
+	} {
+		if payload := strings.TrimSpace(fields[key]); payload != "" {
+			return payload
+		}
+	}
+	return ""
 }
 
 func acceptedKeys(block templatecompile.TemplateBlock) []string {
