@@ -22,6 +22,8 @@ type CompiledTemplate struct {
 	Status                string    `gorm:"size:32;not null;default:'compiled'" json:"status"`
 	CreatedAt             time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt             time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
+
+	Jobs []PaperWorkflowJob `gorm:"foreignKey:CompiledTemplateID" json:"jobs,omitempty"`
 }
 
 type PaperWorkflowJob struct {
@@ -35,6 +37,11 @@ type PaperWorkflowJob struct {
 	VerifyResultJSON   string    `gorm:"type:jsonb;not null;default:'{}'" json:"verify_result_json"`
 	CreatedAt          time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt          time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
+
+	Paper            Paper                `gorm:"foreignKey:PaperID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT;" json:"paper,omitempty"`
+	User             User                 `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT;" json:"user,omitempty"`
+	CompiledTemplate CompiledTemplate     `gorm:"foreignKey:CompiledTemplateID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT;" json:"compiled_template,omitempty"`
+	Issues           []PaperWorkflowIssue `gorm:"foreignKey:JobID" json:"issues,omitempty"`
 }
 
 type PaperWorkflowIssue struct {
@@ -46,4 +53,6 @@ type PaperWorkflowIssue struct {
 	Message    string    `gorm:"type:text;not null" json:"message"`
 	DetailJSON string    `gorm:"type:jsonb;not null;default:'{}'" json:"detail_json"`
 	CreatedAt  time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
+
+	Job PaperWorkflowJob `gorm:"foreignKey:JobID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"job,omitempty"`
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paper-format-checker/backend/internal/model"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -31,6 +32,19 @@ func TestMigration20260423CreateDocxClosedLoopV2Tables(t *testing.T) {
 	}
 	if !testDB.Migrator().HasTable("paper_workflow_issues") {
 		t.Fatalf("paper_workflow_issues table was not created")
+	}
+
+	assertForeignKeyExists(t, testDB, "paper_workflow_jobs", "paper_id", "papers")
+	assertForeignKeyExists(t, testDB, "paper_workflow_jobs", "user_id", "users")
+	assertForeignKeyExists(t, testDB, "paper_workflow_jobs", "compiled_template_id", "compiled_templates")
+	assertForeignKeyExists(t, testDB, "paper_workflow_issues", "job_id", "paper_workflow_jobs")
+
+	if !testDB.Migrator().HasIndex(&model.PaperWorkflowJob{}, "idx_paper_workflow_jobs_status_stage") {
+		t.Fatalf("idx_paper_workflow_jobs_status_stage index was not created")
+	}
+
+	if err := runTestMigration(testDB, migration); err != nil {
+		t.Fatalf("migration was not idempotent: %v", err)
 	}
 }
 
@@ -83,6 +97,12 @@ func setupDocxClosedLoopV2TestDB(t *testing.T, seed int64) (*gorm.DB, func()) {
 	if err := testDB.AutoMigrate(&MigrationRecord{}); err != nil {
 		t.Fatalf("failed to create migration records table: %v", err)
 	}
+	if err := testDB.Exec(`CREATE TABLE users (id UUID PRIMARY KEY)`).Error; err != nil {
+		t.Fatalf("failed to create users table: %v", err)
+	}
+	if err := testDB.Exec(`CREATE TABLE papers (id UUID PRIMARY KEY)`).Error; err != nil {
+		t.Fatalf("failed to create papers table: %v", err)
+	}
 
 	cleanup := func() {
 		sqlDB, err := testDB.DB()
@@ -95,4 +115,31 @@ func setupDocxClosedLoopV2TestDB(t *testing.T, seed int64) (*gorm.DB, func()) {
 	}
 
 	return testDB, cleanup
+}
+
+func assertForeignKeyExists(t *testing.T, db *gorm.DB, tableName, columnName, referencedTable string) {
+	t.Helper()
+
+	var count int64
+	err := db.Raw(`
+		SELECT COUNT(*)
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kcu
+		  ON tc.constraint_name = kcu.constraint_name
+		 AND tc.table_schema = kcu.table_schema
+		JOIN information_schema.constraint_column_usage ccu
+		  ON tc.constraint_name = ccu.constraint_name
+		 AND tc.table_schema = ccu.table_schema
+		WHERE tc.constraint_type = 'FOREIGN KEY'
+		  AND tc.table_schema = current_schema()
+		  AND tc.table_name = ?
+		  AND kcu.column_name = ?
+		  AND ccu.table_name = ?
+	`, tableName, columnName, referencedTable).Scan(&count).Error
+	if err != nil {
+		t.Fatalf("failed to inspect foreign keys for %s.%s: %v", tableName, columnName, err)
+	}
+	if count == 0 {
+		t.Fatalf("foreign key for %s.%s -> %s was not created", tableName, columnName, referencedTable)
+	}
 }
