@@ -526,6 +526,7 @@ func main() {
 			papers.GET("/:id/file", middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetPaperFile)
 			papers.GET("/:id/corrected-file", middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetCorrectedPaperFile)
 			papers.POST("/:id/fix/by-template", paperHandler.FixByTemplate)
+			papers.POST("/:id/close-loop", paperHandler.CloseFormatLoop)
 			papers.GET("/:id/review-diffs", paperHandler.ReviewDiffs)
 			papers.POST("/:id/apply-diffs", paperHandler.ApplySelectedDiffs)
 		}

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"gitee.com/greatmusicians/unioffice/document"
@@ -60,14 +61,15 @@ func NewPaperHandler(config *config.Config) *PaperHandler {
 
 // UploadPaperRequest 上传论文请求结构体
 type UploadPaperRequest struct {
-	Title              string                 `form:"title" json:"title" binding:"omitempty,min=1,max=255"`
-	Description        string                 `form:"description" json:"description" binding:"omitempty"`
-	FormatStandardID   uuid.UUID              `form:"format_standard_id" json:"format_standard_id" binding:"omitempty"`
-	TemplateID         int64                  `form:"template_id" json:"template_id" binding:"omitempty"`     // 前端传递的高校ID
-	DocumentType       string                 `form:"document_type" json:"document_type" binding:"omitempty"` // 文档类型：本科论文、硕士论文
-	Subject            string                 `form:"subject" json:"subject" binding:"omitempty"`             // 学科类别：文科、理科
-	ParsedRequirements map[string]interface{} `form:"parsed_requirements" json:"parsed_requirements" binding:"omitempty"`
-	Requirements       string                 `form:"requirements" json:"requirements" binding:"omitempty"`
+	Title                string                 `form:"title" json:"title" binding:"omitempty,min=1,max=255"`
+	Description          string                 `form:"description" json:"description" binding:"omitempty"`
+	FormatStandardID     uuid.UUID              `form:"format_standard_id" json:"format_standard_id" binding:"omitempty"`
+	TemplateID           int64                  `form:"template_id" json:"template_id" binding:"omitempty"`     // 前端传递的高校ID
+	DocumentType         string                 `form:"document_type" json:"document_type" binding:"omitempty"` // 文档类型：本科论文、硕士论文
+	Subject              string                 `form:"subject" json:"subject" binding:"omitempty"`             // 学科类别：文科、理科
+	ParsedRequirements   map[string]interface{} `form:"parsed_requirements" json:"parsed_requirements" binding:"omitempty"`
+	Requirements         string                 `form:"requirements" json:"requirements" binding:"omitempty"`
+	ExperimentalPipeline string                 `form:"experimental_pipeline" json:"experimental_pipeline" binding:"omitempty"`
 }
 
 // FormatCheckRequest 格式检查请求结构体
@@ -82,6 +84,12 @@ type FormatFixRequest struct {
 	CheckResult uuid.UUID `json:"check_result_id" binding:"required"`
 	FixAll      bool      `json:"fix_all" binding:"omitempty"`
 	IssueIDs    []string  `json:"issue_ids" binding:"omitempty"`
+}
+
+type FormatCloseLoopRequest struct {
+	TemplateID       int64     `json:"template_id" binding:"omitempty"`
+	FormatStandardID uuid.UUID `json:"format_standard_id" binding:"omitempty"`
+	MaxLoops         int       `json:"max_loops" binding:"omitempty,min=1,max=10"`
 }
 
 // fixByTemplateRequest FixByTemplate 入参（支持 multipart 与 JSON）
@@ -130,14 +138,12 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 	if !h.uploadPaperPaymentGateAllows(c) {
 		return
 	}
-
 	// 解析表单、校验文件类型与大小，组装 UploadPaperRequest
 	userID, req, file, fileType, err := h.validateUploadRequest(c)
 	// 校验失败时 parseAndValidateUploadFile 等已写错误响应
 	if err != nil {
 		return
 	}
-
 	// 落盘文件并创建 paper 记录（multipart：file + title/description 等表单字段，不是 JSON 里的 paper 对象）
 	paper, err := h.performFileUpload(c, userID, req, file, fileType)
 	if err != nil {
@@ -154,6 +160,10 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 		segmentFormatHints     []service.PaperSegmentFormatHint
 		templateFormatsRawBody string
 		wordzeroOutPath        string
+		semanticHTMLResult     *service.SemanticHTMLPipelineResult
+		semanticHTMLError      string
+		semanticJSONResult     *service.SemanticJSONPipelineResult
+		semanticJSONError      string
 	)
 	if fileType == "docx" || fileType == "doc" {
 		paperpath := filepath.Clean(paper.FilePath)
@@ -246,7 +256,6 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 			log.Printf("[上传论文] WordZero SetPageSize: %v", err)
 		}
 		for _, seg := range paperSections {
-
 			switch seg.Key {
 			case "cover":
 				fullText := seg.Text
@@ -446,6 +455,55 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 		}
 	}
 
+	if fileType == "docx" || fileType == "doc" {
+		switch mode := service.NormalizeExperimentalPipelineMode(req.ExperimentalPipeline); mode {
+		case service.ExperimentalPipelineSemanticJSON:
+			runner, runErr := service.NewSemanticJSONPipelineRunnerFromConfig(h.config)
+			if runErr != nil {
+				semanticJSONError = runErr.Error()
+				log.Printf("[上传论文] semantic json 实验通道不可用: %v", runErr)
+			} else {
+				experimentOutputDir := filepath.Join(filepath.Clean(h.config.File.UploadPath), "papers", "experiments")
+				result, err := runner.Run(context.Background(), service.SemanticJSONPipelineRequest{
+					InputPath:    filepath.Clean(paper.FilePath),
+					TemplatePath: h.formatTemplateGoldenOrFilePath(paper, req),
+					OutputDir:    experimentOutputDir,
+					BaseName:     paper.ID.String(),
+					Requirements: req.Requirements,
+				})
+				if err != nil {
+					semanticJSONError = err.Error()
+					log.Printf("[上传论文] semantic json 实验失败: %v", err)
+				} else {
+					semanticJSONResult = &result
+					log.Printf("[上传论文] semantic json 实验文档已生成: %s", result.OutputDocxPath)
+				}
+			}
+		case service.ExperimentalPipelineSemanticHTML:
+			runner, runErr := service.NewSemanticHTMLPipelineRunnerFromConfig(h.config)
+			if runErr != nil {
+				semanticHTMLError = runErr.Error()
+				log.Printf("[上传论文] semantic html 实验通道不可用: %v", runErr)
+			} else {
+				experimentOutputDir := filepath.Join(filepath.Clean(h.config.File.UploadPath), "papers", "experiments")
+				result, err := runner.Run(context.Background(), service.SemanticHTMLPipelineRequest{
+					InputPath:    filepath.Clean(paper.FilePath),
+					TemplatePath: h.formatTemplateGoldenOrFilePath(paper, req),
+					OutputDir:    experimentOutputDir,
+					BaseName:     paper.ID.String(),
+					Requirements: req.Requirements,
+				})
+				if err != nil {
+					semanticHTMLError = err.Error()
+					log.Printf("[上传论文] semantic html 实验失败: %v", err)
+				} else {
+					semanticHTMLResult = &result
+					log.Printf("[上传论文] semantic html 实验文档已生成: %s", result.OutputDocxPath)
+				}
+			}
+		}
+	}
+
 	database.DB.Model(paper).Update("status", "processing")
 
 	pos := h.bumpUploadPaperQueue()
@@ -478,6 +536,20 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 	}
 	if wordzeroOutPath != "" {
 		resp["formatted_wz_docx"] = wordzeroOutPath
+	}
+	if semanticHTMLResult != nil {
+		resp["semantic_html_experiment"] = semanticHTMLResult
+		resp["formatted_semantic_html_docx"] = semanticHTMLResult.OutputDocxPath
+	}
+	if semanticHTMLError != "" {
+		resp["semantic_html_error"] = semanticHTMLError
+	}
+	if semanticJSONResult != nil {
+		resp["semantic_json_experiment"] = semanticJSONResult
+		resp["formatted_semantic_json_docx"] = semanticJSONResult.OutputDocxPath
+	}
+	if semanticJSONError != "" {
+		resp["semantic_json_error"] = semanticJSONError
 	}
 	utils.Created(c, resp)
 }
@@ -570,14 +642,40 @@ func (h *PaperHandler) runUploadPaperAsyncJob(uid interface{}, p *model.Paper, r
 	processingQueue <- struct{}{}
 	log.Printf("[处理队列] paper %s 开始处理", p.ID)
 
-	// 有高校模板且 V2 快速修正成功则直接结束，不再走完整后处理
-	if r.TemplateID != 0 && h.tryQuickV2FixAfterUpload(p, r) {
+	// 先尝试闭环修正：若带了高校模板或格式标准，则反复检查与修正直到差异为 0 或达到最大循环次数
+	if response, err := h.closeLoopAfterUpload(uid, p, r); err == nil && response != nil {
+		h.finalizeUploadPaperAsyncFromResponse(p, response)
 		return
 	}
 
-	// 格式检查、自动修正、对比报告等（c 传 nil 表示非 HTTP 请求上下文）
+	// 若闭环不适用或失败，则退回已有的检查/自动修正流程
 	response, _ := h.handlePostUploadProcessing(nil, uid, p, r)
 	h.finalizeUploadPaperAsyncFromResponse(p, response)
+}
+
+func (h *PaperHandler) closeLoopAfterUpload(userID interface{}, paper *model.Paper, req UploadPaperRequest) (gin.H, error) {
+	if req.FormatStandardID == uuid.Nil && req.TemplateID == 0 && paper.SelectedTemplateID == nil {
+		return nil, fmt.Errorf("no format template available for close-loop processing")
+	}
+
+	formatStandardID := req.FormatStandardID
+	if formatStandardID == uuid.Nil && paper.SelectedTemplateID != nil {
+		formatStandardID = *paper.SelectedTemplateID
+	}
+
+	result, err := h.paperService.ClosePaperFormatLoop(userID.(uuid.UUID), paper.ID, formatStandardID, 3)
+	if err != nil {
+		return nil, err
+	}
+
+	response := gin.H{
+		"paper_id":              paper.ID,
+		"close_loop_result":     result,
+		"corrected_file_path":   result["corrected_file_path"],
+		"final_check_result_id": result["final_check_result_id"],
+	}
+
+	return response, nil
 }
 
 func (h *PaperHandler) tryQuickV2FixAfterUpload(p *model.Paper, r UploadPaperRequest) bool {
@@ -634,6 +732,7 @@ func (h *PaperHandler) validateUploadRequest(c *gin.Context) (interface{}, Uploa
 		return nil, UploadPaperRequest{}, nil, "", err
 	}
 	req := h.uploadRequestFromForm(c)
+	req.ExperimentalPipeline = c.PostForm("experimental_pipeline")
 	// 根据 template_id 或 format_standard_id 补全 FormatStandardID
 	h.attachUploadFormatStandardID(c, &req)
 	return userID, req, file, fileType, nil
@@ -1317,6 +1416,46 @@ func (h *PaperHandler) ComparePaperFormats(c *gin.Context) {
 
 	// 返回响应
 	utils.Success(c, comparison)
+}
+
+// CloseFormatLoop 允许前端触发“修正后再检查”闭环流程
+func (h *PaperHandler) CloseFormatLoop(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	paperID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		utils.BadRequest(c, "invalid paper id")
+		return
+	}
+
+	var req FormatCloseLoopRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.BadRequest(c, err.Error())
+		return
+	}
+
+	paper, err := h.paperService.GetPaperByID(userID.(uuid.UUID), paperID)
+	if err != nil {
+		utils.InternalServerError(c, err.Error())
+		return
+	}
+
+	formatStandardID := req.FormatStandardID
+	if formatStandardID == uuid.Nil && paper.SelectedTemplateID != nil {
+		formatStandardID = *paper.SelectedTemplateID
+	}
+
+	result, err := h.paperService.ClosePaperFormatLoop(userID.(uuid.UUID), paperID, formatStandardID, req.MaxLoops)
+	if err != nil {
+		utils.InternalServerError(c, err.Error())
+		return
+	}
+
+	utils.Success(c, gin.H{
+		"paper_id":              paperID,
+		"close_loop_result":     result,
+		"corrected_file_path":   result["corrected_file_path"],
+		"final_check_result_id": result["final_check_result_id"],
+	})
 }
 
 // ExportCorrectedPaper 导出修正后的论文

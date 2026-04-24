@@ -19,16 +19,36 @@ import (
 
 // EnhancedProcessor 增强的文档处理器，提供更精确的格式修正
 type EnhancedProcessor struct {
-	debug           bool
-	fontNameMap     map[string]*string            // 缓存字体名，避免悬空指针
-	smartClassifier *aiclassifier.SmartClassifier // 智能段落分类器（三级路由）
-	templatePath    string                        // 黄金模板路径（由 SetTemplatePath 设置）
-	lastDiffReport  *DocDiffReport                // 最近一次格式修正的差异报告
+	debug               bool
+	fontNameMap         map[string]*string            // 缓存字体名，避免悬空指针
+	smartClassifier     *aiclassifier.SmartClassifier // 智能段落分类器（三级路由）
+	templatePath        string                        // 黄金模板路径（由 SetTemplatePath 设置）
+	lastDiffReport      *DocDiffReport                // 最近一次格式修正的差异报告
+	lastStrongVerify    *StrongVerifyResult           // 最近一次强校验摘要（供接口返回）
+	formatSelfCheckHook func(FormattingSelfCheckResult)
 }
 
 // GetLastDiffReport 返回最近一次格式修正的差异报告
 func (p *EnhancedProcessor) GetLastDiffReport() *DocDiffReport {
 	return p.lastDiffReport
+}
+
+// StrongVerifyResult 记录一次强校验流程的关键统计信息。
+type StrongVerifyResult struct {
+	Enabled      bool   `json:"enabled"`
+	Threshold    int    `json:"threshold"`
+	InitialDiffs int    `json:"initial_diffs"`
+	RetryDiffs   int    `json:"retry_diffs"`
+	FinalDiffs   int    `json:"final_diffs"`
+	Retried      bool   `json:"retried"`
+	FallbackUsed bool   `json:"fallback_used"`
+	Passed       bool   `json:"passed"`
+	FinalEngine  string `json:"final_engine"`
+}
+
+// GetLastStrongVerifyResult 返回最近一次 ApplyCorrectionsV2 的强校验摘要。
+func (p *EnhancedProcessor) GetLastStrongVerifyResult() *StrongVerifyResult {
+	return p.lastStrongVerify
 }
 
 // SetTemplatePath 设置黄金模板路径，调用 ApplyCorrections 前先设置
@@ -2434,7 +2454,7 @@ func (p *EnhancedProcessor) applyTitleFormatting(paragraphs []document.Paragraph
 			p.applyParagraphFormatting(para, titleRules)
 		}
 	}
-
+	p.runParagraphFormattingSelfCheck("applyTitleFormatting", paragraphs, titleRules)
 	return nil
 }
 
@@ -2455,7 +2475,7 @@ func (p *EnhancedProcessor) applyHeadingFormatting(paragraphs []document.Paragra
 		if err := p.applyParagraphFormatting(para, levelRules); err != nil {
 		}
 	}
-
+	p.runParagraphFormattingSelfCheck("applyHeadingFormatting", paragraphs, levelRules)
 	return nil
 }
 
@@ -2493,7 +2513,7 @@ func (p *EnhancedProcessor) applyBodyFormatting(paragraphs []document.Paragraph,
 			log.Printf("[body] 段落[%d] 修正后: 字体=%s 字号=%s", i, afterFont, afterSize)
 		}
 	}
-
+	p.runParagraphFormattingSelfCheck("applyBodyFormatting", paragraphs, bodyRules)
 	return nil
 }
 
@@ -2581,6 +2601,7 @@ func (p *EnhancedProcessor) applyReferencesTitleFormatting(paragraphs []document
 		}
 		p.applyParagraphFormatting(para, titleRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyReferencesTitleFormatting", paragraphs, titleRules)
 	return nil
 }
 
@@ -2612,6 +2633,7 @@ func (p *EnhancedProcessor) applyReferencesFormatting(paragraphs []document.Para
 	for _, para := range paragraphs {
 		p.applyParagraphFormatting(para, contentRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyReferencesFormatting", paragraphs, contentRules)
 	return nil
 }
 
@@ -2650,6 +2672,7 @@ func (p *EnhancedProcessor) applyAcknowledgementsTitleFormatting(paragraphs []do
 		}
 		p.applyParagraphFormatting(para, titleRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyAcknowledgementsTitleFormatting", paragraphs, titleRules)
 	return nil
 }
 
@@ -2673,6 +2696,7 @@ func (p *EnhancedProcessor) applyAcknowledgementsContentFormatting(paragraphs []
 	for _, para := range paragraphs {
 		p.applyParagraphFormatting(para, contentRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyAcknowledgementsContentFormatting", paragraphs, contentRules)
 	return nil
 }
 
@@ -2711,6 +2735,7 @@ func (p *EnhancedProcessor) applyAppendixTitleFormatting(paragraphs []document.P
 		}
 		p.applyParagraphFormatting(para, titleRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyAppendixTitleFormatting", paragraphs, titleRules)
 	return nil
 }
 
@@ -2734,6 +2759,7 @@ func (p *EnhancedProcessor) applyAppendixContentFormatting(paragraphs []document
 	for _, para := range paragraphs {
 		p.applyParagraphFormatting(para, contentRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyAppendixContentFormatting", paragraphs, contentRules)
 	return nil
 }
 
@@ -2772,6 +2798,7 @@ func (p *EnhancedProcessor) applyNotesTitleFormatting(paragraphs []document.Para
 		}
 		p.applyParagraphFormatting(para, titleRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyNotesTitleFormatting", paragraphs, titleRules)
 	return nil
 }
 
@@ -2794,6 +2821,7 @@ func (p *EnhancedProcessor) applyNotesContentFormatting(paragraphs []document.Pa
 	for _, para := range paragraphs {
 		p.applyParagraphFormatting(para, contentRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyNotesContentFormatting", paragraphs, contentRules)
 	return nil
 }
 
@@ -2815,6 +2843,7 @@ func (p *EnhancedProcessor) applyFigureCaptionFormatting(paragraphs []document.P
 	for _, para := range paragraphs {
 		p.applyParagraphFormatting(para, captionRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyFigureCaptionFormatting", paragraphs, captionRules)
 	return nil
 }
 
@@ -2836,6 +2865,7 @@ func (p *EnhancedProcessor) applyTableCaptionFormatting(paragraphs []document.Pa
 	for _, para := range paragraphs {
 		p.applyParagraphFormatting(para, captionRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyTableCaptionFormatting", paragraphs, captionRules)
 	return nil
 }
 
@@ -2928,6 +2958,7 @@ func (p *EnhancedProcessor) applyTableFormatting(doc *document.Document, rules m
 			}
 		}
 	}
+	p.runDocumentFormattingSelfCheck("applyTableFormatting", doc)
 }
 
 // chineseFontToEnglish 中文字体名 → 英文字体名映射
@@ -2948,6 +2979,20 @@ func getEnglishFontName(chineseName string) string {
 		return en
 	}
 	return chineseName
+}
+
+// getChineseFontName 获取字体的中文名（若传入英文别名且有映射，则回转成中文名）
+func getChineseFontName(fontName string) string {
+	trimmed := strings.TrimSpace(fontName)
+	if trimmed == "" {
+		return ""
+	}
+	for zh, en := range chineseFontToEnglish {
+		if strings.EqualFold(trimmed, en) {
+			return zh
+		}
+	}
+	return trimmed
 }
 
 // applyTableFormattingWithSpec 使用模板 ParagraphFormatSpec 修正表格内文字格式
@@ -3101,6 +3146,7 @@ func (p *EnhancedProcessor) applyTOCTitleFormatting(paragraphs []document.Paragr
 	for _, para := range paragraphs {
 		p.applyParagraphFormatting(para, titleRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyTOCTitleFormatting", paragraphs, titleRules)
 	return nil
 }
 
@@ -3181,6 +3227,7 @@ func (p *EnhancedProcessor) applyTOCEntryFormatting(paragraphs []document.Paragr
 			p.applyParagraphFormatting(para, defaultL3)
 		}
 	}
+	p.runParagraphFormattingSelfCheck("applyTOCEntryFormatting", paragraphs, defaultL1)
 	return nil
 }
 
@@ -3216,6 +3263,7 @@ func (p *EnhancedProcessor) applyAbstractTitleFormatting(paragraphs []document.P
 	for _, para := range paragraphs {
 		p.applyParagraphFormatting(para, titleRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyAbstractTitleFormatting", paragraphs, titleRules)
 	return nil
 }
 
@@ -3256,6 +3304,7 @@ func (p *EnhancedProcessor) applyAbstractFormatting(paragraphs []document.Paragr
 			p.applyParagraphFormatting(para, contentRules)
 		}
 	}
+	p.runParagraphFormattingSelfCheck("applyAbstractFormatting", paragraphs, contentRules)
 	return nil
 }
 
@@ -3293,6 +3342,7 @@ func (p *EnhancedProcessor) applyKeywordsFormatting(paragraphs []document.Paragr
 	for _, para := range paragraphs {
 		p.applyKeywordsParagraphFormatting(para, labelRules, contentRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyKeywordsFormatting", paragraphs, contentRules)
 	return nil
 }
 
@@ -3391,6 +3441,7 @@ func (p *EnhancedProcessor) applyKeywordsParagraphFormatting(para document.Parag
 
 	// 设置段落默认 rPr 为内容规则（因为内容是主体部分）
 	p.setParagraphDefaultRPr(para, contentRules)
+	p.runSingleParagraphFormattingSelfCheck("applyKeywordsParagraphFormatting", para, contentRules)
 }
 
 // applyLabelContentParagraphFormatting 通用的标签+内容分段格式化
@@ -3476,6 +3527,7 @@ func (p *EnhancedProcessor) applyLabelContentParagraphFormatting(para document.P
 	}
 
 	p.setParagraphDefaultRPr(para, contentRules)
+	p.runSingleParagraphFormattingSelfCheck("applyLabelContentParagraphFormatting", para, contentRules)
 }
 
 // findLabelEnd 查找标签结束位置（含冒号），返回内容开始的 byte 索引，-1 表示未找到
@@ -3599,6 +3651,7 @@ func (p *EnhancedProcessor) applyEnglishAbstractTitleFormatting(paragraphs []doc
 	for _, para := range paragraphs {
 		p.applyParagraphFormatting(para, titleRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyEnglishAbstractTitleFormatting", paragraphs, titleRules)
 	return nil
 }
 
@@ -3617,6 +3670,7 @@ func (p *EnhancedProcessor) applyEnglishAbstractFormatting(paragraphs []document
 			p.applyParagraphFormatting(para, contentRules)
 		}
 	}
+	p.runParagraphFormattingSelfCheck("applyEnglishAbstractFormatting", paragraphs, contentRules)
 	return nil
 }
 
@@ -3653,6 +3707,7 @@ func (p *EnhancedProcessor) applyEnglishKeywordsFormatting(paragraphs []document
 	for _, para := range paragraphs {
 		p.applyEnglishKeywordsParagraphFormatting(para, labelRules, contentRules)
 	}
+	p.runParagraphFormattingSelfCheck("applyEnglishKeywordsFormatting", paragraphs, contentRules)
 	return nil
 }
 
@@ -3728,6 +3783,7 @@ func (p *EnhancedProcessor) applyEnglishKeywordsParagraphFormatting(para documen
 	}
 
 	p.setParagraphDefaultRPr(para, contentRules)
+	p.runSingleParagraphFormattingSelfCheck("applyEnglishKeywordsParagraphFormatting", para, contentRules)
 }
 
 // applyParagraphFormatting 应用段落格式
@@ -3953,6 +4009,7 @@ applyOtherFormatting:
 		p.applyRunFormatting(run, rules)
 	}
 
+	p.runSingleParagraphFormattingSelfCheck("applyParagraphFormatting", para, rules)
 	return nil
 }
 
@@ -4066,6 +4123,12 @@ func (p *EnhancedProcessor) applyRunFormatting(run document.Run, rules map[strin
 		rPr.U.ValAttr = wml.ST_UnderlineSingle
 	}
 
+	p.executeFormattingSelfCheck(FormattingSelfCheckResult{
+		FunctionName: "applyRunFormatting",
+		Scope:        "run",
+		TargetCount:  1,
+		CheckedCount: 1,
+	})
 	return nil
 }
 

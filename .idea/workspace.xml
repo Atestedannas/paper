@@ -4,49 +4,16 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="以学生稿为主文档 → 从模板「学」样式再改学生稿 → 容易在分类、样式映射、分节、域字段上出偏差。">
-      <change afterPath="$PROJECT_DIR$/internal/handler/paper_format_admin_display.go" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/internal/handler/paper_format_chinese.go" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/internal/handler/paper_format_friendly.go" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/internal/handler/paper_format_models.go" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/internal/handler/paper_format_parse.go" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/internal/handler/paper_handler_diffs.go" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/internal/handler/paper_handler_fix_by_template.go" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/internal/handler/paper_handler_template.go" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/internal/handler/paper_parse_requirements_api.go" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/internal/handler/paper_text_extract.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/backend.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/backend.iml" afterDir="false" />
+    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="wordzero">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/cmd/server/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/cmd/server/main.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/conf/cert/14_13_52_597.password" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/conf/cert/14_13_52_597.private.pem" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/conf/cert/14_13_52_597.public.pem" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/conf/cert/yc/password" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/conf/cert/yc/private.pem" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/conf/rbac_model.conf" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/go.mod" beforeDir="false" afterPath="$PROJECT_DIR$/go.mod" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/go.sum" beforeDir="false" afterPath="$PROJECT_DIR$/go.sum" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/admin_university_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/admin_university_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/batch_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/batch_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/billing_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/billing_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/contact_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/contact_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/data_permission_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/data_permission_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/notification_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/notification_handler.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/handler/paper_format_admin_display.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/paper_format_admin_display.go" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/internal/handler/paper_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/paper_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/paper_history_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/paper_history_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/payment_check_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/payment_check_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/permission_package_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/permission_package_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/sandbox_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/sandbox_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/task_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/task_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/university_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/university_handler.go" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/internal/service/paper_service.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/paper_service.go" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/enhanced_processor.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/enhanced_processor.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/server" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/test_rbac.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/0ceb2e35-dcd2-4e6c-93c4-dd746405304a.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/uploads/papers/0ceb2e35-dcd2-4e6c-93c4-dd746405304a_enhanced_corrected_1772610831.docx" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -77,33 +44,33 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "Go 构建.go build github.com/paper-format-checker/backend.executor": "Debug",
-    "Go 测试.go test backend.executor": "Debug",
-    "Go 测试.go test server.executor": "Run",
-    "RunOnceActivity.OpenProjectViewOnStart": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.go.formatter.settings.were.checked": "true",
-    "RunOnceActivity.go.migrated.go.modules.settings": "true",
-    "RunOnceActivity.go.modules.automatic.dependencies.download": "true",
-    "RunOnceActivity.go.modules.go.list.on.any.changes.was.set": "true",
-    "WebServerToolWindowPanel.toolwindow.highlight.mappings": "true",
-    "WebServerToolWindowPanel.toolwindow.highlight.symlinks": "true",
-    "WebServerToolWindowPanel.toolwindow.show.date": "false",
-    "WebServerToolWindowPanel.toolwindow.show.permissions": "false",
-    "WebServerToolWindowPanel.toolwindow.show.size": "false",
-    "git-widget-placeholder": "arch/template-shell-fill",
-    "go.import.settings.migrated": "true",
-    "go.sdk.automatically.set": "true",
-    "last_opened_file_path": "D:/workpace/博客/paperjiaoben",
-    "node.js.detected.package.eslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "reference.settingsdialog.project.grazie"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;Go 构建.go build github.com/paper-format-checker/backend.executor&quot;: &quot;Debug&quot;,
+    &quot;Go 测试.go test backend.executor&quot;: &quot;Debug&quot;,
+    &quot;Go 测试.go test server.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.formatter.settings.were.checked&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.migrated.go.modules.settings&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.modules.automatic.dependencies.download&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.modules.go.list.on.any.changes.was.set&quot;: &quot;true&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.highlight.mappings&quot;: &quot;true&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.highlight.symlinks&quot;: &quot;true&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.show.date&quot;: &quot;false&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.show.permissions&quot;: &quot;false&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.show.size&quot;: &quot;false&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;arch/template-shell-fill&quot;,
+    &quot;go.import.settings.migrated&quot;: &quot;true&quot;,
+    &quot;go.sdk.automatically.set&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;D:/workpace/博客/paperjiaoben&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;reference.settingsdialog.project.grazie&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="D:\workpace\博客\paper\backend" />
@@ -165,7 +132,8 @@
     <MESSAGE value="论文核心修改" />
     <MESSAGE value="格式修正引擎配置（python-docx 样式引用引擎）" />
     <MESSAGE value="以学生稿为主文档 → 从模板「学」样式再改学生稿 → 容易在分类、样式映射、分节、域字段上出偏差。" />
-    <option name="LAST_COMMIT_MESSAGE" value="以学生稿为主文档 → 从模板「学」样式再改学生稿 → 容易在分类、样式映射、分节、域字段上出偏差。" />
+    <MESSAGE value="wordzero" />
+    <option name="LAST_COMMIT_MESSAGE" value="wordzero" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>

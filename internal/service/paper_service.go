@@ -198,6 +198,175 @@ func (s PaperService) CheckPaperFormat(userID, paperID, templateID uuid.UUID) (*
 	return result, nil
 }
 
+// CheckPaperFormatByFilePath 使用指定文件路径执行格式检查，并保存结果
+func (s PaperService) CheckPaperFormatByFilePath(userID, paperID, templateID uuid.UUID, filePath string) (*model.CheckResult, error) {
+	if filePath == "" {
+		return nil, fmt.Errorf("file path cannot be empty")
+	}
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("user id is required")
+	}
+
+	paper, err := s.GetPaperByID(userID, paperID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get paper: %v", err)
+	}
+
+	if templateID == uuid.Nil {
+		if paper.SelectedTemplateID != nil {
+			templateID = *paper.SelectedTemplateID
+		} else {
+			return nil, fmt.Errorf("no template selected for paper")
+		}
+	}
+
+	var template model.FormatTemplate
+	if err := database.DB.Where("id = ?", templateID).First(&template).Error; err != nil {
+		return nil, fmt.Errorf("failed to get format template: %v", err)
+	}
+
+	var rulesMap map[string]interface{}
+	if err := json.Unmarshal([]byte(template.FormatRules), &rulesMap); err != nil {
+		var jsonString string
+		if err2 := json.Unmarshal([]byte(template.FormatRules), &jsonString); err2 == nil {
+			if err3 := json.Unmarshal([]byte(jsonString), &rulesMap); err3 != nil {
+				return nil, fmt.Errorf("failed to unmarshal format rules (double encoded): %v", err3)
+			}
+		} else {
+			return nil, fmt.Errorf("failed to unmarshal format rules: %v", err)
+		}
+	}
+
+	logFormatRulesDebug("CheckPaperFormatByFilePath", paperID, templateID, rulesMap)
+
+	standard := formatchecker.ParseRequirementsToStandard(rulesMap)
+	processor := fileprocessor.NewBasicFileProcessor()
+	factory := formatchecker.NewCheckerFactory()
+	checker, err := factory.CreateChecker(paper.FileType, processor, standard)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create checker: %v", err)
+	}
+
+	ctx := context.Background()
+	checkResult, err := checker.Check(ctx, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check paper format: %v", err)
+	}
+
+	issuesJSON, _ := json.Marshal(checkResult.Issues)
+	resultUserID := userID
+	if resultUserID == uuid.Nil {
+		resultUserID = paper.UserID
+	}
+
+	result := &model.CheckResult{
+		ID:               uuid.New(),
+		PaperID:          paperID,
+		UserID:           resultUserID,
+		TemplateID:       templateID,
+		FormatTemplateID: templateID,
+		Status:           "completed",
+		TotalIssues:      checkResult.TotalIssues,
+		ErrorCount:       checkResult.ErrorCount,
+		WarningCount:     checkResult.WarningCount,
+		InfoCount:        checkResult.InfoCount,
+		Issues:           string(issuesJSON),
+		Differences:      "[]",
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+
+	if err := database.DB.Create(result).Error; err != nil {
+		return nil, fmt.Errorf("failed to save check result: %v", err)
+	}
+
+	return result, nil
+}
+
+// ClosePaperFormatLoop 反复检查并修正论文，直到检查结果无差异或达到最大循环次数
+func (s PaperService) ClosePaperFormatLoop(userID, paperID, templateID uuid.UUID, maxLoops int) (map[string]interface{}, error) {
+	if maxLoops <= 0 {
+		maxLoops = 3
+	}
+
+	paper, err := s.GetPaperByID(userID, paperID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get paper: %v", err)
+	}
+
+	if templateID == uuid.Nil {
+		if paper.SelectedTemplateID != nil {
+			templateID = *paper.SelectedTemplateID
+		} else {
+			return nil, fmt.Errorf("no template selected for paper")
+		}
+	}
+
+	currentPath := paper.FilePath
+	if paper.CorrectedFilePath != "" {
+		currentPath = paper.CorrectedFilePath
+	}
+
+	var lastCheck *model.CheckResult
+	loopCount := 0
+	for loopCount < maxLoops {
+		loopCount++
+
+		checkResult, err := s.CheckPaperFormatByFilePath(userID, paperID, templateID, currentPath)
+		if err != nil {
+			return nil, fmt.Errorf("loop %d format check failed: %w", loopCount, err)
+		}
+		lastCheck = checkResult
+
+		if checkResult.TotalIssues == 0 {
+			return map[string]interface{}{
+				"paper_id":              paperID,
+				"template_id":           templateID,
+				"final_check_result_id": checkResult.ID,
+				"corrected_file_path":   paper.CorrectedFilePath,
+				"loop_count":            loopCount,
+				"status":                "closed",
+			}, nil
+		}
+
+		if _, err := s.FixPaperFormat(userID, paperID, checkResult.ID); err != nil {
+			return nil, fmt.Errorf("loop %d format fix failed: %w", loopCount, err)
+		}
+
+		paper, err = s.GetPaperByID(userID, paperID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reload paper after fix: %v", err)
+		}
+		if paper.CorrectedFilePath != "" {
+			currentPath = paper.CorrectedFilePath
+		}
+
+		if loopCount == maxLoops {
+			finalCheck, err := s.CheckPaperFormatByFilePath(userID, paperID, templateID, currentPath)
+			if err != nil {
+				return nil, fmt.Errorf("final verification check failed: %w", err)
+			}
+			return map[string]interface{}{
+				"paper_id":              paperID,
+				"template_id":           templateID,
+				"final_check_result_id": finalCheck.ID,
+				"corrected_file_path":   paper.CorrectedFilePath,
+				"loop_count":            loopCount,
+				"status":                "max_loops_reached",
+			}, nil
+		}
+	}
+
+	return map[string]interface{}{
+		"paper_id":              paperID,
+		"template_id":           templateID,
+		"final_check_result_id": lastCheck.ID,
+		"corrected_file_path":   paper.CorrectedFilePath,
+		"loop_count":            loopCount,
+		"status":                "completed",
+	}, nil
+}
+
 // QuickV2Fix 直接运行 V2 引擎修正格式（跳过 CheckPaperFormat，~200ms）
 func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (string, error) {
 	start := time.Now()
@@ -414,13 +583,17 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 	}
 
 	// 返回给 API 的摘要：路径、下载 URL、实际应用的 issue 列表与数量
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"corrected_file_path": fixedPath,
 		"download_url":        fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String()),
 		"applied_issue_ids":   selectedIssueIDs,
 		"applied_issue_count": len(selectedIssueIDs),
 		"fix_all":             options.FixAll || len(options.IssueIDs) == 0,
-	}, nil
+	}
+	if sv := processor.GetLastStrongVerifyResult(); sv != nil {
+		result["strong_verify"] = sv
+	}
+	return result, nil
 }
 
 // tryTemplateFill uses the Go OOXML template filling engine for high-accuracy correction.
