@@ -2,6 +2,8 @@ package database
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -81,9 +83,17 @@ func TestMigrationIdempotency(t *testing.T) {
 func setupTestDB(t *testing.T, seed int64) (*gorm.DB, func()) {
 	// 使用唯一的数据库名称
 	dbName := fmt.Sprintf("test_migration_%d_%d", time.Now().Unix(), seed)
+	testConfig := getTestConfig()
 
 	// 连接到默认数据库以创建测试数据库
-	adminDSN := "host=localhost port=5432 user=postgres password=postgres dbname=postgres sslmode=disable"
+	adminDSN := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
+		testConfig.Database.Host,
+		testConfig.Database.Port,
+		testConfig.Database.User,
+		testConfig.Database.Password,
+		testConfig.Database.SSLMode,
+	)
 	adminDB, err := gorm.Open(postgres.Open(adminDSN), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
@@ -99,7 +109,15 @@ func setupTestDB(t *testing.T, seed int64) (*gorm.DB, func()) {
 	}
 
 	// 连接到测试数据库
-	testDSN := fmt.Sprintf("host=localhost port=5432 user=postgres password=postgres dbname=%s sslmode=disable", dbName)
+	testDSN := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		testConfig.Database.Host,
+		testConfig.Database.Port,
+		testConfig.Database.User,
+		testConfig.Database.Password,
+		dbName,
+		testConfig.Database.SSLMode,
+	)
 	testDB, err := gorm.Open(postgres.Open(testDSN), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
@@ -423,7 +441,7 @@ func TestMigrationLogging(t *testing.T) {
 
 // 辅助函数：初始化测试配置
 func getTestConfig() *config.Config {
-	return &config.Config{
+	cfg := &config.Config{
 		Database: config.DatabaseConfig{
 			Host:     "localhost",
 			Port:     5432,
@@ -433,4 +451,27 @@ func getTestConfig() *config.Config {
 			SSLMode:  "disable",
 		},
 	}
+
+	if host := os.Getenv("DATABASE_HOST"); host != "" {
+		cfg.Database.Host = host
+	}
+	if port := os.Getenv("DATABASE_PORT"); port != "" {
+		if parsed, err := strconv.Atoi(port); err == nil {
+			cfg.Database.Port = parsed
+		}
+	}
+	if user := os.Getenv("DATABASE_USER"); user != "" {
+		cfg.Database.User = user
+	}
+	if password := os.Getenv("DATABASE_PASSWORD"); password != "" {
+		cfg.Database.Password = password
+	}
+	if name := os.Getenv("DATABASE_NAME"); name != "" {
+		cfg.Database.Name = name
+	}
+	if sslMode := os.Getenv("DATABASE_SSL_MODE"); sslMode != "" {
+		cfg.Database.SSLMode = sslMode
+	}
+
+	return cfg
 }
