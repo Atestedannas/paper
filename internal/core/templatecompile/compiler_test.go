@@ -46,8 +46,8 @@ func TestCompilerBuildsCompiledTemplatePackage(t *testing.T) {
 	if result.SkeletonPath == "" {
 		t.Fatal("expected skeleton path")
 	}
-	if filepath.Dir(result.SkeletonPath) != outputDir {
-		t.Fatalf("skeleton path should be inside output dir, got %s", result.SkeletonPath)
+	if filepath.Dir(filepath.Dir(result.SkeletonPath)) != outputDir {
+		t.Fatalf("skeleton package should be inside output dir, got %s", result.SkeletonPath)
 	}
 	assertFileBytesEqual(t, templatePath, result.SkeletonPath)
 	if result.SkeletonSource != templatePath {
@@ -70,10 +70,12 @@ func TestCompilerBuildsCompiledTemplatePackage(t *testing.T) {
 		if block.Kind != kind {
 			t.Fatalf("MustBlock(%s) returned kind %q", kind, block.Kind)
 		}
+		assertBlockContract(t, block)
 	}
 	if _, err := result.MustBlock("missing_block"); err == nil {
 		t.Fatal("expected MustBlock to fail for unknown block")
 	}
+	assertBlocksOrdered(t, result.BlockCatalog)
 
 	requiredPatchTargets := []string{
 		"word/document.xml",
@@ -89,12 +91,63 @@ func TestCompilerBuildsCompiledTemplatePackage(t *testing.T) {
 	if len(result.StyleProfiles) == 0 {
 		t.Fatal("expected style profiles")
 	}
-	if len(result.MappingContract.Bindings) == 0 {
+	assertStyleProfileContract(t, result.StyleProfiles[0])
+	if result.MappingContract.ContractID == "" {
+		t.Fatal("expected mapping contract id")
+	}
+	if len(result.MappingContract.BlockBindings) == 0 {
 		t.Fatal("expected mapping contract bindings")
+	}
+	if result.MappingContract.PatchTarget == "" {
+		t.Fatal("expected mapping contract patch target")
 	}
 	if len(result.VerificationRules) == 0 {
 		t.Fatal("expected verification rules")
 	}
+	assertVerificationRuleContract(t, result.VerificationRules[0])
+}
+
+func TestCompilerCreatesUniquePackageDirectories(t *testing.T) {
+	templatePath := writeSimpleTemplateDocx(t)
+	outputDir := t.TempDir()
+	compiler := NewCompiler()
+
+	first, err := compiler.Compile(context.Background(), templatePath, CompileOptions{
+		SchoolID:     "cq-test",
+		TemplateName: "official-template",
+		Version:      "v1",
+		OutputDir:    outputDir,
+	})
+	if err != nil {
+		t.Fatalf("first Compile() error = %v", err)
+	}
+
+	marker := []byte("first skeleton must remain untouched")
+	if err := os.WriteFile(first.SkeletonPath, marker, 0o644); err != nil {
+		t.Fatalf("write first skeleton marker: %v", err)
+	}
+
+	second, err := compiler.Compile(context.Background(), templatePath, CompileOptions{
+		SchoolID:     "cq-test",
+		TemplateName: "official-template",
+		Version:      "v1",
+		OutputDir:    outputDir,
+	})
+	if err != nil {
+		t.Fatalf("second Compile() error = %v", err)
+	}
+
+	if first.SkeletonPath == second.SkeletonPath {
+		t.Fatalf("expected unique skeleton paths, both were %s", first.SkeletonPath)
+	}
+	got, err := os.ReadFile(first.SkeletonPath)
+	if err != nil {
+		t.Fatalf("read first skeleton: %v", err)
+	}
+	if !bytes.Equal(got, marker) {
+		t.Fatal("second compile overwrote first skeleton")
+	}
+	assertFileBytesEqual(t, templatePath, second.SkeletonPath)
 }
 
 func writeSimpleTemplateDocx(t *testing.T) string {
@@ -144,6 +197,73 @@ func assertFileBytesEqual(t *testing.T, wantPath, gotPath string) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatal("copied skeleton differs from source")
+	}
+}
+
+func assertBlocksOrdered(t *testing.T, blocks []TemplateBlock) {
+	t.Helper()
+
+	if len(blocks) == 0 {
+		t.Fatal("expected blocks")
+	}
+	for i, block := range blocks {
+		if block.OrderIndex != i {
+			t.Fatalf("block %s has order index %d, want %d", block.BlockID, block.OrderIndex, i)
+		}
+	}
+}
+
+func assertBlockContract(t *testing.T, block TemplateBlock) {
+	t.Helper()
+
+	if block.BlockID == "" {
+		t.Fatalf("block %s missing block id", block.Kind)
+	}
+	if block.Kind == "" {
+		t.Fatalf("block %s missing kind", block.BlockID)
+	}
+	if block.SlotType == "" {
+		t.Fatalf("block %s missing slot type", block.BlockID)
+	}
+	if block.StyleProfileID == "" {
+		t.Fatalf("block %s missing style profile id", block.BlockID)
+	}
+	if block.Anchor.Path == "" || block.Anchor.Match == "" {
+		t.Fatalf("block %s missing anchor contract: %#v", block.BlockID, block.Anchor)
+	}
+	if block.SourceRegion.Path == "" || block.SourceRegion.Start == "" || block.SourceRegion.End == "" {
+		t.Fatalf("block %s missing source region: %#v", block.BlockID, block.SourceRegion)
+	}
+	if block.Capacity.Min < 0 || block.Capacity.Max <= 0 {
+		t.Fatalf("block %s missing capacity: %#v", block.BlockID, block.Capacity)
+	}
+	if len(block.Accepts) == 0 {
+		t.Fatalf("block %s missing accepted content types", block.BlockID)
+	}
+	if block.PatchPolicy.Target == "" || block.PatchPolicy.Mode == "" {
+		t.Fatalf("block %s missing patch policy: %#v", block.BlockID, block.PatchPolicy)
+	}
+	if block.VerifyPolicy.RuleID == "" || block.VerifyPolicy.Severity == "" {
+		t.Fatalf("block %s missing verify policy: %#v", block.BlockID, block.VerifyPolicy)
+	}
+}
+
+func assertStyleProfileContract(t *testing.T, profile StyleProfile) {
+	t.Helper()
+
+	if profile.StyleProfileID == "" || profile.Name == "" || profile.BasedOn == "" {
+		t.Fatalf("style profile is too shallow: %#v", profile)
+	}
+	if len(profile.Properties) == 0 {
+		t.Fatalf("style profile missing properties: %#v", profile)
+	}
+}
+
+func assertVerificationRuleContract(t *testing.T, rule VerificationRule) {
+	t.Helper()
+
+	if rule.RuleID == "" || rule.Target == "" || rule.Assertion == "" || rule.Severity == "" {
+		t.Fatalf("verification rule is too shallow: %#v", rule)
 	}
 }
 

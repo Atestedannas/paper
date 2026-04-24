@@ -14,7 +14,7 @@ type CompileOptions struct {
 
 type CompiledTemplatePackage struct {
 	Manifest          TemplateManifest
-	BlockCatalog      map[string]TemplateBlock
+	BlockCatalog      []TemplateBlock
 	SkeletonPath      string
 	SkeletonSource    string
 	PatchTargets      []string
@@ -33,20 +33,65 @@ type TemplateManifest struct {
 }
 
 type TemplateBlock struct {
-	Kind        string
-	Description string
+	BlockID        string
+	Kind           string
+	SlotType       string
+	OrderIndex     int
+	ParentBlockID  string
+	StyleProfileID string
+	Anchor         Anchor
+	SourceRegion   SourceRegion
+	Capacity       Capacity
+	Required       bool
+	Accepts        []string
+	PatchPolicy    PatchPolicy
+	VerifyPolicy   VerifyPolicy
+}
+
+type Anchor struct {
+	Path  string
+	Match string
+}
+
+type SourceRegion struct {
+	Path  string
+	Start string
+	End   string
+}
+
+type Capacity struct {
+	Min int
+	Max int
+}
+
+type PatchPolicy struct {
+	Target string
+	Mode   string
+}
+
+type VerifyPolicy struct {
+	RuleID   string
+	Severity string
 }
 
 type StyleProfile struct {
-	Name string
+	StyleProfileID string
+	Name           string
+	BasedOn        string
+	Properties     map[string]string
 }
 
 type MappingContract struct {
-	Bindings map[string]string
+	ContractID    string
+	BlockBindings map[string]string
+	PatchTarget   string
 }
 
 type VerificationRule struct {
-	Name string
+	RuleID    string
+	Target    string
+	Assertion string
+	Severity  string
 }
 
 func (p *CompiledTemplatePackage) MustBlock(kind string) (TemplateBlock, error) {
@@ -54,10 +99,11 @@ func (p *CompiledTemplatePackage) MustBlock(kind string) (TemplateBlock, error) 
 		return TemplateBlock{}, fmt.Errorf("compiled template package is nil")
 	}
 
-	block, ok := p.BlockCatalog[kind]
-	if !ok {
-		return TemplateBlock{}, fmt.Errorf("template block %q not found", kind)
+	for _, block := range p.BlockCatalog {
+		if block.Kind == kind {
+			return block, nil
+		}
 	}
 
-	return block, nil
+	return TemplateBlock{}, fmt.Errorf("template block %q not found", kind)
 }

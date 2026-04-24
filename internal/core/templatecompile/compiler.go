@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -48,7 +49,11 @@ func (c *Compiler) Compile(ctx context.Context, templatePath string, opts Compil
 		return nil, fmt.Errorf("create output dir: %w", err)
 	}
 
-	skeletonPath := filepath.Join(opts.OutputDir, "skeleton.docx")
+	packageDir, err := os.MkdirTemp(opts.OutputDir, packageDirPrefix(opts, hash.Sum(nil))+"-*")
+	if err != nil {
+		return nil, fmt.Errorf("create compiled package dir: %w", err)
+	}
+	skeletonPath := filepath.Join(packageDir, "skeleton.docx")
 	skeleton, err := os.Create(skeletonPath)
 	if err != nil {
 		return nil, fmt.Errorf("create skeleton docx: %w", err)
@@ -73,19 +78,10 @@ func (c *Compiler) Compile(ctx context.Context, templatePath string, opts Compil
 			CompilerVersion: compilerVersion,
 			CompiledAt:      time.Now().UTC(),
 		},
-		BlockCatalog: map[string]TemplateBlock{
-			"cover_title": {
-				Kind:        "cover_title",
-				Description: "Cover title placeholder",
-			},
-			"abstract_cn_body": {
-				Kind:        "abstract_cn_body",
-				Description: "Chinese abstract body placeholder",
-			},
-			"heading_1": {
-				Kind:        "heading_1",
-				Description: "Level 1 heading style",
-			},
+		BlockCatalog: []TemplateBlock{
+			newBlock("block-cover-title", "cover_title", "text", 0, "", "style-cover-title", "{{cover_title}}", true),
+			newBlock("block-abstract-cn-body", "abstract_cn_body", "rich_text", 1, "", "style-body-cn", "{{abstract_cn_body}}", true),
+			newBlock("block-heading-1", "heading_1", "style", 2, "", "style-heading-1", "w:pStyle=Heading1", false),
 		},
 		SkeletonPath:   skeletonPath,
 		SkeletonSource: templatePath,
@@ -95,17 +91,116 @@ func (c *Compiler) Compile(ctx context.Context, templatePath string, opts Compil
 			"word/settings.xml",
 		},
 		StyleProfiles: []StyleProfile{
-			{Name: "default"},
+			{
+				StyleProfileID: "style-cover-title",
+				Name:           "Cover Title",
+				BasedOn:        "Title",
+				Properties: map[string]string{
+					"alignment": "center",
+					"bold":      "true",
+				},
+			},
+			{
+				StyleProfileID: "style-body-cn",
+				Name:           "Chinese Body",
+				BasedOn:        "Normal",
+				Properties: map[string]string{
+					"language": "zh-CN",
+					"spacing":  "single",
+				},
+			},
+			{
+				StyleProfileID: "style-heading-1",
+				Name:           "Heading 1",
+				BasedOn:        "Heading1",
+				Properties: map[string]string{
+					"outlineLevel": "1",
+				},
+			},
 		},
 		MappingContract: MappingContract{
-			Bindings: map[string]string{
-				"cover_title":      "word/document.xml",
-				"abstract_cn_body": "word/document.xml",
-				"heading_1":        "word/document.xml",
+			ContractID:  "mapping-default",
+			PatchTarget: "word/document.xml",
+			BlockBindings: map[string]string{
+				"block-cover-title":      "{{cover_title}}",
+				"block-abstract-cn-body": "{{abstract_cn_body}}",
+				"block-heading-1":        "w:pStyle=Heading1",
 			},
 		},
 		VerificationRules: []VerificationRule{
-			{Name: "skeleton_docx_exists"},
+			{
+				RuleID:    "verify-skeleton-docx-exists",
+				Target:    "skeleton.docx",
+				Assertion: "file_exists",
+				Severity:  "error",
+			},
+			{
+				RuleID:    "verify-document-patchable",
+				Target:    "word/document.xml",
+				Assertion: "zip_entry_exists",
+				Severity:  "error",
+			},
 		},
 	}, nil
+}
+
+func newBlock(blockID, kind, slotType string, orderIndex int, parentBlockID, styleProfileID, anchorMatch string, required bool) TemplateBlock {
+	return TemplateBlock{
+		BlockID:        blockID,
+		Kind:           kind,
+		SlotType:       slotType,
+		OrderIndex:     orderIndex,
+		ParentBlockID:  parentBlockID,
+		StyleProfileID: styleProfileID,
+		Anchor: Anchor{
+			Path:  "word/document.xml",
+			Match: anchorMatch,
+		},
+		SourceRegion: SourceRegion{
+			Path:  "word/document.xml",
+			Start: anchorMatch,
+			End:   anchorMatch,
+		},
+		Capacity: Capacity{
+			Min: 0,
+			Max: 1,
+		},
+		Required: required,
+		Accepts: []string{
+			slotType,
+		},
+		PatchPolicy: PatchPolicy{
+			Target: "word/document.xml",
+			Mode:   "replace_anchor",
+		},
+		VerifyPolicy: VerifyPolicy{
+			RuleID:   "verify-document-patchable",
+			Severity: "error",
+		},
+	}
+}
+
+func packageDirPrefix(opts CompileOptions, hash []byte) string {
+	return strings.Join([]string{
+		safeSegment(opts.SchoolID),
+		safeSegment(opts.Version),
+		hex.EncodeToString(hash)[:12],
+	}, "-")
+}
+
+func safeSegment(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return "unknown"
+	}
+
+	var builder strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			builder.WriteRune(r)
+			continue
+		}
+		builder.WriteByte('-')
+	}
+	return builder.String()
 }
