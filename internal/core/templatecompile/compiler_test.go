@@ -4,9 +4,12 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestCompilerBuildsCompiledTemplatePackage(t *testing.T) {
@@ -150,6 +153,78 @@ func TestCompilerCreatesUniquePackageDirectories(t *testing.T) {
 	assertFileBytesEqual(t, templatePath, second.SkeletonPath)
 }
 
+func TestCompilerCleansPackageDirWhenFinalContextCheckFails(t *testing.T) {
+	templatePath := writeSimpleTemplateDocx(t)
+	outputDir := t.TempDir()
+	compiler := NewCompiler()
+
+	ctx := &errAfterCallsContext{
+		failOnCall: 2,
+		err:        context.Canceled,
+	}
+	result, err := compiler.Compile(ctx, templatePath, CompileOptions{
+		SchoolID:     "cq-test",
+		TemplateName: "official-template",
+		Version:      "v1",
+		OutputDir:    outputDir,
+	})
+	if err == nil {
+		t.Fatal("expected Compile to return final context error")
+	}
+	if result != nil {
+		t.Fatalf("expected nil result on error, got %#v", result)
+	}
+	assertDirectoryEmpty(t, outputDir)
+}
+
+func TestCompilerPackageJSONUsesSnakeCaseContractFields(t *testing.T) {
+	templatePath := writeSimpleTemplateDocx(t)
+	outputDir := t.TempDir()
+	compiler := NewCompiler()
+
+	result, err := compiler.Compile(context.Background(), templatePath, CompileOptions{
+		SchoolID:     "cq-test",
+		TemplateName: "official-template",
+		Version:      "v1",
+		OutputDir:    outputDir,
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	payload, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal compiled package: %v", err)
+	}
+	body := string(payload)
+	requiredKeys := []string{
+		`"school_id"`,
+		`"block_catalog"`,
+		`"block_id"`,
+		`"style_profile_id"`,
+		`"mapping_contract"`,
+		`"verification_rules"`,
+	}
+	for _, key := range requiredKeys {
+		if !strings.Contains(body, key) {
+			t.Fatalf("marshaled package missing %s: %s", key, body)
+		}
+	}
+	defaultKeys := []string{
+		`"SchoolID"`,
+		`"BlockCatalog"`,
+		`"BlockID"`,
+		`"StyleProfileID"`,
+		`"MappingContract"`,
+		`"VerificationRules"`,
+	}
+	for _, key := range defaultKeys {
+		if strings.Contains(body, key) {
+			t.Fatalf("marshaled package used default Go field key %s: %s", key, body)
+		}
+	}
+}
+
 func writeSimpleTemplateDocx(t *testing.T) string {
 	t.Helper()
 
@@ -182,6 +257,45 @@ func writeSimpleTemplateDocx(t *testing.T) string {
 	}
 
 	return path
+}
+
+func assertDirectoryEmpty(t *testing.T, path string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatalf("read output dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected empty output dir, got %d entries", len(entries))
+	}
+}
+
+type errAfterCallsContext struct {
+	context.Context
+	calls      int
+	failOnCall int
+	err        error
+}
+
+func (c *errAfterCallsContext) Deadline() (time.Time, bool) {
+	return time.Time{}, false
+}
+
+func (c *errAfterCallsContext) Done() <-chan struct{} {
+	return nil
+}
+
+func (c *errAfterCallsContext) Err() error {
+	c.calls++
+	if c.calls >= c.failOnCall {
+		return c.err
+	}
+	return nil
+}
+
+func (c *errAfterCallsContext) Value(key any) any {
+	return nil
 }
 
 func assertFileBytesEqual(t *testing.T, wantPath, gotPath string) {

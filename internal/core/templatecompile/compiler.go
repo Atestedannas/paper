@@ -53,6 +53,13 @@ func (c *Compiler) Compile(ctx context.Context, templatePath string, opts Compil
 	if err != nil {
 		return nil, fmt.Errorf("create compiled package dir: %w", err)
 	}
+	success := false
+	defer func() {
+		if !success {
+			_ = os.RemoveAll(packageDir)
+		}
+	}()
+
 	skeletonPath := filepath.Join(packageDir, "skeleton.docx")
 	skeleton, err := os.Create(skeletonPath)
 	if err != nil {
@@ -69,6 +76,7 @@ func (c *Compiler) Compile(ctx context.Context, templatePath string, opts Compil
 		return nil, err
 	}
 
+	success = true
 	return &CompiledTemplatePackage{
 		Manifest: TemplateManifest{
 			SchoolID:        opts.SchoolID,
