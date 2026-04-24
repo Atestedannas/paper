@@ -90,7 +90,10 @@ type fixByTemplateRequest struct {
 	FormatConfigJSON string `form:"format_config_json" json:"format_config_json"`
 }
 
-const maxIssueIDsPerRequest = 500
+const (
+	maxIssueIDsPerRequest  = 500
+	legacyWritePathMessage = "legacy paper write path has been retired; use /api/v2/papers"
+)
 
 // uploadPaperExposeDeepSeekRaw 为 true 时，上传成功响应里会多一个字段 deepseek_raw（模型去掉 ``` 围栏后的完整字符串），便于在浏览器 Network → 响应里查看。
 // 开启方式：环境变量 DEEPSEEK_DEBUG_RESPONSE=1/true，或 multipart 表单字段 debug_deepseek=1/true。长文 JSON 体积大，勿在生产长期开启。
@@ -125,6 +128,8 @@ func (h *PaperHandler) formatTemplateGoldenOrFilePath(paper *model.Paper, req Up
 
 // UploadPaper 上传论文；后台异步格式修正经 paperService → ApplyCorrectionsV2，引擎由 pkg/formatengine 编译期常量控制（与 Handler 无直接耦合）。
 func (h *PaperHandler) UploadPaper(c *gin.Context) {
+	utils.ErrorResponse(c, http.StatusGone, legacyWritePathMessage, "")
+	return
 
 	// 付费/白名单校验；不通过时已写 HTTP 响应，此处直接返回
 	if !h.uploadPaperPaymentGateAllows(c) {
@@ -976,6 +981,9 @@ func (h *PaperHandler) CheckFormat(c *gin.Context) {
 
 // FixFormat 修复论文格式
 func (h *PaperHandler) FixFormat(c *gin.Context) {
+	utils.ErrorResponse(c, http.StatusGone, legacyWritePathMessage, "")
+	return
+
 	userID, _ := c.Get("user_id")
 	paperID, err := uuid.Parse(c.Param("id"))
 	if err != nil {

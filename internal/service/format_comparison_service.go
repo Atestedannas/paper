@@ -16,6 +16,8 @@ import (
 )
 
 // FormatComparisonService 格式对比服务接口
+// FormatComparisonService is retained for legacy read/comparison surfaces only.
+// It is no longer a production write path for generating corrected documents.
 type FormatComparisonService interface {
 	// CheckPaperFormat 检查论文格式
 	CheckPaperFormat(paperID uuid.UUID, templateID uuid.UUID) (*model.CheckResult, error)
@@ -573,6 +575,8 @@ func (s *formatComparisonService) GenerateFormatDifferences(checkResultID uuid.U
 
 // ApplyCorrections 应用格式修正
 func (s *formatComparisonService) ApplyCorrections(checkResultID uuid.UUID, correctionIDs []uuid.UUID) (*CorrectionResult, error) {
+	return nil, ErrLegacyWritePathDisabled
+
 	// 获取检查结果
 	var checkResult model.CheckResult
 	if err := database.DB.Preload("Paper").First(&checkResult, "id = ?", checkResultID).Error; err != nil {
@@ -632,6 +636,8 @@ func (s *formatComparisonService) GetCheckResult(checkResultID uuid.UUID) (*mode
 
 // GenerateCorrectedDocument 生成修正后的文档
 func (s *formatComparisonService) GenerateCorrectedDocument(checkResultID uuid.UUID) (string, error) {
+	return "", ErrLegacyWritePathDisabled
+
 	// 获取检查结果和模板
 	var checkResult model.CheckResult
 	if err := database.DB.Preload("Paper").Preload("Template.University").First(&checkResult, "id = ?", checkResultID).Error; err != nil {

@@ -33,6 +33,8 @@ type PaperService struct {
 
 const maxFormatRulesDebugBytes = 16384
 
+var ErrLegacyWritePathDisabled = fmt.Errorf("legacy paper write path disabled")
+
 // logFormatRulesDebug 在环境变量 PAPER_DEBUG_FORMAT_RULES=1 或 true 时，把模板 format_rules（JSON）打到日志。
 // 用于 POST /upload 异步链路：检查 CheckPaperFormat、修正 FixPaperFormat、快速 QuickV2Fix 对照规则与引擎行为。
 func logFormatRulesDebug(phase string, paperID, templateID uuid.UUID, rulesMap map[string]interface{}) {
@@ -200,6 +202,8 @@ func (s PaperService) CheckPaperFormat(userID, paperID, templateID uuid.UUID) (*
 
 // QuickV2Fix 直接运行 V2 引擎修正格式（跳过 CheckPaperFormat，~200ms）
 func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (string, error) {
+	return "", ErrLegacyWritePathDisabled
+
 	start := time.Now()
 
 	var template model.FormatTemplate
@@ -239,6 +243,8 @@ func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (stri
 
 // FixPaperFormatByParsedRequirements 鏍规嵁瑙ｆ瀽鐨勮姹備慨澶嶈鏂囨牸寮?
 func (s PaperService) FixPaperFormatByParsedRequirements(userID, paperID uuid.UUID, requirements map[string]interface{}) (interface{}, error) {
+	return nil, ErrLegacyWritePathDisabled
+
 	// 鑾峰彇璁烘枃淇℃伅
 
 	paper, err := s.GetPaperByID(userID, paperID)
@@ -281,13 +287,13 @@ func (s PaperService) FixPaperFormatByParsedRequirements(userID, paperID uuid.UU
 
 // FixPaperFormat 淇璁烘枃鏍煎紡
 func (s PaperService) FixPaperFormat(userID, paperID, checkResultID uuid.UUID) (interface{}, error) {
-	return s.FixPaperFormatWithOptions(userID, paperID, checkResultID, FixPaperFormatOptions{
-		FixAll: true,
-	})
+	return nil, ErrLegacyWritePathDisabled
 }
 
 // FixPaperFormatWithOptions 按 Issue 粒度修复论文格式
 func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID uuid.UUID, options FixPaperFormatOptions) (interface{}, error) {
+	return nil, ErrLegacyWritePathDisabled
+
 	// 校验 FixAll 与 IssueIDs 是否同时指定等非法组合
 	if err := validateFixPaperFormatOptions(options); err != nil {
 		return nil, err
