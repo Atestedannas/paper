@@ -749,7 +749,7 @@ func main() {
 		}
 	}
 
-	apiV2 := router.Group("/api/v2")
+	apiV2 := router.Group("/api/v2", middleware.AuthMiddleware(cfg, database.DB))
 	{
 		apiV2.POST("/templates/compile", paperWorkflowHandler.CompileTemplate)
 		apiV2.POST("/papers", paperWorkflowHandler.CreatePaperJob)

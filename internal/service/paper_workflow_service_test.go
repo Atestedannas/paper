@@ -15,10 +15,11 @@ import (
 func TestPaperWorkflowServiceGetJobReturnsView(t *testing.T) {
 	db := openPaperWorkflowServiceTestDB(t)
 	jobID := uuid.New()
+	userID := uuid.New()
 	job := model.PaperWorkflowJob{
 		ID:                 jobID,
 		PaperID:            uuid.New(),
-		UserID:             uuid.New(),
+		UserID:             userID,
 		CompiledTemplateID: uuid.New(),
 		Status:             string(workflow.StatusVerifiedPass),
 		Stage:              workflow.StageVerified,
@@ -37,6 +38,9 @@ func TestPaperWorkflowServiceGetJobReturnsView(t *testing.T) {
 	if view.ID != jobID {
 		t.Fatalf("ID = %s, want %s", view.ID, jobID)
 	}
+	if view.UserID != userID {
+		t.Fatalf("UserID = %s, want %s", view.UserID, userID)
+	}
 	if view.Status != string(workflow.StatusVerifiedPass) {
 		t.Fatalf("Status = %s, want %s", view.Status, workflow.StatusVerifiedPass)
 	}
@@ -45,6 +49,60 @@ func TestPaperWorkflowServiceGetJobReturnsView(t *testing.T) {
 	}
 	if view.DownloadPath != "out/final.docx" {
 		t.Fatalf("DownloadPath = %s, want out/final.docx", view.DownloadPath)
+	}
+}
+
+func TestPaperWorkflowServiceGetJobForUserReturnsOwnerJob(t *testing.T) {
+	db := openPaperWorkflowServiceTestDB(t)
+	jobID := uuid.New()
+	userID := uuid.New()
+	job := model.PaperWorkflowJob{
+		ID:                 jobID,
+		PaperID:            uuid.New(),
+		UserID:             userID,
+		CompiledTemplateID: uuid.New(),
+		Status:             string(workflow.StatusVerifiedPass),
+		Stage:              workflow.StageVerified,
+		DownloadPath:       "out/final.docx",
+		VerifyResultJSON:   "{}",
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	view, err := NewPaperWorkflowService(db).GetJobForUser(jobID.String(), userID)
+	if err != nil {
+		t.Fatalf("GetJobForUser() error = %v", err)
+	}
+
+	if view.ID != jobID {
+		t.Fatalf("ID = %s, want %s", view.ID, jobID)
+	}
+	if view.UserID != userID {
+		t.Fatalf("UserID = %s, want %s", view.UserID, userID)
+	}
+}
+
+func TestPaperWorkflowServiceGetJobForUserReturnsNotFoundForNonOwner(t *testing.T) {
+	db := openPaperWorkflowServiceTestDB(t)
+	jobID := uuid.New()
+	job := model.PaperWorkflowJob{
+		ID:                 jobID,
+		PaperID:            uuid.New(),
+		UserID:             uuid.New(),
+		CompiledTemplateID: uuid.New(),
+		Status:             string(workflow.StatusVerifiedPass),
+		Stage:              workflow.StageVerified,
+		DownloadPath:       "out/final.docx",
+		VerifyResultJSON:   "{}",
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	_, err := NewPaperWorkflowService(db).GetJobForUser(jobID.String(), uuid.New())
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("GetJobForUser() error = %v, want gorm.ErrRecordNotFound", err)
 	}
 }
 
