@@ -38,9 +38,9 @@ type PaperWorkflowJob struct {
 	CreatedAt          time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt          time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
 
-	Paper            Paper                `gorm:"foreignKey:PaperID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT;" json:"paper,omitempty"`
-	User             User                 `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT;" json:"user,omitempty"`
-	CompiledTemplate CompiledTemplate     `gorm:"foreignKey:CompiledTemplateID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT;" json:"compiled_template,omitempty"`
+	Paper            Paper                `gorm:"foreignKey:PaperID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"paper,omitempty"`
+	User             User                 `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"user,omitempty"`
+	CompiledTemplate CompiledTemplate     `gorm:"foreignKey:CompiledTemplateID;constraint:OnUpdate:CASCADE;" json:"compiled_template,omitempty"`
 	Issues           []PaperWorkflowIssue `gorm:"foreignKey:JobID" json:"issues,omitempty"`
 }
 

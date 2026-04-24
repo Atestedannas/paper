@@ -38,6 +38,9 @@ func TestMigration20260423CreateDocxClosedLoopV2Tables(t *testing.T) {
 	assertForeignKeyExists(t, testDB, "paper_workflow_jobs", "user_id", "users")
 	assertForeignKeyExists(t, testDB, "paper_workflow_jobs", "compiled_template_id", "compiled_templates")
 	assertForeignKeyExists(t, testDB, "paper_workflow_issues", "job_id", "paper_workflow_jobs")
+	assertForeignKeyDeleteRule(t, testDB, "paper_workflow_jobs", "paper_id", "CASCADE")
+	assertForeignKeyDeleteRule(t, testDB, "paper_workflow_jobs", "user_id", "CASCADE")
+	assertForeignKeyDeleteRule(t, testDB, "paper_workflow_issues", "job_id", "CASCADE")
 
 	if !testDB.Migrator().HasIndex(&model.PaperWorkflowJob{}, "idx_paper_workflow_jobs_status_stage") {
 		t.Fatalf("idx_paper_workflow_jobs_status_stage index was not created")
@@ -141,5 +144,32 @@ func assertForeignKeyExists(t *testing.T, db *gorm.DB, tableName, columnName, re
 	}
 	if count == 0 {
 		t.Fatalf("foreign key for %s.%s -> %s was not created", tableName, columnName, referencedTable)
+	}
+}
+
+func assertForeignKeyDeleteRule(t *testing.T, db *gorm.DB, tableName, columnName, expectedRule string) {
+	t.Helper()
+
+	var deleteRule string
+	err := db.Raw(`
+		SELECT rc.delete_rule
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kcu
+		  ON tc.constraint_name = kcu.constraint_name
+		 AND tc.table_schema = kcu.table_schema
+		JOIN information_schema.referential_constraints rc
+		  ON tc.constraint_name = rc.constraint_name
+		 AND tc.constraint_schema = rc.constraint_schema
+		WHERE tc.constraint_type = 'FOREIGN KEY'
+		  AND tc.table_schema = current_schema()
+		  AND tc.table_name = ?
+		  AND kcu.column_name = ?
+		LIMIT 1
+	`, tableName, columnName).Scan(&deleteRule).Error
+	if err != nil {
+		t.Fatalf("failed to inspect delete rule for %s.%s: %v", tableName, columnName, err)
+	}
+	if deleteRule != expectedRule {
+		t.Fatalf("unexpected delete rule for %s.%s: got %s want %s", tableName, columnName, deleteRule, expectedRule)
 	}
 }
