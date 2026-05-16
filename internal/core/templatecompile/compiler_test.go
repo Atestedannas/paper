@@ -63,7 +63,12 @@ func TestCompilerBuildsCompiledTemplatePackage(t *testing.T) {
 	requiredBlocks := []string{
 		"cover_title",
 		"abstract_cn_body",
+		"keywords_cn",
 		"heading_1",
+		"body",
+		"content_blocks",
+		"references",
+		"acknowledgement",
 	}
 	for _, kind := range requiredBlocks {
 		block, err := result.MustBlock(kind)

@@ -25,6 +25,7 @@ func (m *Mapper) Map(template *templatecompile.CompiledTemplatePackage, paper *p
 
 	result := &MappingResult{
 		UnmappedBlocks: append([]string(nil), paper.Abnormal...),
+		CoverFields:    copyCoverFields(paper.CoverFields),
 	}
 
 	blocks := append([]templatecompile.TemplateBlock(nil), template.BlockCatalog...)
@@ -68,8 +69,87 @@ func (m *Mapper) Map(template *templatecompile.CompiledTemplatePackage, paper *p
 			Payload:   payloads[0],
 		})
 	}
+	appendBackMatterFallbackBindings(result, paper)
 
 	return result, nil
+}
+
+func appendBackMatterFallbackBindings(result *MappingResult, paper *paperparse.ParsedPaper) {
+	if result == nil || paper == nil {
+		return
+	}
+	references, acknowledgements := splitBackMatterPayloads(paper.References, paper.Acknowledgements)
+	if !hasBinding(result.Bindings, "references") && !hasBindingKind(result.Bindings, "references") {
+		if payload := strings.TrimSpace(strings.Join(references, "\n")); payload != "" {
+			result.Bindings = append(result.Bindings, Binding{BlockID: "references", BlockKind: "back_matter", Payload: payload})
+		}
+	}
+	if !hasBinding(result.Bindings, "acknowledgement") && !hasBindingKind(result.Bindings, "acknowledgement") {
+		if payload := strings.TrimSpace(strings.Join(acknowledgements, "\n")); payload != "" {
+			result.Bindings = append(result.Bindings, Binding{BlockID: "acknowledgement", BlockKind: "back_matter", Payload: payload})
+		}
+	}
+}
+
+func splitBackMatterPayloads(references []string, acknowledgements []string) ([]string, []string) {
+	cleanRefs := make([]string, 0, len(references))
+	cleanThanks := append([]string(nil), acknowledgements...)
+	inThanks := false
+	for _, payload := range references {
+		text := strings.TrimSpace(payload)
+		if text == "" {
+			continue
+		}
+		if isAcknowledgementHeading(text) {
+			inThanks = true
+			if content := strings.TrimSpace(strings.TrimPrefix(normalizeFragment(text), "致谢")); content != "" {
+				cleanThanks = append(cleanThanks, content)
+			}
+			continue
+		}
+		if inThanks {
+			cleanThanks = append(cleanThanks, text)
+			continue
+		}
+		cleanRefs = append(cleanRefs, text)
+	}
+	return cleanRefs, cleanThanks
+}
+
+func isAcknowledgementHeading(text string) bool {
+	return strings.HasPrefix(normalizeFragment(text), "致谢")
+}
+
+func hasBinding(bindings []Binding, blockID string) bool {
+	for _, binding := range bindings {
+		if binding.BlockID == blockID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasBindingKind(bindings []Binding, kind string) bool {
+	for _, binding := range bindings {
+		if binding.BlockKind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func copyCoverFields(fields map[string]string) map[string]string {
+	if len(fields) == 0 {
+		return nil
+	}
+	copied := make(map[string]string, len(fields))
+	for key, value := range fields {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			continue
+		}
+		copied[key] = value
+	}
+	return copied
 }
 
 func isEmptyPaper(paper *paperparse.ParsedPaper) bool {
@@ -80,6 +160,7 @@ func isEmptyPaper(paper *paperparse.ParsedPaper) bool {
 		len(paper.Body) == 0 &&
 		len(paper.References) == 0 &&
 		len(paper.Acknowledgements) == 0 &&
+		len(paper.ContentBlocks) == 0 &&
 		len(paper.Abnormal) == 0
 }
 
@@ -124,12 +205,39 @@ func payloadsForBlock(block templatecompile.TemplateBlock, paper *paperparse.Par
 					payloads = append(payloads, strings.TrimSpace(heading.Text))
 				}
 			}
+		case "body":
+			for _, paragraph := range paper.Body {
+				if payload := strings.TrimSpace(paragraph); payload != "" {
+					payloads = append(payloads, payload)
+				}
+			}
+		case "content_blocks":
+			for _, block := range paper.ContentBlocks {
+				if isReferenceHeading(block.Text) {
+					break
+				}
+				if isBackMatterBlock(block) || isCoverFieldFragment(block.Text, paper.CoverFields) {
+					continue
+				}
+				if block.Kind == "table" && strings.TrimSpace(block.XML) != "" {
+					payloads = append(payloads, strings.TrimSpace(block.XML))
+					continue
+				}
+				if payload := strings.TrimSpace(block.Text); payload != "" {
+					payloads = append(payloads, payload)
+				}
+			}
 		case "references":
-			if payload := strings.TrimSpace(strings.Join(paper.References, "\n")); payload != "" {
+			references, _ := splitBackMatterPayloads(paper.References, paper.Acknowledgements)
+			if len(references) == 0 {
+				references = referencePayloadsFromContent(paper.ContentBlocks)
+			}
+			if payload := strings.TrimSpace(strings.Join(references, "\n")); payload != "" {
 				payloads = append(payloads, payload)
 			}
 		case "acknowledgement":
-			if payload := strings.TrimSpace(strings.Join(paper.Acknowledgements, "\n")); payload != "" {
+			_, acknowledgements := splitBackMatterPayloads(paper.References, paper.Acknowledgements)
+			if payload := strings.TrimSpace(strings.Join(acknowledgements, "\n")); payload != "" {
 				payloads = append(payloads, payload)
 			}
 		}
@@ -137,6 +245,111 @@ func payloadsForBlock(block templatecompile.TemplateBlock, paper *paperparse.Par
 	return payloads
 }
 
+func isBackMatterBlock(block paperparse.ContentBlock) bool {
+	kind := strings.TrimSpace(block.Kind)
+	if kind == "references" || kind == "acknowledgement" {
+		return true
+	}
+	if looksLikeReferenceText(block.Text) {
+		return true
+	}
+	if kind == "section_label" {
+		text := strings.ToLower(strings.TrimSpace(block.Text))
+		return strings.Contains(text, "reference") ||
+			strings.Contains(text, "acknowledgement") ||
+			strings.Contains(text, "\u53c2\u8003\u6587\u732e") ||
+			strings.Contains(text, "\u81f4\u8c22")
+	}
+	return false
+}
+
+func looksLikeReferenceText(text string) bool {
+	text = strings.TrimSpace(text)
+	if isReferenceHeading(text) || strings.Contains(text, "\u81f4\u8c22") {
+		return true
+	}
+	if strings.HasPrefix(text, "[") {
+		end := strings.Index(text, "]")
+		return end > 1 && end <= 4
+	}
+	return false
+}
+
+func isReferenceHeading(text string) bool {
+	normalized := normalizeFragment(text)
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "references" {
+		return true
+	}
+	if !strings.HasPrefix(normalized, "\u53c2\u8003\u6587\u732e") {
+		return false
+	}
+	suffix := strings.TrimPrefix(normalized, "\u53c2\u8003\u6587\u732e")
+	suffix = strings.Trim(suffix, ":：")
+	return suffix == ""
+}
+
+func referencePayloadsFromContent(blocks []paperparse.ContentBlock) []string {
+	var references []string
+	inReferences := false
+	for _, block := range blocks {
+		text := strings.TrimSpace(block.Text)
+		if text == "" {
+			continue
+		}
+		if isReferenceHeading(text) {
+			inReferences = true
+			continue
+		}
+		if !inReferences {
+			continue
+		}
+		if strings.Contains(text, "\u81f4\u8c22") {
+			break
+		}
+		references = append(references, text)
+	}
+	return references
+}
+
+func isCoverFieldFragment(text string, fields map[string]string) bool {
+	text = normalizeFragment(text)
+	if text == "" {
+		return true
+	}
+	for _, value := range []string{
+		"\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587/\u8bbe\u8ba1",
+		"\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587",
+		"\u9898\u76ee", "\u5b66\u9662", "\u4e13\u4e1a", "\u73ed\u7ea7",
+		"\u5b66\u53f7", "\u59d3\u540d", "\u6307\u5bfc\u6559\u5e08", "\u5b8c\u6210\u65e5\u671f",
+	} {
+		if text == normalizeFragment(value) {
+			return true
+		}
+	}
+	for key, value := range fields {
+		key = normalizeFragment(key)
+		value = normalizeFragment(value)
+		if text == key || text == value {
+			return true
+		}
+		if len(text) >= 4 && len(value) >= 4 && strings.Contains(value, text) {
+			return true
+		}
+	}
+	if isCoverDateFragment(text) {
+		return true
+	}
+	return false
+}
+
+func normalizeFragment(text string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(text)), "")
+}
+
+func isCoverDateFragment(text string) bool {
+	return strings.Contains(text, "\u5e74") && strings.Contains(text, "\u6708") && len([]rune(text)) <= 12
+}
 func coverTitlePayload(fields map[string]string) string {
 	for _, key := range []string{
 		"cover_title",
@@ -171,7 +384,7 @@ func acceptedKeys(block templatecompile.TemplateBlock) []string {
 
 func isSupportedKey(key string) bool {
 	switch key {
-	case "cover_title", "abstract_cn_body", "keywords_cn", "heading_1", "references", "acknowledgement":
+	case "cover_title", "abstract_cn_body", "keywords_cn", "heading_1", "body", "content_blocks", "references", "acknowledgement":
 		return true
 	default:
 		return false

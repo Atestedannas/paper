@@ -56,14 +56,7 @@ func NewAlipayService(config *config.Config) *AlipayService {
 
 // GenerateLoginURL 生成支付宝登录URL
 func (s *AlipayService) GenerateLoginURL() (string, error) {
-	params := url.Values{}
-	params.Add("app_id", s.config.AppID)
-	params.Add("redirect_uri", s.config.RedirectURL)
-	params.Add("response_type", "code")
-	params.Add("scope", s.config.Scope)
-	params.Add("state", "alipay_login")
-
-	return fmt.Sprintf("%s?%s", s.config.AuthorizeURL, params.Encode()), nil
+	return s.buildAuthorizeURL("alipay_login")
 }
 
 // generateSign 生成 Alipay RSA2 签名（SHA256WithRSA）
@@ -82,16 +75,27 @@ func (s *AlipayService) generateSign(params url.Values) (string, error) {
 	}
 	signStr := strings.Join(parts, "&")
 
-	// 2. 解析 PKCS8 私钥（支持带 PEM 头或纯 base64）
+	// 2. 解析私钥（支持 PKCS1 和 PKCS8 格式）
 	pkeyStr := strings.TrimSpace(s.config.AppPrivateKey)
 	if !strings.Contains(pkeyStr, "-----BEGIN") {
-		pkeyStr = "-----BEGIN PRIVATE KEY-----\n" + pkeyStr + "\n-----END PRIVATE KEY-----"
+		if strings.Contains(s.config.AppPrivateKey, "MIIEvwIBADANBgk") {
+			pkeyStr = "-----BEGIN RSA PRIVATE KEY-----\n" + pkeyStr + "\n-----END RSA PRIVATE KEY-----"
+		} else {
+			pkeyStr = "-----BEGIN PRIVATE KEY-----\n" + pkeyStr + "\n-----END PRIVATE KEY-----"
+		}
 	}
 	block, _ := pem.Decode([]byte(pkeyStr))
 	if block == nil {
 		return "", fmt.Errorf("alipay: failed to decode private key PEM")
 	}
-	keyIface, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+
+	var keyIface interface{}
+	var err error
+	if strings.Contains(string(block.Bytes), "RSA") {
+		keyIface, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+	} else {
+		keyIface, err = x509.ParsePKCS8PrivateKey(block.Bytes)
+	}
 	if err != nil {
 		return "", fmt.Errorf("alipay: failed to parse private key: %w", err)
 	}
@@ -251,13 +255,32 @@ func (s *AlipayService) GenerateQRCodeURL() (string, string, error) {
 	// 生成随机state用于防CSRF攻击
 	state := fmt.Sprintf("alipay_qr_%d", time.Now().UnixNano())
 
+	qrURL, err := s.buildAuthorizeURL(state)
+	return qrURL, state, err
+}
+
+func (s *AlipayService) buildAuthorizeURL(state string) (string, error) {
+	if strings.TrimSpace(s.config.AppID) == "" {
+		return "", fmt.Errorf("alipay login is not configured: missing app id")
+	}
+	if strings.TrimSpace(s.config.RedirectURL) == "" {
+		return "", fmt.Errorf("alipay login is not configured: missing redirect url")
+	}
+	if strings.TrimSpace(s.config.AuthorizeURL) == "" {
+		return "", fmt.Errorf("alipay login is not configured: missing authorize url")
+	}
+
+	scope := strings.TrimSpace(s.config.Scope)
+	if scope == "" {
+		scope = "auth_user"
+	}
+
 	params := url.Values{}
 	params.Add("app_id", s.config.AppID)
 	params.Add("redirect_uri", s.config.RedirectURL)
 	params.Add("response_type", "code")
-	params.Add("scope", s.config.Scope)
+	params.Add("scope", scope)
 	params.Add("state", state)
 
-	qrURL := fmt.Sprintf("%s?%s", s.config.AuthorizeURL, params.Encode())
-	return qrURL, state, nil
+	return fmt.Sprintf("%s?%s", s.config.AuthorizeURL, params.Encode()), nil
 }

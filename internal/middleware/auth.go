@@ -263,41 +263,10 @@ func RequireCheckPermissionMiddleware() gin.HandlerFunc {
 
 // ConditionalAuthMiddleware 条件认证中间件 - 根据系统设置决定是否需要认证
 func ConditionalAuthMiddleware(config *config.Config, db *gorm.DB, serviceType ServiceType) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// 获取支付配置
-		settingService := service.GetSystemSettingService()
-		paymentConfig, err := settingService.GetPaymentConfig()
-		if err != nil {
-			// 配置获取失败，默认需要认证
-			AuthMiddleware(config, db)(c)
-			return
-		}
-
-		// 检查是否免费
-		isFree := false
-		if serviceType == ServiceFormatCheck {
-			if isCheckFree, ok := paymentConfig["is_check_free"].(bool); ok && isCheckFree {
-				isFree = true
-			}
-		} else if serviceType == ServicePaperDownload {
-			if price, ok := paymentConfig["paper_download"].(float64); ok && price == 0 {
-				isFree = true
-			}
-		}
-
-		// 如果免费，跳过认证，直接设置一个默认的用户ID
-		if isFree {
-			// 为免费用户创建一个临时的用户ID或者设置为nil表示匿名
-			c.Set("user_id", uuid.Nil) // 使用nil表示匿名用户
-			c.Set("username", "anonymous")
-			c.Set("role", "guest")
-			c.Next()
-			return
-		}
-
-		// 如果不免费，执行正常的认证
-		AuthMiddleware(config, db)(c)
-	}
+	// 历史版本在免费配置下会注入 uuid.Nil/anonymous，导致未登录用户仍可上传或下载。
+	// 现在统一收口：所有论文资源接口先登录，是否免费只交给 PaymentMiddleware 判断。
+	_ = serviceType
+	return AuthMiddleware(config, db)
 }
 
 // AdminMiddleware 管理员权限中间件

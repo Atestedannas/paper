@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -16,8 +17,8 @@ import (
 // AuthHandler 认证处理器
 type AuthHandler struct {
 	userService           service.UserService
-	wechatService         *service.WechatService
 	alipayService         *service.AlipayService
+	wechatService         *service.WechatLoginService
 	config                *config.Config
 	db                    *gorm.DB
 	tokenBlacklistService *service.TokenBlacklistService
@@ -28,8 +29,8 @@ type AuthHandler struct {
 func NewAuthHandler(config *config.Config, db *gorm.DB) *AuthHandler {
 	return &AuthHandler{
 		userService:           service.NewUserService(),
-		wechatService:         service.NewWechatService(config),
 		alipayService:         service.NewAlipayService(config),
+		wechatService:         service.NewWechatLoginService(config),
 		config:                config,
 		db:                    db,
 		tokenBlacklistService: service.NewTokenBlacklistService(db),
@@ -239,94 +240,6 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 	utils.Success(c, user)
 }
 
-// GetWechatAuthURL 获取微信登录URL
-func (h *AuthHandler) GetWechatAuthURL(c *gin.Context) {
-	// 初始化微信服务
-	wechatService := service.NewWechatService(h.config)
-
-	// 生成微信扫码登录的二维码URL
-	wechatAuthURL, state, err := wechatService.GenerateQRCodeURL()
-	if err != nil {
-		utils.InternalServerError(c, "failed to generate wechat auth url")
-		return
-	}
-
-	utils.Success(c, gin.H{
-		"auth_url": wechatAuthURL,
-		"state":    state,
-	})
-}
-
-// WechatAuthCallback 微信登录回调
-func (h *AuthHandler) WechatAuthCallback(c *gin.Context) {
-	// 获取授权码
-	code := c.Query("code")
-
-	if code == "" {
-		utils.BadRequest(c, "missing authorization code")
-		return
-	}
-
-	// 初始化微信服务
-	wechatService := service.NewWechatService(h.config)
-
-	// 用授权码换取访问令牌
-	token, err := wechatService.ExchangeCodeForToken(code)
-	if err != nil {
-		utils.InternalServerError(c, "failed to exchange code for token")
-		return
-	}
-
-	// 获取用户信息
-	userInfo, err := wechatService.GetUserInfo(token.AccessToken, token.OpenID)
-	if err != nil {
-		utils.InternalServerError(c, "failed to get wechat user info")
-		return
-	}
-
-	// 创建或更新用户
-	user, err := h.userService.CreateOrUpdateWechatUser(
-		userInfo.OpenID,
-		userInfo.Nickname,
-		userInfo.UnionID,
-		userInfo.HeadImgURL,
-		userInfo.Sex,
-	)
-	if err != nil {
-		utils.InternalServerError(c, "failed to create or update wechat user")
-		return
-	}
-
-	// 生成JWT令牌
-	tokenStr, err := middleware.GenerateToken(h.config, user.ID, user.Username)
-	if err != nil {
-		utils.InternalServerError(c, "failed to generate token")
-		return
-	}
-
-	// 生成刷新令牌
-	refreshToken, refreshExpiresAt, err := middleware.GenerateRefreshToken(h.config, user.ID)
-	if err != nil {
-		utils.InternalServerError(c, "failed to generate refresh token")
-		return
-	}
-
-	// 保存刷新令牌到数据库
-	_, err = h.refreshTokenService.CreateRefreshToken(refreshToken, user.ID, refreshExpiresAt)
-	if err != nil {
-		utils.InternalServerError(c, "failed to save refresh token")
-		return
-	}
-
-	utils.Success(c, gin.H{
-		"access_token":  tokenStr,
-		"refresh_token": refreshToken,
-		"token_type":    "Bearer",
-		"expires_in":    int64(h.config.JWT.AccessTokenExpiry.Seconds()),
-		"user":          user,
-	})
-}
-
 // GetAlipayAuthURL 获取支付宝登录URL
 func (h *AuthHandler) GetAlipayAuthURL(c *gin.Context) {
 	// 初始化支付宝服务
@@ -339,16 +252,29 @@ func (h *AuthHandler) GetAlipayAuthURL(c *gin.Context) {
 		return
 	}
 
+	setAlipayLoginStateCookie(c, state)
 	utils.Success(c, gin.H{
 		"auth_url": alipayAuthURL,
 		"state":    state,
 	})
 }
 
+// RedirectAlipayLogin redirects the browser to Alipay OAuth login.
+func (h *AuthHandler) RedirectAlipayLogin(c *gin.Context) {
+	alipayAuthURL, state, err := h.alipayService.GenerateQRCodeURL()
+	if err != nil {
+		utils.InternalServerError(c, "failed to generate alipay auth url")
+		return
+	}
+	setAlipayLoginStateCookie(c, state)
+	c.Redirect(http.StatusFound, alipayAuthURL)
+}
+
 // AlipayAuthCallback 支付宝登录回调（GET 重定向 / POST API 均支持）
 func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 	// GET: platform redirect appends auth_code as query param
 	code := c.Query("auth_code")
+	state := c.Query("state")
 	// POST: frontend may send JSON body
 	if code == "" {
 		var body struct {
@@ -361,6 +287,10 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 
 	if code == "" {
 		utils.BadRequest(c, "missing authorization code")
+		return
+	}
+	if state != "" && !alipayLoginStateMatches(c, state) {
+		utils.BadRequest(c, "invalid alipay login state")
 		return
 	}
 
@@ -422,6 +352,136 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 		"expires_in":    int64(h.config.JWT.AccessTokenExpiry.Seconds()),
 		"user":          user,
 	})
+}
+
+func setAlipayLoginStateCookie(c *gin.Context, state string) {
+	c.SetCookie("alipay_login_state", state, 600, "/", "", false, true)
+}
+
+func alipayLoginStateMatches(c *gin.Context, state string) bool {
+	expected, err := c.Cookie("alipay_login_state")
+	if err != nil {
+		return true
+	}
+	c.SetCookie("alipay_login_state", "", -1, "/", "", false, true)
+	return expected == state
+}
+
+// GetWechatAuthURL 获取微信登录URL
+func (h *AuthHandler) GetWechatAuthURL(c *gin.Context) {
+	wechatService := service.NewWechatLoginService(h.config)
+
+	wechatAuthURL, state, err := wechatService.GenerateQRCodeURL()
+	if err != nil {
+		utils.InternalServerError(c, "failed to generate wechat auth url")
+		return
+	}
+
+	setWechatLoginStateCookie(c, state)
+	utils.Success(c, gin.H{
+		"auth_url": wechatAuthURL,
+		"state":    state,
+	})
+}
+
+// RedirectWechatLogin redirects the browser to Wechat OAuth login.
+func (h *AuthHandler) RedirectWechatLogin(c *gin.Context) {
+	wechatAuthURL, state, err := h.wechatService.GenerateQRCodeURL()
+	if err != nil {
+		utils.InternalServerError(c, "failed to generate wechat auth url")
+		return
+	}
+	setWechatLoginStateCookie(c, state)
+	c.Redirect(http.StatusFound, wechatAuthURL)
+}
+
+// WechatAuthCallback 微信登录回调（GET 重定向 / POST API 均支持）
+func (h *AuthHandler) WechatAuthCallback(c *gin.Context) {
+	code := c.Query("code")
+	state := c.Query("state")
+
+	if code == "" {
+		var body struct {
+			Code string `json:"code"`
+		}
+		if err := c.ShouldBindJSON(&body); err == nil {
+			code = body.Code
+		}
+	}
+
+	if code == "" {
+		utils.BadRequest(c, "missing authorization code")
+		return
+	}
+	if state != "" && !wechatLoginStateMatches(c, state) {
+		utils.BadRequest(c, "invalid wechat login state")
+		return
+	}
+
+	wechatService := service.NewWechatLoginService(h.config)
+
+	token, err := wechatService.ExchangeCodeForToken(code)
+	if err != nil {
+		utils.InternalServerError(c, "failed to exchange code for token")
+		return
+	}
+
+	userInfo, err := wechatService.GetUserInfo(token.AccessToken, token.OpenID)
+	if err != nil {
+		utils.InternalServerError(c, "failed to get wechat user info")
+		return
+	}
+
+	user, err := h.userService.CreateOrUpdateWechatUser(
+		userInfo.OpenID,
+		userInfo.Nickname,
+		userInfo.UnionID,
+		userInfo.HeadimgURL,
+		userInfo.Sex,
+	)
+	if err != nil {
+		utils.InternalServerError(c, "failed to create or update wechat user")
+		return
+	}
+
+	tokenStr, err := middleware.GenerateToken(h.config, user.ID, user.Username)
+	if err != nil {
+		utils.InternalServerError(c, "failed to generate token")
+		return
+	}
+
+	refreshToken, refreshExpiresAt, err := middleware.GenerateRefreshToken(h.config, user.ID)
+	if err != nil {
+		utils.InternalServerError(c, "failed to generate refresh token")
+		return
+	}
+
+	_, err = h.refreshTokenService.CreateRefreshToken(refreshToken, user.ID, refreshExpiresAt)
+	if err != nil {
+		utils.InternalServerError(c, "failed to save refresh token")
+		return
+	}
+
+	utils.Success(c, gin.H{
+		"access_token":  tokenStr,
+		"refresh_token": refreshToken,
+		"token_type":    "Bearer",
+		"expires_in":    int64(h.config.JWT.AccessTokenExpiry.Seconds()),
+		"user":          user,
+	})
+}
+
+func setWechatLoginStateCookie(c *gin.Context, state string) {
+	c.SetCookie("wechat_login_state", state, 600, "/", "", false, true)
+}
+
+func wechatLoginStateMatches(c *gin.Context, state string) bool {
+	expected, err := c.Cookie("wechat_login_state")
+	if err != nil {
+		return true
+	}
+	c.SetCookie("wechat_login_state", "", -1, "/", "", false, true)
+	return expected == state
 }
 
 // ChangePassword 修改密码

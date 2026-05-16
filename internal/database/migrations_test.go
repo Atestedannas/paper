@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 	"github.com/leanovate/gopter"
 	"github.com/leanovate/gopter/gen"
 	"github.com/leanovate/gopter/prop"
@@ -82,7 +83,7 @@ func TestMigrationIdempotency(t *testing.T) {
 // setupTestDB 创建测试数据库连接
 func setupTestDB(t *testing.T, seed int64) (*gorm.DB, func()) {
 	// 使用唯一的数据库名称
-	dbName := fmt.Sprintf("test_migration_%d_%d", time.Now().Unix(), seed)
+	dbName := fmt.Sprintf("test_migration_%d_%016x", time.Now().UnixNano(), uint64(seed))
 	testConfig := getTestConfig()
 
 	// 连接到默认数据库以创建测试数据库
@@ -119,19 +120,15 @@ func setupTestDB(t *testing.T, seed int64) (*gorm.DB, func()) {
 		testConfig.Database.SSLMode,
 	)
 	testDB, err := gorm.Open(postgres.Open(testDSN), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger:                                   logger.Default.LogMode(logger.Silent),
+		DisableForeignKeyConstraintWhenMigrating: true,
 	})
 	if err != nil {
 		t.Fatalf("Failed to connect to test database: %v", err)
 	}
 
 	// 创建必要的表
-	err = testDB.AutoMigrate(
-		&model.University{},
-		&model.FormatTemplate{},
-		&MigrationRecord{},
-	)
-	if err != nil {
+	if err := createBaseMigrationTables(testDB); err != nil {
 		t.Fatalf("Failed to create tables: %v", err)
 	}
 
@@ -146,6 +143,55 @@ func setupTestDB(t *testing.T, seed int64) (*gorm.DB, func()) {
 	}
 
 	return testDB, cleanup
+}
+
+func createBaseMigrationTables(db *gorm.DB) error {
+	if err := db.Exec(`CREATE EXTENSION IF NOT EXISTS pgcrypto`).Error; err != nil {
+		return err
+	}
+
+	if err := db.Exec(`
+		CREATE TABLE universities (
+			id BIGSERIAL PRIMARY KEY,
+			name VARCHAR(100) NOT NULL UNIQUE,
+			abbr VARCHAR(50),
+			description TEXT,
+			color VARCHAR(50),
+			tags JSONB,
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+		)
+	`).Error; err != nil {
+		return err
+	}
+
+	if err := db.Exec(`
+		CREATE TABLE format_templates (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			template_id VARCHAR(100) UNIQUE,
+			name VARCHAR(100) NOT NULL DEFAULT '',
+			document_type VARCHAR(50),
+			subject VARCHAR(20),
+			file_path VARCHAR(500),
+			source VARCHAR(50) DEFAULT 'system',
+			version VARCHAR(20) DEFAULT '1.0',
+			is_public BOOLEAN DEFAULT true,
+			is_active BOOLEAN DEFAULT true,
+			format_rules JSONB NOT NULL DEFAULT '{}',
+			parsed_from_paper_id UUID,
+			parse_confidence DOUBLE PRECISION DEFAULT 0,
+			usage_count INTEGER DEFAULT 0,
+			success_rate DOUBLE PRECISION DEFAULT 0,
+			golden_template_path VARCHAR(500),
+			description TEXT,
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+		)
+	`).Error; err != nil {
+		return err
+	}
+
+	return db.AutoMigrate(&MigrationRecord{})
 }
 
 // runTestMigration 运行测试迁移
@@ -439,8 +485,28 @@ func TestMigrationLogging(t *testing.T) {
 	}
 }
 
+func TestGetTestConfigLoadsRepositoryDotEnv(t *testing.T) {
+	oldPassword, hadPassword := os.LookupEnv("DATABASE_PASSWORD")
+	_ = os.Unsetenv("DATABASE_PASSWORD")
+	defer func() {
+		if hadPassword {
+			_ = os.Setenv("DATABASE_PASSWORD", oldPassword)
+		} else {
+			_ = os.Unsetenv("DATABASE_PASSWORD")
+		}
+	}()
+
+	cfg := getTestConfig()
+
+	if cfg.Database.Password == "" || cfg.Database.Password == "postgres" {
+		t.Fatalf("getTestConfig() should load DATABASE_PASSWORD from repository .env")
+	}
+}
+
 // 辅助函数：初始化测试配置
 func getTestConfig() *config.Config {
+	loadTestDotEnv()
+
 	cfg := &config.Config{
 		Database: config.DatabaseConfig{
 			Host:     "localhost",
@@ -474,4 +540,14 @@ func getTestConfig() *config.Config {
 	}
 
 	return cfg
+}
+
+func loadTestDotEnv() {
+	for _, path := range []string{".env", "../../.env"} {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		_ = godotenv.Load(path)
+		return
+	}
 }

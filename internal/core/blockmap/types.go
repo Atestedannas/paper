@@ -7,10 +7,11 @@ type Binding struct {
 }
 
 type MappingResult struct {
-	Bindings        []Binding `json:"bindings"`
-	GeneratedBlocks []string  `json:"generated_blocks"`
-	UnmappedBlocks  []string  `json:"unmapped_blocks"`
-	AmbiguousBlocks []string  `json:"ambiguous_blocks"`
+	Bindings        []Binding         `json:"bindings"`
+	CoverFields     map[string]string `json:"cover_fields,omitempty"`
+	GeneratedBlocks []string          `json:"generated_blocks"`
+	UnmappedBlocks  []string          `json:"unmapped_blocks"`
+	AmbiguousBlocks []string          `json:"ambiguous_blocks"`
 }
 
 type Mapper struct{}

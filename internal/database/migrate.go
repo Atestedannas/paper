@@ -266,12 +266,6 @@ func insertDefaultSystemSettings() {
 			IsSecret:    true,
 		},
 		{
-			Key:         "wechat_app_secret",
-			Value:       "",
-			Description: "寰俊灏忕▼搴廇ppSecret",
-			IsSecret:    true,
-		},
-		{
 			Key:         "alipay_app_id",
 			Value:       "",
 			Description: "鏀粯瀹滱ppID",

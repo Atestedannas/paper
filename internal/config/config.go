@@ -106,16 +106,12 @@ type LogConfig struct {
 
 // WechatConfig 微信配置
 type WechatConfig struct {
-	AppID          string `mapstructure:"app_id"`
-	MchID          string `mapstructure:"mch_id"`
-	ApiKey         string `mapstructure:"api_key"`
-	NotifyURL      string `mapstructure:"notify_url"`
-	RedirectURL    string `mapstructure:"redirect_url"`
-	Scope          string `mapstructure:"scope"`
-	AuthorizeURL   string `mapstructure:"authorize_url"`
-	AccessTokenURL string `mapstructure:"access_token_url"`
-	UserInfoURL    string `mapstructure:"user_info_url"`
-	AppSecret      string `mapstructure:"app_secret"`
+	AppID       string `mapstructure:"app_id"`
+	MchID       string `mapstructure:"mch_id"`
+	ApiKey      string `mapstructure:"api_key"`
+	NotifyURL   string `mapstructure:"notify_url"`
+	RedirectURL string `mapstructure:"redirect_url"`
+	Scope       string `mapstructure:"scope"`
 }
 
 // AlipayConfig 支付宝配置
@@ -176,16 +172,12 @@ func LoadConfig(configPath string) (*Config, error) {
 			Model: "permission",
 		},
 		Wechat: WechatConfig{
-			AppID:          "",
-			MchID:          "",
-			ApiKey:         "",
-			NotifyURL:      "",
-			RedirectURL:    "",
-			Scope:          "snsapi_login",
-			AuthorizeURL:   "https://open.weixin.qq.com/connect/qrconnect",
-			AccessTokenURL: "https://api.weixin.qq.com/sns/oauth2/access_token",
-			UserInfoURL:    "https://api.weixin.qq.com/sns/userinfo",
-			AppSecret:      "",
+			AppID:       "",
+			MchID:       "",
+			ApiKey:      "",
+			NotifyURL:   "",
+			RedirectURL: "",
+			Scope:       "snsapi_login",
 		},
 		WechatSandbox: WechatSandboxConfig{
 			Enabled:        false,
@@ -295,7 +287,7 @@ func LoadConfig(configPath string) (*Config, error) {
 		}
 	}
 
-	// 从环境变量加载微信支付配置
+	// 从环境变量加载微信配置
 	if wechatAppID := os.Getenv("WECHAT_APP_ID"); wechatAppID != "" {
 		config.Wechat.AppID = wechatAppID
 	}
@@ -314,19 +306,6 @@ func LoadConfig(configPath string) (*Config, error) {
 	if wechatScope := os.Getenv("WECHAT_SCOPE"); wechatScope != "" {
 		config.Wechat.Scope = wechatScope
 	}
-	if wechatAuthorizeURL := os.Getenv("WECHAT_AUTHORIZE_URL"); wechatAuthorizeURL != "" {
-		config.Wechat.AuthorizeURL = wechatAuthorizeURL
-	}
-	if wechatAccessTokenURL := os.Getenv("WECHAT_ACCESS_TOKEN_URL"); wechatAccessTokenURL != "" {
-		config.Wechat.AccessTokenURL = wechatAccessTokenURL
-	}
-	if wechatUserInfoURL := os.Getenv("WECHAT_USER_INFO_URL"); wechatUserInfoURL != "" {
-		config.Wechat.UserInfoURL = wechatUserInfoURL
-	}
-	if wechatAppSecret := os.Getenv("WECHAT_APP_SECRET"); wechatAppSecret != "" {
-		config.Wechat.AppSecret = wechatAppSecret
-	}
-
 	// 从环境变量加载支付宝配置
 	if alipayAppID := os.Getenv("ALIPAY_APP_ID"); alipayAppID != "" {
 		config.Alipay.AppID = alipayAppID

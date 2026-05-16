@@ -7,6 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/paper-format-checker/backend/internal/core/cqrwst"
+	"github.com/paper-format-checker/backend/internal/core/paperast"
+	"github.com/paper-format-checker/backend/internal/core/repaircontract"
+	"github.com/paper-format-checker/backend/internal/core/templatecontract"
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
 func TestVerifierReturnsFatalIssueWhenDocxCannotOpen(t *testing.T) {
@@ -22,6 +28,9 @@ func TestVerifierReturnsFatalIssueWhenDocxCannotOpen(t *testing.T) {
 	}
 	if result.FatalIssues[0].Kind != "docx_open" {
 		t.Fatalf("fatal kind = %q, want docx_open", result.FatalIssues[0].Kind)
+	}
+	if result.ComplianceStatus != "rejected" {
+		t.Fatalf("ComplianceStatus = %s, want rejected", result.ComplianceStatus)
 	}
 }
 
@@ -55,26 +64,81 @@ func TestVerifierReturnsRepairableIssueForPlaceholders(t *testing.T) {
 	if result.Passed {
 		t.Fatal("Verify() Passed = true, want false")
 	}
-	if len(result.RepairableIssues) != 1 {
-		t.Fatalf("RepairableIssues len = %d, want 1", len(result.RepairableIssues))
+	if !hasVerifyIssueKind(result.RepairableIssues, "placeholder") {
+		t.Fatalf("RepairableIssues = %#v, want placeholder", result.RepairableIssues)
 	}
-	if result.RepairableIssues[0].Kind != "placeholder" {
-		t.Fatalf("repairable kind = %q, want placeholder", result.RepairableIssues[0].Kind)
+	if result.ComplianceStatus != "review_required" {
+		t.Fatalf("ComplianceStatus = %s, want review_required", result.ComplianceStatus)
 	}
 }
 
-func TestVerifierAllowsOnlyWarningsToPass(t *testing.T) {
+func TestVerifierRejectsRendererIncompatibleStartAlignment(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:pPr><w:jc w:val="start"/></w:pPr><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatal("Verify() Passed = true, want false")
+	}
+	if !hasVerifyIssueKind(result.FatalIssues, "renderer_incompatible_ooxml") {
+		t.Fatalf("FatalIssues = %#v, want renderer_incompatible_ooxml", result.FatalIssues)
+	}
+}
+
+func TestVerifierRequiresFinalDeliveryWithoutComments(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/comments.xml": `<w:comments><w:comment w:id="0"><w:p><w:r><w:t>review note</w:t></w:r></w:p></w:comment></w:comments>`,
+	})
+
+	result, err := NewVerifier().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatal("Verify() Passed = true, want false")
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "comments_not_finalized") {
+		t.Fatalf("RepairableIssues = %#v, want comments_not_finalized", result.RepairableIssues)
+	}
+}
+
+func TestVerifierReportsCQRWSTRepairableIssues(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>1.1研究背景</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatal("Verify() Passed = true, want false")
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "cqrwst_rule") {
+		t.Fatalf("RepairableIssues = %#v, want cqrwst_rule", result.RepairableIssues)
+	}
+}
+
+func TestVerifierDoesNotPassShortDocumentWithMissingCQRWSTStructure(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{"word/document.xml": `  <w/>  `})
 
 	result, err := NewVerifier().Verify(context.Background(), docxPath)
 	if err != nil {
 		t.Fatalf("Verify() error = %v", err)
 	}
-	if !result.Passed {
-		t.Fatal("Verify() Passed = false, want true for warnings only")
+	if result.Passed {
+		t.Fatal("Verify() Passed = true, want false when CQRWST structure is missing")
 	}
 	if len(result.Warnings) != 1 {
 		t.Fatalf("Warnings len = %d, want 1", len(result.Warnings))
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "cqrwst_rule") {
+		t.Fatalf("RepairableIssues = %#v, want cqrwst_rule", result.RepairableIssues)
 	}
 }
 
@@ -82,6 +146,9 @@ func TestVerifierPassesCleanDocument(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
 		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
 	})
+	if _, err := cqrwst.FixDOCX(context.Background(), docxPath); err != nil {
+		t.Fatalf("FixDOCX() error = %v", err)
+	}
 
 	result, err := NewVerifier().Verify(context.Background(), docxPath)
 	if err != nil {
@@ -90,9 +157,102 @@ func TestVerifierPassesCleanDocument(t *testing.T) {
 	if !result.Passed {
 		t.Fatalf("Verify() Passed = false, result = %#v", result)
 	}
+	if result.ComplianceStatus != "format_compliant" {
+		t.Fatalf("ComplianceStatus = %s, want format_compliant", result.ComplianceStatus)
+	}
 	if len(result.FatalIssues) != 0 || len(result.RepairableIssues) != 0 || len(result.Warnings) != 0 {
 		t.Fatalf("Verify() result has unexpected issues: %#v", result)
 	}
+}
+
+func TestVerifierWithTemplateProfileUsesProfileStyles(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>1 Introduction</w:t></w:r></w:p><w:p><w:r><w:t>Body paragraph content long enough.</w:t></w:r></w:p></w:body></w:document>`,
+	})
+	profile := &templateprofile.Profile{
+		Version: templateprofile.Version,
+		Styles: map[string]templateprofile.StyleRule{
+			"body": {
+				FontEastAsia:   "Courier New",
+				FontASCII:      "Times New Roman",
+				FontSizeHalfPt: "26",
+				Alignment:      "both",
+				Line:           "420",
+				FirstLineChars: "200",
+			},
+		},
+	}
+	if _, err := cqrwst.FixDOCXWithTemplateProfile(context.Background(), docxPath, profile); err != nil {
+		t.Fatalf("FixDOCXWithTemplateProfile() error = %v", err)
+	}
+
+	hardcodedResult, err := NewVerifier().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hardcodedResult.Passed {
+		t.Fatal("NewVerifier() Passed = true, want false because hardcoded style differs from profile")
+	}
+
+	profileResult, err := NewVerifierWithTemplateProfile(profile).Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() with profile error = %v", err)
+	}
+	if !profileResult.Passed {
+		t.Fatalf("NewVerifierWithTemplateProfile() Passed = false, result = %#v", profileResult)
+	}
+}
+
+func TestVerifierRejectsComplianceWhenClosureArtifactsAreInvalid(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+	})
+	if _, err := cqrwst.FixDOCX(context.Background(), docxPath); err != nil {
+		t.Fatalf("FixDOCX() error = %v", err)
+	}
+
+	result, err := NewVerifierWithTemplateProfileAndClosure(nil, templatecontract.RuleSet{Version: templatecontract.Version}, paperast.Snapshot{Version: paperast.Version}, repaircontract.Contract{Version: repaircontract.Version}).Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatal("Verify() Passed = true, want false when closure artifacts are incomplete")
+	}
+	if result.ComplianceStatus != "rejected" {
+		t.Fatalf("ComplianceStatus = %s, want rejected", result.ComplianceStatus)
+	}
+	if !hasVerifyIssueKind(result.FatalIssues, "closure_paper_ast") || !hasVerifyIssueKind(result.FatalIssues, "closure_repair_contract") {
+		t.Fatalf("FatalIssues = %#v, want closure artifact issues", result.FatalIssues)
+	}
+}
+
+func TestVerifierPassesWhenClosureArtifactsAreValid(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+	})
+	if _, err := cqrwst.FixDOCX(context.Background(), docxPath); err != nil {
+		t.Fatalf("FixDOCX() error = %v", err)
+	}
+	ast := paperast.ExtractDocumentXML(`<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`)
+	rules := templatecontract.Build(nil)
+	contract := repaircontract.Build(rules, ast)
+
+	result, err := NewVerifierWithTemplateProfileAndClosure(nil, rules, ast, contract).Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !result.Passed || result.ComplianceStatus != "format_compliant" {
+		t.Fatalf("Verify() result = %#v, want compliant pass", result)
+	}
+}
+
+func hasVerifyIssueKind(issues []Issue, kind string) bool {
+	for _, issue := range issues {
+		if issue.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func TestVerifierReturnsContextCanceled(t *testing.T) {

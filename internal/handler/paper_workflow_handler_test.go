@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,14 @@ type fakePaperWorkflowService struct {
 	err error
 }
 
+func (f fakePaperWorkflowService) CreatePaperJob(context.Context, service.CreatePaperJobInput) (*service.WorkflowJobView, error) {
+	return f.job, f.err
+}
+
+func (f fakePaperWorkflowService) RunJob(context.Context, string, uuid.UUID) (*service.WorkflowJobView, error) {
+	return f.job, f.err
+}
+
 func (f fakePaperWorkflowService) GetJob(id string) (*service.WorkflowJobView, error) {
 	return f.job, f.err
 }
@@ -34,7 +43,7 @@ func TestPaperWorkflowHandlerDownloadJobServiceNilReturnsConflict(t *testing.T) 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
 	}
-	if body := rec.Body.String(); body == "" || !contains(body, "job not ready for download") {
+	if body := rec.Body.String(); body == "" || !containsWorkflowHandlerText(body, "job not ready for download") {
 		t.Fatalf("body = %q, want job not ready message", body)
 	}
 }
@@ -49,7 +58,7 @@ func TestPaperWorkflowHandlerDownloadJobRejectsNonVerifiedPass(t *testing.T) {
 			Stage:        workflow.StagePatchAttempted,
 			DownloadPath: "out/final.docx",
 		},
-	}), jobID.String())
+	}), jobID.String(), uuid.New())
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
@@ -81,7 +90,7 @@ func TestPaperWorkflowHandlerDownloadJobReturnsFileForVerifiedPass(t *testing.T)
 	if rec.Body.String() != "docx bytes" {
 		t.Fatalf("body = %q, want file bytes", rec.Body.String())
 	}
-	if got := rec.Header().Get("Content-Disposition"); !contains(got, "final.docx") {
+	if got := rec.Header().Get("Content-Disposition"); !containsWorkflowHandlerText(got, "final.docx") {
 		t.Fatalf("Content-Disposition = %q, want final.docx", got)
 	}
 }
@@ -237,6 +246,6 @@ func performPaperWorkflowDownloadWithUserValue(t *testing.T, handler *PaperWorkf
 	return rec
 }
 
-func contains(s string, substr string) bool {
+func containsWorkflowHandlerText(s string, substr string) bool {
 	return strings.Contains(s, substr)
 }

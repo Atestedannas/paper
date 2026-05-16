@@ -56,3 +56,42 @@ fixme
 语义理解（NLP）： 利用大模型（GPT-4o 或 DeepSeek）提取学校要求文档中的关键约束（如：一级标题黑体三号居中）。
 
 精确执行（DOM 操作）： 根据识别结果，定位到对应的 XML 节点进行参数强制重写。
+
+普通测试账号：
+test@qq.com
+Test@123456
+
+管理员账号：
+admin
+Admin@123456
+
+
+=== 使用说明 ===
+纯plus号池模型：gpt-5.4、gpt-5.5、gpt-image-2、Claude模型使用教程在网站内部，自行查看中转站地址：https://www.inroi.shop教程: https://ocnis2js9qbf.feishu.cn/docx/IysedZgy5oCEQDxgr5JchAnwnFg
+
+=== 卡密内容 ===
+f01e77ff69e549c65c21f49dc9aa4bd4
+
+ZTPraXyZQd5zFc9W
+
+# 方式一：直接在命令行中执行
+PORT=8002 && sudo lsof -t -i :$PORT | xargs -r sudo kill -9 && docker compose up -d --build
+
+
+kendrakasparek6004@hotmail.com   gpt密码H132357479h.   邮箱密码spdnu588144
+
+4e&(8%.AuoG4=IjR
+https://proton.me/mail
+
+
+
+peak@wqwq.eu.cc
+1234qwerQWER@
+
+
+edigitalchoice.com
+
+注册土耳其apple id https://account.apple.com/
+ 邮箱网站 https://awamail.com/?lang=zh
+
+无线邮箱:https://sall.cc/zh-CN/moe

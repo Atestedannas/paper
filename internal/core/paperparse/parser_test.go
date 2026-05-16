@@ -82,6 +82,90 @@ func TestParserParsesStudentPaperSections(t *testing.T) {
 	}
 }
 
+func TestParserPreservesOrderedContentBlocks(t *testing.T) {
+	docPath := filepath.Join(t.TempDir(), "ordered-content.docx")
+	createTestDocx(t, docPath, []string{
+		"Title: Source Paper",
+		"1 Introduction",
+		"First body paragraph",
+		"1.1 Background",
+		"Second body paragraph",
+	})
+
+	paper, err := NewParser().Parse(context.Background(), docPath)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	want := []ContentBlock{
+		{Kind: "heading", Level: 1, Text: "1 Introduction"},
+		{Kind: "body", Text: "First body paragraph"},
+		{Kind: "heading", Level: 2, Text: "1.1 Background"},
+		{Kind: "body", Text: "Second body paragraph"},
+	}
+	if !reflect.DeepEqual(paper.ContentBlocks, want) {
+		t.Fatalf("ContentBlocks = %#v, want %#v", paper.ContentBlocks, want)
+	}
+}
+
+func TestParserPreservesTablesInContentBlockOrder(t *testing.T) {
+	docPath := filepath.Join(t.TempDir(), "ordered-table.docx")
+	documentXML := `<?xml version="1.0" encoding="UTF-8"?>` +
+		`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+		`<w:p><w:r><w:t>1 Introduction</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>Before table</w:t></w:r></w:p>` +
+		`<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
+		`<w:p><w:r><w:t>After table</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	createTestDocxWithDocumentXML(t, docPath, documentXML)
+
+	paper, err := NewParser().Parse(context.Background(), docPath)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	if len(paper.ContentBlocks) != 4 {
+		t.Fatalf("ContentBlocks = %#v, want heading/body/table/body", paper.ContentBlocks)
+	}
+	if paper.ContentBlocks[2].Kind != "table" {
+		t.Fatalf("ContentBlocks[2].Kind = %q, want table", paper.ContentBlocks[2].Kind)
+	}
+	if !strings.Contains(paper.ContentBlocks[2].Text, "A1") || !strings.Contains(paper.ContentBlocks[2].Text, "B1") {
+		t.Fatalf("table text = %q, want cell text", paper.ContentBlocks[2].Text)
+	}
+	if !strings.Contains(paper.ContentBlocks[2].XML, "<w:tbl>") {
+		t.Fatalf("table XML = %q, want raw table XML", paper.ContentBlocks[2].XML)
+	}
+	if paper.ContentBlocks[3].Text != "After table" {
+		t.Fatalf("ContentBlocks[3] = %#v, want body after table", paper.ContentBlocks[3])
+	}
+}
+
+func TestParserExtractsCoverFieldsFromTwoColumnTables(t *testing.T) {
+	docPath := filepath.Join(t.TempDir(), "cover-table.docx")
+	documentXML := `<?xml version="1.0" encoding="UTF-8"?>` +
+		`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+		`<w:tbl>` +
+		`<w:tr><w:tc><w:p><w:r><w:t>Title</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Source Paper</w:t></w:r></w:p></w:tc></w:tr>` +
+		`<w:tr><w:tc><w:p><w:r><w:t>College</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Nursing College</w:t></w:r></w:p></w:tc></w:tr>` +
+		`</w:tbl>` +
+		`<w:p><w:r><w:t>Abstract: Body abstract</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	createTestDocxWithDocumentXML(t, docPath, documentXML)
+
+	paper, err := NewParser().Parse(context.Background(), docPath)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	if got := paper.CoverFields["Title"]; got != "Source Paper" {
+		t.Fatalf("CoverFields[Title] = %q, want Source Paper", got)
+	}
+	if got := paper.CoverFields["College"]; got != "Nursing College" {
+		t.Fatalf("CoverFields[College] = %q, want Nursing College", got)
+	}
+}
+
 func TestParserReturnsErrorsForInvalidPath(t *testing.T) {
 	parser := NewParser()
 

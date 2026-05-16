@@ -45,6 +45,15 @@ func (p *DocxPackage) Set(name string, content []byte) {
 	p.entries[name] = append([]byte(nil), content...)
 }
 
+func (p *DocxPackage) Names() []string {
+	names := make([]string, 0, len(p.entries))
+	for name := range p.entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (p *DocxPackage) Write(path string) error {
 	file, err := os.Create(path)
 	if err != nil {

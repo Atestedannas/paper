@@ -33,10 +33,14 @@ func InitDatabase(config *config.Config) error {
 
 	var err error
 	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logLevel),
+		Logger:                                   logger.Default.LogMode(logLevel),
+		DisableForeignKeyConstraintWhenMigrating: true,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	if err := RepairLegacyFormatTemplateConstraints(DB); err != nil {
+		log.Printf("Warning: failed to repair legacy format template constraints: %v", err)
 	}
 
 	// 先运行自定义迁移脚本（在 AutoMigrate 之前）
@@ -60,8 +64,12 @@ func PerformMigration() error {
 	log.Println("开始执行数据库迁移和初始化...")
 
 	// 1. 先运行自定义迁移脚本
+	if err := RepairLegacyFormatTemplateConstraints(DB); err != nil {
+		log.Printf("WARNING: legacy format template constraint repair failed before migrations: %v", err)
+	}
+
 	if err := RunMigrations(); err != nil {
-		return fmt.Errorf("failed to run migrations: %w", err)
+		log.Printf("WARNING: custom migrations finished with errors, continuing with AutoMigrate: %v", err)
 	}
 
 	// 2. 自动迁移数据库表（GORM AutoMigrate）
@@ -70,6 +78,10 @@ func PerformMigration() error {
 	}
 
 	// 3. 插入初始数据
+	if err := RepairLegacyFormatTemplateConstraints(DB); err != nil {
+		log.Printf("WARNING: legacy format template constraint repair failed after AutoMigrate: %v", err)
+	}
+
 	insertInitialData()
 
 	// 4. 最终兜底检查：确保 format_templates 表有 template_id 列
@@ -131,6 +143,7 @@ func migrateDatabase() error {
 	return DB.AutoMigrate(
 		// 核心模型
 		&model.User{},
+		&model.RefreshToken{},
 		&model.University{},
 		&model.FormatTemplate{},
 		&model.Paper{},
@@ -168,5 +181,8 @@ func migrateDatabase() error {
 		// CMS 帖子系统
 		&model.CmsPost{},
 		&model.CmsReply{},
+		&model.CompiledTemplate{},
+		&model.PaperWorkflowJob{},
+		&model.PaperWorkflowIssue{},
 	)
 }
