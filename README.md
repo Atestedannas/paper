@@ -95,3 +95,12 @@ edigitalchoice.com
  邮箱网站 https://awamail.com/?lang=zh
 
 无线邮箱:https://sall.cc/zh-CN/moe
+
+fk-4c598568b589410d89577ed54b5e0820
+
+admin@sub2api.org	admin123
+
+https://github.com/adminlove520/AI-Account-Toolkit
+
+
+路由vpn ：https://github.com/mowei-ie/router-vpn
