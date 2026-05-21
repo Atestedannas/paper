@@ -66,6 +66,111 @@ func keysOfRulesMapForDebug(m map[string]interface{}) []string {
 	return keys
 }
 
+func formatRulesForTemplate(template model.FormatTemplate) (map[string]interface{}, bool, error) {
+	universityName := ""
+	universityAbbr := ""
+	if template.University != nil {
+		universityName = template.University.Name
+		universityAbbr = template.University.Abbr
+	}
+	if formatchecker.ShouldForceChongqingRenwenRules(template.Name, universityName, universityAbbr) {
+		log.Printf("[FormatRules] force Chongqing Renwen rules template=%s university=%q", template.ID, universityName)
+		return formatchecker.ChongqingRenwenRules(), true, nil
+	}
+
+	var rulesMap map[string]interface{}
+	if err := json.Unmarshal([]byte(template.FormatRules), &rulesMap); err != nil {
+		var jsonString string
+		if err2 := json.Unmarshal([]byte(template.FormatRules), &jsonString); err2 == nil {
+			if err3 := json.Unmarshal([]byte(jsonString), &rulesMap); err3 != nil {
+				return nil, false, fmt.Errorf("failed to unmarshal format rules (double encoded): %v", err3)
+			}
+		} else {
+			return nil, false, fmt.Errorf("failed to unmarshal format rules: %v", err)
+		}
+	}
+	if len(rulesMap) == 0 {
+		return nil, false, fmt.Errorf("format template %s has empty format rules", template.ID)
+	}
+	return rulesMap, false, nil
+}
+
+func resolveExistingLocalPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+
+	candidates := []string{path}
+	if strings.HasPrefix(path, "/uploads/") || path == "/uploads" {
+		candidates = append(candidates, strings.TrimPrefix(path, "/"))
+	}
+
+	for _, candidate := range candidates {
+		cleanPath := filepath.Clean(candidate)
+		if _, err := os.Stat(cleanPath); err == nil {
+			return cleanPath
+		}
+	}
+	return ""
+}
+
+func resolveTemplateFormattingPath(template model.FormatTemplate) string {
+	for _, p := range []string{template.GoldenTemplatePath, template.FilePath} {
+		p = strings.TrimSpace(p)
+		if p == "" || strings.ToLower(filepath.Ext(p)) != ".docx" {
+			continue
+		}
+		if resolved := resolveExistingLocalPath(p); resolved != "" {
+			return resolved
+		}
+	}
+	return ""
+}
+
+func findCorrectedPaperPath(originalPath, storedCorrectedPath string) string {
+	if resolved := resolveExistingLocalPath(storedCorrectedPath); resolved != "" {
+		return resolved
+	}
+
+	ext := filepath.Ext(originalPath)
+	baseNoExt := strings.TrimSuffix(filepath.Base(originalPath), ext)
+	dir := filepath.Dir(originalPath)
+
+	candidates := []string{
+		filepath.Join(dir, baseNoExt+"_corrected"+ext),
+		filepath.Join(dir, "corrected", baseNoExt+"_v2_corrected"+ext),
+		filepath.Join(dir, "corrected", baseNoExt+"_styled"+ext),
+	}
+	for _, candidate := range candidates {
+		if resolved := resolveExistingLocalPath(candidate); resolved != "" {
+			return resolved
+		}
+	}
+
+	patterns := []string{
+		filepath.Join(dir, baseNoExt+"_corrected_*"+ext),
+		filepath.Join(dir, "corrected", baseNoExt+"*"+ext),
+	}
+	var latestPath string
+	var latestTime time.Time
+	for _, pattern := range patterns {
+		matches, _ := filepath.Glob(pattern)
+		for _, match := range matches {
+			cleanPath := filepath.Clean(match)
+			fi, err := os.Stat(cleanPath)
+			if err != nil || fi.IsDir() {
+				continue
+			}
+			if latestPath == "" || fi.ModTime().After(latestTime) {
+				latestPath = cleanPath
+				latestTime = fi.ModTime()
+			}
+		}
+	}
+	return latestPath
+}
+
 // FixPaperFormatOptions 控制按问题粒度修复
 type FixPaperFormatOptions struct {
 	FixAll   bool
@@ -377,7 +482,6 @@ func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (stri
 		return "", fmt.Errorf("no active template for university %d: %v", universityID, err)
 	}
 
-	// QuickV2Fix 只把 school_id 等传给 ApplyCorrectionsV2，不传入下方 JSON；调试时仍可打印库里的 format_rules 便于对照
 	var quickV2DbgRules map[string]interface{}
 	if err := json.Unmarshal([]byte(template.FormatRules), &quickV2DbgRules); err != nil {
 		var js string
@@ -388,44 +492,42 @@ func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (stri
 	logFormatRulesDebug("QuickV2Fix_upload_async", uuid.Nil, template.ID, quickV2DbgRules)
 
 	processor := s.createSmartProcessor()
-	if template.GoldenTemplatePath != "" {
-		processor.SetTemplatePath(template.GoldenTemplatePath)
+	templatePath := resolveTemplateFormattingPath(template)
+	if templatePath == "" {
+		return "", fmt.Errorf("template %s has no readable .docx template path", template.ID)
 	}
+	processor.SetTemplatePath(templatePath)
 
-	var corrections []map[string]interface{}
+	correctionMap := map[string]interface{}{
+		"template_path": templatePath,
+	}
 	if template.ID != uuid.Nil && template.University != nil {
 		if sid := fileprocessor.SchoolIDFromUniversityName(template.University.Name, template.University.Abbr); sid != "" {
-			corrections = []map[string]interface{}{{"school_id": sid}}
+			correctionMap["school_id"] = sid
 			log.Printf("[QuickV2Fix] school_id=%s (StyleFormatter school spec)", sid)
 		}
 	}
 
 	ctx := context.Background()
-	result, err := processor.ApplyCorrectionsV2(ctx, paperFilePath, corrections)
-	log.Printf("[QuickV2Fix] 完成: result=%q, err=%v, 耗时=%v", result, err, time.Since(start))
+	result, err := processor.ApplyCorrectionsV2(ctx, paperFilePath, []map[string]interface{}{correctionMap})
+	log.Printf("[QuickV2Fix] done: result=%q, err=%v, elapsed=%v", result, err, time.Since(start))
 	return result, err
 }
 
-// FixPaperFormatByParsedRequirements 鏍规嵁瑙ｆ瀽鐨勮姹備慨澶嶈鏂囨牸寮?
 func (s PaperService) FixPaperFormatByParsedRequirements(userID, paperID uuid.UUID, requirements map[string]interface{}) (interface{}, error) {
-	// 鑾峰彇璁烘枃淇℃伅
-
 	paper, err := s.GetPaperByID(userID, paperID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get paper: %v", err)
 	}
 
-	// 鍒涘缓妫€鏌ュ櫒閰嶇疆
 	standard := formatchecker.ParseRequirementsToStandard(requirements)
-	processor := fileprocessor.NewBasicFileProcessor() // 浣跨敤鍩烘湰澶勭悊鍣ㄨ繘琛屾鏌?
+	processor := fileprocessor.NewBasicFileProcessor()
 	factory := formatchecker.NewCheckerFactory()
 	checker, err := factory.CreateChecker(paper.FileType, processor, standard)
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to create checker: %v", err)
 	}
 
-	// 淇鏂囨。
 	ctx := context.Background()
 	fixedPath, err := checker.FixDocumentDirectly(ctx, paper.FilePath, standard)
 	if err != nil {
@@ -435,7 +537,6 @@ func (s PaperService) FixPaperFormatByParsedRequirements(userID, paperID uuid.UU
 		return nil, fmt.Errorf("failed to fix document: empty corrected file path")
 	}
 
-	// 鏇存柊璁烘枃璁板綍
 	paper.CorrectedFilePath = fixedPath
 	paper.Status = "corrected"
 	if err := database.DB.Save(paper).Error; err != nil {
@@ -448,141 +549,108 @@ func (s PaperService) FixPaperFormatByParsedRequirements(userID, paperID uuid.UU
 	}, nil
 }
 
-// FixPaperFormat 淇璁烘枃鏍煎紡
 func (s PaperService) FixPaperFormat(userID, paperID, checkResultID uuid.UUID) (interface{}, error) {
-	return s.FixPaperFormatWithOptions(userID, paperID, checkResultID, FixPaperFormatOptions{
-		FixAll: true,
-	})
+	return s.FixPaperFormatWithOptions(userID, paperID, checkResultID, FixPaperFormatOptions{FixAll: true})
 }
 
-// FixPaperFormatWithOptions 按 Issue 粒度修复论文格式
 func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID uuid.UUID, options FixPaperFormatOptions) (interface{}, error) {
-	// 校验 FixAll 与 IssueIDs 是否同时指定等非法组合
 	if err := validateFixPaperFormatOptions(options); err != nil {
 		return nil, err
 	}
 
-	// 按用户 ID 与论文 ID 加载论文记录（含 FilePath 等）
 	paper, err := s.GetPaperByID(userID, paperID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get paper: %v", err)
 	}
 
-	// 校验该检查记录属于当前用户与当前论文
 	checkResult, err := s.GetCheckResultForPaperUser(userID, paperID, checkResultID)
 	if err != nil {
 		return nil, err
 	}
-	// 仅已完成检查的结果才能驱动修正（Issues 已落库）
 	if checkResult.Status != "completed" {
 		return nil, fmt.Errorf("check result status is not completed")
 	}
 
-	// 从检查结果解析/生成可修复的 issue id 列表
 	allIssueIDs, err := s.ensureFormatCorrectionsFromCheckResult(checkResult)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare corrections: %v", err)
 	}
-	// 没有任何可映射到修正逻辑的 issue 则无法继续
 	if len(allIssueIDs) == 0 {
 		return nil, fmt.Errorf("no fixable issues found for check result %s", checkResultID.String())
 	}
 
-	// 根据 options.FixAll / options.IssueIDs 得到实际要应用的 id 子集
 	selectedIssueIDs, err := resolveSelectedIssueIDs(allIssueIDs, options)
 	if err != nil {
 		return nil, err
 	}
-	// 过滤后为空说明所选 id 均不在检查结果中
 	if len(selectedIssueIDs) == 0 {
 		return nil, fmt.Errorf("no issue selected to apply")
 	}
 
-	// 将本次选中的 issue 标记为已应用（便于幂等与审计）
 	if err := s.markAppliedCorrections(checkResult.ID, selectedIssueIDs); err != nil {
 		return nil, fmt.Errorf("failed to update correction selection: %v", err)
 	}
 
-	// 加载格式模板；Preload University 供高校名解析 school_id（样式规范目录）
 	var template model.FormatTemplate
 	if err := database.DB.Preload("University").Where("id = ?", checkResult.TemplateID).First(&template).Error; err != nil {
 		return nil, fmt.Errorf("failed to get format template: %v", err)
 	}
 
-	// 将模板表中的 FormatRules（JSON 字符串）反序列化为 map，供 V2 引擎消费
-	var rulesMap map[string]interface{}
-	if err := json.Unmarshal([]byte(template.FormatRules), &rulesMap); err != nil {
-		// 兼容历史「双重 JSON 字符串」存储：先解成 string 再解成对象
-		var jsonString string
-		if err2 := json.Unmarshal([]byte(template.FormatRules), &jsonString); err2 == nil {
-			if err3 := json.Unmarshal([]byte(jsonString), &rulesMap); err3 != nil {
-				return nil, fmt.Errorf("failed to unmarshal format rules (double encoded): %v", err3)
-			}
-		} else {
-			return nil, fmt.Errorf("failed to unmarshal format rules: %v", err)
-		}
+	rulesMap, forcedRules, err := formatRulesForTemplate(template)
+	if err != nil {
+		return nil, err
 	}
-
-	// 环境变量 PAPER_DEBUG_FORMAT_RULES=1 时打印完整规则 JSON（截断）
 	logFormatRulesDebug("FixPaperFormat", paper.ID, template.ID, rulesMap)
 
-	// 修正过程无 HTTP 上下文，使用 Background
-	ctx := context.Background()
-	var fixedPath string // V2 返回的修正后 docx 路径
-	var fixErr error     // ApplyCorrectionsV2 的错误
+	templatePath := resolveTemplateFormattingPath(template)
+	if templatePath == "" {
+		return nil, fmt.Errorf("template %s has no readable .docx template path", template.ID)
+	}
 
-	// 记录模板 ID 与金模板路径（有金模板时引擎可走「对照范例」分支）
-	log.Printf("[FixFormat] templateID=%s GoldenTemplatePath=%q", template.ID, template.GoldenTemplatePath)
-	// 创建带 V2/分类器等能力的处理器实例
+	ctx := context.Background()
 	processor := s.createSmartProcessor()
-	if template.GoldenTemplatePath != "" {
-		processor.SetTemplatePath(template.GoldenTemplatePath) // 设置金模板磁盘路径
-	} else {
-		log.Printf("[FixFormat] ⚠️  GoldenTemplatePath为空，将使用JSON规则方案")
-	}
-	// 传入 V2 的修正参数：规则全文 + 选中 issue + 是否全量修复语义
+	processor.SetTemplatePath(templatePath)
+
 	correctionMap := map[string]interface{}{
-		"format_rules":       rulesMap,                                     // 与检查阶段 ParseRequirementsToStandard 同源
-		"selected_issue_ids": selectedIssueIDs,                             // 只处理这些 issue（与 fix_all 配合）
-		"fix_all":            options.FixAll || len(options.IssueIDs) == 0, // FixAll 或未显式传 IssueIDs 时视为全量
+		"format_rules":       rulesMap,
+		"template_path":      templatePath,
+		"selected_issue_ids": selectedIssueIDs,
+		"fix_all":            options.FixAll || len(options.IssueIDs) == 0,
 	}
-	if template.ID != uuid.Nil {
-		if u := template.University; u != nil {
-			// 由高校中文名/简称映射到 pkg 内学校标识，加载 *.spec.json 等
-			if sid := fileprocessor.SchoolIDFromUniversityName(u.Name, u.Abbr); sid != "" {
-				correctionMap["school_id"] = sid
-				log.Printf("[FixFormat] school_id=%s (for StyleFormatter school spec)", sid)
-			}
+	if forcedRules {
+		correctionMap["school_id"] = "cq-hr-university"
+		correctionMap["force_school_rules"] = "chongqing_renwen"
+	}
+	if template.ID != uuid.Nil && template.University != nil {
+		if sid := fileprocessor.SchoolIDFromUniversityName(template.University.Name, template.University.Abbr); sid != "" {
+			correctionMap["school_id"] = sid
+			log.Printf("[FixFormat] school_id=%s (for StyleFormatter school spec)", sid)
 		}
 	}
-	// 对原稿路径执行 V2 修正，生成新文件路径
-	fixedPath, fixErr = processor.ApplyCorrectionsV2(ctx, paper.FilePath, []map[string]interface{}{
-		correctionMap,
-	})
+
+	fixedPath, fixErr := processor.ApplyCorrectionsV2(ctx, paper.FilePath, []map[string]interface{}{correctionMap})
 	if fixErr != nil {
 		return nil, fmt.Errorf("failed to fix document: %v", fixErr)
 	}
 	if fixedPath == "" {
 		return nil, fmt.Errorf("failed to fix document: empty corrected file path")
 	}
-	paper.CorrectedFilePath = fixedPath // 回写论文表：修正稿路径
-	paper.Status = "corrected"          // 状态标记为已修正
+
+	paper.CorrectedFilePath = fixedPath
+	paper.Status = "corrected"
 	if err := database.DB.Save(paper).Error; err != nil {
 		return nil, fmt.Errorf("failed to update paper record: %v", err)
 	}
 
-	// 若处理器生成了差异报告，序列化后挂到本次 CheckResult 上
 	if report := processor.GetLastDiffReport(); report != nil {
 		if b, err2 := json.Marshal(report); err2 == nil {
 			database.DB.Model(&model.CheckResult{}).
 				Where("id = ?", checkResult.ID).
 				Update("diff_report", string(b))
-			log.Printf("[差异报告] 已保存到数据库，错误: %d 警告: %d",
-				report.ErrorCount, report.WarningCount)
+			log.Printf("[DiffReport] saved to database: errors=%d warnings=%d", report.ErrorCount, report.WarningCount)
 		}
 	}
 
-	// 返回给 API 的摘要：路径、下载 URL、实际应用的 issue 列表与数量
 	result := map[string]interface{}{
 		"corrected_file_path": fixedPath,
 		"download_url":        fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String()),
@@ -595,9 +663,6 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 	}
 	return result, nil
 }
-
-// tryTemplateFill uses the Go OOXML template filling engine for high-accuracy correction.
-// Falls back to the legacy Python script if the Go engine fails.
 func (s PaperService) tryTemplateFill(ctx context.Context, inputPath, goldenTemplatePath string, rulesMap map[string]interface{}) (string, error) {
 	tf := templatefiller.NewTemplateFiller()
 
@@ -1090,10 +1155,10 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 		return "", fmt.Errorf("failed to get paper: %v", err)
 	}
 
-	if paper.CorrectedFilePath != "" {
-		if _, err := os.Stat(filepath.Clean(paper.CorrectedFilePath)); err == nil {
-			return paper.CorrectedFilePath, nil
-		}
+	if correctedPath := findCorrectedPaperPath(paper.FilePath, paper.CorrectedFilePath); correctedPath != "" {
+		paper.CorrectedFilePath = correctedPath
+		_ = database.DB.Save(paper).Error
+		return correctedPath, nil
 	}
 
 	ext := filepath.Ext(paper.FilePath)
@@ -1154,10 +1219,12 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 				log.Println("========================================")
 
 				fp := s.createSmartProcessor()
-				if template.GoldenTemplatePath != "" {
-					fp.SetTemplatePath(template.GoldenTemplatePath)
+				templatePath := resolveTemplateFormattingPath(template)
+				if templatePath == "" {
+					return "", fmt.Errorf("template %s has no readable .docx template path", template.ID)
 				}
-				retryCorrMap := map[string]interface{}{"format_rules": rulesMap}
+				fp.SetTemplatePath(templatePath)
+				retryCorrMap := map[string]interface{}{"format_rules": rulesMap, "template_path": templatePath}
 				if template.ID != uuid.Nil {
 					if u := template.University; u != nil {
 						if sid := fileprocessor.SchoolIDFromUniversityName(u.Name, u.Abbr); sid != "" {

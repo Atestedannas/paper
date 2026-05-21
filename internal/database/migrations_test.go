@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -83,7 +84,7 @@ func setupTestDB(t *testing.T, seed int64) (*gorm.DB, func()) {
 	dbName := fmt.Sprintf("test_migration_%d_%d", time.Now().Unix(), seed)
 
 	// 连接到默认数据库以创建测试数据库
-	adminDSN := "host=localhost port=5432 user=postgres password=postgres dbname=postgres sslmode=disable"
+	adminDSN := postgresTestDSN("postgres")
 	adminDB, err := gorm.Open(postgres.Open(adminDSN), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
@@ -99,7 +100,7 @@ func setupTestDB(t *testing.T, seed int64) (*gorm.DB, func()) {
 	}
 
 	// 连接到测试数据库
-	testDSN := fmt.Sprintf("host=localhost port=5432 user=postgres password=postgres dbname=%s sslmode=disable", dbName)
+	testDSN := postgresTestDSN(dbName)
 	testDB, err := gorm.Open(postgres.Open(testDSN), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
@@ -128,6 +129,22 @@ func setupTestDB(t *testing.T, seed int64) (*gorm.DB, func()) {
 	}
 
 	return testDB, cleanup
+}
+
+func postgresTestDSN(dbName string) string {
+	host := envOrDefault("DATABASE_HOST", "localhost")
+	port := envOrDefault("DATABASE_PORT", "5432")
+	user := envOrDefault("DATABASE_USER", "postgres")
+	password := envOrDefault("DATABASE_PASSWORD", "postgres")
+	sslMode := envOrDefault("DATABASE_SSL_MODE", "disable")
+	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", host, port, user, password, dbName, sslMode)
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
 }
 
 // runTestMigration 运行测试迁移

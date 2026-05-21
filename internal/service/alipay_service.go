@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -10,16 +11,20 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/paper-format-checker/backend/internal/config"
 )
 
-// AlipayAccessToken 支付宝访问令牌
+// AlipayAccessToken is the token returned by alipay.system.oauth.token.
 type AlipayAccessToken struct {
 	AccessToken  string `json:"access_token"`
 	ExpiresIn    int    `json:"expires_in"`
@@ -29,7 +34,7 @@ type AlipayAccessToken struct {
 	ReExpiresIn  int    `json:"re_expires_in"`
 }
 
-// AlipayUserInfo 支付宝用户信息
+// AlipayUserInfo is the user profile returned by alipay.user.info.share.
 type AlipayUserInfo struct {
 	UserID      string `json:"user_id"`
 	Avatar      string `json:"avatar"`
@@ -40,13 +45,13 @@ type AlipayUserInfo struct {
 	CountryCode string `json:"country_code"`
 }
 
-// AlipayService 支付宝认证服务
+// AlipayService handles Alipay OAuth login.
 type AlipayService struct {
 	config     *config.AlipayConfig
 	httpClient *http.Client
 }
 
-// NewAlipayService 创建支付宝认证服务实例
+// NewAlipayService 鍒涘缓鏀粯瀹濊璇佹湇鍔″疄渚?
 func NewAlipayService(config *config.Config) *AlipayService {
 	return &AlipayService{
 		config:     &config.Alipay,
@@ -54,7 +59,6 @@ func NewAlipayService(config *config.Config) *AlipayService {
 	}
 }
 
-// GenerateLoginURL 生成支付宝登录URL
 func (s *AlipayService) GenerateLoginURL() (string, error) {
 	params := url.Values{}
 	params.Add("app_id", s.config.AppID)
@@ -62,16 +66,28 @@ func (s *AlipayService) GenerateLoginURL() (string, error) {
 	params.Add("response_type", "code")
 	params.Add("scope", s.config.Scope)
 	params.Add("state", "alipay_login")
+	params.Add("source", "alipay_wallet")
 
 	return fmt.Sprintf("%s?%s", s.config.AuthorizeURL, params.Encode()), nil
 }
 
-// generateSign 生成 Alipay RSA2 签名（SHA256WithRSA）
+// BuildAuthURL builds the Alipay authorization URL used as the QR content.
+func (s *AlipayService) BuildAuthURL(redirectURL, state string) (string, error) {
+	params := url.Values{}
+	params.Add("app_id", s.config.AppID)
+	params.Add("redirect_uri", redirectURL)
+	params.Add("response_type", "code")
+	params.Add("scope", s.config.Scope)
+	params.Add("state", state)
+	params.Add("source", "alipay_wallet")
+	return fmt.Sprintf("%s?%s", s.config.AuthorizeURL, params.Encode()), nil
+}
+
+// generateSign signs request parameters according to Alipay RSA2 rules.
 func (s *AlipayService) generateSign(params url.Values) (string, error) {
-	// 1. 排序、拼接待签名字符串（排除 sign / sign_type）
 	var keys []string
 	for k := range params {
-		if k != "sign" && k != "sign_type" {
+		if k != "sign" && params.Get(k) != "" {
 			keys = append(keys, k)
 		}
 	}
@@ -82,25 +98,11 @@ func (s *AlipayService) generateSign(params url.Values) (string, error) {
 	}
 	signStr := strings.Join(parts, "&")
 
-	// 2. 解析 PKCS8 私钥（支持带 PEM 头或纯 base64）
-	pkeyStr := strings.TrimSpace(s.config.AppPrivateKey)
-	if !strings.Contains(pkeyStr, "-----BEGIN") {
-		pkeyStr = "-----BEGIN PRIVATE KEY-----\n" + pkeyStr + "\n-----END PRIVATE KEY-----"
-	}
-	block, _ := pem.Decode([]byte(pkeyStr))
-	if block == nil {
-		return "", fmt.Errorf("alipay: failed to decode private key PEM")
-	}
-	keyIface, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	rsaKey, err := parseAlipayPrivateKey(s.config.AppPrivateKey)
 	if err != nil {
-		return "", fmt.Errorf("alipay: failed to parse private key: %w", err)
-	}
-	rsaKey, ok := keyIface.(*rsa.PrivateKey)
-	if !ok {
-		return "", fmt.Errorf("alipay: private key is not RSA")
+		return "", err
 	}
 
-	// 3. SHA256WithRSA 签名
 	h := sha256.New()
 	h.Write([]byte(signStr))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, rsaKey, crypto.SHA256, h.Sum(nil))
@@ -110,15 +112,21 @@ func (s *AlipayService) generateSign(params url.Values) (string, error) {
 	return base64.StdEncoding.EncodeToString(sig), nil
 }
 
-// buildSignedParams 构造带签名的参数
-func (s *AlipayService) buildSignedParams(method string, bizContent string) (url.Values, error) {
+func (s *AlipayService) buildCommonParams(method string) url.Values {
 	params := url.Values{}
 	params.Set("app_id", s.config.AppID)
 	params.Set("method", method)
+	params.Set("format", "JSON")
 	params.Set("charset", "utf-8")
 	params.Set("sign_type", "RSA2")
 	params.Set("timestamp", time.Now().Format("2006-01-02 15:04:05"))
 	params.Set("version", "1.0")
+	return params
+}
+
+// buildSignedParams builds signed Alipay request parameters.
+func (s *AlipayService) buildSignedParams(method string, bizContent string) (url.Values, error) {
+	params := s.buildCommonParams(method)
 	if bizContent != "" {
 		params.Set("biz_content", bizContent)
 	}
@@ -134,7 +142,48 @@ func (s *AlipayService) buildSignedParams(method string, bizContent string) (url
 	return params, nil
 }
 
-// gatewayURL 返回生产或沙箱网关
+func parseAlipayPrivateKey(raw string) (*rsa.PrivateKey, error) {
+	keyStr := strings.TrimSpace(raw)
+	if keyStr == "" {
+		return nil, fmt.Errorf("alipay: empty private key")
+	}
+	if (strings.Contains(keyStr, "/") || strings.Contains(keyStr, "\\")) && !strings.Contains(keyStr, "-----BEGIN") {
+		if data, err := os.ReadFile(keyStr); err == nil {
+			keyStr = strings.TrimSpace(string(data))
+		}
+	}
+	if !strings.Contains(keyStr, "-----BEGIN") {
+		p8 := "-----BEGIN PRIVATE KEY-----\n" + keyStr + "\n-----END PRIVATE KEY-----" // gitleaks:allow
+		if blk, _ := pem.Decode([]byte(p8)); blk != nil {
+			if k, err := x509.ParsePKCS8PrivateKey(blk.Bytes); err == nil {
+				if rk, ok := k.(*rsa.PrivateKey); ok {
+					return rk, nil
+				}
+			}
+		}
+		p1 := "-----BEGIN RSA PRIVATE KEY-----\n" + keyStr + "\n-----END RSA PRIVATE KEY-----"
+		if blk, _ := pem.Decode([]byte(p1)); blk != nil {
+			if k, err := x509.ParsePKCS1PrivateKey(blk.Bytes); err == nil {
+				return k, nil
+			}
+		}
+		return nil, fmt.Errorf("alipay: unable to parse private key")
+	}
+	blk, _ := pem.Decode([]byte(keyStr))
+	if blk == nil {
+		return nil, fmt.Errorf("alipay: failed to decode private key PEM")
+	}
+	if k, err := x509.ParsePKCS8PrivateKey(blk.Bytes); err == nil {
+		if rk, ok := k.(*rsa.PrivateKey); ok {
+			return rk, nil
+		}
+	}
+	if k, err := x509.ParsePKCS1PrivateKey(blk.Bytes); err == nil {
+		return k, nil
+	}
+	return nil, fmt.Errorf("alipay: unsupported private key format")
+}
+
 func (s *AlipayService) gatewayURL() string {
 	if s.config.SandboxEnabled && s.config.SandboxGatewayURL != "" {
 		return s.config.SandboxGatewayURL
@@ -142,113 +191,136 @@ func (s *AlipayService) gatewayURL() string {
 	return s.config.GatewayURL
 }
 
-// ExchangeCodeForToken 用授权码换取访问令牌
+// ExchangeCodeForToken exchanges an auth_code for an Alipay access token.
 func (s *AlipayService) ExchangeCodeForToken(code string) (*AlipayAccessToken, error) {
-	params := url.Values{}
-	params.Set("app_id", s.config.AppID)
-	params.Set("method", "alipay.system.oauth.token")
-	params.Set("charset", "utf-8")
-	params.Set("sign_type", "RSA2")
-	params.Set("timestamp", time.Now().Format("2006-01-02 15:04:05"))
-	params.Set("version", "1.0")
+	params := s.buildCommonParams("alipay.system.oauth.token")
 	params.Set("grant_type", "authorization_code")
 	params.Set("code", code)
-
-	if s.config.AppPrivateKey != "" {
-		sign, err := s.generateSign(params)
-		if err != nil {
-			return nil, err
-		}
-		params.Set("sign", sign)
+	sign, err := s.generateSign(params)
+	if err != nil {
+		return nil, err
 	}
+	params.Set("sign", sign)
 
-	url := fmt.Sprintf("%s?%s", s.gatewayURL(), params.Encode())
+	req, err := http.NewRequest(http.MethodPost, s.gatewayURL(), bytes.NewBufferString(params.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create access token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := s.httpClient.Get(url)
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to request access token: %w", err)
 	}
 	defer resp.Body.Close()
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read access token response: %w", err)
+	}
+
 	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode access token response: %w", err)
 	}
 
-	// 检查是否返回错误
 	if errorResponse, ok := result["error_response"].(map[string]interface{}); ok {
+		log.Printf("[Alipay OAuth] token exchange failed: http=%d body=%s", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("alipay api error: %v - %v", errorResponse["code"], errorResponse["msg"])
 	}
 
-	// 获取访问令牌
-	tokenResponse := result["alipay_system_oauth_token_response"].(map[string]interface{})
-	token := &AlipayAccessToken{
-		AccessToken:  tokenResponse["access_token"].(string),
-		ExpiresIn:    int(tokenResponse["expires_in"].(float64)),
-		RefreshToken: tokenResponse["refresh_token"].(string),
-		UserID:       tokenResponse["user_id"].(string),
-		TokenType:    tokenResponse["token_type"].(string),
-		ReExpiresIn:  int(tokenResponse["re_expires_in"].(float64)),
+	tokenResponse, ok := result["alipay_system_oauth_token_response"].(map[string]interface{})
+	if !ok {
+		log.Printf("[Alipay OAuth] token exchange unexpected response: http=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("alipay api error: unexpected token response shape")
+	}
+	if code := mapString(tokenResponse, "code"); code != "" && code != "10000" {
+		log.Printf("[Alipay OAuth] token exchange business error: http=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("alipay api error: code=%s msg=%s sub_code=%s sub_msg=%s",
+			code,
+			mapString(tokenResponse, "msg"),
+			mapString(tokenResponse, "sub_code"),
+			mapString(tokenResponse, "sub_msg"),
+		)
+	}
+
+	token := buildAlipayAccessToken(tokenResponse)
+	if token.AccessToken == "" || token.UserID == "" {
+		log.Printf("[Alipay OAuth] token exchange missing fields: http=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("alipay api error: token response missing access_token or user identity")
 	}
 
 	return token, nil
 }
-
-// GetUserInfo 获取支付宝用户信息
 func (s *AlipayService) GetUserInfo(accessToken string) (*AlipayUserInfo, error) {
-	params := url.Values{}
-	params.Set("app_id", s.config.AppID)
-	params.Set("method", "alipay.user.info.share")
-	params.Set("charset", "utf-8")
-	params.Set("sign_type", "RSA2")
-	params.Set("timestamp", time.Now().Format("2006-01-02 15:04:05"))
-	params.Set("version", "1.0")
+	params := s.buildCommonParams("alipay.user.info.share")
 	params.Set("auth_token", accessToken)
-
-	if s.config.AppPrivateKey != "" {
-		sign, err := s.generateSign(params)
-		if err != nil {
-			return nil, err
-		}
-		params.Set("sign", sign)
+	sign, err := s.generateSign(params)
+	if err != nil {
+		return nil, err
 	}
+	params.Set("sign", sign)
 
-	url := fmt.Sprintf("%s?%s", s.gatewayURL(), params.Encode())
+	req, err := http.NewRequest(http.MethodPost, s.gatewayURL(), bytes.NewBufferString(params.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create user info request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := s.httpClient.Get(url)
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to request user info: %w", err)
 	}
 	defer resp.Body.Close()
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read user info response: %w", err)
+	}
+
 	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode user info response: %w", err)
 	}
 
-	// 检查是否返回错误
 	if errorResponse, ok := result["error_response"].(map[string]interface{}); ok {
+		log.Printf("[Alipay OAuth] user info failed: http=%d body=%s", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("alipay api error: %v - %v", errorResponse["code"], errorResponse["msg"])
 	}
 
-	// 获取用户信息
-	userInfoResponse := result["alipay_user_info_share_response"].(map[string]interface{})
+	userInfoResponse, ok := result["alipay_user_info_share_response"].(map[string]interface{})
+	if !ok {
+		log.Printf("[Alipay OAuth] user info unexpected response: http=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("alipay api error: unexpected user info response shape")
+	}
+	if code := mapString(userInfoResponse, "code"); code != "" && code != "10000" {
+		log.Printf("[Alipay OAuth] user info business error: http=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("alipay api error: code=%s msg=%s sub_code=%s sub_msg=%s",
+			code,
+			mapString(userInfoResponse, "msg"),
+			mapString(userInfoResponse, "sub_code"),
+			mapString(userInfoResponse, "sub_msg"),
+		)
+	}
+
 	userInfo := &AlipayUserInfo{
-		UserID:      userInfoResponse["user_id"].(string),
-		Avatar:      userInfoResponse["avatar"].(string),
-		Nickname:    userInfoResponse["nick_name"].(string),
-		Gender:      userInfoResponse["gender"].(string),
-		Province:    userInfoResponse["province"].(string),
-		City:        userInfoResponse["city"].(string),
-		CountryCode: userInfoResponse["country_code"].(string),
+		UserID:      mapFirstString(userInfoResponse, "user_id", "open_id", "union_id"),
+		Avatar:      mapString(userInfoResponse, "avatar"),
+		Nickname:    mapString(userInfoResponse, "nick_name"),
+		Gender:      mapString(userInfoResponse, "gender"),
+		Province:    mapString(userInfoResponse, "province"),
+		City:        mapString(userInfoResponse, "city"),
+		CountryCode: mapString(userInfoResponse, "country_code"),
+	}
+	if userInfo.UserID == "" {
+		log.Printf("[Alipay OAuth] user info missing fields: http=%d body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("alipay api error: user info response missing user identity")
 	}
 
 	return userInfo, nil
 }
-
-// GenerateQRCodeURL 生成支付宝扫码登录的二维码URL
 func (s *AlipayService) GenerateQRCodeURL() (string, string, error) {
-	// 生成随机state用于防CSRF攻击
+	// 鐢熸垚闅忔満state鐢ㄤ簬闃睠SRF鏀诲嚮
 	state := fmt.Sprintf("alipay_qr_%d", time.Now().UnixNano())
 
 	params := url.Values{}
@@ -257,7 +329,49 @@ func (s *AlipayService) GenerateQRCodeURL() (string, string, error) {
 	params.Add("response_type", "code")
 	params.Add("scope", s.config.Scope)
 	params.Add("state", state)
+	params.Add("source", "alipay_wallet")
 
 	qrURL := fmt.Sprintf("%s?%s", s.config.AuthorizeURL, params.Encode())
 	return qrURL, state, nil
+}
+
+func buildAlipayAccessToken(tokenResponse map[string]interface{}) *AlipayAccessToken {
+	return &AlipayAccessToken{
+		AccessToken:  mapString(tokenResponse, "access_token"),
+		ExpiresIn:    mapInt(tokenResponse, "expires_in"),
+		RefreshToken: mapString(tokenResponse, "refresh_token"),
+		UserID:       mapFirstString(tokenResponse, "user_id", "open_id", "union_id"),
+		TokenType:    mapString(tokenResponse, "token_type"),
+		ReExpiresIn:  mapInt(tokenResponse, "re_expires_in"),
+	}
+}
+
+func mapFirstString(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value := mapString(m, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func mapString(m map[string]interface{}, key string) string {
+	if v, ok := m[key]; ok && v != nil {
+		return fmt.Sprint(v)
+	}
+	return ""
+}
+
+func mapInt(m map[string]interface{}, key string) int {
+	raw := mapString(m, key)
+	if raw == "" {
+		return 0
+	}
+	if n, err := strconv.Atoi(raw); err == nil {
+		return n
+	}
+	if f, err := strconv.ParseFloat(raw, 64); err == nil {
+		return int(f)
+	}
+	return 0
 }

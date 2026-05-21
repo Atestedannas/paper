@@ -14,7 +14,7 @@ import (
 const (
 	KeyEncryptionKey = "security_encryption_key"
 	KeyPaymentConfig = "payment_config"
-	DefaultDevKey    = "this-is-a-default-32-byte-key-12" // 32 bytes exactly
+	DefaultDevKey    = "dev-only-dev-only-dev-only-key!!" // 32 bytes exactly
 )
 
 type SystemSettingService interface {

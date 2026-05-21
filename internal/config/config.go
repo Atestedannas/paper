@@ -199,7 +199,7 @@ func LoadConfig(configPath string) (*Config, error) {
 			ReturnURL:         "",
 			RedirectURL:       "",
 			Scope:             "auth_user",
-			AuthorizeURL:      "https://open.auth.alipay.com/oauth2/publicAppAuthorize.htm",
+			AuthorizeURL:      "https://openauth.alipay.com/oauth2/publicAppAuthorize.htm",
 			GatewayURL:        "https://openapi.alipay.com/gateway.do",
 			SandboxEnabled:    false,
 			SandboxGatewayURL: "https://openapi.alipaydev.com/gateway.do",

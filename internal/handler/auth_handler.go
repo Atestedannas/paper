@@ -1,15 +1,25 @@
 package handler
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"log"
+	"math/big"
+	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/config"
 	"github.com/paper-format-checker/backend/internal/middleware"
+	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
 	"github.com/paper-format-checker/backend/internal/utils"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
@@ -17,11 +27,12 @@ import (
 type AuthHandler struct {
 	userService           service.UserService
 	wechatService         *service.WechatService
-	alipayService         *service.AlipayService
+	alipayService         alipayAuthService
+	alipaySessionService  *service.AlipayLoginSessionService
 	config                *config.Config
 	db                    *gorm.DB
 	tokenBlacklistService *service.TokenBlacklistService
-	refreshTokenService   *service.RefreshTokenService
+	refreshTokenService   refreshTokenService
 }
 
 // NewAuthHandler 创建认证处理器实例
@@ -30,6 +41,7 @@ func NewAuthHandler(config *config.Config, db *gorm.DB) *AuthHandler {
 		userService:           service.NewUserService(),
 		wechatService:         service.NewWechatService(config),
 		alipayService:         service.NewAlipayService(config),
+		alipaySessionService:  service.NewAlipayLoginSessionService(db),
 		config:                config,
 		db:                    db,
 		tokenBlacklistService: service.NewTokenBlacklistService(db),
@@ -54,6 +66,30 @@ type LoginRequest struct {
 type AuthResponse struct {
 	Token string `json:"token"`
 	User  any    `json:"user"`
+}
+
+type passwordResetChallenge struct {
+	Email     string
+	Code      string
+	Token     string
+	ExpiresAt time.Time
+	Verified  bool
+}
+
+var passwordResetChallenges = struct {
+	sync.Mutex
+	byEmail map[string]passwordResetChallenge
+	byToken map[string]passwordResetChallenge
+}{
+	byEmail: make(map[string]passwordResetChallenge),
+	byToken: make(map[string]passwordResetChallenge),
+}
+
+func resetPasswordResetChallengesForTest() {
+	passwordResetChallenges.Lock()
+	defer passwordResetChallenges.Unlock()
+	passwordResetChallenges.byEmail = make(map[string]passwordResetChallenge)
+	passwordResetChallenges.byToken = make(map[string]passwordResetChallenge)
 }
 
 // Register 用户注册
@@ -370,6 +406,7 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 	// 用授权码换取访问令牌
 	token, err := alipayService.ExchangeCodeForToken(code)
 	if err != nil {
+		log.Printf("[Alipay OAuth] exchange token failed: err=%v", err)
 		utils.InternalServerError(c, "failed to exchange code for token")
 		return
 	}
@@ -377,6 +414,7 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 	// 获取用户信息
 	userInfo, err := alipayService.GetUserInfo(token.AccessToken)
 	if err != nil {
+		log.Printf("[Alipay OAuth] get user info failed: err=%v", err)
 		utils.InternalServerError(c, "failed to get alipay user info")
 		return
 	}
@@ -454,6 +492,139 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 
 	// 返回响应
 	utils.Success(c, gin.H{"message": "password changed successfully"})
+}
+
+func (h *AuthHandler) SendPasswordResetCode(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.BadRequest(c, err.Error())
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if _, err := h.userService.GetUserByEmail(email); err != nil {
+		utils.Success(c, gin.H{"message": "if the email exists, a reset code has been sent"})
+		return
+	}
+
+	code, err := randomDigits(6)
+	if err != nil {
+		utils.InternalServerError(c, "failed to generate reset code")
+		return
+	}
+
+	challenge := passwordResetChallenge{
+		Email:     email,
+		Code:      code,
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+	}
+
+	passwordResetChallenges.Lock()
+	passwordResetChallenges.byEmail[email] = challenge
+	passwordResetChallenges.Unlock()
+
+	log.Printf("[PasswordReset] reset code for %s: %s", email, code)
+	utils.Success(c, gin.H{
+		"message":    "reset code generated",
+		"expires_in": 600,
+		"reset_code": code,
+	})
+}
+
+func (h *AuthHandler) VerifyPasswordResetCode(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+		Code  string `json:"code" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.BadRequest(c, err.Error())
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	code := strings.TrimSpace(req.Code)
+
+	passwordResetChallenges.Lock()
+	challenge, ok := passwordResetChallenges.byEmail[email]
+	passwordResetChallenges.Unlock()
+
+	if !ok || challenge.Code != code || time.Now().After(challenge.ExpiresAt) {
+		utils.ErrorResponse(c, http.StatusBadRequest, "invalid or expired reset code", "")
+		return
+	}
+
+	token, err := randomHexToken(32)
+	if err != nil {
+		utils.InternalServerError(c, "failed to generate reset token")
+		return
+	}
+
+	challenge.Token = token
+	challenge.Verified = true
+	challenge.ExpiresAt = time.Now().Add(10 * time.Minute)
+
+	passwordResetChallenges.Lock()
+	passwordResetChallenges.byEmail[email] = challenge
+	passwordResetChallenges.byToken[token] = challenge
+	passwordResetChallenges.Unlock()
+
+	utils.Success(c, gin.H{
+		"reset_token": token,
+		"expires_in":  600,
+	})
+}
+
+func (h *AuthHandler) ResetPasswordByCode(c *gin.Context) {
+	var req struct {
+		ResetToken  string `json:"reset_token" binding:"required"`
+		NewPassword string `json:"new_password" binding:"required,min=8,max=20"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.BadRequest(c, err.Error())
+		return
+	}
+	if !h.isPasswordComplex(req.NewPassword) {
+		utils.BadRequest(c, "password must contain uppercase, lowercase, number and special character")
+		return
+	}
+
+	passwordResetChallenges.Lock()
+	challenge, ok := passwordResetChallenges.byToken[req.ResetToken]
+	passwordResetChallenges.Unlock()
+
+	if !ok || !challenge.Verified || time.Now().After(challenge.ExpiresAt) {
+		utils.ErrorResponse(c, http.StatusBadRequest, "invalid or expired reset token", "")
+		return
+	}
+
+	user, err := h.userService.GetUserByEmail(challenge.Email)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "invalid reset token", "")
+		return
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), 12)
+	if err != nil {
+		utils.InternalServerError(c, "failed to update password")
+		return
+	}
+
+	if err := h.db.Model(&model.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+		"password_hash": string(hashedPassword),
+		"updated_at":    time.Now(),
+	}).Error; err != nil {
+		utils.InternalServerError(c, "failed to update password")
+		return
+	}
+
+	passwordResetChallenges.Lock()
+	delete(passwordResetChallenges.byEmail, challenge.Email)
+	delete(passwordResetChallenges.byToken, req.ResetToken)
+	passwordResetChallenges.Unlock()
+
+	utils.Success(c, gin.H{"message": "password reset successfully"})
 }
 
 // RefreshToken 刷新访问令牌
@@ -602,4 +773,24 @@ func (h *AuthHandler) isPasswordComplex(password string) bool {
 	}
 
 	return lower && upper && digit && special
+}
+
+func randomDigits(length int) (string, error) {
+	var builder strings.Builder
+	for i := 0; i < length; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(10))
+		if err != nil {
+			return "", fmt.Errorf("generate random digit: %w", err)
+		}
+		builder.WriteByte(byte('0' + n.Int64()))
+	}
+	return builder.String(), nil
+}
+
+func randomHexToken(byteLength int) (string, error) {
+	buf := make([]byte, byteLength)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate random token: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }

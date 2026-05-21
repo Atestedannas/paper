@@ -38,27 +38,9 @@ func (h *PaperHandler) saveUploadedFile(c *gin.Context, file *multipart.FileHead
 	return filePath, nil
 }
 
-// applyCorrectionsAndGenerateFile 应用修正并生成修正后的文件
+// applyCorrectionsAndGenerateFile keeps old callers from pretending a copy is a fix.
 func (h *PaperHandler) applyCorrectionsAndGenerateFile(originalPath string, issues []formatchecker.FormatIssue, corrections []formatchecker.Correction) (string, error) {
-	// 这里应该实现具体的修正逻辑
-	// 由于时间关系，暂时返回原始文件路径作为占位符
-	// 实际实现应该使用unioffice库来修改文档格式
-
-	// 创建修正后的文件路径
-	correctedPath := strings.Replace(originalPath, ".docx", "_corrected.docx", 1)
-
-	// 复制原始文件到修正路径（临时实现）
-	// 实际应该使用unioffice库来应用修正
-	originalContent, err := os.ReadFile(originalPath)
-	if err != nil {
-		return "", err
-	}
-
-	if err := os.WriteFile(correctedPath, originalContent, 0644); err != nil {
-		return "", err
-	}
-
-	return correctedPath, nil
+	return "", fmt.Errorf("legacy correction file generation is unsupported; use PaperService.FixPaperFormat or DOCXChecker.ApplyCorrections")
 }
 
 // UploadTemplate 上传高校论文格式模板
@@ -292,6 +274,8 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 		university.ID, documentType, subject).First(&existingTemplate).Error
 	if err == nil {
 		existingTemplate.FormatRules = string(formatRulesJSON)
+		existingTemplate.FilePath = docxPath
+		existingTemplate.GoldenTemplatePath = docxPath
 		existingTemplate.UpdatedAt = time.Now()
 		if description != "" {
 			existingTemplate.Description = description
@@ -305,16 +289,18 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 	}
 
 	newTemplate := model.FormatTemplate{
-		TemplateID:   uuid.New().String(),
-		Name:         fmt.Sprintf("%s%s格式标准", universityName, documentType),
-		UniversityID: &university.ID,
-		DocumentType: documentType,
-		Subject:      subject,
-		Source:       "sample_upload",
-		IsActive:     true,
-		IsPublic:     true,
-		FormatRules:  string(formatRulesJSON),
-		Description:  description,
+		TemplateID:         uuid.New().String(),
+		Name:               fmt.Sprintf("%s%s格式标准", universityName, documentType),
+		UniversityID:       &university.ID,
+		DocumentType:       documentType,
+		Subject:            subject,
+		FilePath:           docxPath,
+		Source:             "sample_upload",
+		IsActive:           true,
+		IsPublic:           true,
+		FormatRules:        string(formatRulesJSON),
+		GoldenTemplatePath: docxPath,
+		Description:        description,
 	}
 	if err := database.DB.Create(&newTemplate).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())

@@ -168,5 +168,6 @@ func migrateDatabase() error {
 		// CMS 帖子系统
 		&model.CmsPost{},
 		&model.CmsReply{},
+		&model.AlipayLoginSession{},
 	)
 }

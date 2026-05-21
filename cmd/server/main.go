@@ -143,6 +143,9 @@ func main() {
 			auth.POST("/login", authHandler.Login)
 			auth.POST("/refresh", authHandler.RefreshToken)                                       // Add refresh token route
 			auth.POST("/logout", middleware.AuthMiddleware(cfg, database.DB), authHandler.Logout) // Add logout route
+			auth.POST("/forgot-password", authHandler.SendPasswordResetCode)
+			auth.POST("/verify-reset-code", authHandler.VerifyPasswordResetCode)
+			auth.POST("/reset-password", authHandler.ResetPasswordByCode)
 			auth.GET("/profile", middleware.AuthMiddleware(cfg, database.DB), authHandler.GetProfile)
 			auth.PUT("/profile", middleware.AuthMiddleware(cfg, database.DB), authHandler.UpdateProfile)
 			auth.PUT("/password", middleware.AuthMiddleware(cfg, database.DB), authHandler.ChangePassword)
@@ -153,6 +156,9 @@ func main() {
 
 			// Alipay login (GET for platform redirect, POST for API call)
 			auth.GET("/alipay/login-url", authHandler.GetAlipayAuthURL)
+			auth.GET("/alipay/qr-session", authHandler.GetAlipayQRSession)
+			auth.GET("/alipay/qr-session/:sessionID/status", authHandler.GetAlipayQRSessionStatus)
+			auth.GET("/alipay/qr-callback", authHandler.AlipayQRCallback)
 			auth.GET("/alipay/callback", authHandler.AlipayAuthCallback)
 			auth.POST("/alipay/callback", authHandler.AlipayAuthCallback)
 
@@ -391,6 +397,9 @@ func main() {
 			auth.POST("/login", authHandler.Login)
 			auth.POST("/refresh", authHandler.RefreshToken)
 			auth.POST("/logout", middleware.AuthMiddleware(cfg, database.DB), authHandler.Logout)
+			auth.POST("/forgot-password", authHandler.SendPasswordResetCode)
+			auth.POST("/verify-reset-code", authHandler.VerifyPasswordResetCode)
+			auth.POST("/reset-password", authHandler.ResetPasswordByCode)
 			auth.GET("/profile", middleware.AuthMiddleware(cfg, database.DB), authHandler.GetProfile)
 			auth.PUT("/profile", middleware.AuthMiddleware(cfg, database.DB), authHandler.UpdateProfile)
 			auth.PUT("/password", middleware.AuthMiddleware(cfg, database.DB), authHandler.ChangePassword)
@@ -401,6 +410,9 @@ func main() {
 
 			// Alipay login (GET for platform redirect, POST for API call)
 			auth.GET("/alipay/login-url", authHandler.GetAlipayAuthURL)
+			auth.GET("/alipay/qr-session", authHandler.GetAlipayQRSession)
+			auth.GET("/alipay/qr-session/:sessionID/status", authHandler.GetAlipayQRSessionStatus)
+			auth.GET("/alipay/qr-callback", authHandler.AlipayQRCallback)
 			auth.GET("/alipay/callback", authHandler.AlipayAuthCallback)
 			auth.POST("/alipay/callback", authHandler.AlipayAuthCallback)
 
@@ -411,6 +423,10 @@ func main() {
 			// System config
 			auth.GET("/config/system", configHandler.GetSystemConfig)          // Get system config
 			auth.GET("/config/paper-check", configHandler.GetPaperCheckConfig) // Get paper format check config
+
+			// Payment check APIs
+			auth.GET("/payment/check-service", middleware.AuthMiddleware(cfg, database.DB), paymentCheckHandler.CheckServicePaymentStatus)
+			auth.GET("/payment/free-checks", middleware.AuthMiddleware(cfg, database.DB), paymentCheckHandler.GetUserFreeChecks)
 		}
 
 		// Member routes
@@ -733,6 +749,7 @@ func main() {
 		// University related routes
 		apiV1.GET("/universities", universityHandler.GetUniversities)
 		apiV1.GET("/universities/tags", universityHandler.GetTags)
+		apiV1.POST("/universities/templates/import", paperHandler.UploadTemplate)
 		apiV1.GET("/universities/:id", universityHandler.GetUniversityDetail)
 		apiV1.GET("/universities/:id/download-template", universityHandler.DownloadTemplate)
 

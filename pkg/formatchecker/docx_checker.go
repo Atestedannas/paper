@@ -2261,36 +2261,12 @@ func normalizeHeadingText(s string) string {
 
 // ApplyCorrections 应用修正建议到文档
 func (c *DOCXChecker) ApplyCorrections(ctx context.Context, docPath string, corrections []Correction) (string, error) {
-	// 打开文档
-	r, err := docx.ReadDocxFile(docPath)
+	standard, err := c.correctionsToStandard(corrections)
 	if err != nil {
-		return "", fmt.Errorf("failed to open document: %w", err)
-	}
-	defer r.Close()
-
-	// 获取可编辑的文档对象
-	doc := r.Editable()
-
-	// 应用每个修正
-	for _, correction := range corrections {
-		if !correction.Applied {
-			err := c.applySingleCorrection(doc, correction)
-			if err != nil {
-				fmt.Printf("应用修正失败: %s - %v\n", correction.IssueID, err)
-				continue
-			}
-		}
+		return "", err
 	}
 
-	// 生成输出文件路径
-	outputPath := strings.TrimSuffix(docPath, filepath.Ext(docPath)) + "_corrected.docx"
-
-	// 保存文档
-	if err := doc.WriteToFile(outputPath); err != nil {
-		return "", fmt.Errorf("failed to save corrected document: %w", err)
-	}
-
-	return outputPath, nil
+	return c.FixDocumentDirectly(ctx, docPath, *standard)
 }
 
 // applySingleCorrection 应用单个修正
@@ -2306,40 +2282,28 @@ func (c *DOCXChecker) applySingleCorrection(doc *docx.Docx, correction Correctio
 	case CorrectionTypeHeading:
 		return c.applyHeadingStyleCorrection(doc, correction)
 	default:
-		return nil
+		return fmt.Errorf("unsupported correction type: %s", correction.Type)
 	}
 }
 
 // applyPageSetupCorrection 应用页面设置修正
 func (c *DOCXChecker) applyPageSetupCorrection(doc *docx.Docx, correction Correction) error {
-	// 简化的页面设置修正实现
-	// 实际实现需要更复杂的逻辑
-	// 这里可以根据correction.Parameters中的参数来修改页面设置
-	return nil
+	return fmt.Errorf("page setup correction is handled by the standard pipeline")
 }
 
 // applyFontCorrection 应用字体修正
 func (c *DOCXChecker) applyFontCorrection(doc *docx.Docx, correction Correction) error {
-	// 简化的字体修正实现
-	// 实际实现需要更复杂的逻辑
-	// 这里可以根据correction.Parameters中的参数来修改字体设置
-	return nil
+	return fmt.Errorf("font correction is handled by the standard pipeline")
 }
 
 // applySpacingCorrection 应用间距修正
 func (c *DOCXChecker) applySpacingCorrection(doc *docx.Docx, correction Correction) error {
-	// 简化的间距修正实现
-	// 实际实现需要更复杂的逻辑
-	// 这里可以根据correction.Parameters中的参数来修改间距设置
-	return nil
+	return fmt.Errorf("spacing correction is handled by the standard pipeline")
 }
 
 // applyHeadingStyleCorrection 应用标题样式修正
 func (c *DOCXChecker) applyHeadingStyleCorrection(doc *docx.Docx, correction Correction) error {
-	// 简化的标题样式修正实现
-	// 实际实现需要更复杂的逻辑
-	// 这里可以根据correction.Parameters中的参数来修改标题样式
-	return nil
+	return fmt.Errorf("heading correction is handled by the standard pipeline")
 }
 
 // generateCorrectionForIssue 为单个问题生成修正建议

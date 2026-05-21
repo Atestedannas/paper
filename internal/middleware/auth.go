@@ -14,6 +14,17 @@ import (
 	"gorm.io/gorm"
 )
 
+func shouldSkipAdminRBAC(path string) bool {
+	p := "/" + strings.Trim(strings.TrimSpace(path), "/")
+	switch p {
+	case "/api/v1/admin/menus/user-tree", "/api/admin/menus/user-tree",
+		"/api/v1/admin/menus/user", "/api/admin/menus/user":
+		return true
+	default:
+		return false
+	}
+}
+
 func resolveAdminResource(path string) string {
 	p := strings.TrimSpace(path)
 	p = strings.TrimPrefix(p, "/api/v1/admin/")
@@ -328,6 +339,11 @@ func AdminRBACMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		role, _ := c.Get("role")
 		if role == "super_admin" {
+			c.Next()
+			return
+		}
+
+		if shouldSkipAdminRBAC(c.Request.URL.Path) {
 			c.Next()
 			return
 		}

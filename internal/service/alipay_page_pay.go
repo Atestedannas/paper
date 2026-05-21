@@ -297,7 +297,7 @@ func parsePrivateKey(keyStr string) (*rsa.PrivateKey, error) {
 			}
 		}
 		// 尝试 PKCS1
-		p1 := "-----BEGIN RSA PRIVATE KEY-----\n" + keyStr + "\n-----END RSA PRIVATE KEY-----"
+		p1 := "-----BEGIN RSA PRIVATE KEY-----\n" + keyStr + "\n-----END RSA PRIVATE KEY-----" // gitleaks:allow
 		if blk, _ := pem.Decode([]byte(p1)); blk != nil {
 			if k, err := x509.ParsePKCS1PrivateKey(blk.Bytes); err == nil {
 				return k, nil

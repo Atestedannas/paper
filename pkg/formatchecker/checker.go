@@ -258,6 +258,7 @@ func ParseRequirementsToStandard(parsedRequirements map[string]interface{}) Form
 		standard.ReferenceStyle = parseReferenceStyleEnglish(parsedRequirements)
 		standard.TableStyle = parseTableStyleEnglish(parsedRequirements)
 		standard.FigureStyle = parseFigureStyleEnglish(parsedRequirements)
+		standard.AbstractStyles = parseAbstractStylesEnglish(parsedRequirements)
 	} else {
 		// 新增：处理直接结构，即您数据库中存储的格式
 		// 直接从顶层解析各种样式
@@ -1479,6 +1480,35 @@ func parseFigureStyleEnglish(settings map[string]interface{}) FigureStyle {
 	}
 
 	return result
+}
+
+func parseAbstractStylesEnglish(settings map[string]interface{}) []AbstractStyle {
+	var styles []AbstractStyle
+
+	if rawStyles, ok := settings["abstract_styles"].([]interface{}); ok {
+		for _, rawStyle := range rawStyles {
+			styleMap, ok := rawStyle.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			styles = append(styles, AbstractStyle{
+				Type:            getString(styleMap, "type", "chinese"),
+				Heading:         getString(styleMap, "heading", "摘要"),
+				FontName:        getString(styleMap, "font_name", "宋体"),
+				FontSize:        getFloat64(styleMap, "font_size", 12),
+				Bold:            getBool(styleMap, "bold", false),
+				Alignment:       getString(styleMap, "alignment", "justify"),
+				LineSpacing:     getFloat64(styleMap, "line_spacing", 24),
+				FirstLineIndent: getFloat64(styleMap, "first_line_indent", 2),
+				KeywordsPrefix:  getString(styleMap, "keywords_prefix", getDefaultKeywordsPrefix(getString(styleMap, "type", "chinese"))),
+			})
+		}
+	}
+
+	if len(styles) == 0 {
+		return parseAbstractStylesFromDirectStructure(settings)
+	}
+	return styles
 }
 
 type CorrectionType string

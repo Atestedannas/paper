@@ -4,16 +4,9 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="wordzero">
+    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="codex  提高i准确率！">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/cmd/server/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/cmd/server/main.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/go.mod" beforeDir="false" afterPath="$PROJECT_DIR$/go.mod" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/go.sum" beforeDir="false" afterPath="$PROJECT_DIR$/go.sum" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/paper_format_admin_display.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/paper_format_admin_display.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/paper_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/paper_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/service/paper_service.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/paper_service.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/enhanced_processor.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/enhanced_processor.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/superpowers/specs/2026-04-23-docx-single-template-closed-loop-design.md" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -64,7 +57,7 @@
     &quot;git-widget-placeholder&quot;: &quot;arch/template-shell-fill&quot;,
     &quot;go.import.settings.migrated&quot;: &quot;true&quot;,
     &quot;go.sdk.automatically.set&quot;: &quot;true&quot;,
-    &quot;last_opened_file_path&quot;: &quot;D:/workpace/博客/paperjiaoben&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/user/.config/superpowers/worktrees/paper/docx-closed-loop-task1&quot;,
     &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
     &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
     &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
@@ -133,7 +126,8 @@
     <MESSAGE value="格式修正引擎配置（python-docx 样式引用引擎）" />
     <MESSAGE value="以学生稿为主文档 → 从模板「学」样式再改学生稿 → 容易在分类、样式映射、分节、域字段上出偏差。" />
     <MESSAGE value="wordzero" />
-    <option name="LAST_COMMIT_MESSAGE" value="wordzero" />
+    <MESSAGE value="codex  提高i准确率！" />
+    <option name="LAST_COMMIT_MESSAGE" value="codex  提高i准确率！" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>
