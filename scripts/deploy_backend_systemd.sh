@@ -3,6 +3,7 @@ set -euo pipefail
 
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/paper}"
 SERVICE_NAME="${SERVICE_NAME:-paper.service}"
+SERVER_PORT="${SERVER_PORT:-8002}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8002/health}"
 ARTIFACT_PATH="${1:-/tmp/paper-server.new}"
 APP_PATH="${DEPLOY_DIR}/paper-server"
@@ -29,6 +30,12 @@ command -v systemctl >/dev/null 2>&1 || fail "systemctl not found"
 command -v curl >/dev/null 2>&1 || fail "curl not found"
 
 mkdir -p "$DEPLOY_DIR"
+mkdir -p "/etc/systemd/system/${SERVICE_NAME}.d"
+cat >"/etc/systemd/system/${SERVICE_NAME}.d/override.conf" <<EOF
+[Service]
+Environment=SERVER_PORT=${SERVER_PORT}
+EOF
+systemctl daemon-reload
 
 if [ -f "$APP_PATH" ]; then
   log "backup ${APP_PATH} -> ${BACKUP_PATH}"

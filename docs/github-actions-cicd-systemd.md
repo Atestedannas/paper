@@ -57,6 +57,7 @@ git remote -v
 | --- | --- |
 | `PROD_DEPLOY_DIR` | `/opt/paper` |
 | `PROD_SERVICE_NAME` | `paper.service` |
+| `PROD_SERVER_PORT` | `8002` |
 | `PROD_HEALTH_URL` | `http://127.0.0.1:8002/health` |
 
 ## 4. 提交并推送
@@ -95,9 +96,10 @@ git push origin master
    ```bash
    /opt/paper/paper-server.backup-YYYYmmdd-HHMMSS
    ```
-8. 替换 `/opt/paper/paper-server`
-9. 重启 `paper.service`
-10. 健康检查失败时自动回滚旧版本
+8. 写入 systemd 覆盖配置，固定 `SERVER_PORT=8002`
+9. 替换 `/opt/paper/paper-server`
+10. 重启 `paper.service`
+11. 健康检查失败时自动回滚旧版本
 
 ## 6. 手动运行部署
 

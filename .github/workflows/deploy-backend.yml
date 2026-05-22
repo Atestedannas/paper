@@ -28,6 +28,7 @@ jobs:
       PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
       PROD_DEPLOY_DIR: ${{ vars.PROD_DEPLOY_DIR || '/opt/paper' }}
       PROD_SERVICE_NAME: ${{ vars.PROD_SERVICE_NAME || 'paper.service' }}
+      PROD_SERVER_PORT: ${{ vars.PROD_SERVER_PORT || '8002' }}
       PROD_HEALTH_URL: ${{ vars.PROD_HEALTH_URL || 'http://127.0.0.1:8002/health' }}
 
     steps:
@@ -72,4 +73,4 @@ jobs:
       - name: Deploy with systemd rollback
         run: |
           ssh -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
-            "chmod +x /tmp/deploy_backend_systemd.sh && DEPLOY_DIR='$PROD_DEPLOY_DIR' SERVICE_NAME='$PROD_SERVICE_NAME' HEALTH_URL='$PROD_HEALTH_URL' /tmp/deploy_backend_systemd.sh /tmp/paper-server.new"
+            "chmod +x /tmp/deploy_backend_systemd.sh && DEPLOY_DIR='$PROD_DEPLOY_DIR' SERVICE_NAME='$PROD_SERVICE_NAME' SERVER_PORT='$PROD_SERVER_PORT' HEALTH_URL='$PROD_HEALTH_URL' /tmp/deploy_backend_systemd.sh /tmp/paper-server.new"
