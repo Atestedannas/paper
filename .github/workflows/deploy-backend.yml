@@ -49,9 +49,10 @@ jobs:
           mkdir -p output
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o output/paper-server ./cmd/server
           chmod +x output/paper-server scripts/deploy_backend_systemd.sh
-          gzip -9 -c output/paper-server > output/paper-server.gz
+          cp scripts/deploy_backend_systemd.sh output/deploy_backend_systemd.sh
+          tar -czf output/paper-backend-deploy.tar.gz -C output paper-server deploy_backend_systemd.sh
           ls -lh output/paper-server
-          ls -lh output/paper-server.gz
+          ls -lh output/paper-backend-deploy.tar.gz
 
       - name: Validate deployment secrets
         run: |
@@ -69,10 +70,9 @@ jobs:
 
       - name: Upload artifact
         run: |
-          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PROD_PORT" -i ~/.ssh/deploy_key output/paper-server.gz "$PROD_USER@$PROD_HOST:/tmp/paper-server.new.gz"
-          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PROD_PORT" -i ~/.ssh/deploy_key scripts/deploy_backend_systemd.sh "$PROD_USER@$PROD_HOST:/tmp/deploy_backend_systemd.sh"
+          timeout 180s scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PROD_PORT" -i ~/.ssh/deploy_key output/paper-backend-deploy.tar.gz "$PROD_USER@$PROD_HOST:/tmp/paper-backend-deploy.tar.gz"
 
       - name: Deploy with systemd rollback
         run: |
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
-            "gzip -dc /tmp/paper-server.new.gz > /tmp/paper-server.new && chmod +x /tmp/paper-server.new /tmp/deploy_backend_systemd.sh && DEPLOY_DIR='$PROD_DEPLOY_DIR' SERVICE_NAME='$PROD_SERVICE_NAME' SERVER_PORT='$PROD_SERVER_PORT' HEALTH_URL='$PROD_HEALTH_URL' /tmp/deploy_backend_systemd.sh /tmp/paper-server.new"
+            "rm -rf /tmp/paper-backend-deploy && mkdir -p /tmp/paper-backend-deploy && tar -xzf /tmp/paper-backend-deploy.tar.gz -C /tmp/paper-backend-deploy && chmod +x /tmp/paper-backend-deploy/paper-server /tmp/paper-backend-deploy/deploy_backend_systemd.sh && DEPLOY_DIR='$PROD_DEPLOY_DIR' SERVICE_NAME='$PROD_SERVICE_NAME' SERVER_PORT='$PROD_SERVER_PORT' HEALTH_URL='$PROD_HEALTH_URL' /tmp/paper-backend-deploy/deploy_backend_systemd.sh /tmp/paper-backend-deploy/paper-server"
