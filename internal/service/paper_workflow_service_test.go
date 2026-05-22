@@ -268,13 +268,17 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 		t.Fatalf("generated output should include cover date year/month: %s", documentXML)
 	}
 	documentText := workflowDocumentText(documentXML)
-	dateIndex := strings.Index(documentText, "2026年4月")
+	coverDate := regexp.MustCompile(`20\d{2}年\d{1,2}月`).FindString(documentText)
+	if coverDate == "" {
+		t.Fatalf("generated output should include a visible cover date in document text: %s", documentText)
+	}
+	dateIndex := strings.Index(documentText, coverDate)
 	abstractIndex := strings.Index(documentText, "摘要：目的")
 	frontTitleIndex := -1
 	if dateIndex >= 0 {
-		relativeIndex := strings.Index(documentText[dateIndex+len("2026年4月"):], "社区2型糖尿病患者疾病知识")
+		relativeIndex := strings.Index(documentText[dateIndex+len(coverDate):], "社区2型糖尿病患者疾病知识")
 		if relativeIndex >= 0 {
-			frontTitleIndex = dateIndex + len("2026年4月") + relativeIndex
+			frontTitleIndex = dateIndex + len(coverDate) + relativeIndex
 		}
 	}
 	if dateIndex < 0 || frontTitleIndex < 0 || abstractIndex < 0 || frontTitleIndex > abstractIndex {

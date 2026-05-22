@@ -48,6 +48,13 @@ func resolveAdminResource(path string) string {
 	}
 }
 
+func isAdminRBACSelfMenuPath(path string) bool {
+	p := strings.Trim(strings.TrimSpace(path), "/")
+	p = strings.TrimPrefix(p, "api/v1/admin/")
+	p = strings.TrimPrefix(p, "api/admin/")
+	return p == "menus/user-tree" || p == "menus/user"
+}
+
 // JWTClaims JWT声明结构体
 type JWTClaims struct {
 	UserID   uuid.UUID `json:"user_id"`
@@ -281,6 +288,11 @@ func AdminMiddleware() gin.HandlerFunc {
 		}
 
 		// 检查用户角色 - 允许 admin 或 super_admin 访问
+		if isAdminRBACSelfMenuPath(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+
 		role, exists := c.Get("role")
 		if !exists || (role != "admin" && role != "super_admin") {
 			c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
@@ -297,6 +309,11 @@ func AdminRBACMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		role, _ := c.Get("role")
 		if role == "super_admin" {
+			c.Next()
+			return
+		}
+
+		if isAdminRBACSelfMenuPath(c.Request.URL.Path) {
 			c.Next()
 			return
 		}

@@ -78,10 +78,39 @@ ZTPraXyZQd5zFc9W
 PORT=8002 && sudo lsof -t -i :$PORT | xargs -r sudo kill -9 && docker compose up -d --build
 
 
+
+
+
+systemctl stop paper.service
+
+cp /opt/paper/paper-server.backup-20260522-132457 /opt/paper/paper-server
+chmod +x /opt/paper/paper-server
+chown root:root /opt/paper/paper-server
+
+    systemctl start paper.service
+    systemctl status paper.service --no-pager
+    ss -lntp | grep 8002
+curl -i http://127.0.0.1:8002/health
+
+
+
+
+
+
+
+
+
+
+
+
+
 kendrakasparek6004@hotmail.com   gpt密码H132357479h.   邮箱密码spdnu588144
 
 4e&(8%.AuoG4=IjR
 https://proton.me/mail
+
+
+
 
 
 

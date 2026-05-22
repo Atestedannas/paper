@@ -34,6 +34,7 @@ type PaperService struct {
 const maxFormatRulesDebugBytes = 16384
 
 var ErrLegacyWritePathDisabled = fmt.Errorf("legacy paper write path disabled")
+var ErrCorrectedFileNotFound = fmt.Errorf("corrected file not found")
 
 // logFormatRulesDebug 在环境变量 PAPER_DEBUG_FORMAT_RULES=1 或 true 时，把模板 format_rules（JSON）打到日志。
 // 用于 POST /upload 异步链路：检查 CheckPaperFormat、修正 FixPaperFormat、快速 QuickV2Fix 对照规则与引擎行为。
@@ -914,6 +915,58 @@ func (s PaperService) GetAllPapers(page, pageSize int) ([]model.Paper, int64, er
 	database.DB.Offset(offset).Limit(pageSize).Order("created_at DESC").Find(&papers)
 
 	return papers, total, nil
+}
+
+// ResolveCorrectedPaperFile resolves an already-generated corrected file for download.
+func (s PaperService) ResolveCorrectedPaperFile(userID, paperID uuid.UUID) (string, error) {
+	paper, err := s.GetPaperByID(userID, paperID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get paper: %w", err)
+	}
+
+	if paper.CorrectedFilePath != "" {
+		if _, err := os.Stat(filepath.Clean(paper.CorrectedFilePath)); err == nil {
+			return paper.CorrectedFilePath, nil
+		}
+	}
+
+	ext := filepath.Ext(paper.FilePath)
+	baseNoExt := strings.TrimSuffix(filepath.Base(paper.FilePath), ext)
+	dir := filepath.Dir(paper.FilePath)
+
+	candidates := []string{
+		filepath.Join(dir, baseNoExt+"_corrected"+ext),
+		filepath.Join(dir, "corrected", baseNoExt+"_v2_corrected"+ext),
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(filepath.Clean(candidate)); err == nil {
+			paper.CorrectedFilePath = candidate
+			_ = database.DB.Save(paper).Error
+			return candidate, nil
+		}
+	}
+
+	pattern := filepath.Join(dir, baseNoExt+"_corrected_*"+ext)
+	matches, _ := filepath.Glob(pattern)
+	latestPath := ""
+	var latestTime time.Time
+	for _, match := range matches {
+		fi, err := os.Stat(filepath.Clean(match))
+		if err != nil {
+			continue
+		}
+		if latestPath == "" || fi.ModTime().After(latestTime) {
+			latestPath = match
+			latestTime = fi.ModTime()
+		}
+	}
+	if latestPath != "" {
+		paper.CorrectedFilePath = latestPath
+		_ = database.DB.Save(paper).Error
+		return latestPath, nil
+	}
+
+	return "", fmt.Errorf("%w for paper %s", ErrCorrectedFileNotFound, paperID)
 }
 
 // ExportCorrectedPaper 瀵煎嚭淇鍚庣殑璁烘枃

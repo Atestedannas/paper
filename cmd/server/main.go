@@ -137,21 +137,7 @@ func main() {
 		api.POST("/payment/wechat/callback", paymentHandler.HandleWechatCallback)
 		api.POST("/payment/alipay/callback", paymentHandler.HandleAlipayCallback)
 
-		// v1 API routes (for frontend compatibility)
-		v1 := api.Group("/v1")
-		{
-			v1Auth := v1.Group("/auth")
-			{
-				v1Auth.GET("/wechat/login-url", authHandler.GetWechatAuthURL)
-				v1Auth.GET("/alipay/login-url", authHandler.GetAlipayAuthURL)
-				v1Auth.GET("/alipay/qr-session", authHandler.GetAlipayAuthURL)
-				v1Auth.GET("/alipay/callback", authHandler.AlipayAuthCallback)
-				v1Auth.POST("/alipay/callback", authHandler.AlipayAuthCallback)
-				v1Auth.GET("/wechat/callback", authHandler.WechatAuthCallback)
-				v1Auth.POST("/wechat/callback", authHandler.WechatAuthCallback)
-			}
-		}
-
+		api.PUT("/order/:id/status", orderHandler.UpdateOrderStatus)
 		// Authentication routes
 		auth := api.Group("/auth")
 		{
@@ -164,7 +150,11 @@ func main() {
 			auth.PUT("/password", middleware.AuthMiddleware(cfg, database.DB), authHandler.ChangePassword)
 
 			// Alipay login (GET for platform redirect, POST for API call)
+			auth.GET("/wechat/login-url", authHandler.GetWechatAuthURL)
+			auth.GET("/wechat/callback", authHandler.WechatAuthCallback)
+			auth.POST("/wechat/callback", authHandler.WechatAuthCallback)
 			auth.GET("/alipay/login-url", authHandler.GetAlipayAuthURL)
+			auth.GET("/alipay/qr-session", authHandler.GetAlipayAuthURL)
 			auth.GET("/alipay/login", authHandler.RedirectAlipayLogin)
 			auth.GET("/alipay/callback", authHandler.AlipayAuthCallback)
 			auth.POST("/alipay/callback", authHandler.AlipayAuthCallback)
@@ -210,7 +200,7 @@ func main() {
 			order.GET("/statistics", orderHandler.GetOrderStatistics)
 
 			// Payment callback routes (no authentication required)
-			order.PUT("/:id/status", orderHandler.UpdateOrderStatus)
+			//order.PUT("/:id/status", orderHandler.UpdateOrderStatus)
 		}
 
 		// Payment routes
@@ -408,8 +398,12 @@ func main() {
 			auth.PUT("/profile", middleware.AuthMiddleware(cfg, database.DB), authHandler.UpdateProfile)
 			auth.PUT("/password", middleware.AuthMiddleware(cfg, database.DB), authHandler.ChangePassword)
 
-			// Alipay login (GET for platform redirect, POST for API call)
+			// OAuth login (GET for platform redirect, POST for API call)
+			auth.GET("/wechat/login-url", authHandler.GetWechatAuthURL)
+			auth.GET("/wechat/callback", authHandler.WechatAuthCallback)
+			auth.POST("/wechat/callback", authHandler.WechatAuthCallback)
 			auth.GET("/alipay/login-url", authHandler.GetAlipayAuthURL)
+			auth.GET("/alipay/qr-session", authHandler.GetAlipayAuthURL)
 			auth.GET("/alipay/login", authHandler.RedirectAlipayLogin)
 			auth.GET("/alipay/callback", authHandler.AlipayAuthCallback)
 			auth.POST("/alipay/callback", authHandler.AlipayAuthCallback)

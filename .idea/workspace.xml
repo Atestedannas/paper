@@ -4,9 +4,16 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="以学生稿为主文档 → 从模板「学」样式再改学生稿 → 容易在分类、样式映射、分节、域字段上出偏差。">
+    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="readme">
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/cmd/server/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/cmd/server/main.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/handler/paper_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/paper_handler.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/handler/paper_handler_legacy_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/paper_handler_legacy_test.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/middleware/auth.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/middleware/auth.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/service/paper_service.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/paper_service.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/service/paper_workflow_service_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/paper_workflow_service_test.go" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -125,7 +132,8 @@
     <MESSAGE value="论文核心修改" />
     <MESSAGE value="格式修正引擎配置（python-docx 样式引用引擎）" />
     <MESSAGE value="以学生稿为主文档 → 从模板「学」样式再改学生稿 → 容易在分类、样式映射、分节、域字段上出偏差。" />
-    <option name="LAST_COMMIT_MESSAGE" value="以学生稿为主文档 → 从模板「学」样式再改学生稿 → 容易在分类、样式映射、分节、域字段上出偏差。" />
+    <MESSAGE value="readme" />
+    <option name="LAST_COMMIT_MESSAGE" value="readme" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>

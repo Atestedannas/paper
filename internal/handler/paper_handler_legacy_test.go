@@ -75,34 +75,36 @@ func TestLegacyApplyDiffsPathReturnsGoneWhenV2WritePathEnabled(t *testing.T) {
 	}
 }
 
-func TestLegacyCorrectedDownloadsReturnGoneWhenV2WritePathEnabled(t *testing.T) {
+func TestLegacyExportCorrectedReturnsGoneWhenV2WritePathEnabled(t *testing.T) {
 	paperID := uuid.New().String()
-	cases := []struct {
-		name    string
-		path    string
-		handler gin.HandlerFunc
-	}{
-		{name: "corrected-file", path: "/api/paper/:id/corrected-file", handler: (&PaperHandler{}).GetCorrectedPaperFile},
-		{name: "export-corrected", path: "/api/paper/:id/export-corrected", handler: (&PaperHandler{}).ExportCorrectedPaper},
+	rec := performLegacyPaperRequest(
+		http.MethodGet,
+		"/api/paper/:id/export-corrected",
+		"/api/paper/"+paperID+"/export-corrected",
+		(&PaperHandler{}).ExportCorrectedPaper,
+		"",
+	)
+
+	if rec.Code != http.StatusGone {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusGone, rec.Body.String())
 	}
+	if body := rec.Body.String(); !strings.Contains(body, legacyWritePathMessage) {
+		t.Fatalf("body = %q, want legacy write path message", body)
+	}
+}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			rec := performLegacyPaperRequest(
-				http.MethodGet,
-				tc.path,
-				strings.Replace(tc.path, ":id", paperID, 1),
-				tc.handler,
-				"",
-			)
+func TestCorrectedFileDownloadRequiresAuthenticatedUser(t *testing.T) {
+	paperID := uuid.New().String()
+	rec := performLegacyPaperRequest(
+		http.MethodGet,
+		"/api/paper/:id/corrected-file",
+		"/api/paper/"+paperID+"/corrected-file",
+		(&PaperHandler{}).GetCorrectedPaperFile,
+		"",
+	)
 
-			if rec.Code != http.StatusGone {
-				t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusGone, rec.Body.String())
-			}
-			if body := rec.Body.String(); !strings.Contains(body, legacyWritePathMessage) {
-				t.Fatalf("body = %q, want legacy write path message", body)
-			}
-		})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
 }
 

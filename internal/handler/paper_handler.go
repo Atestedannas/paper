@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"gitee.com/greatmusicians/unioffice/document"
 	"log"
@@ -1281,17 +1282,27 @@ func (h *PaperHandler) GetPaperFile(c *gin.Context) {
 
 // GetCorrectedPaperFile 获取修正后的论文文件
 func (h *PaperHandler) GetCorrectedPaperFile(c *gin.Context) {
-	utils.ErrorResponse(c, http.StatusGone, legacyWritePathMessage, "")
-	return
-
-	userID, _ := c.Get("user_id")
+	userID, exists := c.Get("user_id")
+	if !exists {
+		utils.Unauthorized(c, "未登录")
+		return
+	}
+	uid, ok := userID.(uuid.UUID)
+	if !ok {
+		utils.Unauthorized(c, "invalid user id")
+		return
+	}
 	paperID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		utils.BadRequest(c, "invalid paper id")
 		return
 	}
-	filePath, err := h.paperService.ExportCorrectedPaper(userID.(uuid.UUID), paperID)
+	filePath, err := h.paperService.ResolveCorrectedPaperFile(uid, paperID)
 	if err != nil {
+		if errors.Is(err, service.ErrCorrectedFileNotFound) {
+			utils.ErrorResponse(c, http.StatusNotFound, "修正后的文件在服务器上不存在", err.Error())
+			return
+		}
 		utils.InternalServerError(c, err.Error())
 		return
 	}
