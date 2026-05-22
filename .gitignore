@@ -36,3 +36,7 @@ deploy-package.zip
 # Runtime data
 uploads/
 logs/
+
+# Python cache
+__pycache__/
+*.pyc
