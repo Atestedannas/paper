@@ -45,13 +45,23 @@ func TestAlipayQRCodeURLRequiresRedirectURL(t *testing.T) {
 	}
 }
 
+func TestAlipayQRCodeURLRequiresHTTPSRedirectURL(t *testing.T) {
+	cfg := testAlipayConfig()
+	cfg.Alipay.RedirectURL = "http://example.com/api/v1/auth/alipay/callback"
+
+	_, _, err := NewAlipayService(cfg).GenerateQRCodeURL()
+	if err == nil {
+		t.Fatal("expected non-https redirect url to be rejected")
+	}
+}
+
 func testAlipayConfig() *config.Config {
 	return &config.Config{
 		Alipay: config.AlipayConfig{
 			AppID:        "2021000000000000",
 			RedirectURL:  "https://example.com/api/v1/auth/alipay/callback",
 			Scope:        "auth_user",
-			AuthorizeURL: "https://open.auth.alipay.com/oauth2/publicAppAuthorize.htm",
+			AuthorizeURL: "https://openauth.alipay.com/oauth2/publicAppAuthorize.htm",
 		},
 	}
 }

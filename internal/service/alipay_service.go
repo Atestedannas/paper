@@ -259,12 +259,20 @@ func (s *AlipayService) GenerateQRCodeURL() (string, string, error) {
 	return qrURL, state, err
 }
 
+func (s *AlipayService) GenerateQRCodeURLWithState(state string) (string, error) {
+	return s.buildAuthorizeURL(state)
+}
+
 func (s *AlipayService) buildAuthorizeURL(state string) (string, error) {
 	if strings.TrimSpace(s.config.AppID) == "" {
 		return "", fmt.Errorf("alipay login is not configured: missing app id")
 	}
 	if strings.TrimSpace(s.config.RedirectURL) == "" {
 		return "", fmt.Errorf("alipay login is not configured: missing redirect url")
+	}
+	redirectURL, err := url.Parse(strings.TrimSpace(s.config.RedirectURL))
+	if err != nil || redirectURL.Scheme != "https" || redirectURL.Host == "" {
+		return "", fmt.Errorf("alipay login redirect url must be a public https url")
 	}
 	if strings.TrimSpace(s.config.AuthorizeURL) == "" {
 		return "", fmt.Errorf("alipay login is not configured: missing authorize url")
