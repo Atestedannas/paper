@@ -160,6 +160,8 @@ func main() {
 			auth.GET("/alipay/login", authHandler.RedirectAlipayLogin)
 			auth.GET("/alipay/callback", authHandler.AlipayAuthCallback)
 			auth.POST("/alipay/callback", authHandler.AlipayAuthCallback)
+			auth.GET("/alipay/qr-callback", authHandler.AlipayAuthCallback)
+			auth.POST("/alipay/qr-callback", authHandler.AlipayAuthCallback)
 
 			// File download
 			auth.GET("/papers/:id/file", middleware.AuthMiddleware(cfg, database.DB), middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetPaperFile)
@@ -411,6 +413,8 @@ func main() {
 			auth.GET("/alipay/login", authHandler.RedirectAlipayLogin)
 			auth.GET("/alipay/callback", authHandler.AlipayAuthCallback)
 			auth.POST("/alipay/callback", authHandler.AlipayAuthCallback)
+			auth.GET("/alipay/qr-callback", authHandler.AlipayAuthCallback)
+			auth.POST("/alipay/qr-callback", authHandler.AlipayAuthCallback)
 
 			// File download
 			auth.GET("/papers/:id/file", middleware.AuthMiddleware(cfg, database.DB), middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetPaperFile)
