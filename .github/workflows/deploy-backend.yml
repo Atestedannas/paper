@@ -19,7 +19,7 @@ jobs:
     name: Build, test, and deploy
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 40
+    timeout-minutes: 70
 
     env:
       PROD_HOST: ${{ secrets.PROD_HOST }}
@@ -50,7 +50,7 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o output/paper-server ./cmd/server
           chmod +x output/paper-server scripts/deploy_backend_systemd.sh
           cp scripts/deploy_backend_systemd.sh output/deploy_backend_systemd.sh
-          tar -czf output/paper-backend-deploy.tar.gz -C output paper-server deploy_backend_systemd.sh
+          tar -cf - -C output paper-server deploy_backend_systemd.sh | gzip -9 > output/paper-backend-deploy.tar.gz
           ls -lh output/paper-server
           ls -lh output/paper-backend-deploy.tar.gz
 
@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload artifact
         run: |
-          timeout 900s ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" "cat > /tmp/paper-backend-deploy.tar.gz" < output/paper-backend-deploy.tar.gz
+          timeout 2400s ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" "cat > /tmp/paper-backend-deploy.tar.gz" < output/paper-backend-deploy.tar.gz
 
       - name: Deploy with systemd rollback
         run: |
