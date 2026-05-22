@@ -19,7 +19,7 @@ jobs:
     name: Build, test, and deploy
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 20
+    timeout-minutes: 40
 
     env:
       PROD_HOST: ${{ secrets.PROD_HOST }}
@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload artifact
         run: |
-          timeout 180s ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" "cat > /tmp/paper-backend-deploy.tar.gz" < output/paper-backend-deploy.tar.gz
+          timeout 900s ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" "cat > /tmp/paper-backend-deploy.tar.gz" < output/paper-backend-deploy.tar.gz
 
       - name: Deploy with systemd rollback
         run: |
