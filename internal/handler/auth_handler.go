@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -18,6 +19,7 @@ import (
 type AuthHandler struct {
 	userService           service.UserService
 	alipayService         *service.AlipayService
+	alipayQRSessionStore  *service.AlipayQRLoginSessionStore
 	wechatService         *service.WechatLoginService
 	config                *config.Config
 	db                    *gorm.DB
@@ -30,12 +32,50 @@ func NewAuthHandler(config *config.Config, db *gorm.DB) *AuthHandler {
 	return &AuthHandler{
 		userService:           service.NewUserService(),
 		alipayService:         service.NewAlipayService(config),
+		alipayQRSessionStore:  service.NewAlipayQRLoginSessionStore(),
 		wechatService:         service.NewWechatLoginService(config),
 		config:                config,
 		db:                    db,
 		tokenBlacklistService: service.NewTokenBlacklistService(db),
 		refreshTokenService:   service.NewRefreshTokenService(db),
 	}
+}
+
+// GetAlipayQRSession creates a pollable QR login session.
+func (h *AuthHandler) GetAlipayQRSession(c *gin.Context) {
+	session := service.NewAlipayQRLoginSession(10 * time.Minute)
+	alipayAuthURL, err := h.alipayService.GenerateQRCodeURLWithState(session.State)
+	if err != nil {
+		utils.InternalServerError(c, "failed to generate alipay auth url: "+err.Error())
+		return
+	}
+
+	h.alipayQRSessionStore.SavePending(session, alipayAuthURL)
+	utils.Success(c, gin.H{
+		"auth_url":   alipayAuthURL,
+		"session_id": session.SessionID,
+		"status":     service.AlipayQRLoginPending,
+		"expires_at": session.ExpiresAt,
+	})
+}
+
+// GetAlipayQRSessionStatus returns the current QR login status for frontend polling.
+func (h *AuthHandler) GetAlipayQRSessionStatus(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	if sessionID == "" {
+		sessionID = c.Query("session_id")
+	}
+	if sessionID == "" {
+		utils.BadRequest(c, "missing session_id")
+		return
+	}
+
+	session, ok := h.alipayQRSessionStore.Get(sessionID)
+	if !ok {
+		utils.NotFound(c, "alipay qr session not found")
+		return
+	}
+	utils.Success(c, session)
 }
 
 // RegisterRequest 注册请求结构体
@@ -247,8 +287,9 @@ func (h *AuthHandler) GetAlipayAuthURL(c *gin.Context) {
 
 	// 生成支付宝扫码登录的二维码URL
 	alipayAuthURL, state, err := alipayService.GenerateQRCodeURL()
+
 	if err != nil {
-		utils.InternalServerError(c, "failed to generate alipay auth url")
+		utils.InternalServerError(c, "failed to generate alipay auth url: "+err.Error())
 		return
 	}
 
@@ -286,10 +327,12 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 	}
 
 	if code == "" {
+		h.failAlipayQRSession(state, "missing authorization code")
 		utils.BadRequest(c, "missing authorization code")
 		return
 	}
 	if state != "" && !alipayLoginStateMatches(c, state) {
+		h.failAlipayQRSession(state, "invalid alipay login state")
 		utils.BadRequest(c, "invalid alipay login state")
 		return
 	}
@@ -300,6 +343,7 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 	// 用授权码换取访问令牌
 	token, err := alipayService.ExchangeCodeForToken(code)
 	if err != nil {
+		h.failAlipayQRSession(state, "failed to exchange code for token")
 		utils.InternalServerError(c, "failed to exchange code for token")
 		return
 	}
@@ -307,6 +351,7 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 	// 获取用户信息
 	userInfo, err := alipayService.GetUserInfo(token.AccessToken)
 	if err != nil {
+		h.failAlipayQRSession(state, "failed to get alipay user info")
 		utils.InternalServerError(c, "failed to get alipay user info")
 		return
 	}
@@ -320,6 +365,7 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 		userInfo.Gender,
 	)
 	if err != nil {
+		h.failAlipayQRSession(state, "failed to create or update alipay user")
 		utils.InternalServerError(c, "failed to create or update alipay user")
 		return
 	}
@@ -327,6 +373,7 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 	// 生成JWT令牌
 	tokenStr, err := middleware.GenerateToken(h.config, user.ID, user.Username)
 	if err != nil {
+		h.failAlipayQRSession(state, "failed to generate token")
 		utils.InternalServerError(c, "failed to generate token")
 		return
 	}
@@ -334,6 +381,7 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 	// 生成刷新令牌
 	refreshToken, refreshExpiresAt, err := middleware.GenerateRefreshToken(h.config, user.ID)
 	if err != nil {
+		h.failAlipayQRSession(state, "failed to generate refresh token")
 		utils.InternalServerError(c, "failed to generate refresh token")
 		return
 	}
@@ -341,8 +389,24 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 	// 保存刷新令牌到数据库
 	_, err = h.refreshTokenService.CreateRefreshToken(refreshToken, user.ID, refreshExpiresAt)
 	if err != nil {
+		h.failAlipayQRSession(state, "failed to save refresh token")
 		utils.InternalServerError(c, "failed to save refresh token")
 		return
+	}
+
+	if state != "" {
+		if _, ok := h.alipayQRSessionStore.AuthorizeByState(
+			state,
+			tokenStr,
+			refreshToken,
+			"Bearer",
+			int64(h.config.JWT.AccessTokenExpiry.Seconds()),
+			user,
+		); ok {
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusOK, alipayQRLoginConfirmedHTML())
+			return
+		}
 	}
 
 	utils.Success(c, gin.H{
@@ -352,6 +416,17 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 		"expires_in":    int64(h.config.JWT.AccessTokenExpiry.Seconds()),
 		"user":          user,
 	})
+}
+
+func (h *AuthHandler) failAlipayQRSession(state, message string) {
+	if state == "" {
+		return
+	}
+	h.alipayQRSessionStore.FailByState(state, message)
+}
+
+func alipayQRLoginConfirmedHTML() string {
+	return `<!doctype html><html><head><meta charset="utf-8"><title>支付宝登录确认</title></head><body>支付宝登录已确认，请回到电脑页面。<script>function closeAlipay(){if(window.AlipayJSBridge){AlipayJSBridge.call('closeWebview')}else{document.addEventListener('AlipayJSBridgeReady',function(){AlipayJSBridge.call('closeWebview')},false)}}closeAlipay();</script></body></html>`
 }
 
 func setAlipayLoginStateCookie(c *gin.Context, state string) {

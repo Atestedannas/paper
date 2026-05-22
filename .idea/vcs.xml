@@ -2,5 +2,29 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="$PROJECT_DIR$" vcs="Git" />
+    <mapping directory="D:/workpace/博客/AI-Account-Toolkit" vcs="Git" />
+    <mapping directory="D:/workpace/博客/ai agent/TRAE-Skills" vcs="Git" />
+    <mapping directory="D:/workpace/博客/aicut/JJYB_AI_VideoAutoCut" vcs="Git" />
+    <mapping directory="D:/workpace/博客/auto_reg" vcs="Git" />
+    <mapping directory="D:/workpace/博客/chatgpt2api" vcs="Git" />
+    <mapping directory="D:/workpace/博客/claw-code" vcs="Git" />
+    <mapping directory="D:/workpace/博客/codex-manager" vcs="Git" />
+    <mapping directory="D:/workpace/博客/dxpdf" vcs="Git" />
+    <mapping directory="D:/workpace/博客/front/admin" vcs="Git" />
+    <mapping directory="D:/workpace/博客/front/bbs-go" vcs="Git" />
+    <mapping directory="D:/workpace/博客/front/crawlab" vcs="Git" />
+    <mapping directory="D:/workpace/博客/front/gin-vue-admin" vcs="Git" />
+    <mapping directory="D:/workpace/博客/front/go-admin" vcs="Git" />
+    <mapping directory="D:/workpace/博客/front/go-gin-api" vcs="Git" />
+    <mapping directory="D:/workpace/博客/front/poetize-vue2-master" vcs="Git" />
+    <mapping directory="D:/workpace/博客/front/vue3-element-admin" vcs="Git" />
+    <mapping directory="D:/workpace/博客/geph2" vcs="Git" />
+    <mapping directory="D:/workpace/博客/goadmin" vcs="Git" />
+    <mapping directory="D:/workpace/博客/gobuster/gobuster" vcs="Git" />
+    <mapping directory="D:/workpace/博客/inkos" vcs="Git" />
+    <mapping directory="D:/workpace/博客/openclaw-zero-token" vcs="Git" />
+    <mapping directory="D:/workpace/博客/paper/_tmp_aspose_go" vcs="Git" />
+    <mapping directory="D:/workpace/博客/paper/backend" vcs="Git" />
+    <mapping directory="D:/workpace/博客/pentagi" vcs="Git" />
   </component>
 </project>

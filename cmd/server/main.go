@@ -154,10 +154,14 @@ func main() {
 			auth.GET("/wechat/callback", authHandler.WechatAuthCallback)
 			auth.POST("/wechat/callback", authHandler.WechatAuthCallback)
 			auth.GET("/alipay/login-url", authHandler.GetAlipayAuthURL)
-			auth.GET("/alipay/qr-session", authHandler.GetAlipayAuthURL)
+			auth.GET("/alipay/qr-session", authHandler.GetAlipayQRSession)
+			auth.GET("/alipay/qr-session/status", authHandler.GetAlipayQRSessionStatus)
+			auth.GET("/alipay/qr-session/:session_id", authHandler.GetAlipayQRSessionStatus)
 			auth.GET("/alipay/login", authHandler.RedirectAlipayLogin)
 			auth.GET("/alipay/callback", authHandler.AlipayAuthCallback)
 			auth.POST("/alipay/callback", authHandler.AlipayAuthCallback)
+			auth.GET("/alipay/qr-callback", authHandler.AlipayAuthCallback)
+			auth.POST("/alipay/qr-callback", authHandler.AlipayAuthCallback)
 
 			// File download
 			auth.GET("/papers/:id/file", middleware.AuthMiddleware(cfg, database.DB), middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetPaperFile)
@@ -403,10 +407,14 @@ func main() {
 			auth.GET("/wechat/callback", authHandler.WechatAuthCallback)
 			auth.POST("/wechat/callback", authHandler.WechatAuthCallback)
 			auth.GET("/alipay/login-url", authHandler.GetAlipayAuthURL)
-			auth.GET("/alipay/qr-session", authHandler.GetAlipayAuthURL)
+			auth.GET("/alipay/qr-session", authHandler.GetAlipayQRSession)
+			auth.GET("/alipay/qr-session/status", authHandler.GetAlipayQRSessionStatus)
+			auth.GET("/alipay/qr-session/:session_id", authHandler.GetAlipayQRSessionStatus)
 			auth.GET("/alipay/login", authHandler.RedirectAlipayLogin)
 			auth.GET("/alipay/callback", authHandler.AlipayAuthCallback)
 			auth.POST("/alipay/callback", authHandler.AlipayAuthCallback)
+			auth.GET("/alipay/qr-callback", authHandler.AlipayAuthCallback)
+			auth.POST("/alipay/qr-callback", authHandler.AlipayAuthCallback)
 
 			// File download
 			auth.GET("/papers/:id/file", middleware.AuthMiddleware(cfg, database.DB), middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetPaperFile)

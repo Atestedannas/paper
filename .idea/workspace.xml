@@ -4,21 +4,23 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="readme">
-      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="ci: add gitee go backend deployment">
       <change beforePath="$PROJECT_DIR$/cmd/server/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/cmd/server/main.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/paper_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/paper_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/handler/paper_handler_legacy_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/handler/paper_handler_legacy_test.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/middleware/auth.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/middleware/auth.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/service/paper_service.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/paper_service.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/service/paper_workflow_service_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/paper_workflow_service_test.go" afterDir="false" />
+      <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/layout/components/NavBar/components/NavbarRight.vue" beforeDir="false" afterPath="D:/workpace/博客/front/vue3-element-admin/src/layout/components/NavBar/components/NavbarRight.vue" afterDir="false" />
+      <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/views/dashboard/index.vue" beforeDir="false" afterPath="D:/workpace/博客/front/vue3-element-admin/src/views/dashboard/index.vue" afterDir="false" />
+      <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/views/profile/index.vue" beforeDir="false" afterPath="D:/workpace/博客/front/vue3-element-admin/src/views/profile/index.vue" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Go File" />
+      </list>
+    </option>
   </component>
   <component name="GOROOT" url="file://D:/go workpace" />
   <component name="Git.Settings">
@@ -44,39 +46,42 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
-    &quot;Go 构建.go build github.com/paper-format-checker/backend.executor&quot;: &quot;Debug&quot;,
-    &quot;Go 测试.go test backend.executor&quot;: &quot;Debug&quot;,
-    &quot;Go 测试.go test server.executor&quot;: &quot;Run&quot;,
-    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.go.formatter.settings.were.checked&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.go.migrated.go.modules.settings&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.go.modules.automatic.dependencies.download&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.go.modules.go.list.on.any.changes.was.set&quot;: &quot;true&quot;,
-    &quot;WebServerToolWindowPanel.toolwindow.highlight.mappings&quot;: &quot;true&quot;,
-    &quot;WebServerToolWindowPanel.toolwindow.highlight.symlinks&quot;: &quot;true&quot;,
-    &quot;WebServerToolWindowPanel.toolwindow.show.date&quot;: &quot;false&quot;,
-    &quot;WebServerToolWindowPanel.toolwindow.show.permissions&quot;: &quot;false&quot;,
-    &quot;WebServerToolWindowPanel.toolwindow.show.size&quot;: &quot;false&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;task1-v2-workflow-models&quot;,
-    &quot;go.import.settings.migrated&quot;: &quot;true&quot;,
-    &quot;go.sdk.automatically.set&quot;: &quot;true&quot;,
-    &quot;last_opened_file_path&quot;: &quot;C:/Users/user/.config/superpowers/worktrees/paper/docx-closed-loop-task1&quot;,
-    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
-    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
-    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;reference.settingsdialog.project.grazie&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
+    "DefaultGoTemplateProperty": "Go File",
+    "Go 构建.go build github.com/paper-format-checker/backend.executor": "Debug",
+    "Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestAuthHandler_Register.executor": "Run",
+    "Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestGetAlipayAuthURL_Real.executor": "Run",
+    "Go 测试.go test backend.executor": "Debug",
+    "Go 测试.go test server.executor": "Run",
+    "RunOnceActivity.OpenProjectViewOnStart": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.go.formatter.settings.were.checked": "true",
+    "RunOnceActivity.go.migrated.go.modules.settings": "true",
+    "RunOnceActivity.go.modules.automatic.dependencies.download": "true",
+    "RunOnceActivity.go.modules.go.list.on.any.changes.was.set": "true",
+    "WebServerToolWindowPanel.toolwindow.highlight.mappings": "true",
+    "WebServerToolWindowPanel.toolwindow.highlight.symlinks": "true",
+    "WebServerToolWindowPanel.toolwindow.show.date": "false",
+    "WebServerToolWindowPanel.toolwindow.show.permissions": "false",
+    "WebServerToolWindowPanel.toolwindow.show.size": "false",
+    "git-widget-placeholder": "task1-v2-workflow-models",
+    "go.import.settings.migrated": "true",
+    "go.sdk.automatically.set": "true",
+    "last_opened_file_path": "C:/Users/user/.config/superpowers/worktrees/paper/docx-closed-loop-task1",
+    "node.js.detected.package.eslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "settings.editor.selected.configurable": "preferences.editor"
   }
-}</component>
+}]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="D:\workpace\博客\paper\backend" />
     </key>
   </component>
-  <component name="RunManager">
+  <component name="RunManager" selected="Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestGetAlipayAuthURL_Real">
     <configuration name="go build github.com/paper-format-checker/backend" type="GoApplicationRunConfiguration" factoryName="Go Application" temporary="true" nameIsGenerated="true">
       <module name="backend" />
       <working_directory value="$PROJECT_DIR$/cmd/server" />
@@ -86,6 +91,36 @@
       <filePath value="$PROJECT_DIR$" />
       <method v="2" />
     </configuration>
+    <configuration name="github.com/paper-format-checker/backend/internal/handler 中的 TestAuthHandler_Register" type="GoTestRunConfiguration" factoryName="Go Test" temporary="true" nameIsGenerated="true">
+      <module name="docx-closed-loop-task1" />
+      <working_directory value="$PROJECT_DIR$/internal/handler" />
+      <root_directory value="$PROJECT_DIR$" />
+      <kind value="PACKAGE" />
+      <package value="github.com/paper-format-checker/backend/internal/handler" />
+      <directory value="$PROJECT_DIR$" />
+      <filePath value="$PROJECT_DIR$" />
+      <framework value="gotest" />
+      <pattern value="^\QTestAuthHandler_Register\E$" />
+      <method v="2" />
+    </configuration>
+    <configuration name="github.com/paper-format-checker/backend/internal/handler 中的 TestGetAlipayAuthURL_Real" type="GoTestRunConfiguration" factoryName="Go Test" temporary="true" nameIsGenerated="true">
+      <module name="docx-closed-loop-task1" />
+      <working_directory value="$PROJECT_DIR$/internal/handler" />
+      <root_directory value="$PROJECT_DIR$" />
+      <kind value="PACKAGE" />
+      <package value="github.com/paper-format-checker/backend/internal/handler" />
+      <directory value="$PROJECT_DIR$" />
+      <filePath value="$PROJECT_DIR$" />
+      <framework value="gotest" />
+      <pattern value="^\QTestGetAlipayAuthURL_Real\E$" />
+      <method v="2" />
+    </configuration>
+    <recent_temporary>
+      <list>
+        <item itemvalue="Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestGetAlipayAuthURL_Real" />
+        <item itemvalue="Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestAuthHandler_Register" />
+      </list>
+    </recent_temporary>
   </component>
   <component name="SharedIndexes">
     <attachedChunks>
@@ -133,7 +168,8 @@
     <MESSAGE value="格式修正引擎配置（python-docx 样式引用引擎）" />
     <MESSAGE value="以学生稿为主文档 → 从模板「学」样式再改学生稿 → 容易在分类、样式映射、分节、域字段上出偏差。" />
     <MESSAGE value="readme" />
-    <option name="LAST_COMMIT_MESSAGE" value="readme" />
+    <MESSAGE value="ci: add gitee go backend deployment" />
+    <option name="LAST_COMMIT_MESSAGE" value="ci: add gitee go backend deployment" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>
