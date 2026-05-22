@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  # Go 主控服务
+  paper-service:
+    image: paper-format-checker:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: paper-service
+    ports:
+      - "8002:8002"
+    environment:
+      - SERVER_PORT=8002
+      - SERVER_HOST=0.0.0.0
+      - DATABASE_HOST=10.0.0.1
+      - DATABASE_PORT=5432
+      - DATABASE_USER=postgres
+      - DATABASE_PASSWORD=postgres
+      - DATABASE_NAME=paper_checker
+      - REDIS_ADDR=10.0.0.2:6379
+    volumes:
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+      - ./.env:/app/.env
+    restart: unless-stopped
+    networks:
+      - paper-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  paper-network:
+    driver: bridge

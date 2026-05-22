@@ -1,0 +1,807 @@
+paragraphs=806
+p[000] text="" style=none section_state= sect_pr=none
+p[001] text="" style=none section_state= sect_pr=none
+p[002] text="" style=none section_state= sect_pr=none
+p[003] text="本科毕业论文/设计" style=none section_state= sect_pr=none
+p[004] text="题目" style=none section_state= sect_pr=none
+p[005] text="社区2型糖尿病患者疾病知识" style=none section_state= sect_pr=none
+p[006] text="" style=none section_state= sect_pr=none
+p[007] text="认知现状及影响因素分析" style=none section_state= sect_pr=none
+p[008] text="" style=none section_state= sect_pr=none
+p[009] text="" style=none section_state= sect_pr=none
+p[010] text="" style=none section_state= sect_pr=none
+p[011] text="" style=none section_state= sect_pr=none
+p[012] text="学院" style=none section_state= sect_pr=none
+p[013] text="护理学院" style=none section_state= sect_pr=none
+p[014] text="专业" style=none section_state= sect_pr=none
+p[015] text="护理学" style=none section_state= sect_pr=none
+p[016] text="班级" style=none section_state= sect_pr=none
+p[017] text="2022级护理学5班" style=none section_state= sect_pr=none
+p[018] text="学号" style=none section_state= sect_pr=none
+p[019] text="20220152192" style=none section_state= sect_pr=none
+p[020] text="姓名" style=none section_state= sect_pr=none
+p[021] text="冉怡琴" style=none section_state= sect_pr=none
+p[022] text="指导教师" style=none section_state= sect_pr=none
+p[023] text="杨严政" style=none section_state= sect_pr=none
+p[024] text="" style=none section_state= sect_pr=none
+p[025] text="" style=none section_state= sect_pr=none
+p[026] text="2026年3月" style=none section_state= sect_pr=present,nextPage,header,footer,upperRoman,margins
+p[027] text="" style=none section_state= sect_pr=none
+p[028] text="" style=none section_state= sect_pr=none
+p[029] text="社区2型糖尿病患者疾病知识认知现状及影响因素分析" style=none section_state= sect_pr=none
+p[030] text="摘  要" style=cqrwst-abstract-cn-title-style section_state=abstract_cn sect_pr=none
+p[031] text="目的  探讨社区二型糖尿病患者疾病知识认水平的影响因素。方法  选择2025年10月-2026年2月的社区二型糖尿病患者190例作为研究对象，采用由陈蔼玲翻译的密西根糖尿病知识测试问卷（DKT）中文版调查患者对疾病的认知水平，根据调查结果分为认知良好、认知一般、认知差，比较三组一般资料，分析社区二型糖尿病患者疾病知识认知水平的影响因素。结果：190例二型糖尿病患者中，15例患者疾病知识认知良好，53例患者疾病知识认知一般，122例患者疾病知识认知差。职业、居住地、文化程度、健康教育情况是社区二型糖尿病患者疾病知识认知水平的影响因素（P＜0.05）。结论：社区二型糖尿病患者认知情况较差，患者居住地、健康教育情况、文化程度情况是社区二型糖尿病患者疾病知识认知水平的影响因素，临床应针对不同人群多渠道加强个体化健康宣教，提高患者对该疾病的认知水平。" style=cqrwst-abstract-cn-body-style section_state=abstract_cn sect_pr=none
+p[032] text="关键词：社区二型糖尿病；认知水平；影响因素" style=none section_state= sect_pr=none
+p[033] text="Abstract" style=cqrwst-abstract-en-title-style section_state=abstract_en sect_pr=none
+p[034] text="Objective To explore the influencing factors of disease knowledge of type 2 diabetes patients in community. Methods 190 community type 2 diabetes patients from October 2025 to February 2026 were selected as the study subjects. The Chinese version of the Michigan diabetes Knowledge Test (DKT) translated by Chen Ailing was used to investigate the patients&amp;#39; cognitive level of disease. According to the survey results, the patients were divided into good cognitive level, general cognitive level, and poor cognitive level. Three groups of general data were compared to analyze the influencing factors of the community type 2 diabetes patients&amp;#39; cognitive level of disease knowledge. Results: Among 190 patients with type 2 diabetes, 15 patients had good knowledge of disease, 53 patients had general knowledge of disease, and 122 patients had poor knowledge of disease. Occupation, place of residence, education level and health education were the influencing factors for the level of disease knowledge of type 2 diabetes patients in the community (P&amp;lt;0.05). Conclusion: The cognition of type 2 diabetes patients in the community is poor. The living place, health education and education level of the patients are the influencing factors of the cognition level of the disease knowledge of type 2 diabetes patients in the community. The clinic should strengthen individualized health education for different groups of people through multiple channels to improve the cognition level of the patients on the disease." style=cqrwst-abstract-en-body-style section_state=abstract_en sect_pr=none
+p[035] text="Keywords: Community type 2 diabetes; Cognitive level; Influencing factors" style=none section_state= sect_pr=none
+p[036] text="" style=none section_state= sect_pr=none
+p[037] text="" style=none section_state= sect_pr=none
+p[038] text="" style=none section_state= sect_pr=none
+p[039] text="" style=none section_state= sect_pr=none
+p[040] text="" style=none section_state= sect_pr=none
+p[041] text="" style=none section_state= sect_pr=none
+p[042] text="" style=none section_state= sect_pr=none
+p[043] text="" style=none section_state= sect_pr=none
+p[044] text="" style=none section_state= sect_pr=none
+p[045] text="" style=none section_state= sect_pr=none
+p[046] text="" style=none section_state= sect_pr=none
+p[047] text="" style=none section_state= sect_pr=none
+p[048] text="" style=none section_state= sect_pr=none
+p[049] text="" style=none section_state= sect_pr=none
+p[050] text="" style=none section_state= sect_pr=none
+p[051] text="" style=none section_state= sect_pr=none
+p[052] text="" style=none section_state= sect_pr=none
+p[053] text="" style=none section_state= sect_pr=none
+p[054] text="" style=none section_state= sect_pr=none
+p[055] text="" style=none section_state= sect_pr=none
+p[056] text="" style=none section_state= sect_pr=none
+p[057] text="" style=none section_state= sect_pr=none
+p[058] text="" style=none section_state= sect_pr=none
+p[059] text="" style=none section_state= sect_pr=none
+p[060] text="" style=none section_state= sect_pr=none
+p[061] text="" style=none section_state= sect_pr=none
+p[062] text="" style=none section_state= sect_pr=none
+p[063] text="" style=none section_state= sect_pr=none
+p[064] text="" style=none section_state= sect_pr=present,nextPage,header,footer,upperRoman,margins
+p[065] text="" style=none section_state= sect_pr=none
+p[066] text="" style=none section_state= sect_pr=none
+p[067] text="" style=none section_state= sect_pr=none
+p[068] text="" style=none section_state= sect_pr=none
+p[069] text="目      录" style=none section_state= sect_pr=present,nextPage
+p[070] text="摘要：I" style=none section_state= sect_pr=none
+p[071] text="关键词：I" style=none section_state= sect_pr=present,nextPage,header,footer,upperRoman,margins
+p[072] text="1 绪论1" style=none section_state= sect_pr=none
+p[073] text="1.1 研究背景1" style=none section_state= sect_pr=none
+p[074] text="1.2 研究目的1" style=none section_state= sect_pr=none
+p[075] text="1.3 研究意义1" style=none section_state= sect_pr=none
+p[076] text="1.4 国内外研究现状 2" style=none section_state= sect_pr=none
+p[077] text="1.4.2 国内研究现状 2" style=none section_state= sect_pr=none
+p[078] text="1.4.1 国外研究现状 2" style=none section_state= sect_pr=none
+p[079] text="2 研究对象与方法2" style=none section_state= sect_pr=none
+p[080] text="2.1 研究对象2" style=none section_state= sect_pr=none
+p[081] text="2.1.1 研究对象选择2" style=none section_state= sect_pr=none
+p[082] text="2.1.2 纳入标准3" style=none section_state= sect_pr=none
+p[083] text="2.1.3 排除标准3" style=none section_state= sect_pr=none
+p[084] text="2.1.4 样本量的计算3" style=none section_state= sect_pr=none
+p[085] text="2.1.5 统计方法3" style=none section_state= sect_pr=none
+p[086] text="2.1.6 技术路线图3" style=none section_state= sect_pr=none
+p[087] text="2.2 研究工具4" style=none section_state= sect_pr=none
+p[088] text="2.2.1 患者一般资料调查表4" style=none section_state= sect_pr=none
+p[089] text="2.2.2 糖尿病知识测试问卷量表4" style=none section_state= sect_pr=none
+p[090] text="3 研究结果 4" style=none section_state= sect_pr=none
+p[091] text="3.1 研究样本的基本特征分布4" style=none section_state= sect_pr=none
+p[092] text="3.2 研究样本疾病知识水平现状5" style=none section_state= sect_pr=none
+p[093] text="3.3 核心特征与认知现状的关联6" style=none section_state= sect_pr=none
+p[094] text="4 认知水平影响因素分析6" style=none section_state= sect_pr=none
+p[095] text="4.1 单因素影响分析6" style=none section_state= sect_pr=none
+p[096] text="4.2 糖尿病患者疾病知识认知水平的多因素分析7" style=none section_state= sect_pr=none
+p[097] text="5 结论8" style=none section_state= sect_pr=none
+p[098] text="5.1 单因素分析结果的核心8" style=none section_state= sect_pr=none
+p[099] text="5.2 多因素分析的关键结论：核心影响因素的筛选与验证9" style=none section_state= sect_pr=none
+p[100] text="5.3 研究结果对社区糖尿病健康管理的实践意义10" style=none section_state= sect_pr=none
+p[101] text="5.4 研究的潜在局限性11" style=none section_state= sect_pr=none
+p[102] text="5.5 总结11" style=none section_state= sect_pr=none
+p[103] text="参考文献12" style=none section_state= sect_pr=none
+p[104] text="致      谢13" style=none section_state= sect_pr=none
+p[105] text="" style=none section_state= sect_pr=present,nextPage,header,footer,decimal,margins
+p[106] text="1 绪论" style=cqrwst-heading1-style section_state=body sect_pr=none
+p[107] text="1.1 研究背景" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[108] text="糖尿病是一组以高血糖为主要特征的慢性代谢性疾病，2型糖尿病（T2D）比例约占90%[1]。随着社会的发展和环境的不断变化，2型糖尿病患者的患病率却不断增高，根据国际糖尿病联合会(IDF)的估计到2035年，全球的糖尿病患者人数将增至5.92亿[2]，糖尿病现已成为全球各国的主要的健康问题之一。近些年来，我国的糖尿病患者患病率将持续增长并且速度不断加快，如今我国的糖尿病病人已达1.14亿人，占全球糖尿病病人总数的三分之一，而2型糖尿病病的人数占总人数的90%。目前我国糖尿病的发病情况呈现出高患病率、低诊断率和低控制率的特点。现有研究表明[3-4]，糖尿病患者对自身疾病的认知水平，会直接影响血糖控制效果与后面的生活质量。不过在现实情况中，患者的受教育程度、地区的医疗资源以及健康素养等因素的影响，这使得社区患者的疾病认知存在显著的差异，进而成为了制约糖尿病防控成效的关键瓶颈。" style=cqrwst-body-style section_state=body sect_pr=none
+p[109] text="1.2 研究目的" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[110] text="本研究旨在系统的调查并且明确社区2型糖尿病患者在疾病相关知识方面的认知现状与掌握水平，其中重点涵盖了饮食的管理、科学的运动、糖尿病足的预防护理、规范用药以及血糖监测等核心的内容，从而全面评估患者对糖尿病相关知识的一个整体认知程度。在这些基本情况的调查基础上，本研究会进一步深入分析患者的年龄、文化程度、患病病程、既往是否接受过健康宣教的情况等相关因素，这些对其疾病知识认知水平的具体影响，通过对收集到的数据进行分析识别并提炼出影响社区2型糖尿病患者疾病认知的关键因素。最后，希望能为后续制定出更具针对性、个性化与实用性的社区糖尿病健康教育方案提供出可以参考的科学依据与理论参考。" style=cqrwst-body-style section_state=body sect_pr=none
+p[111] text="1.3 研究意义" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[112] text="近些年来，我国的城市化进程一直在不断地加快，普通居民的生活方式、日常的饮食结构以及平时的行为习惯都发生了较显著的变化。像高热量饮食、长期久坐少动、精神压力的增大等危险因素日益普遍，这些情况导致我国社区人群中2型糖尿病的发病率呈现出持续攀升的状态，这已成为了严重威胁居民健康、加重社会医疗负担的重要慢性疾病。社区本身就作为糖尿病预防与管理的核心基层单元，也承担着患者的长期随访、日常的健康指导、定期的病情监测与干预的关键职能，而患者对糖尿病相关知识的认知水平，往往直接决定他们的自我管理能力、日常中的治疗依从性及血糖控制效果，这些又深刻的影响了疾病预后与生活质量。本研究是立足于基层医疗卫生服务的实际场景，聚焦社区2型糖尿病患者这一群体，希望能够进一步的丰富和完善社区糖尿病慢病管理领域的学术研究内容。从客观掌握的基层患者对疾病相关知识认知水平的真实情况，系统的剖析影响该知识掌握程度的关键因素，为了提升社区糖尿病健康教育效果、优化现有的慢病管理模式提供实证支撑，同时为今后开展类似的社区慢性疾病认知与干预研究提供科学的理论参考与可行的研究思路。" style=cqrwst-body-style section_state=body sect_pr=none
+p[113] text="1.4 国内外研究现状" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[114] text="1.4.2 国内研究现状" style=cqrwst-heading3-style section_state=body sect_pr=none
+p[115] text="随着生活条件的不断提高，2型糖尿病发病率逐年上升并且成为我国最常见的代谢性疾病之一[5]。社区作为疾病管理的关键场所，患者对疾病的认知水平直接影响治疗依从性和糖尿病的控制效果[3]。2型糖尿病需长期自我管理，而患者对疾病知识的认知不足可能导致并发症风险的增加，加重家庭和社会的负担[6]。糖尿病患者饮食知识掌握不全面， 一方面可能是患者自身的原因； 另一方面可能是由于患者家属缺乏对饮食治疗认识。" style=cqrwst-body-style section_state=body sect_pr=none
+p[116] text="1.4.1 国外研究现状" style=cqrwst-heading3-style section_state=body sect_pr=none
+p[117] text="近年来，2型糖尿病（T2DM）已成为各个国家最常见的非传染性疾病之一[7]。由于与经济转型、全球化和城市化相关的生活方式改变，亚洲已成为T2DM国家增长最快的公共卫生问题之一[7]。其中糖尿病的发病率与长期以来地区的饮食习惯和经济条件而影响的饮食相关[7]。在国外，通常每个医疗中心建设就会建立一支多学科团队，他们从各自出发，一起合作对患者进行治疗和护理，国外大部分发达国家对于多学科团队模式在糖尿病管理上的应用已形成 一套完整的体系，并纳入国家卫生保健政策中，这在提高医院及社区糖尿病防控水平上 发挥了巨大作用[2]。" style=cqrwst-body-style section_state=body sect_pr=none
+p[118] text="2 研究对象与方法" style=cqrwst-heading1-style section_state=body sect_pr=none
+p[119] text="2.1 研究对象" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[120] text="2.1.1 研究对象选择" style=cqrwst-heading3-style section_state=body sect_pr=none
+p[121] text="本研究以社区2型糖尿病患者为研究对象，采用简单随机抽样法，对符合纳入标准的研究对象进行编号，再通过随机数字表抽取样本，选取符合重庆长寿区渡舟社区、胜天社区、新道路社区以及向阳社区的2型糖尿病的患者。" style=cqrwst-body-style section_state=body sect_pr=none
+p[122] text="2.1.2 纳入标准" style=cqrwst-heading3-style section_state=body sect_pr=none
+p[123] text="（1）选取符合《中国2型糖尿病防治指南》诊断标准的社区常住患者" style=cqrwst-body-style section_state=body sect_pr=none
+p[124] text="（2）年龄18-80周岁的患者" style=cqrwst-body-style section_state=body sect_pr=none
+p[125] text="（3）意识清楚，能够配合完成问卷调查" style=cqrwst-body-style section_state=body sect_pr=none
+p[126] text="2.1.3 排除标准" style=cqrwst-heading3-style section_state=body sect_pr=none
+p[127] text="（1）合并严重心、肝、肾等脏器功能不全，可能影响患者认知和配合度" style=cqrwst-body-style section_state=body sect_pr=none
+p[128] text="（2）精神疾病患者，无法准确回答问题" style=cqrwst-body-style section_state=body sect_pr=none
+p[129] text="（3）近期有重大生活事件或疾病发作，可能影响患者对疾病知识的认知" style=cqrwst-body-style section_state=body sect_pr=none
+p[130] text="2.1.4 样本量的计算" style=cqrwst-heading3-style section_state=body sect_pr=none
+p[131] text="本研究问卷内容包括一般资料15项，糖尿病知识测试问卷23项，共计38项，选取问卷数量的5倍条目计算，考虑20%的无效问卷，一共收集202份问卷，剔除无效问卷后共190份问卷，问卷有效率为94%。" style=cqrwst-body-style section_state=body sect_pr=none
+p[132] text="2.1.5 统计方法" style=cqrwst-heading3-style section_state=body sect_pr=none
+p[133] text="采用Epidata3.1建立数据库，采用 SPSS20.0软件进行数据分析；计数资料以n（%）表示， 采用χ2检验；多因素分析采用二元Logistic回归分析； P＜0.05表示差异有统计学意义。" style=cqrwst-body-style section_state=body sect_pr=none
+p[134] text="2.1.6 技术路线图" style=cqrwst-heading3-style section_state=body sect_pr=none
+p[135] text="设计调查问卷，确定研究工具" style=cqrwst-body-style section_state=body sect_pr=none
+p[136] text="确定研究对象" style=cqrwst-body-style section_state=body sect_pr=none
+p[137] text="查阅文献，确定课题" style=cqrwst-body-style section_state=body sect_pr=none
+p[138] text="发放和回收问卷" style=cqrwst-body-style section_state=body sect_pr=none
+p[139] text="收集数据、建立数据库、spss数据分析" style=cqrwst-body-style section_state=body sect_pr=none
+p[140] text="结果讨论，论文撰写怕【" style=cqrwst-body-style section_state=body sect_pr=none
+p[141] text="一般资料调查表" style=cqrwst-body-style section_state=body sect_pr=none
+p[142] text="排纳标准" style=cqrwst-body-style section_state=body sect_pr=none
+p[143] text="糖尿病知识测试量表" style=cqrwst-body-style section_state=body sect_pr=none
+p[144] text="质量控制：选取信效度良好的问卷进行调查；采用标准化流程收集问卷，核查数据有效性，剔除无效样本" style=cqrwst-body-style section_state=body sect_pr=none
+p[145] text="" style=none section_state=body sect_pr=none
+p[146] text="设计调查问卷，确定研究工具" style=cqrwst-body-style section_state=body sect_pr=none
+p[147] text="确定研究对象" style=cqrwst-body-style section_state=body sect_pr=none
+p[148] text="查阅文献，确定课题" style=cqrwst-body-style section_state=body sect_pr=none
+p[149] text="发放和回收问卷" style=cqrwst-body-style section_state=body sect_pr=none
+p[150] text="收集数据、建立数据库、spss数据分析" style=cqrwst-body-style section_state=body sect_pr=none
+p[151] text="结果讨论，论文撰写怕【" style=cqrwst-body-style section_state=body sect_pr=none
+p[152] text="一般资料调查表" style=cqrwst-body-style section_state=body sect_pr=none
+p[153] text="排纳标准" style=cqrwst-body-style section_state=body sect_pr=none
+p[154] text="糖尿病知识测试量表" style=cqrwst-body-style section_state=body sect_pr=none
+p[155] text="质量控制：选取信效度良好的问卷进行调查；采用标准化流程收集问卷，核查数据有效性，剔除无效样本" style=cqrwst-body-style section_state=body sect_pr=none
+p[156] text="" style=none section_state=body sect_pr=none
+p[157] text="2.2 研究工具" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[158] text="2.2.1 患者一般资料调查表" style=cqrwst-heading3-style section_state=body sect_pr=none
+p[159] text="一般资料共有15项，包括性别、年龄、职业、居住地、文化程度、家庭月收入、病程、其他疾病、并发症发生情况、健康教育情况。" style=cqrwst-body-style section_state=body sect_pr=none
+p[160] text="2.2.2 糖尿病知识测试问卷量表" style=cqrwst-heading3-style section_state=body sect_pr=none
+p[161] text="采用由陈蔼玲翻译的密西根糖尿病知识测试问卷，该问卷共23道单选题，选对得1分，选错不得分，总分23分。知识掌握程度划分：＞20分为良好，15-20分为一般，＜15分为差。该量表内容效度在0.06以上，Cronbach’s 系数在0.70以上，具有良好的信效度[2]。" style=cqrwst-body-style section_state=body sect_pr=none
+p[162] text="3 研究结果" style=cqrwst-heading1-style section_state=body sect_pr=none
+p[163] text="3.1 研究样本的基本特征分布" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[164] text="在190例调查对象中，女性占53.7%，男性46.3%，性别分布较均衡；＞60岁高龄人群为主，占54.2%，40-60岁占28.4%，＜40仅17.4%；无业及退休人群占比最高63.7%，脑力劳动19.5%，体力劳动16.8%；居住地城镇52.1%略高于农村47.9%；初中及以下文化低学历占50%;＜3000元低收入组占比最高38.4%,＞6000元占32.6%，3000-6000元占28.9%；不吸烟（57.4%）、不饮酒（66.8%）者居多，仅34.2%患者接受过糖尿病健康教育。" style=cqrwst-body-style section_state=body sect_pr=none
+p[165] text="患者病程在3-9年占比最高为44.7%，＜3年占32.1%，＞9年占23.2%；空腹血糖＜7mmol/L者55.8%，＞7mmol/L者44.2%；糖化血红蛋白以6.5-7.5区间为主(54.2%),＜6.5仅26.3%；合并并发症者占多数（65.8%），有糖尿病家族史者37.4%；无特殊饮食习惯者57.9%。见表3-1" style=cqrwst-body-style section_state=body sect_pr=none
+p[166] text="表3-1 社区2型糖尿病患者基本特征分布（n=190）" style=cqrwst-body-style section_state=body sect_pr=none
+p[167] text="名称" style=cqrwst-body-style section_state=body sect_pr=none
+p[168] text="选项" style=cqrwst-body-style section_state=body sect_pr=none
+p[169] text="频数" style=cqrwst-body-style section_state=body sect_pr=none
+p[170] text="百分比（%）" style=cqrwst-body-style section_state=body sect_pr=none
+p[171] text="性别" style=cqrwst-body-style section_state=body sect_pr=none
+p[172] text="男" style=cqrwst-body-style section_state=body sect_pr=none
+p[173] text="88" style=cqrwst-body-style section_state=body sect_pr=none
+p[174] text="46.3" style=cqrwst-body-style section_state=body sect_pr=none
+p[175] text="" style=none section_state=body sect_pr=none
+p[176] text="女" style=cqrwst-body-style section_state=body sect_pr=none
+p[177] text="102" style=cqrwst-body-style section_state=body sect_pr=none
+p[178] text="53.7" style=cqrwst-body-style section_state=body sect_pr=none
+p[179] text="年龄" style=cqrwst-body-style section_state=body sect_pr=none
+p[180] text="小于40岁" style=cqrwst-body-style section_state=body sect_pr=none
+p[181] text="33" style=cqrwst-body-style section_state=body sect_pr=none
+p[182] text="17.4" style=cqrwst-body-style section_state=body sect_pr=none
+p[183] text="" style=none section_state=body sect_pr=none
+p[184] text="40-60岁" style=cqrwst-body-style section_state=body sect_pr=none
+p[185] text="54" style=cqrwst-body-style section_state=body sect_pr=none
+p[186] text="28.4" style=cqrwst-body-style section_state=body sect_pr=none
+p[187] text="" style=none section_state=body sect_pr=none
+p[188] text="＞60" style=cqrwst-body-style section_state=body sect_pr=none
+p[189] text="103" style=cqrwst-body-style section_state=body sect_pr=none
+p[190] text="54.2" style=cqrwst-body-style section_state=body sect_pr=none
+p[191] text="职业" style=cqrwst-body-style section_state=body sect_pr=none
+p[192] text="脑力劳动" style=cqrwst-body-style section_state=body sect_pr=none
+p[193] text="37" style=cqrwst-body-style section_state=body sect_pr=none
+p[194] text="19.5" style=cqrwst-body-style section_state=body sect_pr=none
+p[195] text="续表3-1 社区2型糖尿病患者基本特征分布（n=190）" style=cqrwst-body-style section_state=body sect_pr=none
+p[196] text="名称" style=cqrwst-body-style section_state=body sect_pr=none
+p[197] text="选项" style=cqrwst-body-style section_state=body sect_pr=none
+p[198] text="频数" style=cqrwst-body-style section_state=body sect_pr=none
+p[199] text="百分比（%）" style=cqrwst-body-style section_state=body sect_pr=none
+p[200] text="" style=none section_state=body sect_pr=none
+p[201] text="体力劳动" style=cqrwst-body-style section_state=body sect_pr=none
+p[202] text="32" style=cqrwst-body-style section_state=body sect_pr=none
+p[203] text="16.8" style=cqrwst-body-style section_state=body sect_pr=none
+p[204] text="" style=none section_state=body sect_pr=none
+p[205] text="无业及退休" style=cqrwst-body-style section_state=body sect_pr=none
+p[206] text="121" style=cqrwst-body-style section_state=body sect_pr=none
+p[207] text="63.7" style=cqrwst-body-style section_state=body sect_pr=none
+p[208] text="居住地" style=cqrwst-body-style section_state=body sect_pr=none
+p[209] text="农村" style=cqrwst-body-style section_state=body sect_pr=none
+p[210] text="91" style=cqrwst-body-style section_state=body sect_pr=none
+p[211] text="47.9" style=cqrwst-body-style section_state=body sect_pr=none
+p[212] text="" style=none section_state=body sect_pr=none
+p[213] text="城镇" style=cqrwst-body-style section_state=body sect_pr=none
+p[214] text="99" style=cqrwst-body-style section_state=body sect_pr=none
+p[215] text="52.1" style=cqrwst-body-style section_state=body sect_pr=none
+p[216] text="文化程度" style=cqrwst-body-style section_state=body sect_pr=none
+p[217] text="初中及以下" style=cqrwst-body-style section_state=body sect_pr=none
+p[218] text="95" style=cqrwst-body-style section_state=body sect_pr=none
+p[219] text="50" style=cqrwst-body-style section_state=body sect_pr=none
+p[220] text="" style=none section_state=body sect_pr=none
+p[221] text="中专/高中" style=cqrwst-body-style section_state=body sect_pr=none
+p[222] text="57" style=cqrwst-body-style section_state=body sect_pr=none
+p[223] text="30" style=cqrwst-body-style section_state=body sect_pr=none
+p[224] text="" style=none section_state=body sect_pr=none
+p[225] text="大专及以上" style=cqrwst-body-style section_state=body sect_pr=none
+p[226] text="38" style=cqrwst-body-style section_state=body sect_pr=none
+p[227] text="20" style=cqrwst-body-style section_state=body sect_pr=none
+p[228] text="家庭月收入" style=cqrwst-body-style section_state=body sect_pr=none
+p[229] text="＜3000" style=cqrwst-body-style section_state=body sect_pr=none
+p[230] text="73" style=cqrwst-body-style section_state=body sect_pr=none
+p[231] text="38.4" style=cqrwst-body-style section_state=body sect_pr=none
+p[232] text="" style=none section_state=body sect_pr=none
+p[233] text="3000-6000" style=cqrwst-body-style section_state=body sect_pr=none
+p[234] text="55" style=cqrwst-body-style section_state=body sect_pr=none
+p[235] text="28.9" style=cqrwst-body-style section_state=body sect_pr=none
+p[236] text="" style=none section_state=body sect_pr=none
+p[237] text="＞6000" style=cqrwst-body-style section_state=body sect_pr=none
+p[238] text="62" style=cqrwst-body-style section_state=body sect_pr=none
+p[239] text="32.6" style=cqrwst-body-style section_state=body sect_pr=none
+p[240] text="吸烟" style=cqrwst-body-style section_state=body sect_pr=none
+p[241] text="是" style=cqrwst-body-style section_state=body sect_pr=none
+p[242] text="81" style=cqrwst-body-style section_state=body sect_pr=none
+p[243] text="42.6" style=cqrwst-body-style section_state=body sect_pr=none
+p[244] text="" style=none section_state=body sect_pr=none
+p[245] text="否" style=cqrwst-body-style section_state=body sect_pr=none
+p[246] text="109" style=cqrwst-body-style section_state=body sect_pr=none
+p[247] text="57.4" style=cqrwst-body-style section_state=body sect_pr=none
+p[248] text="饮酒" style=cqrwst-body-style section_state=body sect_pr=none
+p[249] text="是" style=cqrwst-body-style section_state=body sect_pr=none
+p[250] text="63" style=cqrwst-body-style section_state=body sect_pr=none
+p[251] text="33.2" style=cqrwst-body-style section_state=body sect_pr=none
+p[252] text="" style=none section_state=body sect_pr=none
+p[253] text="否" style=cqrwst-body-style section_state=body sect_pr=none
+p[254] text="127" style=cqrwst-body-style section_state=body sect_pr=none
+p[255] text="66.8" style=cqrwst-body-style section_state=body sect_pr=none
+p[256] text="病程" style=cqrwst-body-style section_state=body sect_pr=none
+p[257] text="＜3年" style=cqrwst-body-style section_state=body sect_pr=none
+p[258] text="61" style=cqrwst-body-style section_state=body sect_pr=none
+p[259] text="32.1" style=cqrwst-body-style section_state=body sect_pr=none
+p[260] text="" style=none section_state=body sect_pr=none
+p[261] text="3-9年" style=cqrwst-body-style section_state=body sect_pr=none
+p[262] text="85" style=cqrwst-body-style section_state=body sect_pr=none
+p[263] text="44.7" style=cqrwst-body-style section_state=body sect_pr=none
+p[264] text="" style=none section_state=body sect_pr=none
+p[265] text="＞9年" style=cqrwst-body-style section_state=body sect_pr=none
+p[266] text="44" style=cqrwst-body-style section_state=body sect_pr=none
+p[267] text="23.2" style=cqrwst-body-style section_state=body sect_pr=none
+p[268] text="空腹血糖（FBG）" style=cqrwst-body-style section_state=body sect_pr=none
+p[269] text="＜7" style=cqrwst-body-style section_state=body sect_pr=none
+p[270] text="106" style=cqrwst-body-style section_state=body sect_pr=none
+p[271] text="55.8" style=cqrwst-body-style section_state=body sect_pr=none
+p[272] text="" style=none section_state=body sect_pr=none
+p[273] text="＞7" style=cqrwst-body-style section_state=body sect_pr=none
+p[274] text="84" style=cqrwst-body-style section_state=body sect_pr=none
+p[275] text="44.2" style=cqrwst-body-style section_state=body sect_pr=none
+p[276] text="糖化血红蛋白（HbA1c ）水平" style=cqrwst-body-style section_state=body sect_pr=none
+p[277] text="＜6.5" style=cqrwst-body-style section_state=body sect_pr=none
+p[278] text="50" style=cqrwst-body-style section_state=body sect_pr=none
+p[279] text="26.3" style=cqrwst-body-style section_state=body sect_pr=none
+p[280] text="" style=none section_state=body sect_pr=none
+p[281] text="6.5-7.5" style=cqrwst-body-style section_state=body sect_pr=none
+p[282] text="103" style=cqrwst-body-style section_state=body sect_pr=none
+p[283] text="54.2" style=cqrwst-body-style section_state=body sect_pr=none
+p[284] text="" style=none section_state=body sect_pr=none
+p[285] text="＞7.5" style=cqrwst-body-style section_state=body sect_pr=none
+p[286] text="37" style=cqrwst-body-style section_state=body sect_pr=none
+p[287] text="19.5" style=cqrwst-body-style section_state=body sect_pr=none
+p[288] text="并发症" style=cqrwst-body-style section_state=body sect_pr=none
+p[289] text="是" style=cqrwst-body-style section_state=body sect_pr=none
+p[290] text="125" style=cqrwst-body-style section_state=body sect_pr=none
+p[291] text="65.8" style=cqrwst-body-style section_state=body sect_pr=none
+p[292] text="" style=none section_state=body sect_pr=none
+p[293] text="否" style=cqrwst-body-style section_state=body sect_pr=none
+p[294] text="65" style=cqrwst-body-style section_state=body sect_pr=none
+p[295] text="34.2" style=cqrwst-body-style section_state=body sect_pr=none
+p[296] text="家族史" style=cqrwst-body-style section_state=body sect_pr=none
+p[297] text="是" style=cqrwst-body-style section_state=body sect_pr=none
+p[298] text="71" style=cqrwst-body-style section_state=body sect_pr=none
+p[299] text="37.4" style=cqrwst-body-style section_state=body sect_pr=none
+p[300] text="" style=none section_state=body sect_pr=none
+p[301] text="否" style=cqrwst-body-style section_state=body sect_pr=none
+p[302] text="119" style=cqrwst-body-style section_state=body sect_pr=none
+p[303] text="62.5" style=cqrwst-body-style section_state=body sect_pr=none
+p[304] text="特殊饮食习惯" style=cqrwst-body-style section_state=body sect_pr=none
+p[305] text="是" style=cqrwst-body-style section_state=body sect_pr=none
+p[306] text="80" style=cqrwst-body-style section_state=body sect_pr=none
+p[307] text="42.1" style=cqrwst-body-style section_state=body sect_pr=none
+p[308] text="" style=none section_state=body sect_pr=none
+p[309] text="否" style=cqrwst-body-style section_state=body sect_pr=none
+p[310] text="110" style=cqrwst-body-style section_state=body sect_pr=none
+p[311] text="57.9" style=cqrwst-body-style section_state=body sect_pr=none
+p[312] text="接受过健康教育" style=cqrwst-body-style section_state=body sect_pr=none
+p[313] text="是" style=cqrwst-body-style section_state=body sect_pr=none
+p[314] text="65" style=cqrwst-body-style section_state=body sect_pr=none
+p[315] text="34.2" style=cqrwst-body-style section_state=body sect_pr=none
+p[316] text="" style=none section_state=body sect_pr=none
+p[317] text="否" style=cqrwst-body-style section_state=body sect_pr=none
+p[318] text="125" style=cqrwst-body-style section_state=body sect_pr=none
+p[319] text="65.8" style=cqrwst-body-style section_state=body sect_pr=none
+p[320] text="" style=none section_state=body sect_pr=none
+p[321] text="3.2 研究样本疾病知识水平现状" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[322] text="患者整体认知水平较低，认知良好占比仅7.9%，认知一般占比27.9%，认知差者占比最多，占比高达64.2%。本研究结果显示，T2DM患者对糖尿病知识的了解程度仍以中、低水平为主，与黄金等[8]调查结果一 致[9]。见表3-2" style=cqrwst-body-style section_state=body sect_pr=none
+p[323] text="" style=none section_state=body sect_pr=none
+p[324] text="表3-2 疾病认知水平整体现状" style=cqrwst-body-style section_state=body sect_pr=none
+p[325] text="" style=none section_state=body sect_pr=none
+p[326] text="分类" style=cqrwst-body-style section_state=body sect_pr=none
+p[327] text="频数" style=cqrwst-body-style section_state=body sect_pr=none
+p[328] text="百分比" style=cqrwst-body-style section_state=body sect_pr=none
+p[329] text="分级" style=cqrwst-body-style section_state=body sect_pr=none
+p[330] text="差" style=cqrwst-body-style section_state=body sect_pr=none
+p[331] text="122" style=cqrwst-body-style section_state=body sect_pr=none
+p[332] text="64.2" style=cqrwst-body-style section_state=body sect_pr=none
+p[333] text="" style=none section_state=body sect_pr=none
+p[334] text="一般" style=cqrwst-body-style section_state=body sect_pr=none
+p[335] text="53" style=cqrwst-body-style section_state=body sect_pr=none
+p[336] text="27.9" style=cqrwst-body-style section_state=body sect_pr=none
+p[337] text="" style=none section_state=body sect_pr=none
+p[338] text="良好" style=cqrwst-body-style section_state=body sect_pr=none
+p[339] text="15" style=cqrwst-body-style section_state=body sect_pr=none
+p[340] text="7.9" style=cqrwst-body-style section_state=body sect_pr=none
+p[341] text="3.3 核心特征与认知现状的关联" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[342] text="结合样本分析可以直观看出认知水平低的潜在背景：研究对象以高龄、低学历、无业/退休人群为主，且超过六层未接受过糖尿病健康教育，这类特征与糖尿病疾病认知水平偏低的特点高度契合，也为后续分析认知水平的影响因素提供了基础样本背景支撑。" style=cqrwst-body-style section_state=body sect_pr=none
+p[343] text="4 认知水平影响因素分析" style=cqrwst-heading1-style section_state=body sect_pr=none
+p[344] text="4.1 单因素影响分析" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[345] text="经单因素分析结果显示，不同年龄、职业、居住地、文化程度、家庭月收入、吸烟、家族史、接受过健康教育八个变量对疾病认知水平具有统计意义（P＜0.05），其余变量组间无差异（P＞0.05）。见表4-1" style=cqrwst-body-style section_state=body sect_pr=none
+p[346] text="表4-1 社区二型糖尿病患者疾病认知水平的单因素分析[n(%)]" style=cqrwst-body-style section_state=body sect_pr=none
+p[347] text="因素" style=cqrwst-body-style section_state=body sect_pr=none
+p[348] text="n" style=cqrwst-body-style section_state=body sect_pr=none
+p[349] text="认知差组(n=122)" style=cqrwst-body-style section_state=body sect_pr=none
+p[350] text="认知一般组(n=53)" style=cqrwst-body-style section_state=body sect_pr=none
+p[351] text="认知良好组(n=15)" style=cqrwst-body-style section_state=body sect_pr=none
+p[352] text="χ²/Z" style=cqrwst-body-style section_state=body sect_pr=none
+p[353] text="P" style=cqrwst-body-style section_state=body sect_pr=none
+p[354] text="性别" style=cqrwst-body-style section_state=body sect_pr=none
+p[355] text="男" style=cqrwst-body-style section_state=body sect_pr=none
+p[356] text="88" style=cqrwst-body-style section_state=body sect_pr=none
+p[357] text="57(46.72)" style=cqrwst-body-style section_state=body sect_pr=none
+p[358] text="21(39.62)" style=cqrwst-body-style section_state=body sect_pr=none
+p[359] text="10(66.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[360] text="3.461" style=cqrwst-body-style section_state=body sect_pr=none
+p[361] text="0.177" style=cqrwst-body-style section_state=body sect_pr=none
+p[362] text="" style=none section_state=body sect_pr=none
+p[363] text="女" style=cqrwst-body-style section_state=body sect_pr=none
+p[364] text="102" style=cqrwst-body-style section_state=body sect_pr=none
+p[365] text="65(53.28)" style=cqrwst-body-style section_state=body sect_pr=none
+p[366] text="32(60.38)" style=cqrwst-body-style section_state=body sect_pr=none
+p[367] text="5(33.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[368] text="" style=none section_state=body sect_pr=none
+p[369] text="" style=none section_state=body sect_pr=none
+p[370] text="年龄" style=cqrwst-body-style section_state=body sect_pr=none
+p[371] text="&lt;40岁" style=cqrwst-body-style section_state=body sect_pr=none
+p[372] text="33" style=cqrwst-body-style section_state=body sect_pr=none
+p[373] text="2(1.64)" style=cqrwst-body-style section_state=body sect_pr=none
+p[374] text="28(52.83)" style=cqrwst-body-style section_state=body sect_pr=none
+p[375] text="2(20.00)" style=cqrwst-body-style section_state=body sect_pr=none
+p[376] text="86.137" style=cqrwst-body-style section_state=body sect_pr=none
+p[377] text="&lt;0.001" style=cqrwst-body-style section_state=body sect_pr=none
+p[378] text="" style=none section_state=body sect_pr=none
+p[379] text="40-60岁" style=cqrwst-body-style section_state=body sect_pr=none
+p[380] text="54" style=cqrwst-body-style section_state=body sect_pr=none
+p[381] text="28(22.95)" style=cqrwst-body-style section_state=body sect_pr=none
+p[382] text="21(39.62)" style=cqrwst-body-style section_state=body sect_pr=none
+p[383] text="5(33.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[384] text="" style=none section_state=body sect_pr=none
+p[385] text="" style=none section_state=body sect_pr=none
+p[386] text="" style=none section_state=body sect_pr=none
+p[387] text="&gt;60岁" style=cqrwst-body-style section_state=body sect_pr=none
+p[388] text="103" style=cqrwst-body-style section_state=body sect_pr=none
+p[389] text="92(75.41)" style=cqrwst-body-style section_state=body sect_pr=none
+p[390] text="4(7.55)" style=cqrwst-body-style section_state=body sect_pr=none
+p[391] text="7(46.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[392] text="" style=none section_state=body sect_pr=none
+p[393] text="" style=none section_state=body sect_pr=none
+p[394] text="职业" style=cqrwst-body-style section_state=body sect_pr=none
+p[395] text="脑力劳动" style=cqrwst-body-style section_state=body sect_pr=none
+p[396] text="37" style=cqrwst-body-style section_state=body sect_pr=none
+p[397] text="10(8.20)" style=cqrwst-body-style section_state=body sect_pr=none
+p[398] text="22(41.51)" style=cqrwst-body-style section_state=body sect_pr=none
+p[399] text="5(33.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[400] text="45.249" style=cqrwst-body-style section_state=body sect_pr=none
+p[401] text="&lt;0.001" style=cqrwst-body-style section_state=body sect_pr=none
+p[402] text="" style=none section_state=body sect_pr=none
+p[403] text="体力劳动" style=cqrwst-body-style section_state=body sect_pr=none
+p[404] text="32" style=cqrwst-body-style section_state=body sect_pr=none
+p[405] text="14(11.48)" style=cqrwst-body-style section_state=body sect_pr=none
+p[406] text="16(30.19)" style=cqrwst-body-style section_state=body sect_pr=none
+p[407] text="2(13.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[408] text="" style=none section_state=body sect_pr=none
+p[409] text="" style=none section_state=body sect_pr=none
+p[410] text="" style=none section_state=body sect_pr=none
+p[411] text="无业及退休" style=cqrwst-body-style section_state=body sect_pr=none
+p[412] text="121" style=cqrwst-body-style section_state=body sect_pr=none
+p[413] text="98(80.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[414] text="15(28.30)" style=cqrwst-body-style section_state=body sect_pr=none
+p[415] text="8(53.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[416] text="" style=none section_state=body sect_pr=none
+p[417] text="" style=none section_state=body sect_pr=none
+p[418] text="居住地" style=cqrwst-body-style section_state=body sect_pr=none
+p[419] text="农村" style=cqrwst-body-style section_state=body sect_pr=none
+p[420] text="91" style=cqrwst-body-style section_state=body sect_pr=none
+p[421] text="75(61.48)" style=cqrwst-body-style section_state=body sect_pr=none
+p[422] text="16(30.19)" style=cqrwst-body-style section_state=body sect_pr=none
+p[423] text="0(0.00)" style=cqrwst-body-style section_state=body sect_pr=none
+p[424] text="29.462" style=cqrwst-body-style section_state=body sect_pr=none
+p[425] text="&lt;0.001" style=cqrwst-body-style section_state=body sect_pr=none
+p[426] text="" style=none section_state=body sect_pr=none
+p[427] text="城镇" style=cqrwst-body-style section_state=body sect_pr=none
+p[428] text="99" style=cqrwst-body-style section_state=body sect_pr=none
+p[429] text="47(38.52)" style=cqrwst-body-style section_state=body sect_pr=none
+p[430] text="37(69.81)" style=cqrwst-body-style section_state=body sect_pr=none
+p[431] text="15(100.00)" style=cqrwst-body-style section_state=body sect_pr=none
+p[432] text="" style=none section_state=body sect_pr=none
+p[433] text="" style=none section_state=body sect_pr=none
+p[434] text="文化程度" style=cqrwst-body-style section_state=body sect_pr=none
+p[435] text="初中及以下" style=cqrwst-body-style section_state=body sect_pr=none
+p[436] text="95" style=cqrwst-body-style section_state=body sect_pr=none
+p[437] text="80(65.57)" style=cqrwst-body-style section_state=body sect_pr=none
+p[438] text="13(24.53)" style=cqrwst-body-style section_state=body sect_pr=none
+p[439] text="2(13.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[440] text="44.344" style=cqrwst-body-style section_state=body sect_pr=none
+p[441] text="&lt;0.001" style=cqrwst-body-style section_state=body sect_pr=none
+p[442] text="" style=none section_state=body sect_pr=none
+p[443] text="中专/高中" style=cqrwst-body-style section_state=body sect_pr=none
+p[444] text="57" style=cqrwst-body-style section_state=body sect_pr=none
+p[445] text="33(27.05)" style=cqrwst-body-style section_state=body sect_pr=none
+p[446] text="20(37.74)" style=cqrwst-body-style section_state=body sect_pr=none
+p[447] text="4(26.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[448] text="" style=none section_state=body sect_pr=none
+p[449] text="" style=none section_state=body sect_pr=none
+p[450] text="" style=none section_state=body sect_pr=none
+p[451] text="大专及以上" style=cqrwst-body-style section_state=body sect_pr=none
+p[452] text="38" style=cqrwst-body-style section_state=body sect_pr=none
+p[453] text="9(7.38)" style=cqrwst-body-style section_state=body sect_pr=none
+p[454] text="20(37.74)" style=cqrwst-body-style section_state=body sect_pr=none
+p[455] text="9(60.00)" style=cqrwst-body-style section_state=body sect_pr=none
+p[456] text="" style=none section_state=body sect_pr=none
+p[457] text="" style=none section_state=body sect_pr=none
+p[458] text="家庭月收入" style=cqrwst-body-style section_state=body sect_pr=none
+p[459] text="&lt;3000元" style=cqrwst-body-style section_state=body sect_pr=none
+p[460] text="73" style=cqrwst-body-style section_state=body sect_pr=none
+p[461] text="66(54.10)" style=cqrwst-body-style section_state=body sect_pr=none
+p[462] text="7(13.21)" style=cqrwst-body-style section_state=body sect_pr=none
+p[463] text="0(0.00)" style=cqrwst-body-style section_state=body sect_pr=none
+p[464] text="42.633" style=cqrwst-body-style section_state=body sect_pr=none
+p[465] text="&lt;0.001" style=cqrwst-body-style section_state=body sect_pr=none
+p[466] text="续表4-1 社区二型糖尿病患者疾病认知水平的单因素分析[n(%)]" style=cqrwst-body-style section_state=body sect_pr=none
+p[467] text="因素" style=cqrwst-body-style section_state=body sect_pr=none
+p[468] text="n" style=cqrwst-body-style section_state=body sect_pr=none
+p[469] text="认知差组(n=122)" style=cqrwst-body-style section_state=body sect_pr=none
+p[470] text="认知一般组(n=53)" style=cqrwst-body-style section_state=body sect_pr=none
+p[471] text="认知良好组(n=15)" style=cqrwst-body-style section_state=body sect_pr=none
+p[472] text="χ²/Z" style=cqrwst-body-style section_state=body sect_pr=none
+p[473] text="P" style=cqrwst-body-style section_state=body sect_pr=none
+p[474] text="" style=none section_state=body sect_pr=none
+p[475] text="3000-6000元" style=cqrwst-body-style section_state=body sect_pr=none
+p[476] text="55" style=cqrwst-body-style section_state=body sect_pr=none
+p[477] text="32(26.23)" style=cqrwst-body-style section_state=body sect_pr=none
+p[478] text="20(37.74)" style=cqrwst-body-style section_state=body sect_pr=none
+p[479] text="3(20.00)" style=cqrwst-body-style section_state=body sect_pr=none
+p[480] text="" style=none section_state=body sect_pr=none
+p[481] text="" style=none section_state=body sect_pr=none
+p[482] text="" style=none section_state=body sect_pr=none
+p[483] text="&gt;6000元" style=cqrwst-body-style section_state=body sect_pr=none
+p[484] text="62" style=cqrwst-body-style section_state=body sect_pr=none
+p[485] text="24(19.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[486] text="26(49.06)" style=cqrwst-body-style section_state=body sect_pr=none
+p[487] text="12(80.00)" style=cqrwst-body-style section_state=body sect_pr=none
+p[488] text="" style=none section_state=body sect_pr=none
+p[489] text="" style=none section_state=body sect_pr=none
+p[490] text="吸烟" style=cqrwst-body-style section_state=body sect_pr=none
+p[491] text="是" style=cqrwst-body-style section_state=body sect_pr=none
+p[492] text="81" style=cqrwst-body-style section_state=body sect_pr=none
+p[493] text="51(41.80)" style=cqrwst-body-style section_state=body sect_pr=none
+p[494] text="29(54.72)" style=cqrwst-body-style section_state=body sect_pr=none
+p[495] text="1(6.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[496] text="11.133" style=cqrwst-body-style section_state=body sect_pr=none
+p[497] text="0.004" style=cqrwst-body-style section_state=body sect_pr=none
+p[498] text="" style=none section_state=body sect_pr=none
+p[499] text="否" style=cqrwst-body-style section_state=body sect_pr=none
+p[500] text="109" style=cqrwst-body-style section_state=body sect_pr=none
+p[501] text="71(58.20)" style=cqrwst-body-style section_state=body sect_pr=none
+p[502] text="24(45.28)" style=cqrwst-body-style section_state=body sect_pr=none
+p[503] text="14(93.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[504] text="" style=none section_state=body sect_pr=none
+p[505] text="" style=none section_state=body sect_pr=none
+p[506] text="饮酒" style=cqrwst-body-style section_state=body sect_pr=none
+p[507] text="是" style=cqrwst-body-style section_state=body sect_pr=none
+p[508] text="62" style=cqrwst-body-style section_state=body sect_pr=none
+p[509] text="46(37.70)" style=cqrwst-body-style section_state=body sect_pr=none
+p[510] text="14(26.42)" style=cqrwst-body-style section_state=body sect_pr=none
+p[511] text="3(20.00)" style=cqrwst-body-style section_state=body sect_pr=none
+p[512] text="3.379" style=cqrwst-body-style section_state=body sect_pr=none
+p[513] text="0.185" style=cqrwst-body-style section_state=body sect_pr=none
+p[514] text="" style=none section_state=body sect_pr=none
+p[515] text="否" style=cqrwst-body-style section_state=body sect_pr=none
+p[516] text="127" style=cqrwst-body-style section_state=body sect_pr=none
+p[517] text="76(62.30)" style=cqrwst-body-style section_state=body sect_pr=none
+p[518] text="39(73.58)" style=cqrwst-body-style section_state=body sect_pr=none
+p[519] text="12(80.00)" style=cqrwst-body-style section_state=body sect_pr=none
+p[520] text="" style=none section_state=body sect_pr=none
+p[521] text="" style=none section_state=body sect_pr=none
+p[522] text="病程" style=cqrwst-body-style section_state=body sect_pr=none
+p[523] text="&lt;3年" style=cqrwst-body-style section_state=body sect_pr=none
+p[524] text="61" style=cqrwst-body-style section_state=body sect_pr=none
+p[525] text="38(31.15)" style=cqrwst-body-style section_state=body sect_pr=none
+p[526] text="20(37.74)" style=cqrwst-body-style section_state=body sect_pr=none
+p[527] text="3(20.00)" style=cqrwst-body-style section_state=body sect_pr=none
+p[528] text="5.105" style=cqrwst-body-style section_state=body sect_pr=none
+p[529] text="0.078" style=cqrwst-body-style section_state=body sect_pr=none
+p[530] text="" style=none section_state=body sect_pr=none
+p[531] text="3-9年" style=cqrwst-body-style section_state=body sect_pr=none
+p[532] text="85" style=cqrwst-body-style section_state=body sect_pr=none
+p[533] text="60(49.18)" style=cqrwst-body-style section_state=body sect_pr=none
+p[534] text="21(39.62)" style=cqrwst-body-style section_state=body sect_pr=none
+p[535] text="4(26.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[536] text="" style=none section_state=body sect_pr=none
+p[537] text="" style=none section_state=body sect_pr=none
+p[538] text="" style=none section_state=body sect_pr=none
+p[539] text="&gt;9年" style=cqrwst-body-style section_state=body sect_pr=none
+p[540] text="44" style=cqrwst-body-style section_state=body sect_pr=none
+p[541] text="24(19.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[542] text="12(22.64)" style=cqrwst-body-style section_state=body sect_pr=none
+p[543] text="8(53.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[544] text="" style=none section_state=body sect_pr=none
+p[545] text="" style=none section_state=body sect_pr=none
+p[546] text="空腹血糖(FBG)" style=cqrwst-body-style section_state=body sect_pr=none
+p[547] text="&lt;7" style=cqrwst-body-style section_state=body sect_pr=none
+p[548] text="106" style=cqrwst-body-style section_state=body sect_pr=none
+p[549] text="71(58.20)" style=cqrwst-body-style section_state=body sect_pr=none
+p[550] text="31(58.49)" style=cqrwst-body-style section_state=body sect_pr=none
+p[551] text="4(26.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[552] text="5.601" style=cqrwst-body-style section_state=body sect_pr=none
+p[553] text="0.061" style=cqrwst-body-style section_state=body sect_pr=none
+p[554] text="" style=none section_state=body sect_pr=none
+p[555] text="&gt;7" style=cqrwst-body-style section_state=body sect_pr=none
+p[556] text="84" style=cqrwst-body-style section_state=body sect_pr=none
+p[557] text="51(41.80)" style=cqrwst-body-style section_state=body sect_pr=none
+p[558] text="22(41.51)" style=cqrwst-body-style section_state=body sect_pr=none
+p[559] text="11(73.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[560] text="" style=none section_state=body sect_pr=none
+p[561] text="" style=none section_state=body sect_pr=none
+p[562] text="糖化血红蛋白(HbA1c )水平" style=cqrwst-body-style section_state=body sect_pr=none
+p[563] text="&lt;6.5" style=cqrwst-body-style section_state=body sect_pr=none
+p[564] text="50" style=cqrwst-body-style section_state=body sect_pr=none
+p[565] text="31(25.41)" style=cqrwst-body-style section_state=body sect_pr=none
+p[566] text="18(33.96)" style=cqrwst-body-style section_state=body sect_pr=none
+p[567] text="1(6.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[568] text="5.645" style=cqrwst-body-style section_state=body sect_pr=none
+p[569] text="0.059" style=cqrwst-body-style section_state=body sect_pr=none
+p[570] text="" style=none section_state=body sect_pr=none
+p[571] text="6.5-7.5" style=cqrwst-body-style section_state=body sect_pr=none
+p[572] text="103" style=cqrwst-body-style section_state=body sect_pr=none
+p[573] text="64(52.46)" style=cqrwst-body-style section_state=body sect_pr=none
+p[574] text="29(54.72)" style=cqrwst-body-style section_state=body sect_pr=none
+p[575] text="10(66.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[576] text="" style=none section_state=body sect_pr=none
+p[577] text="" style=none section_state=body sect_pr=none
+p[578] text="" style=none section_state=body sect_pr=none
+p[579] text="&gt;7.5" style=cqrwst-body-style section_state=body sect_pr=none
+p[580] text="37" style=cqrwst-body-style section_state=body sect_pr=none
+p[581] text="27(22.13)" style=cqrwst-body-style section_state=body sect_pr=none
+p[582] text="6(11.32)" style=cqrwst-body-style section_state=body sect_pr=none
+p[583] text="4(26.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[584] text="" style=none section_state=body sect_pr=none
+p[585] text="" style=none section_state=body sect_pr=none
+p[586] text="并发症" style=cqrwst-body-style section_state=body sect_pr=none
+p[587] text="是" style=cqrwst-body-style section_state=body sect_pr=none
+p[588] text="125" style=cqrwst-body-style section_state=body sect_pr=none
+p[589] text="80(65.57)" style=cqrwst-body-style section_state=body sect_pr=none
+p[590] text="33(62.26)" style=cqrwst-body-style section_state=body sect_pr=none
+p[591] text="12(80.00)" style=cqrwst-body-style section_state=body sect_pr=none
+p[592] text="1.641" style=cqrwst-body-style section_state=body sect_pr=none
+p[593] text="0.440" style=cqrwst-body-style section_state=body sect_pr=none
+p[594] text="" style=none section_state=body sect_pr=none
+p[595] text="否" style=cqrwst-body-style section_state=body sect_pr=none
+p[596] text="65" style=cqrwst-body-style section_state=body sect_pr=none
+p[597] text="42(34.43)" style=cqrwst-body-style section_state=body sect_pr=none
+p[598] text="20(37.74)" style=cqrwst-body-style section_state=body sect_pr=none
+p[599] text="3(20.00)" style=cqrwst-body-style section_state=body sect_pr=none
+p[600] text="" style=none section_state=body sect_pr=none
+p[601] text="" style=none section_state=body sect_pr=none
+p[602] text="家族史" style=cqrwst-body-style section_state=body sect_pr=none
+p[603] text="是" style=cqrwst-body-style section_state=body sect_pr=none
+p[604] text="71" style=cqrwst-body-style section_state=body sect_pr=none
+p[605] text="41(33.61)" style=cqrwst-body-style section_state=body sect_pr=none
+p[606] text="20(37.74)" style=cqrwst-body-style section_state=body sect_pr=none
+p[607] text="10(66.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[608] text="6.242" style=cqrwst-body-style section_state=body sect_pr=none
+p[609] text="0.044" style=cqrwst-body-style section_state=body sect_pr=none
+p[610] text="" style=none section_state=body sect_pr=none
+p[611] text="否" style=cqrwst-body-style section_state=body sect_pr=none
+p[612] text="119" style=cqrwst-body-style section_state=body sect_pr=none
+p[613] text="81(66.39)" style=cqrwst-body-style section_state=body sect_pr=none
+p[614] text="33(62.26)" style=cqrwst-body-style section_state=body sect_pr=none
+p[615] text="5(33.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[616] text="" style=none section_state=body sect_pr=none
+p[617] text="" style=none section_state=body sect_pr=none
+p[618] text="特殊饮食习惯" style=cqrwst-body-style section_state=body sect_pr=none
+p[619] text="是" style=cqrwst-body-style section_state=body sect_pr=none
+p[620] text="80" style=cqrwst-body-style section_state=body sect_pr=none
+p[621] text="52(42.62)" style=cqrwst-body-style section_state=body sect_pr=none
+p[622] text="20(37.74)" style=cqrwst-body-style section_state=body sect_pr=none
+p[623] text="8(53.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[624] text="1.204" style=cqrwst-body-style section_state=body sect_pr=none
+p[625] text="0.548" style=cqrwst-body-style section_state=body sect_pr=none
+p[626] text="" style=none section_state=body sect_pr=none
+p[627] text="否" style=cqrwst-body-style section_state=body sect_pr=none
+p[628] text="110" style=cqrwst-body-style section_state=body sect_pr=none
+p[629] text="70(57.38)" style=cqrwst-body-style section_state=body sect_pr=none
+p[630] text="33(62.26)" style=cqrwst-body-style section_state=body sect_pr=none
+p[631] text="7(46.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[632] text="" style=none section_state=body sect_pr=none
+p[633] text="" style=none section_state=body sect_pr=none
+p[634] text="接受过健康教育" style=cqrwst-body-style section_state=body sect_pr=none
+p[635] text="是" style=cqrwst-body-style section_state=body sect_pr=none
+p[636] text="65" style=cqrwst-body-style section_state=body sect_pr=none
+p[637] text="18(14.75)" style=cqrwst-body-style section_state=body sect_pr=none
+p[638] text="34(64.15)" style=cqrwst-body-style section_state=body sect_pr=none
+p[639] text="13(86.67)" style=cqrwst-body-style section_state=body sect_pr=none
+p[640] text="59.968" style=cqrwst-body-style section_state=body sect_pr=none
+p[641] text="&lt;0.001" style=cqrwst-body-style section_state=body sect_pr=none
+p[642] text="" style=none section_state=body sect_pr=none
+p[643] text="否" style=cqrwst-body-style section_state=body sect_pr=none
+p[644] text="125" style=cqrwst-body-style section_state=body sect_pr=none
+p[645] text="104(85.25)" style=cqrwst-body-style section_state=body sect_pr=none
+p[646] text="19(35.85)" style=cqrwst-body-style section_state=body sect_pr=none
+p[647] text="2(13.33)" style=cqrwst-body-style section_state=body sect_pr=none
+p[648] text="" style=none section_state=body sect_pr=none
+p[649] text="" style=none section_state=body sect_pr=none
+p[650] text="" style=none section_state=body sect_pr=none
+p[651] text="4.2 糖尿病患者疾病知识认知水平的多因素分析" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[652] text="多因素分析显示，年龄、文化程度、家庭月收入、接受过健康教育是社区二型糖尿病患者疾病认知水平的影响因素（P＜0.05），即年龄越小、文化程度越高、家庭月收入越高、接受过健康教育的患者疾病认知水平越高。见表4-2" style=cqrwst-body-style section_state=body sect_pr=none
+p[653] text="表4-2 糖尿病知识水平影响因素的多分类logistic回归分析" style=cqrwst-body-style section_state=body sect_pr=none
+p[654] text="自变量" style=cqrwst-body-style section_state=body sect_pr=none
+p[655] text="β" style=cqrwst-body-style section_state=body sect_pr=none
+p[656] text="SE" style=cqrwst-body-style section_state=body sect_pr=none
+p[657] text="Wald2" style=cqrwst-body-style section_state=body sect_pr=none
+p[658] text="P" style=cqrwst-body-style section_state=body sect_pr=none
+p[659] text="OR" style=cqrwst-body-style section_state=body sect_pr=none
+p[660] text="95%CI" style=cqrwst-body-style section_state=body sect_pr=none
+p[661] text="年龄为&lt;40岁" style=cqrwst-body-style section_state=body sect_pr=none
+p[662] text="1.932" style=cqrwst-body-style section_state=body sect_pr=none
+p[663] text="0.769" style=cqrwst-body-style section_state=body sect_pr=none
+p[664] text="6.307" style=cqrwst-body-style section_state=body sect_pr=none
+p[665] text="0.012" style=cqrwst-body-style section_state=body sect_pr=none
+p[666] text="6.903" style=cqrwst-body-style section_state=body sect_pr=none
+p[667] text="1.541~30.914" style=cqrwst-body-style section_state=body sect_pr=none
+p[668] text="年龄为40-60岁" style=cqrwst-body-style section_state=body sect_pr=none
+p[669] text="1.262" style=cqrwst-body-style section_state=body sect_pr=none
+p[670] text="0.621" style=cqrwst-body-style section_state=body sect_pr=none
+p[671] text="4.127" style=cqrwst-body-style section_state=body sect_pr=none
+p[672] text="0.042" style=cqrwst-body-style section_state=body sect_pr=none
+p[673] text="3.532" style=cqrwst-body-style section_state=body sect_pr=none
+p[674] text="1.040~11.997" style=cqrwst-body-style section_state=body sect_pr=none
+p[675] text="职业为脑力劳动" style=cqrwst-body-style section_state=body sect_pr=none
+p[676] text="-1.144" style=cqrwst-body-style section_state=body sect_pr=none
+p[677] text="0.646" style=cqrwst-body-style section_state=body sect_pr=none
+p[678] text="3.141" style=cqrwst-body-style section_state=body sect_pr=none
+p[679] text="0.076" style=cqrwst-body-style section_state=body sect_pr=none
+p[680] text="0.318" style=cqrwst-body-style section_state=body sect_pr=none
+p[681] text="0.090~1.123" style=cqrwst-body-style section_state=body sect_pr=none
+p[682] text="职业为体力劳动" style=cqrwst-body-style section_state=body sect_pr=none
+p[683] text="-0.683" style=cqrwst-body-style section_state=body sect_pr=none
+p[684] text="0.621" style=cqrwst-body-style section_state=body sect_pr=none
+p[685] text="1.209" style=cqrwst-body-style section_state=body sect_pr=none
+p[686] text="0.272" style=cqrwst-body-style section_state=body sect_pr=none
+p[687] text="0.505" style=cqrwst-body-style section_state=body sect_pr=none
+p[688] text="0.153~1.673" style=cqrwst-body-style section_state=body sect_pr=none
+p[689] text="续表4-2 糖尿病知识水平影响因素的多分类logistic回归分析" style=cqrwst-body-style section_state=body sect_pr=none
+p[690] text="自变量" style=cqrwst-body-style section_state=body sect_pr=none
+p[691] text="β" style=cqrwst-body-style section_state=body sect_pr=none
+p[692] text="SE" style=cqrwst-body-style section_state=body sect_pr=none
+p[693] text="Wald2" style=cqrwst-body-style section_state=body sect_pr=none
+p[694] text="P" style=cqrwst-body-style section_state=body sect_pr=none
+p[695] text="OR" style=cqrwst-body-style section_state=body sect_pr=none
+p[696] text="95%CI" style=cqrwst-body-style section_state=body sect_pr=none
+p[697] text="居住地在农村" style=cqrwst-body-style section_state=body sect_pr=none
+p[698] text="-0.536" style=cqrwst-body-style section_state=body sect_pr=none
+p[699] text="0.456" style=cqrwst-body-style section_state=body sect_pr=none
+p[700] text="1.382" style=cqrwst-body-style section_state=body sect_pr=none
+p[701] text="0.240" style=cqrwst-body-style section_state=body sect_pr=none
+p[702] text="0.585" style=cqrwst-body-style section_state=body sect_pr=none
+p[703] text="0.241~1.419" style=cqrwst-body-style section_state=body sect_pr=none
+p[704] text="文化程度为初中及以下" style=cqrwst-body-style section_state=body sect_pr=none
+p[705] text="-1.644" style=cqrwst-body-style section_state=body sect_pr=none
+p[706] text="0.561" style=cqrwst-body-style section_state=body sect_pr=none
+p[707] text="8.603" style=cqrwst-body-style section_state=body sect_pr=none
+p[708] text="0.003" style=cqrwst-body-style section_state=body sect_pr=none
+p[709] text="0.193" style=cqrwst-body-style section_state=body sect_pr=none
+p[710] text="0.064~0.584" style=cqrwst-body-style section_state=body sect_pr=none
+p[711] text="文化程度为中专/高中" style=cqrwst-body-style section_state=body sect_pr=none
+p[712] text="-1.209" style=cqrwst-body-style section_state=body sect_pr=none
+p[713] text="0.486" style=cqrwst-body-style section_state=body sect_pr=none
+p[714] text="6.196" style=cqrwst-body-style section_state=body sect_pr=none
+p[715] text="0.013" style=cqrwst-body-style section_state=body sect_pr=none
+p[716] text="0.299" style=cqrwst-body-style section_state=body sect_pr=none
+p[717] text="0.116~0.767" style=cqrwst-body-style section_state=body sect_pr=none
+p[718] text="家庭月收入为&lt;3000元" style=cqrwst-body-style section_state=body sect_pr=none
+p[719] text="-1.624" style=cqrwst-body-style section_state=body sect_pr=none
+p[720] text="0.571" style=cqrwst-body-style section_state=body sect_pr=none
+p[721] text="8.092" style=cqrwst-body-style section_state=body sect_pr=none
+p[722] text="0.004" style=cqrwst-body-style section_state=body sect_pr=none
+p[723] text="0.197" style=cqrwst-body-style section_state=body sect_pr=none
+p[724] text="0.065~0.594" style=cqrwst-body-style section_state=body sect_pr=none
+p[725] text="家庭月收入为3000-6000元" style=cqrwst-body-style section_state=body sect_pr=none
+p[726] text="-0.479" style=cqrwst-body-style section_state=body sect_pr=none
+p[727] text="0.452" style=cqrwst-body-style section_state=body sect_pr=none
+p[728] text="1.127" style=cqrwst-body-style section_state=body sect_pr=none
+p[729] text="0.288" style=cqrwst-body-style section_state=body sect_pr=none
+p[730] text="0.619" style=cqrwst-body-style section_state=body sect_pr=none
+p[731] text="0.257~1.492" style=cqrwst-body-style section_state=body sect_pr=none
+p[732] text="吸烟" style=cqrwst-body-style section_state=body sect_pr=none
+p[733] text="-0.264" style=cqrwst-body-style section_state=body sect_pr=none
+p[734] text="0.399" style=cqrwst-body-style section_state=body sect_pr=none
+p[735] text="0.438" style=cqrwst-body-style section_state=body sect_pr=none
+p[736] text="0.508" style=cqrwst-body-style section_state=body sect_pr=none
+p[737] text="0.768" style=cqrwst-body-style section_state=body sect_pr=none
+p[738] text="0.354~1.663" style=cqrwst-body-style section_state=body sect_pr=none
+p[739] text="有家族史" style=cqrwst-body-style section_state=body sect_pr=none
+p[740] text="0.114" style=cqrwst-body-style section_state=body sect_pr=none
+p[741] text="0.395" style=cqrwst-body-style section_state=body sect_pr=none
+p[742] text="0.083" style=cqrwst-body-style section_state=body sect_pr=none
+p[743] text="0.773" style=cqrwst-body-style section_state=body sect_pr=none
+p[744] text="1.120" style=cqrwst-body-style section_state=body sect_pr=none
+p[745] text="0.514~2.443" style=cqrwst-body-style section_state=body sect_pr=none
+p[746] text="接受过健康教育" style=cqrwst-body-style section_state=body sect_pr=none
+p[747] text="1.599" style=cqrwst-body-style section_state=body sect_pr=none
+p[748] text="0.434" style=cqrwst-body-style section_state=body sect_pr=none
+p[749] text="13.59" style=cqrwst-body-style section_state=body sect_pr=none
+p[750] text="&lt;0.001" style=cqrwst-body-style section_state=body sect_pr=none
+p[751] text="4.95" style=cqrwst-body-style section_state=body sect_pr=none
+p[752] text="2.071~11.827" style=cqrwst-body-style section_state=body sect_pr=none
+p[753] text="5 结论" style=cqrwst-heading1-style section_state=body sect_pr=none
+p[754] text="5.1 单因素分析结果的核心" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[755] text="单因素分析显示，患者年龄、职业、居住地、文化程度、家庭月收入、吸烟、家族史、接受过健康教育8个变量与患者疾病认知水平显著相关（P＜0.05，而性别、饮酒、病程、血糖及糖化血红蛋白水平、并发症、特殊饮食习惯等变量无统计学意义，反应出患者认知水平的差异先在社会人口学、生活行为及健康干预相关维度体验。" style=cqrwst-body-style section_state=body sect_pr=none
+p[756] text="社会人口学特征是认知水平的基础影响维度，年龄越大、文化程度越低、家庭月收入越低，患者认知差的占比越高。在职业与生活行为方面，无业及退休患者认知差占比达80.33%，远高于脑力、体力劳动者；本研究对象中吸烟患者认知良好占比仅6.67%，提示职业带来的健康关注程度、吸烟相关的健康行为习惯，可能间接影响患者对糖尿病知识的获取与重视。李青等[10]的研究显示，糖尿病患者对健康促进方面的需求远高于对疾病本身知识方面的需求，且调查中仍有部分患者存在吸烟、喝酒等不良行为，改变的依从性差[11][2]，本研究对象中吸烟患者的认知良好占比仅6.67%，喝酒认知良好占比20%，提示患者存在的吸烟饮酒行为影响患者对疾病的认知。" style=cqrwst-body-style section_state=body sect_pr=none
+p[757] text="在健康相关的因素中，有家族史、接受过健康教育的患者认知水平更优，尤其是接受过健康教育的患者，认知差占比仅14.75%，认知良好占比达86.67%，直接体现了接受过健康教育对提升疾病认知的直接作用。所以要加强对患者的健康教育，提升患者的疾病知识认知现状，从而达到控制疾病的效果，减轻家庭和社会的负担。" style=cqrwst-body-style section_state=body sect_pr=none
+p[758] text="血糖、病程、并发症等临床指标未显示出显著相关性，说明患者的疾病认知水平并非由病情严重程度直接决定，即使病程长、血糖控制不佳或合并并发症，也未必会主动提升对疾病的了解，反应出社区患者的认知提升并非随病情发展而加强了解，需外部干预。" style=cqrwst-body-style section_state=body sect_pr=none
+p[759] text="5.2 多因素分析的关键结论：核心影响因素的筛选与验证" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[760] text="将单因素有统计学意义的变量纳入多因素分析后，最终明确年龄、文化程度、家庭月收入、接受过健康教育是社区2型糖尿病患者疾病认知水平的独立影响因素（P＜0.05），职业、居住地、吸烟、家族史等变量的独立作用消失，这一结果更具实践指导价值，可明确干预的核心靶点。" style=cqrwst-body-style section_state=body sect_pr=none
+p[761] text="年龄是重要独立保护因素：＜40岁患者认知水平的OR值达6.903（95%CI；1.541-30.914），40-60岁患者OR值为3.532（95%CI:1.040-11.997），说明年龄越小，认识水平越高。这可能与中青年群体学习能力、信息获取渠道更丰富，对健康知识的接受度与关注度更高，而老年患者多存在学习能力下降、信息获取单一等问题，成为认知薄弱群体。" style=cqrwst-body-style section_state=body sect_pr=none
+p[762] text="文化程度与及家庭月收入构成认知的双重支撑：初中及以下文化程度患者OR值仅0.193，中专/高中为0.299，家庭月收入＜3000元患者OR值0.197，均为显著危险因素。文化程度与知识水平密切相关， 随着文化程度的增高，患者的知识水平相应增高， 这与以往的文献显示一致[12]，患者文化程度越高、阅读理解能力越强, 糖尿病教育效果越好, 提示对于文化程度不高的患者要使用浅显的语言,教育目标应适当降低,目标也应更具体。文化程度决定了患者对疾病知识的理解、解读能力，而家庭月收入则影响患者获取健康信息、参与健康宣教的时间与经济成本，经济状况的好坏对患者健康知识掌握的全面与否呈正相关，经济条件好的患者，可以通过各种渠道了解较全面的徤康知识， 参加各种健康教育讲座，以便增长自身对此疾病的知识[13]。二者共同构成了疾病认知的“能力-资源”双重支撑，对于收入低、低文化人群，要加强对此类人群的干预，将此类人群作为认知干预群体的重难点。" style=cqrwst-body-style section_state=body sect_pr=none
+p[763] text="健康教育是最具可操作性的独立干预因素：接受过健康教育的患者OR值达4.95（95%CI：2.071-11.827），是提升认知水平的最强正向因素。这一结果验证了健康宣教的有效性，也说明社区糖尿病健康教育管理中，健康教育的覆盖与落实程度，直接决定了患者认知程度的的高低，是后续干预最易切入、效果最明确的环节。患者接受糖尿病教育课程在对糖尿病教育效果影响作用中位列第一, 说明开展系统的糖尿病健康宣教在糖尿病教育中的重要作用[12]。因此，我们要设计要有人性化、个体化的健康教育形式来满足患者的糖尿病健康教育。" style=cqrwst-body-style section_state=body sect_pr=none
+p[764] text="职业、居住地等变量的非独立作用解读：职业、居住低在单因素中显著但多因素中无统计学意义，原因可能为这些变量与文化程度、家庭月收入存在共线性——如城镇患者多为高文华、高收入群体，脑力劳动者文化程度与收入水平普遍更高，其对认知的影响已倍核心变量覆盖，并非独立作业。而吸烟、家族史的非独立作用，提示其对认知的影响需通过其他变量介导，并非直接影响因素。" style=cqrwst-body-style section_state=body sect_pr=none
+p[765] text="5.3 研究结果对社区糖尿病健康管理的实践意义" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[766] text="结合本次分析结果，社区2型糖尿病疾病认识干预需聚焦重点人群、强化核心手段、兼顾基础保障，制定针对性策略：" style=cqrwst-body-style section_state=body sect_pr=none
+p[767] text="针对知识较为薄弱的核心群体，我们可以采取更有针对性的干预措施：在开展认知干预的过程中，可以把60岁以上的老年人、初中及以下文化程度、家庭月收入低于3000元、农村地区居住的患者作为认知干预的重点对象。根据老年人的学习特点，采用通俗易懂的形式（比如图文手册、视频宣传、面对面讲解），降低知识的理解难度。而对于针对低收入的群体，可以开展免费的社区健康讲座，或是上门入户宣教，减少患者获取健康知识的时间和经济成本。" style=cqrwst-body-style section_state=body sect_pr=none
+p[768] text="强化健康教育的核心作用，实现宣教的全面覆盖与常态化：将健康教育作为社区糖尿病管理的一项基础工作，不断扩大宣教覆盖的范围，尤其是针对于无业以及退休、吸烟等单因素中认识薄弱的群体，主动开展宣教。在此基础上进一步丰富宣教的内容，不仅包含糖尿病的病因、疾病的症状，还涵盖血糖的监测、危险因素的控制、合理的运动、规范用药等知识，提升宣教的实用性。" style=cqrwst-body-style section_state=body sect_pr=none
+p[769] text="联动多维度资源，改善认知的基础支撑条件：结合乡村振兴和社区公共服务提升，逐步的缩小城乡糖尿病知识的资源差距。通过与社区居委会、企业事业单位开展的合作，采取针对不同职业、收入群体开展的差异化宣教，例如为体力劳动的人群、无业及退休的人员开展灵活的宣教时间，以提升参与积极性和宣教效果。" style=cqrwst-body-style section_state=body sect_pr=none
+p[770] text="弱化病情指标带来的被动影响，强化主动认知的引导：由于患者的病程、血糖等临床指标与患者的认知无显著关联。所以社区的医护人员需避免“患者的病情加重自然会重视的认知”这一误区，对所有的糖尿病患者，无论其病情轻重、病程长短，都应在确诊后及时的开展疾病认知宣教，实现早干预、早提升。" style=cqrwst-body-style section_state=body sect_pr=none
+p[771] text="5.4 研究的潜在局限性" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[772] text="本此研究虽明确了核心影响因素，但仍存在一定的局限性：一是研究对象为社区患者，其样本的代表性有地域限制，该研究的结果未必适用于其他地区：二是未考虑患者的健康信息获取渠道、家庭健康认知等中介变量，可能存在遗漏部分的影响因素：三是知识水平的评价未进行长期的随访，无法明确健康教育在长期内起到的效果及认知水平对血糖控制的效果、并发症发生的后续影响。在今后的相关研究中，可扩大样本的范围，把更多可能存在的中介变量纳入分析，同时也可以开展前瞻性的随访研究，进一步的去验证认知水平与糖尿病临床指标之间的联系。" style=cqrwst-body-style section_state=body sect_pr=none
+p[773] text="5.5 总结" style=cqrwst-heading2-style section_state=body sect_pr=none
+p[774] text="本次研究 证实，社区2型糖尿病患者的认知水平并非由病情指标直接决定。而是由年龄、文化程度、家庭月收入等基础社会人口学特征，与接受过健康教育这一外部干预因素共同决定。其中，健康教育是最具可操作性的独立正向因素，为社区糖尿病健康管理提供了明确的干预方向。未来社区糖尿病健康管理工作中，需要以重点薄弱人群为核心，强化健康教育的全面覆盖和个性化，同时兼顾文化、经济、城乡等基础条件的改善，从根本上提升患者的疾病认知水平，为后续血糖控制、并发症防控奠定认知基础，最终提升社区2型糖尿病的整体管理水平。" style=cqrwst-body-style section_state=body sect_pr=none
+p[775] text="" style=none section_state=body sect_pr=none
+p[776] text="" style=none section_state=body sect_pr=none
+p[777] text="" style=none section_state=body sect_pr=none
+p[778] text="" style=none section_state=body sect_pr=none
+p[779] text="" style=none section_state=body sect_pr=none
+p[780] text="" style=none section_state=body sect_pr=none
+p[781] text="参考文献" style=cqrwst-heading1-style section_state=references sect_pr=none
+p[782] text="[1] 刘娟娟,姬学光.全媒体健康教育对2型糖尿病患者疾病认知水平及健康生活方式的影响[J].中国医药导报,2021,18(24):140-144.DOI:10.20047/j.issn1673-7210.2021.24.035." style=cqrwst-reference-style section_state=references sect_pr=none
+p[783] text="[2] 郑晓萌.多学科团队模式在社区糖尿病患者疾病管理中的应用效果评价[D].石河子大学,2016." style=cqrwst-reference-style section_state=references sect_pr=none
+p[784] text="[3] 张颖,苑书岩,刘颖,等.长春市某医院2型糖尿病患者疾病认知水平调查及影响因素分析[J].中国社区医师,2025,41(07):150-152." style=cqrwst-reference-style section_state=references sect_pr=none
+p[785] text="[4] 李平,杨艳杰,项莹,等.自我效能在2型糖尿病患者疾病认知和自我管理行为间的中介效应分析[J].哈尔滨医科大学学报,2021,55(02):201-204." style=cqrwst-reference-style section_state=references sect_pr=none
+p[786] text="[5] 王俊薇,管丽华,邢媛,等.社区2型糖尿病及糖尿病前期管理现状调查研究[J].中国全科医学,2021,24(27):3439-3443+3450." style=cqrwst-reference-style section_state=references sect_pr=none
+p[787] text="[6] 廖艳.探究老年2型糖尿病的自我管理水平提升的研究进展[C]//重庆市健康促进与健康教育学会.临床医学健康与传播学术研讨会论文集（第四册）.广西壮族自治区南溪山医院;,2025:285-288." style=cqrwst-reference-style section_state=references sect_pr=none
+p[788] text="[7] Taimur H ,Ahmad I ,Khan H , et al.A scoping review of type 2 diabetes mellitus in Pakistan investigating the status of glycemic control, awareness, treatment adherence, complications and cost[J].Frontiers in Endocrinology,2024,151441591-1441591." style=cqrwst-reference-style section_state=references sect_pr=none
+p[789] text="[8] 黄金,刘跃华,张艳,等.2型糖尿病患者自我管理现状与糖尿病知识、态度的相关性[J].中南大学学报(医学版),2013,38(02):176-181." style=cqrwst-reference-style section_state=references sect_pr=none
+p[790] text="[9] 张丛笑,章华米,胡小炜,等.社区2型糖尿病患者知识水平及其影响因素的logistic回归分析[J].中国慢性病预防与控制,2016,24(01):35-37.DOI:10.16386/j.cjpccd.issn.1004-6194.2016.01.010." style=cqrwst-reference-style section_state=references sect_pr=none
+p[791] text="[10] 金学勤,徐桂华.社区糖尿病患者自我管理干预模式的研究进展[J].实用临床医药杂志,2015,19(18):196-199." style=cqrwst-reference-style section_state=references sect_pr=none
+p[792] text="[11] 李青,何朝珠,何雪莹,等.南昌市糖尿病患者社区护理需求调查及其影响因素分析[J].中华护理杂志,2012,47(06):494-497." style=cqrwst-reference-style section_state=references sect_pr=none
+p[793] text="[12] 呼庆红,梁真,欧慧婷,等.糖尿病患者糖尿病知识知晓现状调查及影响因素分析[J].护理学报,2007,(05):3-6.DOI:10.16460/j.issn1008-9969.2007.05.002." style=cqrwst-reference-style section_state=references sect_pr=none
+p[794] text="[13] 蒋燕燕.2型糖尿病患者知识影响因素分析及健康教育策略[D].蚌埠医学院,2014." style=cqrwst-reference-style section_state=references sect_pr=none
+p[795] text="[14]  Liao X ,Zhang Y ,Xu J , et al.A Narrative Review on Cognitive Impairment in Type 2 Diabetes: Global Trends and Diagnostic Approaches[J].Biomedicines,2025,13(2):473-473." style=cqrwst-reference-style section_state=references sect_pr=none
+p[796] text="[15]  Kan W ,Qu M ,Wang Y , et al.A review of type 2 diabetes mellitus and cognitive impairment[J].Frontiers in Endocrinology,2025,161624472-1624472." style=cqrwst-reference-style section_state=references sect_pr=none
+p[797] text="[16]  Mueller C ,Neusser T ,Waschke T I , et al.Disease Awareness in Patients With Type 2 Diabetes: Analysis of Baseline Data From the SMART-Finder Observational Study.[J].JMIR formative research,2025,9e60246." style=cqrwst-reference-style section_state=references sect_pr=none
+p[798] text="致      谢" style=cqrwst-body-style section_state=references sect_pr=none
+p[799] text="这篇论文的完成，也标志着我四年的大学生活即将结束。本科这四年的时光转瞬即逝，通过这四年的学习，我相信自己能更好的适应社会。即将离别母校，我更觉感激和不舍。" style=cqrwst-body-style section_state=references sect_pr=none
+p[800] text="本次论文的完成，离不开老师和同学的帮助。首先我由衷的感谢我的论文指导老师杨老师，在论文的选题、研究设计、撰写以及修改过程中，老师始终给予悉心指导与严谨把关，提出许多宝贵的意见，使得我受益匪浅。同时也要感谢学习生涯中每一位教授过我知识，帮助过我的老师，是你们的精彩讲授1拓宽了我的知识视野，为我的研究奠定了坚实基础，桃李不言，下子成蹊。" style=cqrwst-body-style section_state=references sect_pr=none
+p[801] text="最后要感谢我的家人和朋友们，感谢你们在成长过程中给予我的激励、感动和帮助，是你们的理解和包容成就了今天的我。" style=cqrwst-body-style section_state=references sect_pr=none
+p[802] text="行文至此，感激将尽。感恩所有的相遇。时光短暂不经缠，未来有期待长谈。落笔为终，论文停留致谢，人生有待书写。" style=cqrwst-body-style section_state=references sect_pr=none
+p[803] text="" style=none section_state=references sect_pr=none
+p[804] text="" style=none section_state=references sect_pr=none
+p[805] text="" style=none section_state=references sect_pr=none

@@ -1,0 +1,5 @@
+operation=check
+passed=false
+fix_count=1
+issues=1
+issue[000] rule=cqrwst-body-style kind=repairable_style severity=error target=word/document.xml message="正文应为宋体小四号、数字外文 Times New Roman、两端对齐、首行缩进2字符、1.5倍行距"

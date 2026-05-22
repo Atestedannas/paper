@@ -1,0 +1,562 @@
+{
+  "input_exists": true,
+  "output_exists": true,
+  "header_entries": [
+    "word/header1.xml",
+    "word/header2.xml",
+    "word/header3.xml",
+    "word/header4.xml",
+    "word/header5.xml",
+    "word/header6.xml",
+    "word/header7.xml",
+    "word/header8.xml"
+  ],
+  "first_children_input": [
+    {
+      "i": 0,
+      "kind": "p",
+      "text": "",
+      "len": 383,
+      "hasSectPr": false
+    },
+    {
+      "i": 1,
+      "kind": "p",
+      "text": "",
+      "len": 2053,
+      "hasSectPr": false
+    },
+    {
+      "i": 2,
+      "kind": "p",
+      "text": "",
+      "len": 117,
+      "hasSectPr": false
+    },
+    {
+      "i": 3,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"left\" w:leader=\"none\" w:pos=\"184",
+      "len": 814,
+      "hasSectPr": false
+    },
+    {
+      "i": 4,
+      "kind": "tbl",
+      "text": "<w:tblPr><w:tblpPr w:leftFromText=\"180\" w:rightFromText=\"180\" w:vertAnchor=\"text",
+      "len": 3772,
+      "hasSectPr": false,
+      "tblPr": "<w:tblPr><w:tblpPr w:leftFromText=\"180\" w:rightFromText=\"180\" w:vertAnchor=\"text\" w:horzAnchor=\"page\" w:tblpX=\"2181\" w:tblpY=\"554\"/><w:tblOverlap w:val=\"never\"/><w:tblW w:w=\"7819\" w:type=\"dxa\"/><w:jc w:val=\"start\"/><w:tblInd w:w=\"108\" w:type=\"dxa\"/><w:tblLayout w:type=\"fixed\"/><w:tblCellMar><w:top w:w=\"0\" w:type=\"dxa\"/><w:start w:w=\"108\" w:type=\"dxa\"/><w:bottom w:w=\"0\" w:type=\"dxa\"/><w:end w:w=\"108\" w:type=\"dxa\"/></w:tblCellMar></w:tblPr>"
+    },
+    {
+      "i": 5,
+      "kind": "p",
+      "text": "",
+      "len": 271,
+      "hasSectPr": false
+    },
+    {
+      "i": 6,
+      "kind": "p",
+      "text": "",
+      "len": 271,
+      "hasSectPr": false
+    },
+    {
+      "i": 7,
+      "kind": "p",
+      "text": "",
+      "len": 333,
+      "hasSectPr": false
+    },
+    {
+      "i": 8,
+      "kind": "p",
+      "text": "",
+      "len": 547,
+      "hasSectPr": false
+    },
+    {
+      "i": 9,
+      "kind": "tbl",
+      "text": "<w:tblPr><w:tblW w:w=\"7815\" w:type=\"dxa\"/><w:jc w:val=\"start\"/><w:tblInd w:w=\"10",
+      "len": 8843,
+      "hasSectPr": false,
+      "tblPr": "<w:tblPr><w:tblW w:w=\"7815\" w:type=\"dxa\"/><w:jc w:val=\"start\"/><w:tblInd w:w=\"1055\" w:type=\"dxa\"/><w:tblLayout w:type=\"fixed\"/><w:tblCellMar><w:top w:w=\"0\" w:type=\"dxa\"/><w:start w:w=\"113\" w:type=\"dxa\"/><w:bottom w:w=\"0\" w:type=\"dxa\"/><w:end w:w=\"170\" w:type=\"dxa\"/></w:tblCellMar></w:tblPr>"
+    },
+    {
+      "i": 10,
+      "kind": "p",
+      "text": "",
+      "len": 473,
+      "hasSectPr": false
+    },
+    {
+      "i": 11,
+      "kind": "p",
+      "text": "",
+      "len": 473,
+      "hasSectPr": false
+    },
+    {
+      "i": 12,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"left\" w:leader=\"none\" w:pos=\"340",
+      "len": 1669,
+      "hasSectPr": true
+    },
+    {
+      "i": 13,
+      "kind": "p",
+      "text": "",
+      "len": 333,
+      "hasSectPr": false
+    },
+    {
+      "i": 14,
+      "kind": "p",
+      "text": "",
+      "len": 473,
+      "hasSectPr": false
+    },
+    {
+      "i": 15,
+      "kind": "p",
+      "text": "社区2型糖尿病患者疾病知识认知现状及影响因素分析",
+      "len": 814,
+      "hasSectPr": false
+    },
+    {
+      "i": 16,
+      "kind": "p",
+      "text": "摘要：目的  探讨社区二型糖尿病患者疾病知识认水平的影响因素。方法  选择2025年10月-2026年2月的社区二型糖尿病患者190例作为研究对象，采用由陈蔼玲",
+      "len": 4832,
+      "hasSectPr": false
+    },
+    {
+      "i": 17,
+      "kind": "p",
+      "text": "关键词：社区二型糖尿病；认知水平；影响因素",
+      "len": 646,
+      "hasSectPr": false
+    },
+    {
+      "i": 18,
+      "kind": "p",
+      "text": "Abstract: Objective To explore the influencing factors of disease knowledge of t",
+      "len": 2311,
+      "hasSectPr": false
+    },
+    {
+      "i": 19,
+      "kind": "p",
+      "text": "Key words: Community type 2 diabetes; Cognitive level; Influencing factors",
+      "len": 1588,
+      "hasSectPr": false
+    },
+    {
+      "i": 20,
+      "kind": "p",
+      "text": "",
+      "len": 197,
+      "hasSectPr": false
+    },
+    {
+      "i": 21,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 22,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 23,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 24,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 25,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 26,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 27,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 28,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 29,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 30,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 31,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 32,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 33,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    },
+    {
+      "i": 34,
+      "kind": "p",
+      "text": "",
+      "len": 79,
+      "hasSectPr": false
+    }
+  ],
+  "first_children_output": [
+    {
+      "i": 0,
+      "kind": "p",
+      "text": "",
+      "len": 383,
+      "hasSectPr": false
+    },
+    {
+      "i": 1,
+      "kind": "p",
+      "text": "",
+      "len": 2053,
+      "hasSectPr": false
+    },
+    {
+      "i": 2,
+      "kind": "p",
+      "text": "",
+      "len": 117,
+      "hasSectPr": false
+    },
+    {
+      "i": 3,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"left\" w:leader=\"none\" w:pos=\"184",
+      "len": 814,
+      "hasSectPr": false
+    },
+    {
+      "i": 4,
+      "kind": "tbl",
+      "text": "<w:tblPr><w:tblpPr w:leftFromText=\"180\" w:rightFromText=\"180\" w:vertAnchor=\"text",
+      "len": 3771,
+      "hasSectPr": false,
+      "tblPr": "<w:tblPr><w:tblpPr w:leftFromText=\"180\" w:rightFromText=\"180\" w:vertAnchor=\"text\" w:horzAnchor=\"page\" w:tblpX=\"2181\" w:tblpY=\"554\"/><w:tblOverlap w:val=\"never\"/><w:tblW w:w=\"7819\" w:type=\"dxa\"/><w:jc w:val=\"left\"/><w:tblInd w:w=\"108\" w:type=\"dxa\"/><w:tblLayout w:type=\"fixed\"/><w:tblCellMar><w:top w:w=\"0\" w:type=\"dxa\"/><w:start w:w=\"108\" w:type=\"dxa\"/><w:bottom w:w=\"0\" w:type=\"dxa\"/><w:end w:w=\"108\" w:type=\"dxa\"/></w:tblCellMar></w:tblPr>"
+    },
+    {
+      "i": 5,
+      "kind": "p",
+      "text": "",
+      "len": 271,
+      "hasSectPr": false
+    },
+    {
+      "i": 6,
+      "kind": "p",
+      "text": "",
+      "len": 271,
+      "hasSectPr": false
+    },
+    {
+      "i": 7,
+      "kind": "p",
+      "text": "",
+      "len": 333,
+      "hasSectPr": false
+    },
+    {
+      "i": 8,
+      "kind": "p",
+      "text": "",
+      "len": 547,
+      "hasSectPr": false
+    },
+    {
+      "i": 9,
+      "kind": "tbl",
+      "text": "<w:tblPr><w:tblW w:w=\"7815\" w:type=\"dxa\"/><w:jc w:val=\"left\"/><w:tblInd w:w=\"105",
+      "len": 8842,
+      "hasSectPr": false,
+      "tblPr": "<w:tblPr><w:tblW w:w=\"7815\" w:type=\"dxa\"/><w:jc w:val=\"left\"/><w:tblInd w:w=\"1055\" w:type=\"dxa\"/><w:tblLayout w:type=\"fixed\"/><w:tblCellMar><w:top w:w=\"0\" w:type=\"dxa\"/><w:start w:w=\"113\" w:type=\"dxa\"/><w:bottom w:w=\"0\" w:type=\"dxa\"/><w:end w:w=\"170\" w:type=\"dxa\"/></w:tblCellMar></w:tblPr>"
+    },
+    {
+      "i": 10,
+      "kind": "p",
+      "text": "",
+      "len": 473,
+      "hasSectPr": false
+    },
+    {
+      "i": 11,
+      "kind": "p",
+      "text": "",
+      "len": 473,
+      "hasSectPr": false
+    },
+    {
+      "i": 12,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"left\" w:leader=\"none\" w:pos=\"340",
+      "len": 1216,
+      "hasSectPr": false
+    },
+    {
+      "i": 13,
+      "kind": "p",
+      "text": "",
+      "len": 333,
+      "hasSectPr": false
+    },
+    {
+      "i": 14,
+      "kind": "p",
+      "text": "",
+      "len": 473,
+      "hasSectPr": false
+    },
+    {
+      "i": 15,
+      "kind": "p",
+      "text": "</w:sectPr></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"黑体;SimHei\" w:hAnsi=\"黑体;SimHei\"",
+      "len": 861,
+      "hasSectPr": true
+    },
+    {
+      "i": 16,
+      "kind": "p",
+      "text": "摘要：目的  探讨社区二型糖尿病患者疾病知识认水平的影响因素。方法  选择2025年10月-2026年2月的社区二型糖尿病患者190例作为研究对象，采用由陈蔼玲",
+      "len": 839,
+      "hasSectPr": false
+    },
+    {
+      "i": 17,
+      "kind": "p",
+      "text": "关键词：社区二型糖尿病；认知水平；影响因素",
+      "len": 432,
+      "hasSectPr": false
+    },
+    {
+      "i": 18,
+      "kind": "p",
+      "text": "Abstract:Objective To explore the influencing factors of disease knowledge of ty",
+      "len": 1985,
+      "hasSectPr": false
+    },
+    {
+      "i": 19,
+      "kind": "p",
+      "text": "<w:headerReference w:type=\"default\" r:id=\"rIdCQRWSTHeader1\"/><w:footerReference ",
+      "len": 1946,
+      "hasSectPr": true
+    },
+    {
+      "i": 20,
+      "kind": "p",
+      "text": "目      录",
+      "len": 725,
+      "hasSectPr": false
+    },
+    {
+      "i": 21,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 1068,
+      "hasSectPr": false
+    },
+    {
+      "i": 22,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 915,
+      "hasSectPr": false
+    },
+    {
+      "i": 23,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 775,
+      "hasSectPr": false
+    },
+    {
+      "i": 24,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 779,
+      "hasSectPr": false
+    },
+    {
+      "i": 25,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 757,
+      "hasSectPr": false
+    },
+    {
+      "i": 26,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 757,
+      "hasSectPr": false
+    },
+    {
+      "i": 27,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 761,
+      "hasSectPr": false
+    },
+    {
+      "i": 28,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 759,
+      "hasSectPr": false
+    },
+    {
+      "i": 29,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 762,
+      "hasSectPr": false
+    },
+    {
+      "i": 30,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 780,
+      "hasSectPr": false
+    },
+    {
+      "i": 31,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 779,
+      "hasSectPr": false
+    },
+    {
+      "i": 32,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 783,
+      "hasSectPr": false
+    },
+    {
+      "i": 33,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 781,
+      "hasSectPr": false
+    },
+    {
+      "i": 34,
+      "kind": "p",
+      "text": "<w:tab w:val=\"clear\" w:pos=\"420\"/><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"934",
+      "len": 781,
+      "hasSectPr": false
+    }
+  ],
+  "headers": {
+    "word/header1.xml": {
+      "text": "重庆人文科技学院2026届护理学专业本科毕业论文",
+      "double": true,
+      "sz4": true,
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:hdr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/><w:pBdr><w:bottom w:val=\"double\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"Times New Roman\" w:hAnsi=\"Time"
+    },
+    "word/header2.xml": {
+      "text": "重庆人文科技学院2026届护理学专业本科毕业论文",
+      "double": true,
+      "sz4": true,
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:hdr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/><w:pBdr><w:bottom w:val=\"double\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"Times New Roman\" w:hAnsi=\"Time"
+    },
+    "word/header3.xml": {
+      "text": "重庆人文科技学院2026届护理学专业本科毕业论文",
+      "double": true,
+      "sz4": true,
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:hdr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/><w:pBdr><w:bottom w:val=\"double\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"Times New Roman\" w:hAnsi=\"Time"
+    },
+    "word/header4.xml": {
+      "text": "重庆人文科技学院2026届护理学专业本科毕业论文",
+      "double": true,
+      "sz4": true,
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:hdr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/><w:pBdr><w:bottom w:val=\"double\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"Times New Roman\" w:hAnsi=\"Time"
+    },
+    "word/header5.xml": {
+      "text": "重庆人文科技学院2026届护理学专业本科毕业论文",
+      "double": true,
+      "sz4": true,
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:hdr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/><w:pBdr><w:bottom w:val=\"double\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"Times New Roman\" w:hAnsi=\"Time"
+    },
+    "word/header6.xml": {
+      "text": "重庆人文科技学院2026届护理学专业本科毕业论文",
+      "double": true,
+      "sz4": true,
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:hdr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/><w:pBdr><w:bottom w:val=\"double\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"Times New Roman\" w:hAnsi=\"Time"
+    },
+    "word/header7.xml": {
+      "text": "重庆人文科技学院2026届护理学专业本科毕业论文",
+      "double": true,
+      "sz4": true,
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:hdr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/><w:pBdr><w:bottom w:val=\"double\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"Times New Roman\" w:hAnsi=\"Time"
+    },
+    "word/header8.xml": {
+      "text": "重庆人文科技学院2026届护理学专业本科毕业论文",
+      "double": true,
+      "sz4": true,
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:hdr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:p><w:pPr><w:jc w:val=\"center\"/><w:pBdr><w:bottom w:val=\"double\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"Times New Roman\" w:hAnsi=\"Time"
+    }
+  }
+}

@@ -5,7 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="ci: add gitee go backend deployment">
-      <change beforePath="$PROJECT_DIR$/cmd/server/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/cmd/server/main.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/layout/components/NavBar/components/NavbarRight.vue" beforeDir="false" afterPath="D:/workpace/博客/front/vue3-element-admin/src/layout/components/NavBar/components/NavbarRight.vue" afterDir="false" />
       <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/views/dashboard/index.vue" beforeDir="false" afterPath="D:/workpace/博客/front/vue3-element-admin/src/views/dashboard/index.vue" afterDir="false" />
       <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/views/profile/index.vue" beforeDir="false" afterPath="D:/workpace/博客/front/vue3-element-admin/src/views/profile/index.vue" afterDir="false" />
@@ -66,7 +66,7 @@
     "WebServerToolWindowPanel.toolwindow.show.date": "false",
     "WebServerToolWindowPanel.toolwindow.show.permissions": "false",
     "WebServerToolWindowPanel.toolwindow.show.size": "false",
-    "git-widget-placeholder": "task1-v2-workflow-models",
+    "git-widget-placeholder": "main",
     "go.import.settings.migrated": "true",
     "go.sdk.automatically.set": "true",
     "last_opened_file_path": "C:/Users/user/.config/superpowers/worktrees/paper/docx-closed-loop-task1",

@@ -1,0 +1,4103 @@
+{
+  "template": {
+    "path": "C:\\Users\\user\\.config\\superpowers\\worktrees\\paper\\docx-closed-loop-task1\\uploads\\template.docx",
+    "paragraphs": 272,
+    "tables": 39,
+    "drawings": 25,
+    "sections": [
+      {
+        "headers": [],
+        "footers": [],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1134",
+          "bottom": "1134",
+          "left": "1134",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": null,
+        "pgNumStart": null
+      },
+      {
+        "headers": [
+          "rId8"
+        ],
+        "footers": [
+          "rId9"
+        ],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1418",
+          "bottom": "1134",
+          "left": "1418",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": "upperRoman",
+        "pgNumStart": "0"
+      },
+      {
+        "headers": [],
+        "footers": [],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1418",
+          "bottom": "1134",
+          "left": "1418",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": "upperRoman",
+        "pgNumStart": "1"
+      },
+      {
+        "headers": [],
+        "footers": [
+          "rId10"
+        ],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1418",
+          "bottom": "1134",
+          "left": "1418",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": null,
+        "pgNumStart": null
+      },
+      {
+        "headers": [],
+        "footers": [
+          "rId11"
+        ],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1418",
+          "bottom": "1134",
+          "left": "1418",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": null,
+        "pgNumStart": "1"
+      },
+      {
+        "headers": [],
+        "footers": [],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1418",
+          "bottom": "1134",
+          "left": "1418",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": null,
+        "pgNumStart": null
+      },
+      {
+        "headers": [],
+        "footers": [],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1418",
+          "bottom": "1134",
+          "left": "1418",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": null,
+        "pgNumStart": null
+      },
+      {
+        "headers": [],
+        "footers": [],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1418",
+          "bottom": "1134",
+          "left": "1418",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": null,
+        "pgNumStart": null
+      },
+      {
+        "headers": [],
+        "footers": [],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1418",
+          "bottom": "1134",
+          "left": "1418",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": null,
+        "pgNumStart": null
+      },
+      {
+        "headers": [
+          "rId22"
+        ],
+        "footers": [],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1418",
+          "bottom": "1134",
+          "left": "1418",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": null,
+        "pgNumStart": null
+      }
+    ],
+    "headersFooters": {
+      "word/header1.xml": {
+        "text": "重庆人文科技学院2026届XXX专业本科毕业论文/设计",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": [
+          "21"
+        ]
+      },
+      "word/footer3.xml": {
+        "text": "第 0 页 共 12页",
+        "hasPAGE": true,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/footer2.xml": {
+        "text": "",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/footer1.xml": {
+        "text": "2",
+        "hasPAGE": true,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/header2.xml": {
+        "text": "",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      }
+    },
+    "captions": [
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "图1.1 Mesh拓扑结构和Torus拓扑结构",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "time",
+            "hAnsi": "time"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "表2.1 访谈对象基本信息表",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "time",
+            "hAnsi": "time"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "表2.1 递归最小二乘算法",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      }
+    ],
+    "unnumberedCaptions": [
+      "图、表、公式、算式：",
+      "图：",
+      "表：",
+      "表格采用三线表。大专",
+      "表格采用三线表。",
+      "表格采用三线表。初始化",
+      "表格采用三线表。",
+      "图号和图名之间1个空格。图A1 图名",
+      "图号和图名之间1个空格。"
+    ],
+    "headings": [
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "1 绪论．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．1",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2 XXX．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．2",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "100",
+        "firstLine": "210",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.1 xxx．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．4",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "100",
+        "firstLine": "210",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.2 xxx ．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．6",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "100",
+        "firstLine": "210",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.1.1 xxxx．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．6",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "3 XXX．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．6",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "100",
+        "firstLine": "210",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "3.1 xxx ．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．6",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "100",
+        "firstLine": "210",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "3.2 xxx ．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．7",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "100",
+        "firstLine": "210",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "3.3 xxx ．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．8",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "100",
+        "firstLine": "210",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "4.1 xxx ．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．9",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "100",
+        "firstLine": "210",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "4.2 xxx ．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．13",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "5 结论/总结．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．．14",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": null,
+        "lineRule": null,
+        "beforeLines": "100",
+        "afterLines": "100",
+        "before": "312",
+        "after": "312",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "28",
+          "32",
+          "32"
+        ],
+        "bold": true,
+        "text": "1 绪论",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": "100",
+        "afterLines": "100",
+        "before": "312",
+        "after": "312",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "32",
+          "32"
+        ],
+        "bold": true,
+        "text": "2 xxx",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "30",
+          "30",
+          "30"
+        ],
+        "bold": true,
+        "text": "2.1 xxxx",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "28",
+          "28",
+          "28"
+        ],
+        "bold": true,
+        "text": "2.1.1 xxxx",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "28",
+          "28",
+          "28"
+        ],
+        "bold": true,
+        "text": "2.1.2 xxxx",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "30",
+          "30",
+          "30"
+        ],
+        "bold": true,
+        "text": "2.2 xxxx",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": null,
+        "lineRule": null,
+        "beforeLines": "100",
+        "afterLines": "100",
+        "before": "312",
+        "after": "312",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "32",
+          "32"
+        ],
+        "bold": true,
+        "text": "3 xxx",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "30",
+          "30",
+          "30"
+        ],
+        "bold": true,
+        "text": "3.1 xxxx",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "30",
+          "30",
+          "30"
+        ],
+        "bold": true,
+        "text": "3.2 xxxx",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "30",
+          "30",
+          "30"
+        ],
+        "bold": true,
+        "text": "3.3 xxx",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": null,
+        "lineRule": null,
+        "beforeLines": "100",
+        "afterLines": "100",
+        "before": "312",
+        "after": "312",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "32",
+          "32"
+        ],
+        "bold": true,
+        "text": "4 xxxx",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "30",
+          "30",
+          "30"
+        ],
+        "bold": true,
+        "text": "4.1 xxxx",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "30",
+          "30",
+          "30"
+        ],
+        "bold": true,
+        "text": "4.2 xxxx",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": null,
+        "lineRule": null,
+        "beforeLines": "100",
+        "afterLines": "100",
+        "before": "312",
+        "after": "312",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "32",
+          "32",
+          "32"
+        ],
+        "bold": true,
+        "text": "5 结论/总结",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      }
+    ],
+    "refsAck": [
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "[1] 袁庆龙,候义.Ni-P合金镀层组织形貌及显微硬度研究[J].太原理工大学学报,2001,32(1):51-53.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "[2] 刘国钧,王连成.图书馆史研究[M].北京:高等教育出版社,1979:101.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "[3] 孙品一.高校学报编辑工作现代化特征[C].中国高等学校自然科学学报研究会.科技编辑学论文集(2).北京:北京师范大学出版社,1998:10-22.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "[4] 张和生.地质力学系统理论[D].太原:太原理工大学,1998:11-12.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "[5] 姜锡洲.一种温热外敷药制备方案[P].中国:881056078,1983-08-12.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "[6] GB/T 16159—1996,汉语拼音正词法基本规则[S].北京:中国标准出版社,1996.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "[7] 谢希德.创造学习的思路[N].人民日报,1998-12-25(10).",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "[8] 萧钰.出版业信息化迈入快车道[EB/OL].(2001-12-19)[2002-04-15]. http://www.reader.com/news/20011219/200112190019.html.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      }
+    ],
+    "abstractKeywords": [
+      {
+        "pStyle": "a3",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": "200",
+        "before": null,
+        "after": "624",
+        "firstLineChars": "200",
+        "firstLine": "602",
+        "fonts": [
+          {
+            "eastAsia": "仿宋_GB2312",
+            "ascii": "time",
+            "hAnsi": "time"
+          },
+          {
+            "eastAsia": "黑体",
+            "ascii": "黑体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "24",
+          "30",
+          "24"
+        ],
+        "bold": true,
+        "text": "摘要：xxxxxxxxxxx……………(“摘要：”用黑体小三号加粗，首行缩进2字符。摘要内容：宋体，小四号， 1.5倍行距。在段落中设置段后两行。摘要应说明论文（设计）的目的、主要内容、研究方法、得出的成果和结论等。必须重点突出，文字精练。",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": "200",
+        "before": null,
+        "after": "624",
+        "firstLineChars": "200",
+        "firstLine": "602",
+        "fonts": [
+          {
+            "ascii": "time",
+            "hAnsi": "time"
+          },
+          {
+            "eastAsia": "黑体",
+            "ascii": "黑体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "30",
+          "24",
+          "24"
+        ],
+        "bold": true,
+        "text": "关键词：XXX；XXX；XXX（“关键词：”用黑体小三号加粗、1.5倍行距排列，首行缩进2字符；关键词内容：宋体小四号，相邻关键词间用中文分号间隔，3-5个关键词。在段落中设置段后两行。）",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": "200",
+        "before": null,
+        "after": "624",
+        "firstLineChars": "200",
+        "firstLine": "602",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "30",
+          "24",
+          "24"
+        ],
+        "bold": true,
+        "text": "Abstract: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (英文摘要和关键词的内容与中文摘要完全一致。“Abstract：”用“Times New Roman”体小三号加粗，首行缩进2字符。",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "a3",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "200",
+        "firstLine": "420",
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {},
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "18",
+          "30",
+          "24"
+        ],
+        "bold": true,
+        "text": "摘要页码：罗马数字、大写。Key words: Machine,  Numuber,  XXX,  XXX ( “Key words：”用“Times New Roman”体小三号加粗、1.5倍行距排列，首行缩进2字符；关键词内容：用“Ti",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "fonts": [
+          {}
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "摘要页码：罗马数字、大写。",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      }
+    ],
+    "firstParas": [
+      {
+        "pStyle": null,
+        "jc": "left",
+        "fonts": [
+          {},
+          {},
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "44",
+          "24",
+          "24"
+        ],
+        "bold": false,
+        "text": "封面格式不要调整，直接填写相关内容即可。“论文”或“设计”，根据实际情况选择一个即可，删除另一个。",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "left",
+        "fonts": [
+          {},
+          {}
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "封面格式不要调整，直接填写相关内容即可。“论文”或“设计”，根据实际情况选择一个即可，删除另一个。",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "fonts": [
+          {
+            "eastAsia": "黑体",
+            "ascii": "黑体"
+          },
+          {},
+          {}
+        ],
+        "sizes": [
+          "72",
+          "44",
+          "72"
+        ],
+        "bold": true,
+        "text": "选题题目一般不超过20个汉字。要求：宋体、二号、加粗。题目如需隐藏真实名称，不能使用“XX公司/企业”，而应使用单个字母如“A公司”或“某企业”等替代。本科毕业论文/设计",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "a3",
+        "jc": "both",
+        "fonts": [
+          {},
+          {},
+          {}
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "选题题目一般不超过20个汉字。",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "a3",
+        "jc": "both",
+        "fonts": [
+          {},
+          {},
+          {}
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "要求：宋体、二号、加粗。题目如需隐藏真实名称，不能使用“XX公司/企业”，而应使用单个字母如“A公司”或“某企业”等替代。",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "36",
+          "44"
+        ],
+        "bold": true,
+        "text": "题目",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "44",
+          "44"
+        ],
+        "bold": true,
+        "text": "XXXXXXXXXXXXXXXXXXXXXXXXXXX",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "44",
+          "44",
+          "44"
+        ],
+        "bold": true,
+        "text": "——以XXXX为例",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      }
+    ]
+  },
+  "final": {
+    "path": "C:\\Users\\user\\.config\\superpowers\\worktrees\\paper\\docx-closed-loop-task1\\uploads\\workflow_outputs\\ff182710-3a7f-44ae-9094-fa1a7e4bddd4\\final.docx",
+    "paragraphs": 666,
+    "tables": 65,
+    "drawings": 3,
+    "sections": [
+      {
+        "headers": [],
+        "footers": [],
+        "pgSz": {},
+        "pgMar": {},
+        "pgNumFmt": null,
+        "pgNumStart": null
+      },
+      {
+        "headers": [
+          "rIdCQRWSTHeader1"
+        ],
+        "footers": [
+          "rIdCQRWSTFooter1"
+        ],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1418",
+          "bottom": "1134",
+          "left": "1418",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": "upperRoman",
+        "pgNumStart": "1"
+      },
+      {
+        "headers": [
+          "rIdCQRWSTHeader1"
+        ],
+        "footers": [],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1418",
+          "bottom": "1134",
+          "left": "1418",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": null,
+        "pgNumStart": null
+      },
+      {
+        "headers": [
+          "rIdCQRWSTHeader1"
+        ],
+        "footers": [
+          "rIdCQRWSTFooter1"
+        ],
+        "pgSz": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "pgMar": {
+          "top": "1418",
+          "bottom": "1134",
+          "left": "1418",
+          "right": "1134",
+          "header": "851",
+          "footer": "992"
+        },
+        "pgNumFmt": "decimal",
+        "pgNumStart": "1"
+      }
+    ],
+    "headersFooters": {
+      "word/header1.xml": {
+        "text": "重庆人文科技学院2026届护理学专业本科毕业论文",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": true,
+        "fonts": [
+          "宋体"
+        ],
+        "sizes": [
+          "18",
+          "18"
+        ]
+      },
+      "word/footer1.xml": {
+        "text": "第页 共页",
+        "hasPAGE": true,
+        "hasNUMPAGES": true,
+        "hasDoubleLine": false,
+        "fonts": [
+          "宋体"
+        ],
+        "sizes": [
+          "18",
+          "18"
+        ]
+      },
+      "word/header2.xml": {
+        "text": "",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/header3.xml": {
+        "text": "",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/footer2.xml": {
+        "text": "II",
+        "hasPAGE": true,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/footer3.xml": {
+        "text": "",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/header4.xml": {
+        "text": "",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/header5.xml": {
+        "text": "",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/footer4.xml": {
+        "text": "",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/footer5.xml": {
+        "text": "",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/header6.xml": {
+        "text": "",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/header7.xml": {
+        "text": "",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/footer6.xml": {
+        "text": "11",
+        "hasPAGE": true,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/footer7.xml": {
+        "text": "",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [],
+        "sizes": []
+      },
+      "word/header8.xml": {
+        "text": "重庆人文科技学院X堀堀届X堀堀专业本科毕业论文 或 重庆人文科技学院X堀堀届X堀堀专业本科毕业设计",
+        "hasPAGE": false,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [
+          "宋体"
+        ],
+        "sizes": [
+          "18",
+          "18"
+        ]
+      },
+      "word/footer8.xml": {
+        "text": "-1-",
+        "hasPAGE": true,
+        "hasNUMPAGES": false,
+        "hasDoubleLine": false,
+        "fonts": [
+          "宋体",
+          "宋体",
+          "宋体"
+        ],
+        "sizes": [
+          "18",
+          "18",
+          "18"
+        ]
+      }
+    },
+    "captions": [
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "21"
+        ],
+        "bold": false,
+        "text": "图1.1 图示",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "21"
+        ],
+        "bold": false,
+        "text": "表1.1 表格",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "21"
+        ],
+        "bold": false,
+        "text": "表1.2 表格",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "21"
+        ],
+        "bold": false,
+        "text": "图2.1 技术路线图",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "表3-1 社区2型糖尿病患者基本特征分布（n=190）",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "21"
+        ],
+        "bold": false,
+        "text": "表3.1 表格",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "表3-2 疾病认知水平整体现状",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "表4-1 社区二型糖尿病患者疾病认知水平的单因素分析[n(%)]",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "21"
+        ],
+        "bold": false,
+        "text": "表4.1 表格",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "表4-2 糖尿病知识水平影响因素的多分类logistic回归分析",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "21"
+        ],
+        "bold": false,
+        "text": "表4.2 表格",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      }
+    ],
+    "unnumberedCaptions": [],
+    "headings": [
+      {
+        "pStyle": "TOC1",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "1 绪论1",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "1.1 研究背景1",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "1.2 研究目的1",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "1.3 研究意义1",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "1.4 国内外研究现状 2",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC3",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "1.4.2 国内研究现状 2",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC3",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "1.4.1 国外研究现状 2",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC1",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2 研究对象与方法2",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.1 研究对象2",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC3",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.1.1 研究对象选择2",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC3",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.1.2 纳入标准3",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC3",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.1.3 排除标准3",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC3",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.1.4 样本量的计算3",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC3",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.1.5 统计方法3",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC3",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.1.6 技术路线图3",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.2 研究工具4",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC3",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.2.1 患者一般资料调查表4",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC3",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "2.2.2 糖尿病知识测试问卷量表4",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC1",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "3 研究结果 4",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "3.1 研究样本的基本特征分布4",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "3.2 研究样本疾病知识水平现状5",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "3.3 核心特征与认知现状的关联6",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC1",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "4 认知水平影响因素分析6",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "4.1 单因素影响分析6",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "4.2 糖尿病患者疾病知识认知水平的多因素分析7",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC1",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "5 结论8",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "5.1 单因素分析结果的核心8",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "5.2 多因素分析的关键结论：核心影响因素的筛选与验证9",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "5.3 研究结果对社区糖尿病健康管理的实践意义10",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC2",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "5.4 研究的潜在局限性11",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      }
+    ],
+    "refsAck": [
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": "100",
+        "afterLines": "100",
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "eastAsia": "黑体",
+            "ascii": "黑体",
+            "hAnsi": "黑体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "32",
+          "32",
+          "32"
+        ],
+        "bold": true,
+        "text": "参考文献",
+        "hasPageBreak": true,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": true,
+        "text": "[1] 刘娟娟,姬学光.全媒体健康教育对2型糖尿病患者疾病认知水平及健康生活方式的影响[J].中国医药导报,2021,18(24):140-144.DOI:10.20047/j.issn1673-7210.2021.24.035.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "[2] 郑晓萌.多学科团队模式在社区糖尿病患者疾病管理中的应用效果评价[D].石河子大学,2016.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "[3] 张颖,苑书岩,刘颖,等.长春市某医院2型糖尿病患者疾病认知水平调查及影响因素分析[J].中国社区医师,2025,41(07):150-152.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "[4] 李平,杨艳杰,项莹,等.自我效能在2型糖尿病患者疾病认知和自我管理行为间的中介效应分析[J].哈尔滨医科大学学报,2021,55(02):201-204.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "[5] 王俊薇,管丽华,邢媛,等.社区2型糖尿病及糖尿病前期管理现状调查研究[J].中国全科医学,2021,24(27):3439-3443+3450.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": true,
+        "text": "[6] 廖艳.探究老年2型糖尿病的自我管理水平提升的研究进展[C]//重庆市健康促进与健康教育学会.临床医学健康与传播学术研讨会论文集（第四册）.广西壮族自治区南溪山医院;,2025:285-288.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "[7] Taimur H ,Ahmad I ,Khan H , et al.A scoping review of type 2 diabetes mellitus in Pakistan investigating the status ",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "[8] 黄金,刘跃华,张艳,等.2型糖尿病患者自我管理现状与糖尿病知识、态度的相关性[J].中南大学学报(医学版),2013,38(02):176-181.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": true,
+        "text": "[9] 张丛笑,章华米,胡小炜,等.社区2型糖尿病患者知识水平及其影响因素的logistic回归分析[J].中国慢性病预防与控制,2016,24(01):35-37.DOI:10.16386/j.cjpccd.issn.1004-6194.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "[10] 金学勤,徐桂华.社区糖尿病患者自我管理干预模式的研究进展[J].实用临床医药杂志,2015,19(18):196-199.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "[11] 李青,何朝珠,何雪莹,等.南昌市糖尿病患者社区护理需求调查及其影响因素分析[J].中华护理杂志,2012,47(06):494-497.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": true,
+        "text": "[12] 呼庆红,梁真,欧慧婷,等.糖尿病患者糖尿病知识知晓现状调查及影响因素分析[J].护理学报,2007,(05):3-6.DOI:10.16460/j.issn1008-9969.2007.05.002.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21",
+          "21"
+        ],
+        "bold": false,
+        "text": "[13] 蒋燕燕.2型糖尿病患者知识影响因素分析及健康教育策略[D].蚌埠医学院,2014.",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21"
+        ],
+        "bold": false,
+        "text": "[14]  Liao X ,Zhang Y ,Xu J , et al.A Narrative Review on Cognitive Impairment in Type 2 Diabetes: Global Trends and Dia",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21"
+        ],
+        "bold": false,
+        "text": "[15]  Kan W ,Qu M ,Wang Y , et al.A review of type 2 diabetes mellitus and cognitive impairment[J].Frontiers in Endocrin",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "21"
+        ],
+        "bold": false,
+        "text": "[16]  Mueller C ,Neusser T ,Waschke T I , et al.Disease Awareness in Patients With Type 2 Diabetes: Analysis of Baseline",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      }
+    ],
+    "abstractKeywords": [
+      {
+        "pStyle": null,
+        "jc": "both",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": "200",
+        "before": null,
+        "after": null,
+        "firstLineChars": "200",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "黑体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "24"
+        ],
+        "bold": true,
+        "text": "摘要：目的  探讨社区二型糖尿病患者疾病知识认水平的影响因素。方法  选择2025年10月-2026年2月的社区二型糖尿病患者190例作为研究对象，采用由陈蔼玲翻译的密西根糖尿病知识测试问卷（DKT）中文版调查患者对疾病的认知水平，根据调查",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": "0",
+        "after": "0",
+        "firstLineChars": null,
+        "firstLine": "602",
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "黑体",
+            "ascii": "黑体",
+            "hAnsi": "黑体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "24",
+          "30",
+          "24"
+        ],
+        "bold": true,
+        "text": "关键词：社区二型糖尿病；认知水平；影响因素",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "both",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": "200",
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "eastAsia": "Times New Roman",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "Times New Roman",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "24"
+        ],
+        "bold": true,
+        "text": "Abstract:Objective To explore the influencing factors of disease knowledge of type 2 diabetes patients in community. Met",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": "240",
+        "after": null,
+        "firstLineChars": null,
+        "firstLine": "602",
+        "fonts": [
+          {
+            "eastAsia": "Times New Roman",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "Times New Roman",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          },
+          {
+            "eastAsia": "Times New Roman",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "24",
+          "30",
+          "24"
+        ],
+        "bold": true,
+        "text": "Key words: Community type 2 diabetes; Cognitive level; Influencing factors",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC1",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "摘要：I",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "TOC1",
+        "jc": null,
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [],
+        "bold": false,
+        "text": "关键词：I",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      }
+    ],
+    "firstParas": [
+      {
+        "pStyle": "Normal",
+        "jc": "start",
+        "fonts": [
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          },
+          {
+            "ascii": "宋体;SimSun",
+            "hAnsi": "宋体;SimSun"
+          }
+        ],
+        "sizes": [
+          "24",
+          "24"
+        ],
+        "bold": false,
+        "text": "",
+        "hasPageBreak": false,
+        "hasDrawing": true
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "21"
+        ],
+        "bold": false,
+        "text": "图1.1 图示",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": "Normal",
+        "jc": "center",
+        "fonts": [
+          {
+            "eastAsia": "黑体;SimHei",
+            "ascii": "黑体;SimHei",
+            "hAnsi": "黑体;SimHei"
+          },
+          {
+            "eastAsia": "黑体;SimHei",
+            "ascii": "黑体;SimHei",
+            "hAnsi": "黑体;SimHei"
+          },
+          {
+            "eastAsia": "黑体;SimHei",
+            "ascii": "黑体;SimHei",
+            "hAnsi": "黑体;SimHei"
+          }
+        ],
+        "sizes": [
+          "72",
+          "72",
+          "72"
+        ],
+        "bold": true,
+        "text": "本科毕业论文/设计",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "21"
+        ],
+        "bold": false,
+        "text": "表1.1 表格",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "both",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": "0",
+        "after": "0",
+        "firstLineChars": null,
+        "firstLine": "480",
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "24",
+          "24"
+        ],
+        "bold": true,
+        "text": "题目",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "both",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": "0",
+        "after": "0",
+        "firstLineChars": null,
+        "firstLine": "480",
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "24",
+          "24",
+          "24"
+        ],
+        "bold": true,
+        "text": "社区2型糖尿病患者疾病知识",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "both",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": "0",
+        "after": "0",
+        "firstLineChars": null,
+        "firstLine": "480",
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          },
+          {
+            "eastAsia": "宋体",
+            "ascii": "宋体",
+            "hAnsi": "宋体"
+          }
+        ],
+        "sizes": [
+          "24",
+          "24"
+        ],
+        "bold": true,
+        "text": "认知现状及影响因素分析",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      },
+      {
+        "pStyle": null,
+        "jc": "center",
+        "line": "360",
+        "lineRule": "auto",
+        "beforeLines": null,
+        "afterLines": null,
+        "before": null,
+        "after": null,
+        "firstLineChars": "0",
+        "firstLine": null,
+        "fonts": [
+          {
+            "eastAsia": "宋体",
+            "ascii": "Times New Roman",
+            "hAnsi": "Times New Roman"
+          }
+        ],
+        "sizes": [
+          "21"
+        ],
+        "bold": false,
+        "text": "表1.2 表格",
+        "hasPageBreak": false,
+        "hasDrawing": false
+      }
+    ]
+  }
+}
