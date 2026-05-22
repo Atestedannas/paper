@@ -1,0 +1,75 @@
+name: Deploy backend
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-backend
+  cancel-in-progress: false
+
+jobs:
+  build-test-deploy:
+    name: Build, test, and deploy
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+
+    env:
+      PROD_HOST: ${{ secrets.PROD_HOST }}
+      PROD_PORT: ${{ secrets.PROD_PORT || '22' }}
+      PROD_USER: ${{ secrets.PROD_USER }}
+      PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+      PROD_DEPLOY_DIR: ${{ vars.PROD_DEPLOY_DIR || '/opt/paper' }}
+      PROD_SERVICE_NAME: ${{ vars.PROD_SERVICE_NAME || 'paper.service' }}
+      PROD_HEALTH_URL: ${{ vars.PROD_HEALTH_URL || 'http://127.0.0.1:8002/health' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: true
+
+      - name: Test
+        run: go test ./internal/middleware ./internal/handler ./internal/service ./cmd/server
+
+      - name: Build Linux binary
+        run: |
+          mkdir -p output
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o output/paper-server ./cmd/server
+          chmod +x output/paper-server scripts/deploy_backend_systemd.sh
+          ls -lh output/paper-server
+
+      - name: Validate deployment secrets
+        run: |
+          test -n "$PROD_HOST"
+          test -n "$PROD_PORT"
+          test -n "$PROD_USER"
+          test -n "$PROD_SSH_KEY"
+
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$PROD_PORT" "$PROD_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload artifact
+        run: |
+          scp -P "$PROD_PORT" -i ~/.ssh/deploy_key output/paper-server "$PROD_USER@$PROD_HOST:/tmp/paper-server.new"
+          scp -P "$PROD_PORT" -i ~/.ssh/deploy_key scripts/deploy_backend_systemd.sh "$PROD_USER@$PROD_HOST:/tmp/deploy_backend_systemd.sh"
+
+      - name: Deploy with systemd rollback
+        run: |
+          ssh -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
+            "chmod +x /tmp/deploy_backend_systemd.sh && DEPLOY_DIR='$PROD_DEPLOY_DIR' SERVICE_NAME='$PROD_SERVICE_NAME' HEALTH_URL='$PROD_HEALTH_URL' /tmp/deploy_backend_systemd.sh /tmp/paper-server.new"
