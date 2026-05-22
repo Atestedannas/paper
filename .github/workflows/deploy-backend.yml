@@ -65,14 +65,14 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -p "$PROD_PORT" "$PROD_HOST" >> ~/.ssh/known_hosts
+          timeout 20s ssh-keyscan -p "$PROD_PORT" "$PROD_HOST" >> ~/.ssh/known_hosts || true
 
       - name: Upload artifact
         run: |
-          scp -P "$PROD_PORT" -i ~/.ssh/deploy_key output/paper-server.gz "$PROD_USER@$PROD_HOST:/tmp/paper-server.new.gz"
-          scp -P "$PROD_PORT" -i ~/.ssh/deploy_key scripts/deploy_backend_systemd.sh "$PROD_USER@$PROD_HOST:/tmp/deploy_backend_systemd.sh"
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PROD_PORT" -i ~/.ssh/deploy_key output/paper-server.gz "$PROD_USER@$PROD_HOST:/tmp/paper-server.new.gz"
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PROD_PORT" -i ~/.ssh/deploy_key scripts/deploy_backend_systemd.sh "$PROD_USER@$PROD_HOST:/tmp/deploy_backend_systemd.sh"
 
       - name: Deploy with systemd rollback
         run: |
-          ssh -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
             "gzip -dc /tmp/paper-server.new.gz > /tmp/paper-server.new && chmod +x /tmp/paper-server.new /tmp/deploy_backend_systemd.sh && DEPLOY_DIR='$PROD_DEPLOY_DIR' SERVICE_NAME='$PROD_SERVICE_NAME' SERVER_PORT='$PROD_SERVER_PORT' HEALTH_URL='$PROD_HEALTH_URL' /tmp/deploy_backend_systemd.sh /tmp/paper-server.new"
