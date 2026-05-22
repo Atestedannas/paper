@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload artifact
         run: |
-          timeout 180s scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PROD_PORT" -i ~/.ssh/deploy_key output/paper-backend-deploy.tar.gz "$PROD_USER@$PROD_HOST:/tmp/paper-backend-deploy.tar.gz"
+          timeout 180s ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" "cat > /tmp/paper-backend-deploy.tar.gz" < output/paper-backend-deploy.tar.gz
 
       - name: Deploy with systemd rollback
         run: |
