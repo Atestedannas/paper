@@ -16,3 +16,26 @@ bin-release/
 # Project files, i.e. `.project`, `.actionScriptProperties` and `.flexProperties`
 # should NOT be excluded as they contain compiler settings and other important
 # information for Eclipse / Flash Builder.
+
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*_id_ed25519
+*_id_rsa
+ALIPAY_APP_PRIVATE_KEY.txt
+ALIPAY_PUBLIC_KEY.txt
+*_PRIVATE_KEY.txt
+*_PUBLIC_KEY.txt
+
+# Build artifacts and local runtime output
+paper-server
+paper-server-*
+paper-backend-linux
+*.exe
+logs/
+uploads/
