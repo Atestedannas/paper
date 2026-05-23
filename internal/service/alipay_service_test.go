@@ -187,6 +187,49 @@ func TestDecodeAlipayAccessTokenResponseHandlesStringDurations(t *testing.T) {
 	}
 }
 
+func TestDecodeAlipayAccessTokenResponseUsesOpenIDWhenUserIDMissing(t *testing.T) {
+	body := []byte(`{
+		"alipay_system_oauth_token_response": {
+			"access_token": "access-token",
+			"expires_in": 1296000,
+			"open_id": "2088123456789012",
+			"re_expires_in": 2592000,
+			"refresh_token": "refresh-token",
+			"union_id": "union-id"
+		}
+	}`)
+
+	token, err := decodeAlipayAccessTokenResponse(body)
+	if err != nil {
+		t.Fatalf("decodeAlipayAccessTokenResponse returned error: %v", err)
+	}
+	if token.UserID != "2088123456789012" {
+		t.Fatalf("UserID = %q, want open_id fallback", token.UserID)
+	}
+}
+
+func TestDecodeAlipayAccessTokenResponseIncludesSanitizedBodyWhenTokenFieldsMissing(t *testing.T) {
+	body := []byte(`{
+		"alipay_system_oauth_token_response": {
+			"code": "10000",
+			"msg": "Success",
+			"access_token": "secret-access-token",
+			"refresh_token": "secret-refresh-token"
+		}
+	}`)
+
+	_, err := decodeAlipayAccessTokenResponse(body)
+	if err == nil {
+		t.Fatal("expected missing token fields error")
+	}
+	if !strings.Contains(err.Error(), `"access_token":"<redacted>"`) {
+		t.Fatalf("expected sanitized access token in error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-access-token") || strings.Contains(err.Error(), "secret-refresh-token") {
+		t.Fatalf("error leaked token body: %v", err)
+	}
+}
+
 func alipayTestSignContent(params url.Values, excluded ...string) string {
 	exclude := make(map[string]bool, len(excluded))
 	for _, key := range excluded {
@@ -241,6 +284,25 @@ func TestDecodeAlipayUserInfoResponseAllowsMissingOptionalFields(t *testing.T) {
 	}
 	if userInfo.UserID != "2088102175794899" || userInfo.Nickname != "支付宝用户" {
 		t.Fatalf("unexpected user info: %+v", userInfo)
+	}
+}
+
+func TestDecodeAlipayUserInfoResponseUsesOpenIDWhenUserIDMissing(t *testing.T) {
+	body := []byte(`{
+		"alipay_user_info_share_response": {
+			"code": "10000",
+			"msg": "Success",
+			"open_id": "2088123456789012",
+			"nick_name": "支付宝用户"
+		}
+	}`)
+
+	userInfo, err := decodeAlipayUserInfoResponse(body)
+	if err != nil {
+		t.Fatalf("decodeAlipayUserInfoResponse returned error: %v", err)
+	}
+	if userInfo.UserID != "2088123456789012" {
+		t.Fatalf("UserID = %q, want open_id fallback", userInfo.UserID)
 	}
 }
 

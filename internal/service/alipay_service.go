@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -226,6 +227,7 @@ func decodeAlipayAccessTokenResponse(body []byte) (*AlipayAccessToken, error) {
 			ExpiresIn     json.RawMessage `json:"expires_in"`
 			RefreshToken  string          `json:"refresh_token"`
 			UserID        string          `json:"user_id"`
+			OpenID        string          `json:"open_id"`
 			TokenType     string          `json:"token_type"`
 			AuthTokenType string          `json:"auth_token_type"`
 			ReExpiresIn   json.RawMessage `json:"re_expires_in"`
@@ -256,17 +258,54 @@ func decodeAlipayAccessTokenResponse(body []byte) (*AlipayAccessToken, error) {
 	if err != nil {
 		return nil, err
 	}
-	if result.Response.AccessToken == "" || result.Response.UserID == "" {
-		return nil, fmt.Errorf("alipay token response missing access_token or user_id")
+	userID := result.Response.UserID
+	if userID == "" {
+		userID = result.Response.OpenID
+	}
+	if result.Response.AccessToken == "" || userID == "" {
+		return nil, fmt.Errorf("alipay token response missing access_token or user_id/open_id: %s", sanitizeAlipayResponseBody(body))
 	}
 	return &AlipayAccessToken{
 		AccessToken:  result.Response.AccessToken,
 		ExpiresIn:    expiresIn,
 		RefreshToken: result.Response.RefreshToken,
-		UserID:       result.Response.UserID,
+		UserID:       userID,
 		TokenType:    tokenType,
 		ReExpiresIn:  reExpiresIn,
 	}, nil
+}
+
+func sanitizeAlipayResponseBody(body []byte) string {
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return string(body)
+	}
+	redactAlipayValue(payload)
+	var sanitized bytes.Buffer
+	encoder := json.NewEncoder(&sanitized)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(payload); err != nil {
+		return string(body)
+	}
+	return strings.TrimSpace(sanitized.String())
+}
+
+func redactAlipayValue(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			switch key {
+			case "access_token", "refresh_token", "auth_token":
+				typed[key] = "<redacted>"
+			default:
+				redactAlipayValue(nested)
+			}
+		}
+	case []any:
+		for _, nested := range typed {
+			redactAlipayValue(nested)
+		}
+	}
 }
 
 func alipayIntField(raw json.RawMessage, field string) (int, error) {
@@ -337,6 +376,7 @@ func decodeAlipayUserInfoResponse(body []byte) (*AlipayUserInfo, error) {
 		Response *struct {
 			alipayAPIError
 			UserID      string `json:"user_id"`
+			OpenID      string `json:"open_id"`
 			Avatar      string `json:"avatar"`
 			Nickname    string `json:"nick_name"`
 			Gender      string `json:"gender"`
@@ -358,11 +398,15 @@ func decodeAlipayUserInfoResponse(body []byte) (*AlipayUserInfo, error) {
 	if result.Response.Code != "" && result.Response.Code != "10000" {
 		return nil, result.Response.alipayAPIError
 	}
-	if result.Response.UserID == "" {
-		return nil, fmt.Errorf("alipay user info response missing user_id")
+	userID := result.Response.UserID
+	if userID == "" {
+		userID = result.Response.OpenID
+	}
+	if userID == "" {
+		return nil, fmt.Errorf("alipay user info response missing user_id/open_id")
 	}
 	return &AlipayUserInfo{
-		UserID:      result.Response.UserID,
+		UserID:      userID,
 		Avatar:      result.Response.Avatar,
 		Nickname:    result.Response.Nickname,
 		Gender:      result.Response.Gender,
