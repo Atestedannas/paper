@@ -133,3 +133,9 @@ https://github.com/adminlove520/AI-Account-Toolkit
 
 
 路由vpn ：https://github.com/mowei-ie/router-vpn
+
+
+
+sudo systemctl status paper.service --no-pager -l  查看服务运行状态的概况。
+sudo ss -lntp | grep 8002  查 8002 端口有没有在监听。
+sudo journalctl -u paper.service -n 120 --no-pager -l  查看 paper 服务最近 120 行日志。

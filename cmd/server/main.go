@@ -2,13 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
-	"net"
-	"net/http"
-	"os/exec"
-	"runtime"
-	"time"
-
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/paper-format-checker/backend/internal/config"
@@ -18,6 +11,11 @@ import (
 	"github.com/paper-format-checker/backend/internal/middleware"
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
+	"log"
+	"net"
+	"net/http"
+	"os/exec"
+	"runtime"
 )
 
 func main() {
@@ -34,13 +32,17 @@ func main() {
 
 	// Check if port is in use, if so try to kill the process using it
 	if isPortInUse(cfg.Server.Port) {
-		if err := killProcessUsingPort(cfg.Server.Port); err != nil {
-			log.Printf("Warning: failed to kill process using port %d: %v", cfg.Server.Port, err)
-		}
-		time.Sleep(500 * time.Millisecond)
-		if isPortInUse(cfg.Server.Port) {
-			log.Fatalf("Port %d is still in use after kill attempt", cfg.Server.Port)
-		}
+
+		log.Fatalf("Port %d is already in use", cfg.Server.Port)
+
+		//todo   部署一直杀进程
+		//if err := killProcessUsingPort(cfg.Server.Port); err != nil {
+		//	log.Printf("Warning: failed to kill process using port %d: %v", cfg.Server.Port, err)
+		//}
+		//time.Sleep(500 * time.Millisecond)
+		//if isPortInUse(cfg.Server.Port) {
+		//	log.Fatalf("Port %d is still in use after kill attempt", cfg.Server.Port)
+		//}
 	}
 
 	// Initialize database (allow failure in demo mode)
