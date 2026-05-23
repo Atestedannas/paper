@@ -14,8 +14,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os/exec"
-	"runtime"
 )
 
 func main() {
@@ -30,19 +28,9 @@ func main() {
 	}
 	log.Printf("RBAC model: %s", cfg.RBAC.Model)
 
-	// Check if port is in use, if so try to kill the process using it
+	// Let systemd/deployment own process lifecycle. A second server must not kill the active one.
 	if isPortInUse(cfg.Server.Port) {
-
 		log.Fatalf("Port %d is already in use", cfg.Server.Port)
-
-		//todo   部署一直杀进程
-		//if err := killProcessUsingPort(cfg.Server.Port); err != nil {
-		//	log.Printf("Warning: failed to kill process using port %d: %v", cfg.Server.Port, err)
-		//}
-		//time.Sleep(500 * time.Millisecond)
-		//if isPortInUse(cfg.Server.Port) {
-		//	log.Fatalf("Port %d is still in use after kill attempt", cfg.Server.Port)
-		//}
 	}
 
 	// Initialize database (allow failure in demo mode)
@@ -799,30 +787,4 @@ func isPortInUse(port int) bool {
 	}
 	listener.Close()
 	return false
-}
-
-func killProcessUsingPort(port int) error {
-	if runtime.GOOS == "windows" {
-		cmd := exec.Command("powershell", "-Command",
-			fmt.Sprintf("Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force }", port))
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("windows kill failed: %w, output: %s", err, string(output))
-		}
-		return nil
-	}
-
-	// Unix-like fallback
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("lsof -ti tcp:%d | xargs -r kill -9", port))
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		return nil
-	}
-
-	fallback := exec.Command("fuser", "-k", fmt.Sprintf("%d/tcp", port))
-	fallbackOutput, fallbackErr := fallback.CombinedOutput()
-	if fallbackErr != nil {
-		return fmt.Errorf("unix kill failed: %v; lsof output: %s; fuser output: %s", err, string(output), string(fallbackOutput))
-	}
-	return nil
 }

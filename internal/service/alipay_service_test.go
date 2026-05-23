@@ -1,6 +1,10 @@
 package service
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
 	"net/url"
 	"strings"
 	"testing"
@@ -52,6 +56,117 @@ func TestAlipayQRCodeURLRequiresHTTPSRedirectURL(t *testing.T) {
 	_, _, err := NewAlipayService(cfg).GenerateQRCodeURL()
 	if err == nil {
 		t.Fatal("expected non-https redirect url to be rejected")
+	}
+}
+
+func TestAlipayGenerateSignAcceptsRawPKCS1PrivateKey(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+	rawPKCS1 := base64.StdEncoding.EncodeToString(x509.MarshalPKCS1PrivateKey(key))
+	cfg := testAlipayConfig()
+	cfg.Alipay.AppPrivateKey = rawPKCS1
+
+	params := url.Values{}
+	params.Set("app_id", cfg.Alipay.AppID)
+	params.Set("method", "alipay.system.oauth.token")
+	params.Set("charset", "utf-8")
+	params.Set("sign_type", "RSA2")
+	params.Set("timestamp", "2026-05-23 14:30:00")
+	params.Set("version", "1.0")
+	params.Set("grant_type", "authorization_code")
+	params.Set("code", "test-auth-code")
+
+	sign, err := NewAlipayService(cfg).generateSign(params)
+	if err != nil {
+		t.Fatalf("generateSign should accept raw PKCS1 private key: %v", err)
+	}
+	if sign == "" {
+		t.Fatal("generateSign returned empty signature")
+	}
+}
+
+func TestDecodeAlipayAccessTokenResponseHandlesStringDurations(t *testing.T) {
+	body := []byte(`{
+		"alipay_system_oauth_token_response": {
+			"code": "10000",
+			"msg": "Success",
+			"user_id": "2088102150477652",
+			"access_token": "access-token",
+			"expires_in": "3600",
+			"refresh_token": "refresh-token",
+			"re_expires_in": "86400",
+			"auth_token_type": "permanent"
+		}
+	}`)
+
+	token, err := decodeAlipayAccessTokenResponse(body)
+	if err != nil {
+		t.Fatalf("decodeAlipayAccessTokenResponse returned error: %v", err)
+	}
+	if token.ExpiresIn != 3600 || token.ReExpiresIn != 86400 {
+		t.Fatalf("unexpected durations: expires=%d refresh=%d", token.ExpiresIn, token.ReExpiresIn)
+	}
+	if token.TokenType != "permanent" {
+		t.Fatalf("unexpected token type: %q", token.TokenType)
+	}
+}
+
+func TestDecodeAlipayAccessTokenResponseReturnsBusinessError(t *testing.T) {
+	body := []byte(`{
+		"alipay_system_oauth_token_response": {
+			"code": "40002",
+			"msg": "Invalid Arguments",
+			"sub_code": "isv.code-invalid",
+			"sub_msg": "auth_code is invalid"
+		}
+	}`)
+
+	_, err := decodeAlipayAccessTokenResponse(body)
+	if err == nil {
+		t.Fatal("expected business error")
+	}
+	if !strings.Contains(err.Error(), "isv.code-invalid") {
+		t.Fatalf("expected sub_code in error, got %v", err)
+	}
+}
+
+func TestDecodeAlipayUserInfoResponseAllowsMissingOptionalFields(t *testing.T) {
+	body := []byte(`{
+		"alipay_user_info_share_response": {
+			"code": "10000",
+			"msg": "Success",
+			"user_id": "2088102175794899",
+			"nick_name": "支付宝用户"
+		}
+	}`)
+
+	userInfo, err := decodeAlipayUserInfoResponse(body)
+	if err != nil {
+		t.Fatalf("decodeAlipayUserInfoResponse returned error: %v", err)
+	}
+	if userInfo.UserID != "2088102175794899" || userInfo.Nickname != "支付宝用户" {
+		t.Fatalf("unexpected user info: %+v", userInfo)
+	}
+}
+
+func TestDecodeAlipayUserInfoResponseReturnsBusinessError(t *testing.T) {
+	body := []byte(`{
+		"alipay_user_info_share_response": {
+			"code": "40004",
+			"msg": "Business Failed",
+			"sub_code": "isv.invalid-auth-token",
+			"sub_msg": "invalid auth token"
+		}
+	}`)
+
+	_, err := decodeAlipayUserInfoResponse(body)
+	if err == nil {
+		t.Fatal("expected business error")
+	}
+	if !strings.Contains(err.Error(), "isv.invalid-auth-token") {
+		t.Fatalf("expected sub_code in error, got %v", err)
 	}
 }
 

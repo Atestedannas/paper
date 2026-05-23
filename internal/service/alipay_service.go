@@ -10,9 +10,11 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +40,20 @@ type AlipayUserInfo struct {
 	Province    string `json:"province"`
 	City        string `json:"city"`
 	CountryCode string `json:"country_code"`
+}
+
+type alipayAPIError struct {
+	Code    string `json:"code"`
+	Msg     string `json:"msg"`
+	SubCode string `json:"sub_code"`
+	SubMsg  string `json:"sub_msg"`
+}
+
+func (e alipayAPIError) Error() string {
+	if e.SubCode != "" || e.SubMsg != "" {
+		return fmt.Sprintf("alipay api error: code=%s msg=%s sub_code=%s sub_msg=%s", e.Code, e.Msg, e.SubCode, e.SubMsg)
+	}
+	return fmt.Sprintf("alipay api error: code=%s msg=%s", e.Code, e.Msg)
 }
 
 // AlipayService 支付宝认证服务
@@ -91,10 +107,16 @@ func (s *AlipayService) generateSign(params url.Values) (string, error) {
 
 	var keyIface interface{}
 	var err error
-	if strings.Contains(string(block.Bytes), "RSA") {
+	if block.Type == "RSA PRIVATE KEY" {
 		keyIface, err = x509.ParsePKCS1PrivateKey(block.Bytes)
 	} else {
 		keyIface, err = x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			if pkcs1Key, pkcs1Err := x509.ParsePKCS1PrivateKey(block.Bytes); pkcs1Err == nil {
+				keyIface = pkcs1Key
+				err = nil
+			}
+		}
 	}
 	if err != nil {
 		return "", fmt.Errorf("alipay: failed to parse private key: %w", err)
@@ -174,28 +196,84 @@ func (s *AlipayService) ExchangeCodeForToken(code string) (*AlipayAccessToken, e
 	}
 	defer resp.Body.Close()
 
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read access token response: %w", err)
+	}
+	return decodeAlipayAccessTokenResponse(body)
+}
+
+func decodeAlipayAccessTokenResponse(body []byte) (*AlipayAccessToken, error) {
+	var result struct {
+		Response *struct {
+			alipayAPIError
+			AccessToken   string          `json:"access_token"`
+			ExpiresIn     json.RawMessage `json:"expires_in"`
+			RefreshToken  string          `json:"refresh_token"`
+			UserID        string          `json:"user_id"`
+			TokenType     string          `json:"token_type"`
+			AuthTokenType string          `json:"auth_token_type"`
+			ReExpiresIn   json.RawMessage `json:"re_expires_in"`
+		} `json:"alipay_system_oauth_token_response"`
+		Error *alipayAPIError `json:"error_response"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode access token response: %w", err)
 	}
-
-	// 检查是否返回错误
-	if errorResponse, ok := result["error_response"].(map[string]interface{}); ok {
-		return nil, fmt.Errorf("alipay api error: %v - %v", errorResponse["code"], errorResponse["msg"])
+	if result.Error != nil {
+		return nil, *result.Error
 	}
-
-	// 获取访问令牌
-	tokenResponse := result["alipay_system_oauth_token_response"].(map[string]interface{})
-	token := &AlipayAccessToken{
-		AccessToken:  tokenResponse["access_token"].(string),
-		ExpiresIn:    int(tokenResponse["expires_in"].(float64)),
-		RefreshToken: tokenResponse["refresh_token"].(string),
-		UserID:       tokenResponse["user_id"].(string),
-		TokenType:    tokenResponse["token_type"].(string),
-		ReExpiresIn:  int(tokenResponse["re_expires_in"].(float64)),
+	if result.Response == nil {
+		return nil, fmt.Errorf("missing alipay_system_oauth_token_response")
 	}
+	if result.Response.Code != "" && result.Response.Code != "10000" {
+		return nil, result.Response.alipayAPIError
+	}
+	tokenType := result.Response.TokenType
+	if tokenType == "" {
+		tokenType = result.Response.AuthTokenType
+	}
+	expiresIn, err := alipayIntField(result.Response.ExpiresIn, "expires_in")
+	if err != nil {
+		return nil, err
+	}
+	reExpiresIn, err := alipayIntField(result.Response.ReExpiresIn, "re_expires_in")
+	if err != nil {
+		return nil, err
+	}
+	if result.Response.AccessToken == "" || result.Response.UserID == "" {
+		return nil, fmt.Errorf("alipay token response missing access_token or user_id")
+	}
+	return &AlipayAccessToken{
+		AccessToken:  result.Response.AccessToken,
+		ExpiresIn:    expiresIn,
+		RefreshToken: result.Response.RefreshToken,
+		UserID:       result.Response.UserID,
+		TokenType:    tokenType,
+		ReExpiresIn:  reExpiresIn,
+	}, nil
+}
 
-	return token, nil
+func alipayIntField(raw json.RawMessage, field string) (int, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, nil
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return 0, fmt.Errorf("invalid alipay %s: %w", field, err)
+	}
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid alipay %s: %w", field, err)
+	}
+	return n, nil
 }
 
 // GetUserInfo 获取支付宝用户信息
@@ -225,29 +303,51 @@ func (s *AlipayService) GetUserInfo(accessToken string) (*AlipayUserInfo, error)
 	}
 	defer resp.Body.Close()
 
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read user info response: %w", err)
+	}
+	return decodeAlipayUserInfoResponse(body)
+}
+
+func decodeAlipayUserInfoResponse(body []byte) (*AlipayUserInfo, error) {
+	var result struct {
+		Response *struct {
+			alipayAPIError
+			UserID      string `json:"user_id"`
+			Avatar      string `json:"avatar"`
+			Nickname    string `json:"nick_name"`
+			Gender      string `json:"gender"`
+			Province    string `json:"province"`
+			City        string `json:"city"`
+			CountryCode string `json:"country_code"`
+		} `json:"alipay_user_info_share_response"`
+		Error *alipayAPIError `json:"error_response"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode user info response: %w", err)
 	}
-
-	// 检查是否返回错误
-	if errorResponse, ok := result["error_response"].(map[string]interface{}); ok {
-		return nil, fmt.Errorf("alipay api error: %v - %v", errorResponse["code"], errorResponse["msg"])
+	if result.Error != nil {
+		return nil, *result.Error
 	}
-
-	// 获取用户信息
-	userInfoResponse := result["alipay_user_info_share_response"].(map[string]interface{})
-	userInfo := &AlipayUserInfo{
-		UserID:      userInfoResponse["user_id"].(string),
-		Avatar:      userInfoResponse["avatar"].(string),
-		Nickname:    userInfoResponse["nick_name"].(string),
-		Gender:      userInfoResponse["gender"].(string),
-		Province:    userInfoResponse["province"].(string),
-		City:        userInfoResponse["city"].(string),
-		CountryCode: userInfoResponse["country_code"].(string),
+	if result.Response == nil {
+		return nil, fmt.Errorf("missing alipay_user_info_share_response")
 	}
-
-	return userInfo, nil
+	if result.Response.Code != "" && result.Response.Code != "10000" {
+		return nil, result.Response.alipayAPIError
+	}
+	if result.Response.UserID == "" {
+		return nil, fmt.Errorf("alipay user info response missing user_id")
+	}
+	return &AlipayUserInfo{
+		UserID:      result.Response.UserID,
+		Avatar:      result.Response.Avatar,
+		Nickname:    result.Response.Nickname,
+		Gender:      result.Response.Gender,
+		Province:    result.Response.Province,
+		City:        result.Response.City,
+		CountryCode: result.Response.CountryCode,
+	}, nil
 }
 
 // GenerateQRCodeURL 生成支付宝扫码登录的二维码URL

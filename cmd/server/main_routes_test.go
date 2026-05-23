@@ -25,7 +25,7 @@ func TestMainPreservesOAuthRoutesForBaseAndV1Auth(t *testing.T) {
 	}
 	text := string(source)
 
-	for _, route := range []string{`"/wechat/login-url"`, `"/alipay/qr-session"`} {
+	for _, route := range []string{`"/wechat/login-url"`, `"/alipay/qr-session"`, `"/alipay/qr-session/:session_id/status"`} {
 		if count := strings.Count(text, route); count != 2 {
 			t.Fatalf("%s registrations = %d, want 2 (/api/auth and /api/v1/auth)", route, count)
 		}
@@ -33,5 +33,20 @@ func TestMainPreservesOAuthRoutesForBaseAndV1Auth(t *testing.T) {
 
 	if count := strings.Count(text, `"/wechat/callback"`); count != 4 {
 		t.Fatalf("wechat callback registrations = %d, want 4 (GET/POST for /api/auth and /api/v1/auth)", count)
+	}
+}
+
+func TestMainDoesNotKillExistingProcessOnPortConflict(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	text := string(source)
+
+	if strings.Contains(text, "killProcessUsingPort(cfg.Server.Port)") {
+		t.Fatal("server startup must not kill the process already listening on the configured port")
+	}
+	if !strings.Contains(text, "log.Fatalf(\"Port %d is already in use\"") {
+		t.Fatal("server startup should fail fast when the configured port is already in use")
 	}
 }
