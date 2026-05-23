@@ -111,6 +111,52 @@ https://proton.me/mail
 
 
 
+现在要先看新的真实错误，不能再凭“还是不行”猜。你刚改的是 ALIPAY_PUBLIC_KEY，但上一个错误 isv.invalid-signature 其实主要看的是：
+
+服务器 ALIPAY_APP_PRIVATE_KEY 生成的签名
+支付宝开放平台 应用公钥 验签
+ALIPAY_PUBLIC_KEY 是“支付宝公钥”，它不是这次 isv.invalid-signature 的主因。
+
+先在服务器跑这三条：
+
+sudo systemctl restart paper.service
+重新扫码一次，然后立刻查：
+
+sudo journalctl -u paper.service -n 120 --no-pager -l | grep AlipayQRCallback
+再查当前服务器私钥生成出来的应用公钥到底是什么：
+
+grep '^ALIPAY_APP_PRIVATE_KEY=' /opt/paper/.env | cut -d= -f2- > /tmp/alipay_private_key.txt
+
+awk 'BEGIN{print "-----BEGIN PRIVATE KEY-----"} {print} END{print "-----END PRIVATE KEY-----"}' /tmp/alipay_private_key.txt > /tmp/alipay_private_key.pem
+
+openssl pkey -in /tmp/alipay_private_key.pem -pubout -outform PEM
+把输出中间那段公钥，和支付宝开放平台里的应用公钥对比。必须一模一样。
+
+如果 openssl pkey 报错，再试：
+
+awk 'BEGIN{print "-----BEGIN RSA PRIVATE KEY-----"} {print} END{print "-----END RSA PRIVATE KEY-----"}' /tmp/alipay_private_key.txt > /tmp/alipay_private_key_rsa.pem
+
+openssl rsa -in /tmp/alipay_private_key_rsa.pem -pubout -outform PEM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

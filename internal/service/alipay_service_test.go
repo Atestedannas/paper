@@ -1,11 +1,14 @@
 package service
 
 import (
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"net/url"
+	"sort"
 	"strings"
 	"testing"
 
@@ -120,6 +123,44 @@ func TestAlipayGenerateSignAcceptsRawPKCS8PrivateKeyWithLegacyRSAPrefix(t *testi
 	}
 }
 
+func TestAlipayGenerateSignIncludesSignType(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+	rawPKCS1 := base64.StdEncoding.EncodeToString(x509.MarshalPKCS1PrivateKey(key))
+	cfg := testAlipayConfig()
+	cfg.Alipay.AppPrivateKey = rawPKCS1
+
+	params := url.Values{}
+	params.Set("app_id", cfg.Alipay.AppID)
+	params.Set("method", "alipay.system.oauth.token")
+	params.Set("charset", "utf-8")
+	params.Set("format", "JSON")
+	params.Set("sign_type", "RSA2")
+	params.Set("timestamp", "2026-05-23 19:59:08")
+	params.Set("version", "1.0")
+	params.Set("grant_type", "authorization_code")
+	params.Set("code", "test-auth-code")
+	params.Set("redirect_uri", cfg.Alipay.RedirectURL)
+	params.Set("scope", "auth_user")
+
+	sign, err := NewAlipayService(cfg).generateSign(params)
+	if err != nil {
+		t.Fatalf("generateSign returned error: %v", err)
+	}
+	sig, err := base64.StdEncoding.DecodeString(sign)
+	if err != nil {
+		t.Fatalf("signature is not base64: %v", err)
+	}
+
+	signContent := alipayTestSignContent(params, "sign")
+	digest := sha256.Sum256([]byte(signContent))
+	if err := rsa.VerifyPKCS1v15(&key.PublicKey, crypto.SHA256, digest[:], sig); err != nil {
+		t.Fatalf("signature should verify against Alipay sign content including sign_type: %v\ncontent: %s", err, signContent)
+	}
+}
+
 func TestDecodeAlipayAccessTokenResponseHandlesStringDurations(t *testing.T) {
 	body := []byte(`{
 		"alipay_system_oauth_token_response": {
@@ -144,6 +185,25 @@ func TestDecodeAlipayAccessTokenResponseHandlesStringDurations(t *testing.T) {
 	if token.TokenType != "permanent" {
 		t.Fatalf("unexpected token type: %q", token.TokenType)
 	}
+}
+
+func alipayTestSignContent(params url.Values, excluded ...string) string {
+	exclude := make(map[string]bool, len(excluded))
+	for _, key := range excluded {
+		exclude[key] = true
+	}
+	var keys []string
+	for key := range params {
+		if !exclude[key] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+params.Get(key))
+	}
+	return strings.Join(parts, "&")
 }
 
 func TestDecodeAlipayAccessTokenResponseReturnsBusinessError(t *testing.T) {

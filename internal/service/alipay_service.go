@@ -77,10 +77,10 @@ func (s *AlipayService) GenerateLoginURL() (string, error) {
 
 // generateSign 生成 Alipay RSA2 签名（SHA256WithRSA）
 func (s *AlipayService) generateSign(params url.Values) (string, error) {
-	// 1. 排序、拼接待签名字符串（排除 sign / sign_type）
+	// 1. 排序、拼接待签名字符串（只排除 sign）
 	var keys []string
 	for k := range params {
-		if k != "sign" && k != "sign_type" {
+		if k != "sign" {
 			keys = append(keys, k)
 		}
 	}
