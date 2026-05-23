@@ -87,6 +87,39 @@ func TestAlipayGenerateSignAcceptsRawPKCS1PrivateKey(t *testing.T) {
 	}
 }
 
+func TestAlipayGenerateSignAcceptsRawPKCS8PrivateKeyWithLegacyRSAPrefix(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+	rawPKCS8, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal pkcs8 test key: %v", err)
+	}
+	cfg := testAlipayConfig()
+	cfg.Alipay.AppPrivateKey = "-----BEGIN RSA PRIVATE KEY-----\n" +
+		base64.StdEncoding.EncodeToString(rawPKCS8) +
+		"\n-----END RSA PRIVATE KEY-----"
+
+	params := url.Values{}
+	params.Set("app_id", cfg.Alipay.AppID)
+	params.Set("method", "alipay.system.oauth.token")
+	params.Set("charset", "utf-8")
+	params.Set("sign_type", "RSA2")
+	params.Set("timestamp", "2026-05-23 14:30:00")
+	params.Set("version", "1.0")
+	params.Set("grant_type", "authorization_code")
+	params.Set("code", "test-auth-code")
+
+	sign, err := NewAlipayService(cfg).generateSign(params)
+	if err != nil {
+		t.Fatalf("generateSign should accept raw PKCS8 private key: %v", err)
+	}
+	if sign == "" {
+		t.Fatal("generateSign returned empty signature")
+	}
+}
+
 func TestDecodeAlipayAccessTokenResponseHandlesStringDurations(t *testing.T) {
 	body := []byte(`{
 		"alipay_system_oauth_token_response": {

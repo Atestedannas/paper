@@ -105,21 +105,9 @@ func (s *AlipayService) generateSign(params url.Values) (string, error) {
 		return "", fmt.Errorf("alipay: failed to decode private key PEM")
 	}
 
-	var keyIface interface{}
-	var err error
-	if block.Type == "RSA PRIVATE KEY" {
-		keyIface, err = x509.ParsePKCS1PrivateKey(block.Bytes)
-	} else {
-		keyIface, err = x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
-			if pkcs1Key, pkcs1Err := x509.ParsePKCS1PrivateKey(block.Bytes); pkcs1Err == nil {
-				keyIface = pkcs1Key
-				err = nil
-			}
-		}
-	}
+	keyIface, err := parseAlipayPrivateKey(block.Bytes)
 	if err != nil {
-		return "", fmt.Errorf("alipay: failed to parse private key: %w", err)
+		return "", err
 	}
 	rsaKey, ok := keyIface.(*rsa.PrivateKey)
 	if !ok {
@@ -134,6 +122,25 @@ func (s *AlipayService) generateSign(params url.Values) (string, error) {
 		return "", fmt.Errorf("alipay: signing failed: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(sig), nil
+}
+
+func parseAlipayPrivateKey(der []byte) (interface{}, error) {
+	if keyIface, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		return keyIface, nil
+	}
+	if key, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return key, nil
+	}
+
+	pkcs8Err := "unknown"
+	if _, err := x509.ParsePKCS8PrivateKey(der); err != nil {
+		pkcs8Err = err.Error()
+	}
+	pkcs1Err := "unknown"
+	if _, err := x509.ParsePKCS1PrivateKey(der); err != nil {
+		pkcs1Err = err.Error()
+	}
+	return nil, fmt.Errorf("alipay: failed to parse private key as PKCS8 (%s) or PKCS1 (%s)", pkcs8Err, pkcs1Err)
 }
 
 // buildSignedParams 构造带签名的参数
