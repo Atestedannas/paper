@@ -170,15 +170,7 @@ func (s *AlipayService) gatewayURL() string {
 
 // ExchangeCodeForToken 用授权码换取访问令牌
 func (s *AlipayService) ExchangeCodeForToken(code string) (*AlipayAccessToken, error) {
-	params := url.Values{}
-	params.Set("app_id", s.config.AppID)
-	params.Set("method", "alipay.system.oauth.token")
-	params.Set("charset", "utf-8")
-	params.Set("sign_type", "RSA2")
-	params.Set("timestamp", time.Now().Format("2006-01-02 15:04:05"))
-	params.Set("version", "1.0")
-	params.Set("grant_type", "authorization_code")
-	params.Set("code", code)
+	params := s.buildAccessTokenParams(code)
 
 	if s.config.AppPrivateKey != "" {
 		sign, err := s.generateSign(params)
@@ -201,6 +193,22 @@ func (s *AlipayService) ExchangeCodeForToken(code string) (*AlipayAccessToken, e
 		return nil, fmt.Errorf("failed to read access token response: %w", err)
 	}
 	return decodeAlipayAccessTokenResponse(body)
+}
+
+func (s *AlipayService) buildAccessTokenParams(code string) url.Values {
+	params := url.Values{}
+	params.Set("app_id", s.config.AppID)
+	params.Set("method", "alipay.system.oauth.token")
+	params.Set("format", "JSON")
+	params.Set("charset", "utf-8")
+	params.Set("sign_type", "RSA2")
+	params.Set("timestamp", time.Now().Format("2006-01-02 15:04:05"))
+	params.Set("version", "1.0")
+	params.Set("grant_type", "authorization_code")
+	params.Set("code", code)
+	params.Set("redirect_uri", s.config.RedirectURL)
+	params.Set("scope", s.effectiveScope())
+	return params
 }
 
 func decodeAlipayAccessTokenResponse(body []byte) (*AlipayAccessToken, error) {
@@ -278,14 +286,7 @@ func alipayIntField(raw json.RawMessage, field string) (int, error) {
 
 // GetUserInfo 获取支付宝用户信息
 func (s *AlipayService) GetUserInfo(accessToken string) (*AlipayUserInfo, error) {
-	params := url.Values{}
-	params.Set("app_id", s.config.AppID)
-	params.Set("method", "alipay.user.info.share")
-	params.Set("charset", "utf-8")
-	params.Set("sign_type", "RSA2")
-	params.Set("timestamp", time.Now().Format("2006-01-02 15:04:05"))
-	params.Set("version", "1.0")
-	params.Set("auth_token", accessToken)
+	params := s.buildUserInfoParams(accessToken)
 
 	if s.config.AppPrivateKey != "" {
 		sign, err := s.generateSign(params)
@@ -308,6 +309,20 @@ func (s *AlipayService) GetUserInfo(accessToken string) (*AlipayUserInfo, error)
 		return nil, fmt.Errorf("failed to read user info response: %w", err)
 	}
 	return decodeAlipayUserInfoResponse(body)
+}
+
+func (s *AlipayService) buildUserInfoParams(accessToken string) url.Values {
+	params := url.Values{}
+	params.Set("app_id", s.config.AppID)
+	params.Set("method", "alipay.user.info.share")
+	params.Set("format", "JSON")
+	params.Set("charset", "utf-8")
+	params.Set("sign_type", "RSA2")
+	params.Set("timestamp", time.Now().Format("2006-01-02 15:04:05"))
+	params.Set("version", "1.0")
+	params.Set("auth_token", accessToken)
+	params.Set("scope", s.effectiveScope())
+	return params
 }
 
 func decodeAlipayUserInfoResponse(body []byte) (*AlipayUserInfo, error) {
@@ -378,17 +393,20 @@ func (s *AlipayService) buildAuthorizeURL(state string) (string, error) {
 		return "", fmt.Errorf("alipay login is not configured: missing authorize url")
 	}
 
-	scope := strings.TrimSpace(s.config.Scope)
-	if scope == "" {
-		scope = "auth_user"
-	}
-
 	params := url.Values{}
 	params.Add("app_id", s.config.AppID)
 	params.Add("redirect_uri", s.config.RedirectURL)
 	params.Add("response_type", "code")
-	params.Add("scope", scope)
+	params.Add("scope", s.effectiveScope())
 	params.Add("state", state)
 
 	return fmt.Sprintf("%s?%s", s.config.AuthorizeURL, params.Encode()), nil
+}
+
+func (s *AlipayService) effectiveScope() string {
+	scope := strings.TrimSpace(s.config.Scope)
+	if scope == "" {
+		return "auth_user"
+	}
+	return scope
 }

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -441,6 +442,7 @@ func (h *AuthHandler) failAlipayQRSession(c *gin.Context, state, message string)
 	if _, ok := h.alipayQRSessionStore.FailByState(state, message); !ok {
 		return false
 	}
+	log.Printf("[AlipayQRCallback] session failed state=%s error=%s", state, message)
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.String(http.StatusOK, alipayQRLoginFailedHTML())
 	return true

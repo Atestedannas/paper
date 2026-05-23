@@ -170,6 +170,38 @@ func TestDecodeAlipayUserInfoResponseReturnsBusinessError(t *testing.T) {
 	}
 }
 
+func TestBuildAccessTokenParamsIncludesOAuthContext(t *testing.T) {
+	cfg := testAlipayConfig()
+	params := NewAlipayService(cfg).buildAccessTokenParams("auth-code")
+
+	if got := params.Get("format"); got != "JSON" {
+		t.Fatalf("format = %q, want JSON", got)
+	}
+	if got := params.Get("redirect_uri"); got != cfg.Alipay.RedirectURL {
+		t.Fatalf("redirect_uri = %q, want %q", got, cfg.Alipay.RedirectURL)
+	}
+	if got := params.Get("scope"); got != "auth_user" {
+		t.Fatalf("scope = %q, want auth_user", got)
+	}
+	if got := params.Get("code"); got != "auth-code" {
+		t.Fatalf("code = %q, want auth-code", got)
+	}
+}
+
+func TestBuildUserInfoParamsIncludesJSONFormatAndScope(t *testing.T) {
+	params := NewAlipayService(testAlipayConfig()).buildUserInfoParams("access-token")
+
+	if got := params.Get("format"); got != "JSON" {
+		t.Fatalf("format = %q, want JSON", got)
+	}
+	if got := params.Get("scope"); got != "auth_user" {
+		t.Fatalf("scope = %q, want auth_user", got)
+	}
+	if got := params.Get("auth_token"); got != "access-token" {
+		t.Fatalf("auth_token = %q, want access-token", got)
+	}
+}
+
 func testAlipayConfig() *config.Config {
 	return &config.Config{
 		Alipay: config.AlipayConfig{
