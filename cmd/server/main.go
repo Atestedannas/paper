@@ -14,7 +14,6 @@ import (
 	"github.com/paper-format-checker/backend/internal/config"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/handler"
-	"github.com/paper-format-checker/backend/internal/logger"
 	"github.com/paper-format-checker/backend/internal/middleware"
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
@@ -26,9 +25,6 @@ func main() {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
-	}
-	if err := logger.InitLogrusJSONFile(""); err != nil {
-		log.Printf("Warning: logrus JSON file init failed: %v", err)
 	}
 	log.Printf("RBAC model: %s", cfg.RBAC.Model)
 
