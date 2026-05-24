@@ -196,6 +196,23 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	if err := s.persistWorkflowContracts(ctx, job, profile, rules, ast, contract); err != nil {
 		return nil, err
 	}
+	if profile == nil {
+		result := verify.Result{
+			Passed:           false,
+			ComplianceStatus: "review_required",
+			ComplianceReason: "no template profile is configured for this workflow; school-specific compliance cannot be proven",
+			Warnings: []verify.Issue{{
+				Kind:     "missing_template_profile",
+				Severity: "warning",
+				Message:  "upload or configure a school template before claiming format compliance",
+				Target:   job.Paper.FilePath,
+			}},
+		}
+		if err := workflow.NewStore(s.db).UpdateJobResult(ctx, job.ID, workflow.StatusManualReview, workflow.StageManualReview, "", result); err != nil {
+			return nil, err
+		}
+		return s.GetJobForUser(id, userID)
+	}
 
 	if shouldRunCQRWSTPostFix() {
 		if _, err := cqrwst.FixDOCXWithTemplateProfileAndSemanticAI(ctx, outputPath, profile, newDeepSeekSemanticBlockClient()); err != nil {

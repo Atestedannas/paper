@@ -17,6 +17,8 @@ type RuleSet struct {
 	Confidence        float64                                `json:"confidence"`
 	Sections          map[string]templateprofile.SectionRule `json:"sections"`
 	Styles            map[string]templateprofile.StyleRule   `json:"styles"`
+	PageSetup         templateprofile.PageSetupRule          `json:"page_setup,omitempty"`
+	RulePack          templateprofile.RulePack               `json:"rule_pack,omitempty"`
 	Header            templateprofile.HeaderFooterRule       `json:"header"`
 	Footer            templateprofile.HeaderFooterRule       `json:"footer"`
 	Verification      VerificationRules                      `json:"verification"`
@@ -61,6 +63,8 @@ func Build(profile *templateprofile.Profile) RuleSet {
 	rules.Confidence = profile.Confidence
 	rules.Sections = cloneSections(profile.Sections)
 	rules.Styles = cloneStyles(profile.Styles)
+	rules.PageSetup = profile.PageSetup
+	rules.RulePack = profile.RulePack
 	rules.Header = profile.Header
 	rules.Footer = profile.Footer
 	for key, rule := range rules.Sections {

@@ -86,6 +86,7 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 	if err != nil {
 		return fmt.Errorf("open skeleton docx %q: %w", input.CompiledTemplate.SkeletonPath, err)
 	}
+	usesCQRWSTNormalizers := packageUsesCQRWSTNormalizers(pkg)
 
 	replacements := buildReplacements(input.Mapping.Bindings, input.CompiledTemplate.MappingContract)
 	coverFields := input.Mapping.CoverFields
@@ -124,8 +125,10 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 		pkg.Set(target, []byte(patched))
 	}
 	normalizePackageXML(pkg)
-	normalizeCQRWSTMainHeader(pkg, coverFields)
-	normalizeCQRWSTMainFooter(pkg)
+	if usesCQRWSTNormalizers {
+		normalizeCQRWSTMainHeader(pkg, coverFields)
+		normalizeCQRWSTMainFooter(pkg)
+	}
 
 	if err := ctx.Err(); err != nil {
 		return err
@@ -138,6 +141,20 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 	}
 
 	return nil
+}
+
+func packageUsesCQRWSTNormalizers(pkg *ooxmlpkg.DocxPackage) bool {
+	if pkg == nil {
+		return false
+	}
+	content, ok := pkg.Get(defaultPatchTarget)
+	if !ok {
+		return false
+	}
+	document := string(content)
+	return strings.Contains(document, "重庆人文科技学院") ||
+		strings.Contains(document, "本科毕业论文") ||
+		strings.Contains(document, "本科毕业设计")
 }
 
 func validateInput(input GenerateInput) error {

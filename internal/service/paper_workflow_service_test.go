@@ -68,7 +68,7 @@ func TestPaperWorkflowServiceCreatePaperJobPersistsPaperAndJob(t *testing.T) {
 	}
 }
 
-func TestPaperWorkflowServiceRunJobCopiesDocxAndVerifiesPass(t *testing.T) {
+func TestPaperWorkflowServiceRunJobWithoutTemplateRequiresManualReview(t *testing.T) {
 	db := openPaperWorkflowServiceTestDB(t)
 	outputRoot := t.TempDir()
 	inputPath := filepath.Join(t.TempDir(), "paper.docx")
@@ -93,27 +93,22 @@ func TestPaperWorkflowServiceRunJobCopiesDocxAndVerifiesPass(t *testing.T) {
 		t.Fatalf("RunJob() error = %v", err)
 	}
 
-	if view.Status != string(workflow.StatusVerifiedPass) {
-		t.Fatalf("Status = %s, want %s", view.Status, workflow.StatusVerifiedPass)
+	if view.Status != string(workflow.StatusManualReview) {
+		t.Fatalf("Status = %s, want %s", view.Status, workflow.StatusManualReview)
 	}
-	if view.Stage != workflow.StageVerified {
-		t.Fatalf("Stage = %s, want %s", view.Stage, workflow.StageVerified)
+	if view.Stage != workflow.StageManualReview {
+		t.Fatalf("Stage = %s, want %s", view.Stage, workflow.StageManualReview)
 	}
-	if view.DownloadPath == "" {
-		t.Fatal("DownloadPath is empty")
+	if view.DownloadPath != "" {
+		t.Fatalf("DownloadPath = %s, want empty for unproven no-template compliance", view.DownloadPath)
 	}
-	if !filepath.IsAbs(view.DownloadPath) {
-		t.Fatalf("DownloadPath = %s, want absolute path", view.DownloadPath)
-	}
-	if _, err := os.Stat(view.DownloadPath); err != nil {
-		t.Fatalf("stat output docx: %v", err)
-	}
-	if !strings.HasPrefix(view.DownloadPath, outputRoot) {
-		t.Fatalf("DownloadPath = %s, want inside %s", view.DownloadPath, outputRoot)
+	outputPath := filepath.Join(outputRoot, created.ID.String(), "final.docx")
+	if _, err := os.Stat(outputPath); err != nil {
+		t.Fatalf("expected copied workflow output for manual review: %v", err)
 	}
 }
 
-func TestPaperWorkflowServiceRunJobAppliesCQRWSTFixesBeforeVerification(t *testing.T) {
+func TestPaperWorkflowServiceRunJobWithoutTemplateDoesNotApplyCQRWSTFixes(t *testing.T) {
 	t.Setenv("CQRWST_ALLOW_CONTENT_NORMALIZATION", "true")
 	db := openPaperWorkflowServiceTestDB(t)
 	outputRoot := t.TempDir()
@@ -138,17 +133,14 @@ func TestPaperWorkflowServiceRunJobAppliesCQRWSTFixesBeforeVerification(t *testi
 	if err != nil {
 		t.Fatalf("RunJob() error = %v", err)
 	}
-	if view.Status != string(workflow.StatusVerifiedPass) {
-		t.Fatalf("Status = %s, want %s", view.Status, workflow.StatusVerifiedPass)
+	if view.Status != string(workflow.StatusManualReview) {
+		t.Fatalf("Status = %s, want %s", view.Status, workflow.StatusManualReview)
 	}
 
-	outputPath := view.DownloadPath
-	if outputPath == "" {
-		outputPath = filepath.Join(outputRoot, created.ID.String(), "final.docx")
-	}
+	outputPath := filepath.Join(outputRoot, created.ID.String(), "final.docx")
 	documentXML := readWorkflowDocumentXML(t, outputPath)
-	if !strings.Contains(documentXML, "1.1 研究背景") {
-		t.Fatalf("download docx missing fixed heading: %s", documentXML)
+	if strings.Contains(documentXML, "1.1 研究背景") {
+		t.Fatalf("no-template workflow should not apply school-specific CQRWST text fixes: %s", documentXML)
 	}
 }
 
@@ -374,6 +366,9 @@ func TestPaperWorkflowServiceRunJobPersistsTemplateProfile(t *testing.T) {
 	})
 	templatePath := filepath.Join(t.TempDir(), "template.docx")
 	writeWorkflowTemplateDocxWithReferenceBreak(t, templatePath)
+	if err := os.WriteFile(templatePath+".rules.json", []byte(`{"rule_pack":{"reference_standard":"GB/T 7714-2005","citation_style":"superscript_bracket"}}`), 0644); err != nil {
+		t.Fatalf("write template rule sidecar: %v", err)
+	}
 	t.Setenv("CQRWST_TEMPLATE_PATH", templatePath)
 	t.Setenv("DEEPSEEK_ENABLED", "false")
 	userID := uuid.New()
@@ -416,6 +411,12 @@ func TestPaperWorkflowServiceRunJobPersistsTemplateProfile(t *testing.T) {
 	}
 	if rules.Version != templatecontract.Version || rules.Verification.StrictFailurePolicy != "reject_compliance_on_any_error" {
 		t.Fatalf("template rule JSON not persisted correctly: %#v", rules)
+	}
+	if rules.PageSetup.PageWidthTwips == "" || rules.PageSetup.MarginTopTwips == "" {
+		t.Fatalf("template rule JSON should persist page setup: %#v", rules.PageSetup)
+	}
+	if rules.RulePack.ReferenceStandard != "GB/T 7714-2005" {
+		t.Fatalf("template rule JSON should persist configurable rule pack: %#v", rules.RulePack)
 	}
 	var contract repaircontract.Contract
 	if err := json.Unmarshal([]byte(compiled.MappingContractJSON), &contract); err != nil {
@@ -830,6 +831,7 @@ func writeWorkflowTemplateDocxWithReferenceBreak(t *testing.T, path string) {
 			`<w:p><w:pPr><w:rPr><w:rFonts w:eastAsia="宋体" w:ascii="Times New Roman"/><w:sz w:val="28"/><w:b/></w:rPr></w:pPr><w:r><w:t>参考文献</w:t></w:r></w:p>` +
 			`<w:p><w:r><w:br w:type="page"/></w:r></w:p>` +
 			`<w:p><w:r><w:t>致      谢</w:t></w:r></w:p>` +
+			`<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1701" w:right="1417" w:bottom="1417" w:left="1701" w:header="907" w:footer="851"/></w:sectPr>` +
 			`</w:body></w:document>`,
 	}
 	for name, content := range entries {

@@ -85,6 +85,8 @@ type Profile struct {
 	TemplateSHA string                 `json:"template_sha"`
 	Sections    map[string]SectionRule `json:"sections"`
 	Styles      map[string]StyleRule   `json:"styles"`
+	PageSetup   PageSetupRule          `json:"page_setup,omitempty"`
+	RulePack    RulePack               `json:"rule_pack,omitempty"`
 	Header      HeaderFooterRule       `json:"header"`
 	Footer      HeaderFooterRule       `json:"footer"`
 	AI          *AIProfile             `json:"ai,omitempty"`
@@ -109,6 +111,41 @@ type StyleRule struct {
 	BeforeLines    string `json:"before_lines,omitempty"`
 	AfterLines     string `json:"after_lines,omitempty"`
 	FirstLineChars string `json:"first_line_chars,omitempty"`
+}
+
+type PageSetupRule struct {
+	PageWidthTwips    string `json:"page_width_twips,omitempty"`
+	PageHeightTwips   string `json:"page_height_twips,omitempty"`
+	MarginTopTwips    string `json:"margin_top_twips,omitempty"`
+	MarginRightTwips  string `json:"margin_right_twips,omitempty"`
+	MarginBottomTwips string `json:"margin_bottom_twips,omitempty"`
+	MarginLeftTwips   string `json:"margin_left_twips,omitempty"`
+	HeaderMarginTwips string `json:"header_margin_twips,omitempty"`
+	FooterMarginTwips string `json:"footer_margin_twips,omitempty"`
+	Orientation       string `json:"orientation,omitempty"`
+}
+
+type RulePack struct {
+	CitationStyle            string   `json:"citation_style,omitempty"`
+	ReferenceStandard        string   `json:"reference_standard,omitempty"`
+	FigureNumbering          string   `json:"figure_numbering,omitempty"`
+	TableNumbering           string   `json:"table_numbering,omitempty"`
+	FormulaNumbering         string   `json:"formula_numbering,omitempty"`
+	TableStyle               string   `json:"table_style,omitempty"`
+	NotesStyle               string   `json:"notes_style,omitempty"`
+	RequiredSections         []string `json:"required_sections,omitempty"`
+	RequiredFields           []string `json:"required_fields,omitempty"`
+	TitleMaxCNChars          int      `json:"title_max_cn_chars,omitempty"`
+	TitleMaxENWords          int      `json:"title_max_en_words,omitempty"`
+	KeywordMin               int      `json:"keyword_min,omitempty"`
+	KeywordMax               int      `json:"keyword_max,omitempty"`
+	HeadingNumbering         string   `json:"heading_numbering,omitempty"`
+	BodyMinChars             int      `json:"body_min_chars,omitempty"`
+	ReferenceMinCount        int      `json:"reference_min_count,omitempty"`
+	ReferenceForeignRatioMin float64  `json:"reference_foreign_ratio_min,omitempty"`
+	HeaderPolicy             string   `json:"header_policy,omitempty"`
+	PageNumbering            string   `json:"page_numbering,omitempty"`
+	BlindReview              bool     `json:"blind_review,omitempty"`
 }
 
 type HeaderFooterRule struct {
@@ -146,6 +183,9 @@ var (
 	spacingPattern   = regexp.MustCompile(`<w:spacing\b[^>]*/>`)
 	indentPattern    = regexp.MustCompile(`<w:ind\b[^>]*/>`)
 	jcPattern        = regexp.MustCompile(`<w:jc\b[^>]*/>`)
+	sectPrPattern    = regexp.MustCompile(`(?s)<w:sectPr\b[^>]*>.*?</w:sectPr>|<w:sectPr\b[^>]*/>`)
+	pgSzPattern      = regexp.MustCompile(`<w:pgSz\b[^>]*/>`)
+	pgMarPattern     = regexp.MustCompile(`<w:pgMar\b[^>]*/>`)
 	attrPattern      = regexp.MustCompile(`\s([A-Za-z0-9_:]+)="([^"]*)"`)
 )
 
@@ -157,6 +197,7 @@ func Build(ctx context.Context, templatePath string, opts Options) (*Profile, er
 	if err != nil {
 		return nil, err
 	}
+	AttachRulePackSidecar(profile, templatePath)
 	if opts.AIEnabled && opts.AIClient != nil {
 		AttachAISummary(ctx, profile, opts.AIClient)
 	}
@@ -184,6 +225,7 @@ func Extract(templatePath string) (*Profile, error) {
 		TemplateSHA: hex.EncodeToString(sum[:]),
 		Sections:    map[string]SectionRule{},
 		Styles:      map[string]StyleRule{},
+		PageSetup:   extractPageSetup(string(documentXML)),
 		Header:      extractHeaderFooter(pkg, true),
 		Footer:      extractHeaderFooter(pkg, false),
 		Confidence:  0.76,
@@ -241,6 +283,27 @@ func AttachAISummary(ctx context.Context, profile *Profile, client ChatClient) {
 	}
 }
 
+func AttachRulePackSidecar(profile *Profile, templatePath string) {
+	if profile == nil || strings.TrimSpace(templatePath) == "" {
+		return
+	}
+	data, err := os.ReadFile(templatePath + ".rules.json")
+	if err != nil {
+		return
+	}
+	var raw struct {
+		RulePack RulePack `json:"rule_pack"`
+	}
+	if err := json.Unmarshal(data, &raw); err == nil {
+		profile.RulePack = mergeRulePack(profile.RulePack, raw.RulePack)
+		return
+	}
+	var direct RulePack
+	if err := json.Unmarshal(data, &direct); err == nil {
+		profile.RulePack = mergeRulePack(profile.RulePack, direct)
+	}
+}
+
 func mergeAISummary(profile *Profile, raw map[string]interface{}) {
 	if profile == nil || raw == nil {
 		return
@@ -256,6 +319,8 @@ func mergeAISummary(profile *Profile, raw map[string]interface{}) {
 			DetectedFrom    string `json:"detected_from"`
 		} `json:"sections"`
 		Styles     map[string]StyleRule `json:"styles"`
+		PageSetup  PageSetupRule        `json:"page_setup"`
+		RulePack   RulePack             `json:"rule_pack"`
 		Header     HeaderFooterRule     `json:"header"`
 		Footer     HeaderFooterRule     `json:"footer"`
 		Confidence float64              `json:"confidence"`
@@ -285,6 +350,8 @@ func mergeAISummary(profile *Profile, raw map[string]interface{}) {
 		style.Label = key
 		profile.Styles[key] = mergeStyleRule(profile.Styles[key], style)
 	}
+	profile.PageSetup = mergePageSetupRule(profile.PageSetup, summary.PageSetup)
+	profile.RulePack = mergeRulePack(profile.RulePack, summary.RulePack)
 	profile.Header = mergeHeaderFooterRule(profile.Header, summary.Header)
 	profile.Footer = mergeHeaderFooterRule(profile.Footer, summary.Footer)
 	if summary.Confidence > 0 {
@@ -322,6 +389,101 @@ func mergeStyleRule(base StyleRule, override StyleRule) StyleRule {
 	}
 	if override.FirstLineChars != "" {
 		base.FirstLineChars = override.FirstLineChars
+	}
+	return base
+}
+
+func mergePageSetupRule(base PageSetupRule, override PageSetupRule) PageSetupRule {
+	if override.PageWidthTwips != "" {
+		base.PageWidthTwips = override.PageWidthTwips
+	}
+	if override.PageHeightTwips != "" {
+		base.PageHeightTwips = override.PageHeightTwips
+	}
+	if override.MarginTopTwips != "" {
+		base.MarginTopTwips = override.MarginTopTwips
+	}
+	if override.MarginRightTwips != "" {
+		base.MarginRightTwips = override.MarginRightTwips
+	}
+	if override.MarginBottomTwips != "" {
+		base.MarginBottomTwips = override.MarginBottomTwips
+	}
+	if override.MarginLeftTwips != "" {
+		base.MarginLeftTwips = override.MarginLeftTwips
+	}
+	if override.HeaderMarginTwips != "" {
+		base.HeaderMarginTwips = override.HeaderMarginTwips
+	}
+	if override.FooterMarginTwips != "" {
+		base.FooterMarginTwips = override.FooterMarginTwips
+	}
+	if override.Orientation != "" {
+		base.Orientation = override.Orientation
+	}
+	return base
+}
+
+func mergeRulePack(base RulePack, override RulePack) RulePack {
+	if override.CitationStyle != "" {
+		base.CitationStyle = override.CitationStyle
+	}
+	if override.ReferenceStandard != "" {
+		base.ReferenceStandard = override.ReferenceStandard
+	}
+	if override.FigureNumbering != "" {
+		base.FigureNumbering = override.FigureNumbering
+	}
+	if override.TableNumbering != "" {
+		base.TableNumbering = override.TableNumbering
+	}
+	if override.FormulaNumbering != "" {
+		base.FormulaNumbering = override.FormulaNumbering
+	}
+	if override.TableStyle != "" {
+		base.TableStyle = override.TableStyle
+	}
+	if override.NotesStyle != "" {
+		base.NotesStyle = override.NotesStyle
+	}
+	if len(override.RequiredSections) > 0 {
+		base.RequiredSections = append([]string(nil), override.RequiredSections...)
+	}
+	if len(override.RequiredFields) > 0 {
+		base.RequiredFields = append([]string(nil), override.RequiredFields...)
+	}
+	if override.TitleMaxCNChars > 0 {
+		base.TitleMaxCNChars = override.TitleMaxCNChars
+	}
+	if override.TitleMaxENWords > 0 {
+		base.TitleMaxENWords = override.TitleMaxENWords
+	}
+	if override.KeywordMin > 0 {
+		base.KeywordMin = override.KeywordMin
+	}
+	if override.KeywordMax > 0 {
+		base.KeywordMax = override.KeywordMax
+	}
+	if override.HeadingNumbering != "" {
+		base.HeadingNumbering = override.HeadingNumbering
+	}
+	if override.BodyMinChars > 0 {
+		base.BodyMinChars = override.BodyMinChars
+	}
+	if override.ReferenceMinCount > 0 {
+		base.ReferenceMinCount = override.ReferenceMinCount
+	}
+	if override.ReferenceForeignRatioMin > 0 {
+		base.ReferenceForeignRatioMin = override.ReferenceForeignRatioMin
+	}
+	if override.HeaderPolicy != "" {
+		base.HeaderPolicy = override.HeaderPolicy
+	}
+	if override.PageNumbering != "" {
+		base.PageNumbering = override.PageNumbering
+	}
+	if override.BlindReview {
+		base.BlindReview = true
 	}
 	return base
 }
@@ -375,6 +537,30 @@ func Parse(data string) (*Profile, error) {
 		return nil, fmt.Errorf("unsupported template profile version %q", profile.Version)
 	}
 	return &profile, nil
+}
+
+func extractPageSetup(documentXML string) PageSetupRule {
+	section := sectPrPattern.FindString(documentXML)
+	if section == "" {
+		return PageSetupRule{}
+	}
+	rule := PageSetupRule{}
+	if pgSz := pgSzPattern.FindString(section); pgSz != "" {
+		attrs := attrs(pgSz)
+		rule.PageWidthTwips = attrs["w:w"]
+		rule.PageHeightTwips = attrs["w:h"]
+		rule.Orientation = attrs["w:orient"]
+	}
+	if pgMar := pgMarPattern.FindString(section); pgMar != "" {
+		attrs := attrs(pgMar)
+		rule.MarginTopTwips = attrs["w:top"]
+		rule.MarginRightTwips = attrs["w:right"]
+		rule.MarginBottomTwips = attrs["w:bottom"]
+		rule.MarginLeftTwips = attrs["w:left"]
+		rule.HeaderMarginTwips = attrs["w:header"]
+		rule.FooterMarginTwips = attrs["w:footer"]
+	}
+	return rule
 }
 
 func collectParagraphs(documentXML string) []paragraph {
