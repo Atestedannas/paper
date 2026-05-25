@@ -144,7 +144,19 @@ type RulePack struct {
 	ReferenceMinCount        int      `json:"reference_min_count,omitempty"`
 	ReferenceForeignRatioMin float64  `json:"reference_foreign_ratio_min,omitempty"`
 	HeaderPolicy             string   `json:"header_policy,omitempty"`
+	OddHeaderText            string   `json:"odd_header_text,omitempty"`
+	EvenHeaderText           string   `json:"even_header_text,omitempty"`
+	HeaderLine               string   `json:"header_line,omitempty"`
 	PageNumbering            string   `json:"page_numbering,omitempty"`
+	FrontPageFormat          string   `json:"front_page_format,omitempty"`
+	BodyPageFormat           string   `json:"body_page_format,omitempty"`
+	BodyPageStart            int      `json:"body_page_start,omitempty"`
+	BodyPageWrapper          string   `json:"body_page_wrapper,omitempty"`
+	HeadingLevels            []string `json:"heading_levels,omitempty"`
+	FigureCaptionPosition    string   `json:"figure_caption_position,omitempty"`
+	TableCaptionPosition     string   `json:"table_caption_position,omitempty"`
+	CaptionStyleKey          string   `json:"caption_style_key,omitempty"`
+	ReferenceStyle           string   `json:"reference_style,omitempty"`
 	BlindReview              bool     `json:"blind_review,omitempty"`
 }
 
@@ -479,8 +491,44 @@ func mergeRulePack(base RulePack, override RulePack) RulePack {
 	if override.HeaderPolicy != "" {
 		base.HeaderPolicy = override.HeaderPolicy
 	}
+	if override.OddHeaderText != "" {
+		base.OddHeaderText = override.OddHeaderText
+	}
+	if override.EvenHeaderText != "" {
+		base.EvenHeaderText = override.EvenHeaderText
+	}
+	if override.HeaderLine != "" {
+		base.HeaderLine = override.HeaderLine
+	}
 	if override.PageNumbering != "" {
 		base.PageNumbering = override.PageNumbering
+	}
+	if override.FrontPageFormat != "" {
+		base.FrontPageFormat = override.FrontPageFormat
+	}
+	if override.BodyPageFormat != "" {
+		base.BodyPageFormat = override.BodyPageFormat
+	}
+	if override.BodyPageStart > 0 {
+		base.BodyPageStart = override.BodyPageStart
+	}
+	if override.BodyPageWrapper != "" {
+		base.BodyPageWrapper = override.BodyPageWrapper
+	}
+	if len(override.HeadingLevels) > 0 {
+		base.HeadingLevels = append([]string(nil), override.HeadingLevels...)
+	}
+	if override.FigureCaptionPosition != "" {
+		base.FigureCaptionPosition = override.FigureCaptionPosition
+	}
+	if override.TableCaptionPosition != "" {
+		base.TableCaptionPosition = override.TableCaptionPosition
+	}
+	if override.CaptionStyleKey != "" {
+		base.CaptionStyleKey = override.CaptionStyleKey
+	}
+	if override.ReferenceStyle != "" {
+		base.ReferenceStyle = override.ReferenceStyle
 	}
 	if override.BlindReview {
 		base.BlindReview = true

@@ -30,6 +30,11 @@ var (
 	templateProfileAnyFigure         = regexp.MustCompile(`^\x{56fe}\d+`)
 	templateProfileAnyTable          = regexp.MustCompile(`^\x{8868}\d+`)
 	templateProfileAnyFormula        = regexp.MustCompile(`^\x{5f0f}[\x{ff08}(]\d+`)
+	templateProfileContinuousFigure  = regexp.MustCompile(`^\x{56fe}\d+(?:\s|\x{3000}|$)`)
+	templateProfileContinuousTable   = regexp.MustCompile(`^\x{8868}\d+(?:\s|\x{3000}|$)`)
+	templateProfileContinuousFormula = regexp.MustCompile(`^\x{5f0f}[\x{ff08}(]\d+[\x{ff09})]`)
+	templateProfileDocElementPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
+	templateProfileAuthorYearRef     = regexp.MustCompile(`^[A-Z][A-Za-z-]+(?:\s+et\s+al\.)?\s*\(\d{4}[a-z]?\)`)
 )
 
 type TemplateProfileProcessor interface {
@@ -44,6 +49,11 @@ type ReferenceProcessor struct{}
 type CitationProcessor struct{}
 type FigureTableProcessor struct{}
 type RulePackValidationProcessor struct{}
+type HeaderFooterPolicyProcessor struct{}
+type PageNumberingProcessor struct{}
+type HeadingNumberingProcessor struct{}
+type FigureTableCaptionProcessor struct{}
+type ReferenceStyleProcessor struct{}
 type SectionBreakProcessor struct{}
 type PageSetupProcessor struct{}
 
@@ -55,6 +65,11 @@ func templateProfileProcessors() []TemplateProfileProcessor {
 		CitationProcessor{},
 		ReferenceProcessor{},
 		FigureTableProcessor{},
+		HeaderFooterPolicyProcessor{},
+		PageNumberingProcessor{},
+		HeadingNumberingProcessor{},
+		FigureTableCaptionProcessor{},
+		ReferenceStyleProcessor{},
 		RulePackValidationProcessor{},
 		SectionBreakProcessor{},
 		PageSetupProcessor{},
@@ -228,6 +243,62 @@ func (RulePackValidationProcessor) Check(_ context.Context, path string, documen
 	return countRulePackValidationViolations(path, documentXML, profile), nil
 }
 
+func (HeaderFooterPolicyProcessor) Apply(_ context.Context, _ string, _ *templateprofile.Profile) (int, error) {
+	return 0, nil
+}
+
+func (HeaderFooterPolicyProcessor) Check(_ context.Context, path string, documentXML string, profile *templateprofile.Profile) (int, error) {
+	if profile == nil {
+		return 0, nil
+	}
+	return countHeaderFooterPolicyViolations(path, documentXML, profile.RulePack, profile.Header), nil
+}
+
+func (PageNumberingProcessor) Apply(_ context.Context, _ string, _ *templateprofile.Profile) (int, error) {
+	return 0, nil
+}
+
+func (PageNumberingProcessor) Check(_ context.Context, path string, documentXML string, profile *templateprofile.Profile) (int, error) {
+	if profile == nil {
+		return 0, nil
+	}
+	return countPageNumberingViolations(path, documentXML, profile.RulePack), nil
+}
+
+func (HeadingNumberingProcessor) Apply(_ context.Context, _ string, _ *templateprofile.Profile) (int, error) {
+	return 0, nil
+}
+
+func (HeadingNumberingProcessor) Check(_ context.Context, _ string, documentXML string, profile *templateprofile.Profile) (int, error) {
+	if profile == nil {
+		return 0, nil
+	}
+	return countHeadingLevelViolations(visibleParagraphTexts(documentXML), profile.RulePack.HeadingLevels), nil
+}
+
+func (FigureTableCaptionProcessor) Apply(_ context.Context, _ string, _ *templateprofile.Profile) (int, error) {
+	return 0, nil
+}
+
+func (FigureTableCaptionProcessor) Check(_ context.Context, _ string, documentXML string, profile *templateprofile.Profile) (int, error) {
+	if profile == nil {
+		return 0, nil
+	}
+	paragraphs := visibleParagraphTexts(documentXML)
+	return countAdvancedCaptionViolations(documentXML, paragraphs, profile.RulePack), nil
+}
+
+func (ReferenceStyleProcessor) Apply(_ context.Context, _ string, _ *templateprofile.Profile) (int, error) {
+	return 0, nil
+}
+
+func (ReferenceStyleProcessor) Check(_ context.Context, _ string, documentXML string, profile *templateprofile.Profile) (int, error) {
+	if profile == nil {
+		return 0, nil
+	}
+	return countReferenceStyleViolations(referenceEntries(visibleParagraphTexts(documentXML)), profile.RulePack.ReferenceStyle), nil
+}
+
 func countRulePackValidationViolations(path string, documentXML string, profile *templateprofile.Profile) int {
 	rules := profile.RulePack
 	paragraphs := visibleParagraphTexts(documentXML)
@@ -245,6 +316,254 @@ func countRulePackValidationViolations(path string, documentXML string, profile 
 		violations += countBlindReviewViolations(paragraphs)
 	}
 	return violations
+}
+
+func countHeaderFooterPolicyViolations(path string, documentXML string, rules templateprofile.RulePack, header templateprofile.HeaderFooterRule) int {
+	switch rules.HeaderPolicy {
+	case "":
+		return 0
+	case "none":
+		if strings.Contains(documentXML, "w:headerReference") {
+			return 1
+		}
+	case "template":
+		if header.Exists && !strings.Contains(documentXML, "w:headerReference") {
+			return 1
+		}
+	case "odd_even":
+		violations := 0
+		headerXML := allPackageEntries(path, "word/header")
+		if !(strings.Contains(documentXML, `w:type="default"`) || strings.Contains(documentXML, `w:type="odd"`)) {
+			violations++
+		}
+		if !strings.Contains(documentXML, `w:type="even"`) {
+			violations++
+		}
+		if rules.OddHeaderText != "" && rules.OddHeaderText != "chapter" && !strings.Contains(headerXML, rules.OddHeaderText) {
+			violations++
+		}
+		if rules.EvenHeaderText != "" && !strings.Contains(headerXML, rules.EvenHeaderText) {
+			violations++
+		}
+		if rules.HeaderLine != "" && rules.HeaderLine != "none" && !strings.Contains(headerXML, "w:bottom") {
+			violations++
+		}
+		return violations
+	}
+	return 0
+}
+
+func countPageNumberingViolations(path string, documentXML string, rules templateprofile.RulePack) int {
+	violations := 0
+	if rules.PageNumbering == "body_arabic_footer_center" {
+		footerXML := documentXML + allPackageEntries(path, "word/footer")
+		if !strings.Contains(footerXML, "PAGE") {
+			violations++
+		}
+		if !strings.Contains(documentXML, `w:start="1"`) {
+			violations++
+		}
+	}
+	if rules.PageNumbering == "front_roman_body_arabic_center" || rules.FrontPageFormat != "" || rules.BodyPageFormat != "" {
+		if rules.FrontPageFormat != "" && !strings.Contains(documentXML, `w:fmt="`+rules.FrontPageFormat+`"`) {
+			violations++
+		}
+		bodyStart := rules.BodyPageStart
+		if bodyStart == 0 {
+			bodyStart = 1
+		}
+		if rules.BodyPageFormat != "" && !hasPageNumberType(documentXML, rules.BodyPageFormat, bodyStart) {
+			violations++
+		}
+	}
+	if rules.BodyPageWrapper == "dash" || rules.PageNumbering == "nuaa_dash_arabic_bottom_right" {
+		if !footerHasDashPageNumber(allPackageEntries(path, "word/footer")) {
+			violations++
+		}
+	}
+	return violations
+}
+
+func hasPageNumberType(documentXML string, format string, start int) bool {
+	startNeedle := `w:start="` + strconv.Itoa(start) + `"`
+	for _, section := range sectionPropertiesPattern.FindAllString(documentXML, -1) {
+		if !strings.Contains(section, startNeedle) {
+			continue
+		}
+		if format == "decimal" && !strings.Contains(section, `w:fmt=`) {
+			return true
+		}
+		if strings.Contains(section, `w:fmt="`+format+`"`) {
+			return true
+		}
+	}
+	return false
+}
+
+func footerHasDashPageNumber(footerXML string) bool {
+	return strings.Contains(footerXML, "PAGE") && strings.Contains(footerXML, ">-<")
+}
+
+func countHeadingLevelViolations(paragraphs []string, levels []string) int {
+	if len(levels) == 0 {
+		return 0
+	}
+	violations := 0
+	for _, text := range paragraphs {
+		trimmed := strings.TrimSpace(text)
+		if !looksLikeHeadingNumber(trimmed) {
+			continue
+		}
+		if !matchesAnyHeadingLevel(trimmed, levels) {
+			violations++
+		}
+	}
+	return violations
+}
+
+func looksLikeHeadingNumber(text string) bool {
+	return matchesHeadingPattern(text, "第1章") ||
+		matchesHeadingPattern(text, "第一章") ||
+		matchesHeadingPattern(text, "1.1") ||
+		matchesHeadingPattern(text, "1.1.1") ||
+		matchesHeadingPattern(text, "一") ||
+		matchesHeadingPattern(text, "(一)") ||
+		matchesHeadingPattern(text, "1")
+}
+
+func matchesAnyHeadingLevel(text string, levels []string) bool {
+	for _, level := range levels {
+		if matchesHeadingPattern(text, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesHeadingPattern(text string, pattern string) bool {
+	switch pattern {
+	case "第1章":
+		return regexp.MustCompile(`^\x{7b2c}\d+\x{7ae0}`).MatchString(text)
+	case "第一章":
+		return regexp.MustCompile(`^\x{7b2c}[\x{4e00}\x{4e8c}\x{4e09}\x{56db}\x{4e94}\x{516d}\x{4e03}\x{516b}\x{4e5d}\x{5341}]+\x{7ae0}`).MatchString(text)
+	case "1.1":
+		return regexp.MustCompile(`^\d+\.\d+(?:\s|\x{3000}|$)`).MatchString(text)
+	case "1.1.1":
+		return regexp.MustCompile(`^\d+\.\d+\.\d+(?:\s|\x{3000}|$)`).MatchString(text)
+	case "一":
+		return regexp.MustCompile(`^[\x{4e00}\x{4e8c}\x{4e09}\x{56db}\x{4e94}\x{516d}\x{4e03}\x{516b}\x{4e5d}\x{5341}]+[\x{3001}.．]`).MatchString(text)
+	case "(一)":
+		return regexp.MustCompile(`^[\(（][\x{4e00}\x{4e8c}\x{4e09}\x{56db}\x{4e94}\x{516d}\x{4e03}\x{516b}\x{4e5d}\x{5341}]+[\)）]`).MatchString(text)
+	case "1":
+		return regexp.MustCompile(`^\d+[\x{3001}.．、\s]`).MatchString(text) && !strings.Contains(strings.Fields(text)[0], ".")
+	default:
+		return false
+	}
+}
+
+func countAdvancedCaptionViolations(documentXML string, paragraphs []string, rules templateprofile.RulePack) int {
+	violations := countContinuousOrChapterNumberingViolations(paragraphs, rules)
+	violations += countCaptionPositionViolations(documentXML, rules)
+	return violations
+}
+
+func countContinuousOrChapterNumberingViolations(paragraphs []string, rules templateprofile.RulePack) int {
+	violations := 0
+	for _, text := range paragraphs {
+		trimmed := strings.TrimSpace(text)
+		if rules.FigureNumbering == "continuous" && templateProfileAnyFigure.MatchString(trimmed) && !templateProfileContinuousFigure.MatchString(trimmed) {
+			violations++
+		}
+		if rules.TableNumbering == "continuous" && templateProfileAnyTable.MatchString(trimmed) && !templateProfileContinuousTable.MatchString(trimmed) {
+			violations++
+		}
+		if rules.FormulaNumbering == "continuous" && templateProfileAnyFormula.MatchString(trimmed) && !templateProfileContinuousFormula.MatchString(trimmed) {
+			violations++
+		}
+	}
+	return violations
+}
+
+func countCaptionPositionViolations(documentXML string, rules templateprofile.RulePack) int {
+	if rules.TableCaptionPosition == "" && rules.FigureCaptionPosition == "" {
+		return 0
+	}
+	elements := templateProfileDocElementPattern.FindAllString(documentXML, -1)
+	violations := 0
+	for index, element := range elements {
+		if strings.HasPrefix(element, "<w:tbl") && rules.TableCaptionPosition != "" {
+			before := neighborParagraphText(elements, index-1)
+			after := neighborParagraphText(elements, index+1)
+			violations += captionPositionViolation(before, after, rules.TableCaptionPosition, templateProfileAnyTable)
+		}
+		if strings.Contains(element, "<w:drawing") && rules.FigureCaptionPosition != "" {
+			before := neighborParagraphText(elements, index-1)
+			after := neighborParagraphText(elements, index+1)
+			violations += captionPositionViolation(before, after, rules.FigureCaptionPosition, templateProfileAnyFigure)
+		}
+	}
+	return violations
+}
+
+func neighborParagraphText(elements []string, index int) string {
+	if index < 0 || index >= len(elements) || !strings.HasPrefix(elements[index], "<w:p") {
+		return ""
+	}
+	return strings.TrimSpace(extractParagraphText(elements[index]))
+}
+
+func captionPositionViolation(before string, after string, position string, pattern *regexp.Regexp) int {
+	switch position {
+	case "above":
+		if !pattern.MatchString(before) && pattern.MatchString(after) {
+			return 1
+		}
+	case "below":
+		if !pattern.MatchString(after) && pattern.MatchString(before) {
+			return 1
+		}
+	}
+	return 0
+}
+
+func countReferenceStyleViolations(entries []string, style string) int {
+	if style == "" {
+		return 0
+	}
+	violations := 0
+	for _, entry := range entries {
+		if !matchesReferenceStyle(entry, style) {
+			violations++
+		}
+	}
+	return violations
+}
+
+func matchesReferenceStyle(entry string, style string) bool {
+	trimmed := strings.TrimSpace(entry)
+	switch style {
+	case "gb_t_7714_sequence":
+		return isBasicGBReferenceEntry(trimmed)
+	case "author_year":
+		return templateProfileAuthorYearRef.MatchString(trimmed)
+	case "sample_book_journal_basic", "custom_school_basic":
+		return isSampleBookJournalReference(trimmed)
+	default:
+		return true
+	}
+}
+
+func isSampleBookJournalReference(entry string) bool {
+	if !referenceEntryPattern.MatchString(entry) || !templateProfileReferenceType.MatchString(entry) {
+		return false
+	}
+	if strings.Contains(entry, "[M]") {
+		return strings.Contains(entry, ":") || strings.Contains(entry, "\uff1a")
+	}
+	if strings.Contains(entry, "[J]") {
+		return strings.Contains(entry, ",") && regexp.MustCompile(`\d{4}`).MatchString(entry)
+	}
+	return false
 }
 
 func applyCitationRulesToDocumentXML(documentXML string, profile *templateprofile.Profile) (string, int) {
