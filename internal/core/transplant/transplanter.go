@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/paper-format-checker/backend/internal/core/blockmap"
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/templatecompile"
 )
@@ -307,18 +308,18 @@ func renderAcknowledgements(payloads []string) string {
 func renderLeadLabelParagraph(text string, label string, asciiFont string, eastAsiaFont string) string {
 	style := paragraphStyle{Size: 24, FirstLine: 480, FirstLineChars: 200, Line: 360, After: 624, AfterLines: 200}
 	remainder := strings.TrimPrefix(text, label)
+	paragraphXML, _ := ooxmlpatch.ApplyParagraphProperties(`<w:p></w:p>`, transplantParagraphSpec(text, style, true))
+	insertAt := strings.LastIndex(paragraphXML, "</w:p>")
+	if insertAt < 0 {
+		insertAt = len(paragraphXML)
+	}
 	var builder strings.Builder
-	builder.WriteString(`<w:p><w:pPr>`)
-	builder.WriteString(spacingXML(style))
-	builder.WriteString(`<w:ind w:firstLineChars="200" w:firstLine="480"/>`)
-	builder.WriteString(`<w:rPr>`)
-	builder.WriteString(runPropertiesForText(text, style.Size, false))
-	builder.WriteString(`</w:rPr></w:pPr>`)
+	builder.WriteString(paragraphXML[:insertAt])
 	builder.WriteString(runXMLWithFonts(label, 30, true, asciiFont, eastAsiaFont))
 	if strings.TrimSpace(remainder) != "" {
 		builder.WriteString(runXMLPreservingText(remainder, style.Size, false))
 	}
-	builder.WriteString(`</w:p>`)
+	builder.WriteString(paragraphXML[insertAt:])
 	return builder.String()
 }
 
@@ -653,12 +654,18 @@ func renderStructuredTable(rows [][]structuredTableCell, sourceWidths []int) str
 	}
 
 	var builder strings.Builder
-	builder.WriteString(`<w:tbl><w:tblPr>`)
-	builder.WriteString(`<w:tblBorders><w:top w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:left w:val="nil"/><w:bottom w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:right w:val="nil"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideV w:val="nil"/></w:tblBorders>`)
-	builder.WriteString(fmt.Sprintf(`<w:tblW w:w="%d" w:type="dxa"/>`, targetWidth))
-	builder.WriteString(`<w:jc w:val="center"/><w:tblLayout w:type="fixed"/>`)
-	builder.WriteString(margin)
-	builder.WriteString(`</w:tblPr><w:tblGrid>`)
+	builder.WriteString(`<w:tbl>`)
+	builder.WriteString(ooxmlpatch.BuildTableProperties(ooxmlpatch.TablePropertiesSpec{
+		WidthTwips:            targetWidth,
+		Alignment:             "center",
+		FixedLayout:           true,
+		ThreeLine:             true,
+		CellMarginTopTwips:    tableMarginTwips(margin, "top"),
+		CellMarginStartTwips:  tableMarginTwips(margin, "start"),
+		CellMarginBottomTwips: tableMarginTwips(margin, "bottom"),
+		CellMarginEndTwips:    tableMarginTwips(margin, "end"),
+	}))
+	builder.WriteString(`<w:tblGrid>`)
 	for _, width := range widths {
 		builder.WriteString(fmt.Sprintf(`<w:gridCol w:w="%d"/>`, width))
 	}
@@ -675,21 +682,18 @@ func renderStructuredTable(rows [][]structuredTableCell, sourceWidths []int) str
 				span = 1
 			}
 			cellWidth := sumSpanWidths(widths, column, span)
-			builder.WriteString(`<w:tc><w:tcPr>`)
-			if !dense {
-				builder.WriteString(fmt.Sprintf(`<w:tcW w:w="%d" w:type="dxa"/>`, cellWidth))
+			width := cellWidth
+			if dense {
+				width = 0
 			}
-			if span > 1 {
-				builder.WriteString(fmt.Sprintf(`<w:gridSpan w:val="%d"/>`, span))
-			}
-			if cell.Continue {
-				if cell.VMerge == "" {
-					builder.WriteString(`<w:vMerge/>`)
-				} else {
-					builder.WriteString(fmt.Sprintf(`<w:vMerge w:val="%s"/>`, html.EscapeString(cell.VMerge)))
-				}
-			}
-			builder.WriteString(`<w:vAlign w:val="center"/></w:tcPr>`)
+			builder.WriteString(`<w:tc>`)
+			builder.WriteString(ooxmlpatch.BuildTableCellProperties(ooxmlpatch.TableCellPropertiesSpec{
+				WidthTwips:     width,
+				GridSpan:       span,
+				VMerge:         cell.VMerge,
+				VMergeContinue: cell.Continue,
+				VerticalAlign:  "center",
+			}))
 			builder.WriteString(cleanTableCellParagraphWithSize(cell.Text, rowIndex == 0, fontSize))
 			builder.WriteString(`</w:tc>`)
 			column += span
@@ -716,6 +720,16 @@ func structuredColumnCount(rows [][]structuredTableCell) int {
 		}
 	}
 	return columns
+}
+
+func tableMarginTwips(marginXML string, side string) int {
+	if strings.Contains(marginXML, `<w:`+side+` w:w="20"`) {
+		return 20
+	}
+	if strings.Contains(marginXML, `<w:`+side+` w:w="80"`) {
+		return 80
+	}
+	return 60
 }
 
 func evenWidths(columns int, total int) []int {
@@ -926,13 +940,12 @@ func normalizeDenseTableReadability(tableXML string) string {
 
 func applyThreeLineTableBorders(tableXML string) string {
 	tableXML = tableCellBordersPattern.ReplaceAllString(tableXML, "")
-	borders := `<w:tblBorders><w:top w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:left w:val="nil"/><w:bottom w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:right w:val="nil"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideV w:val="nil"/></w:tblBorders>`
-	if tableBordersPattern.MatchString(tableXML) {
-		return tableBordersPattern.ReplaceAllString(tableXML, borders)
-	}
-	return tablePropertyStartPattern.ReplaceAllStringFunc(tableXML, func(tblPrStart string) string {
-		return tblPrStart + borders
+	updated, _ := ooxmlpatch.ApplyThreeLineTableBorders(tableXML, ooxmlpatch.TableBordersSpec{
+		TopSize:    12,
+		HeaderSize: 4,
+		BottomSize: 12,
 	})
+	return updated
 }
 
 func allowTableRowsToSplitAndRepeatHeader(tableXML string) string {
@@ -961,7 +974,23 @@ func renderCleanTable(rows [][]string) string {
 	}
 	widths := cleanTableWidths(columns)
 	var builder strings.Builder
-	builder.WriteString(`<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="8640" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="000000"/></w:tblBorders><w:tblCellMar><w:top w:w="60" w:type="dxa"/><w:start w:w="80" w:type="dxa"/><w:bottom w:w="60" w:type="dxa"/><w:end w:w="80" w:type="dxa"/></w:tblCellMar><w:tblLook w:val="04A0" w:firstRow="1" w:lastRow="0" w:firstColumn="1" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/></w:tblPr><w:tblGrid>`)
+	builder.WriteString(`<w:tbl>`)
+	builder.WriteString(strings.Replace(
+		ooxmlpatch.BuildTableProperties(ooxmlpatch.TablePropertiesSpec{
+			WidthTwips:            8640,
+			Alignment:             "center",
+			FixedLayout:           true,
+			ThreeLine:             true,
+			CellMarginTopTwips:    60,
+			CellMarginStartTwips:  80,
+			CellMarginBottomTwips: 60,
+			CellMarginEndTwips:    80,
+		}),
+		`<w:tblPr>`,
+		`<w:tblPr><w:tblStyle w:val="TableGrid"/>`,
+		1,
+	))
+	builder.WriteString(`<w:tblGrid>`)
 	for _, width := range widths {
 		builder.WriteString(fmt.Sprintf(`<w:gridCol w:w="%d"/>`, width))
 	}
@@ -973,7 +1002,12 @@ func renderCleanTable(rows [][]string) string {
 			if col < len(row) {
 				text = row[col]
 			}
-			builder.WriteString(fmt.Sprintf(`<w:tc><w:tcPr><w:tcW w:w="%d" w:type="dxa"/><w:tcBorders><w:top w:val="single" w:color="000000" w:sz="4" w:space="0"/><w:left w:val="single" w:color="000000" w:sz="4" w:space="0"/><w:bottom w:val="single" w:color="000000" w:sz="4" w:space="0"/><w:right w:val="single" w:color="000000" w:sz="4" w:space="0"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr>`, widths[col]))
+			builder.WriteString(`<w:tc>`)
+			builder.WriteString(ooxmlpatch.BuildTableCellProperties(ooxmlpatch.TableCellPropertiesSpec{
+				WidthTwips:        widths[col],
+				VerticalAlign:     "center",
+				IncludeAllBorders: true,
+			}))
 			builder.WriteString(cleanTableCellParagraph(text, rowIndex == 0))
 			builder.WriteString(`</w:tc>`)
 		}
@@ -1057,39 +1091,46 @@ func paragraphWithStyle(text string, style paragraphStyle) string {
 	if style.Line == 0 {
 		style.Line = 360
 	}
-	var builder strings.Builder
-	builder.WriteString(`<w:p><w:pPr>`)
-	if style.KeepNext {
-		builder.WriteString(`<w:keepNext/>`)
+	paragraphXML, _ := ooxmlpatch.ApplyParagraphProperties(`<w:p></w:p>`, transplantParagraphSpec(text, style, true))
+	insertAt := strings.LastIndex(paragraphXML, "</w:p>")
+	if insertAt < 0 {
+		insertAt = len(paragraphXML)
 	}
-	if style.AdjustRightIndZero {
-		builder.WriteString(`<w:adjustRightInd w:val="0"/>`)
-	}
-	if style.SnapToGridOff {
-		builder.WriteString(`<w:snapToGrid w:val="0"/>`)
-	}
-	builder.WriteString(spacingXML(style))
-	if style.FirstLine > 0 {
-		if style.FirstLineChars > 0 {
-			builder.WriteString(fmt.Sprintf(`<w:ind w:firstLineChars="%d" w:firstLine="%d"/>`, style.FirstLineChars, style.FirstLine))
-		} else {
-			builder.WriteString(fmt.Sprintf(`<w:ind w:firstLine="%d"/>`, style.FirstLine))
-		}
-	}
-	if style.Alignment != "" {
-		builder.WriteString(fmt.Sprintf(`<w:jc w:val="%s"/>`, style.Alignment))
-	}
-	builder.WriteString(`<w:rPr>`)
-	builder.WriteString(runPropertiesForParagraphStyle(text, style))
-	builder.WriteString(`</w:rPr></w:pPr>`)
 	if style.BoldPrefix != "" && strings.HasPrefix(text, style.BoldPrefix) {
-		builder.WriteString(runXMLForParagraphStyle(style.BoldPrefix, style, true))
-		builder.WriteString(runXMLForParagraphStyle(strings.TrimPrefix(text, style.BoldPrefix), style, style.Bold))
-	} else {
-		builder.WriteString(runXMLForParagraphStyle(text, style, style.Bold))
+		runs := runXMLForParagraphStyle(style.BoldPrefix, style, true) +
+			runXMLForParagraphStyle(strings.TrimPrefix(text, style.BoldPrefix), style, style.Bold)
+		return paragraphXML[:insertAt] + runs + paragraphXML[insertAt:]
 	}
-	builder.WriteString(`</w:p>`)
-	return builder.String()
+	run := runXMLForParagraphStyle(text, style, style.Bold)
+	return paragraphXML[:insertAt] + run + paragraphXML[insertAt:]
+}
+
+func transplantParagraphSpec(text string, style paragraphStyle, includeRunProperties bool) ooxmlpatch.ParagraphPropertiesSpec {
+	asciiFont, eastAsiaFont := fontsForParagraphText(text, style)
+	return ooxmlpatch.ParagraphPropertiesSpec{
+		Alignment:          style.Alignment,
+		LineTwips:          style.Line,
+		LineRule:           "auto",
+		BeforeTwips:        style.Before,
+		AfterTwips:         style.After,
+		BeforeLines:        style.BeforeLines,
+		AfterLines:         style.AfterLines,
+		BeforeLinesSet:     style.BeforeLines > 0,
+		AfterLinesSet:      style.AfterLines > 0,
+		FirstLineChars:     style.FirstLineChars,
+		FirstLineTwips:     style.FirstLine,
+		FirstLineCharsSet:  style.FirstLineChars > 0,
+		KeepNext:           style.KeepNext,
+		SnapToGridOff:      style.SnapToGridOff,
+		AdjustRightIndZero: style.AdjustRightIndZero,
+		RunPropertiesInPPr: includeRunProperties,
+		EastAsiaFont:       eastAsiaFont,
+		AsciiFont:          asciiFont,
+		HAnsiFont:          asciiFont,
+		FontSizeHalfPoints: style.Size,
+		ComplexSizeHalfPts: style.Size,
+		Bold:               style.Bold,
+	}
 }
 
 func runPropertiesForParagraphStyle(text string, style paragraphStyle) string {
@@ -1108,6 +1149,11 @@ func runPropertiesForParagraphStyle(text string, style paragraphStyle) string {
 }
 
 func runXMLForParagraphStyle(text string, style paragraphStyle, bold bool) string {
+	asciiFont, eastAsiaFont := fontsForParagraphText(text, style)
+	return runXMLWithFonts(text, style.Size, bold, asciiFont, eastAsiaFont)
+}
+
+func fontsForParagraphText(text string, style paragraphStyle) (string, string) {
 	if style.AsciiFont != "" || style.EastAsiaFont != "" {
 		asciiFont := style.AsciiFont
 		if asciiFont == "" {
@@ -1117,9 +1163,12 @@ func runXMLForParagraphStyle(text string, style paragraphStyle, bold bool) strin
 		if eastAsiaFont == "" {
 			eastAsiaFont = "宋体"
 		}
-		return runXMLWithFonts(text, style.Size, bold, asciiFont, eastAsiaFont)
+		return asciiFont, eastAsiaFont
 	}
-	return runXML(text, style.Size, bold)
+	if isMostlyASCII(text) {
+		return "Times New Roman", "宋体"
+	}
+	return "宋体", "宋体"
 }
 
 func spacingXML(style paragraphStyle) string {
@@ -1532,24 +1581,16 @@ func renderCQRWSTFrontMatterTitle(fields map[string]string) string {
 }
 
 func frontMatterTitleParagraph(text string) string {
-	style := paragraphStyle{
-		Size:        32,
-		Bold:        true,
-		Line:        360,
-		Before:      312,
-		BeforeLines: 100,
-		After:       624,
-		AfterLines:  200,
-	}
-	var builder strings.Builder
-	builder.WriteString(`<w:p><w:pPr><w:snapToGrid w:val="0"/><w:jc w:val="center"/>`)
-	builder.WriteString(spacingXML(style))
-	builder.WriteString(`<w:rPr>`)
-	builder.WriteString(runPropertiesWithFonts(style.Size, true, "黑体", "黑体"))
-	builder.WriteString(`</w:rPr></w:pPr>`)
-	builder.WriteString(runXMLWithFonts(text, style.Size, true, "黑体", "黑体"))
-	builder.WriteString(`</w:p>`)
-	return builder.String()
+	return centeredParagraphWithFonts(text, paragraphStyle{
+		Size:          32,
+		Bold:          true,
+		Line:          360,
+		Before:        312,
+		BeforeLines:   100,
+		After:         624,
+		AfterLines:    200,
+		SnapToGridOff: true,
+	}, "黑体", "黑体")
 }
 
 func selectCQRWSTBodySectPr(content string, matches [][]int) string {
@@ -1649,23 +1690,10 @@ func centeredParagraphWithFonts(text string, style paragraphStyle, asciiFont str
 	if style.Line == 0 {
 		style.Line = 360
 	}
-	var builder strings.Builder
-	builder.WriteString(`<w:p><w:pPr><w:jc w:val="center"/>`)
-	builder.WriteString(spacingXML(style))
-	builder.WriteString(fmt.Sprintf(`<w:rPr><w:rFonts w:ascii="%s" w:eastAsia="%s" w:hAnsi="%s"/>`, asciiFont, eastAsiaFont, asciiFont))
-	if style.Bold {
-		builder.WriteString(`<w:b/><w:bCs/>`)
-	}
-	builder.WriteString(fmt.Sprintf(`<w:sz w:val="%d"/><w:szCs w:val="%d"/>`, style.Size, style.Size))
-	builder.WriteString(fmt.Sprintf(`</w:rPr></w:pPr><w:r><w:rPr><w:rFonts w:ascii="%s" w:eastAsia="%s" w:hAnsi="%s"/>`, asciiFont, eastAsiaFont, asciiFont))
-	if style.Bold {
-		builder.WriteString(`<w:b/><w:bCs/>`)
-	}
-	builder.WriteString(fmt.Sprintf(`<w:sz w:val="%d"/><w:szCs w:val="%d"/>`, style.Size, style.Size))
-	builder.WriteString(`</w:rPr><w:t>`)
-	builder.WriteString(html.EscapeString(strings.TrimSpace(text)))
-	builder.WriteString(`</w:t></w:r></w:p>`)
-	return builder.String()
+	style.Alignment = "center"
+	style.AsciiFont = asciiFont
+	style.EastAsiaFont = eastAsiaFont
+	return paragraphWithStyle(text, style)
 }
 
 func firstNonEmpty(values ...string) string {
@@ -1857,13 +1885,11 @@ func renderCQRWSTMainHeaderXML(fields map[string]string) string {
 	year := coverYear(fields)
 	major := strings.TrimSpace(firstNonEmpty(fields["专业"], fields["涓撲笟"], "XXX"))
 	text := "重庆人文科技学院" + year + "届" + major + "专业本科毕业论文/设计"
-	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-		`<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
-		`<w:p><w:pPr><w:pBdr><w:bottom w:val="double" w:sz="4" w:space="1" w:color="auto"/></w:pBdr><w:jc w:val="center"/><w:rPr>` +
-		`<w:rFonts w:ascii="宋体" w:eastAsia="宋体" w:hAnsi="宋体"/><w:sz w:val="18"/><w:szCs w:val="18"/>` +
-		`</w:rPr></w:pPr><w:r><w:rPr><w:rFonts w:ascii="宋体" w:eastAsia="宋体" w:hAnsi="宋体"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr><w:t>` +
-		html.EscapeString(text) +
-		`</w:t></w:r></w:p></w:hdr>`
+	return strings.Replace(ooxmlpatch.BuildHeaderXML(text, ooxmlpatch.HeaderFooterPolicySpec{
+		HeaderLine:   "double",
+		FontEastAsia: "宋体",
+		FontSizeHalf: 18,
+	}), `<?xml version="1.0" encoding="UTF-8"?>`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`, 1)
 }
 
 func coverYear(fields map[string]string) string {
@@ -1881,17 +1907,9 @@ func coverYear(fields map[string]string) string {
 }
 
 func renderCQRWSTMainFooterXML() string {
-	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-		`<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
-		`<w:p><w:pPr><w:jc w:val="center"/><w:rPr>` +
-		`<w:rFonts w:ascii="Times New Roman" w:eastAsia="宋体" w:hAnsi="Times New Roman"/><w:sz w:val="21"/><w:szCs w:val="21"/>` +
-		`</w:rPr></w:pPr>` +
-		`<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:eastAsia="宋体" w:hAnsi="Times New Roman"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr><w:t>第 </w:t></w:r>` +
-		`<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE \* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>` +
-		`<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:eastAsia="宋体" w:hAnsi="Times New Roman"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr><w:t> 页 共 </w:t></w:r>` +
-		`<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> NUMPAGES \* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>` +
-		`<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:eastAsia="宋体" w:hAnsi="Times New Roman"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr><w:t> 页</w:t></w:r>` +
-		`</w:p></w:ftr>`
+	return strings.Replace(ooxmlpatch.BuildPageFooterXML(ooxmlpatch.PageNumberingPolicySpec{
+		BodyWrapper: "chinese_total",
+	}), `<?xml version="1.0" encoding="UTF-8"?>`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`, 1)
 }
 
 func validateXML(content string) error {

@@ -575,7 +575,9 @@ func (s *formatComparisonService) GenerateFormatDifferences(checkResultID uuid.U
 
 // ApplyCorrections 应用格式修正
 func (s *formatComparisonService) ApplyCorrections(checkResultID uuid.UUID, correctionIDs []uuid.UUID) (*CorrectionResult, error) {
-	return nil, ErrLegacyWritePathDisabled
+	if legacyWritePathDisabled() {
+		return nil, ErrLegacyWritePathDisabled
+	}
 
 	// 获取检查结果
 	var checkResult model.CheckResult
@@ -636,7 +638,9 @@ func (s *formatComparisonService) GetCheckResult(checkResultID uuid.UUID) (*mode
 
 // GenerateCorrectedDocument 生成修正后的文档
 func (s *formatComparisonService) GenerateCorrectedDocument(checkResultID uuid.UUID) (string, error) {
-	return "", ErrLegacyWritePathDisabled
+	if legacyWritePathDisabled() {
+		return "", ErrLegacyWritePathDisabled
+	}
 
 	// 获取检查结果和模板
 	var checkResult model.CheckResult

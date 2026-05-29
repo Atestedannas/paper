@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
@@ -174,6 +175,53 @@ func (PageSetupProcessor) Check(_ context.Context, _ string, documentXML string,
 	return count, nil
 }
 
+func applyTemplateProfileHeaderFooterAndPageNumbering(path string, profile *templateprofile.Profile, includeHeaderFooter bool, includePageNumbering bool) (int, error) {
+	if profile == nil {
+		return 0, nil
+	}
+	headerSpec := ooxmlpatch.HeaderFooterPolicySpec{}
+	if includeHeaderFooter {
+		headerSpec = ooxmlpatch.HeaderFooterPolicySpec{
+			Policy:       profile.RulePack.HeaderPolicy,
+			OddText:      profile.RulePack.OddHeaderText,
+			EvenText:     profile.RulePack.EvenHeaderText,
+			HeaderLine:   profile.RulePack.HeaderLine,
+			FontEastAsia: profile.Header.FontEastAsia,
+			FontSizeHalf: parseTemplateProfileTwips(profile.Header.FontSizeHalfPt),
+		}
+		if headerSpec.Policy == "template" && profile.Header.Exists {
+			headerSpec.Policy = "odd_even"
+			headerSpec.OddText = profile.Header.Text
+			headerSpec.EvenText = profile.Header.Text
+		}
+	}
+	pageSpec := ooxmlpatch.PageNumberingPolicySpec{}
+	if includePageNumbering {
+		pageSpec = ooxmlpatch.PageNumberingPolicySpec{
+			Policy:      profile.RulePack.PageNumbering,
+			FrontFormat: profile.RulePack.FrontPageFormat,
+			BodyFormat:  profile.RulePack.BodyPageFormat,
+			BodyStart:   profile.RulePack.BodyPageStart,
+			BodyWrapper: profile.RulePack.BodyPageWrapper,
+		}
+	}
+	if headerSpec.Policy == "" && pageSpec.Policy == "" && pageSpec.FrontFormat == "" && pageSpec.BodyFormat == "" && pageSpec.BodyWrapper == "" && pageSpec.BodyStart == 0 {
+		return 0, nil
+	}
+	pkg, err := ooxmlpkg.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	count, err := ooxmlpatch.ApplyHeaderFooterAndPageNumbering(pkg, documentTarget, headerSpec, pageSpec)
+	if err != nil || count == 0 {
+		return count, err
+	}
+	if err := pkg.Write(path); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (CitationProcessor) Apply(_ context.Context, path string, profile *templateprofile.Profile) (int, error) {
 	pkg, err := ooxmlpkg.Open(path)
 	if err != nil {
@@ -243,8 +291,8 @@ func (RulePackValidationProcessor) Check(_ context.Context, path string, documen
 	return countRulePackValidationViolations(path, documentXML, profile), nil
 }
 
-func (HeaderFooterPolicyProcessor) Apply(_ context.Context, _ string, _ *templateprofile.Profile) (int, error) {
-	return 0, nil
+func (HeaderFooterPolicyProcessor) Apply(_ context.Context, path string, profile *templateprofile.Profile) (int, error) {
+	return applyTemplateProfileHeaderFooterAndPageNumbering(path, profile, true, false)
 }
 
 func (HeaderFooterPolicyProcessor) Check(_ context.Context, path string, documentXML string, profile *templateprofile.Profile) (int, error) {
@@ -254,8 +302,8 @@ func (HeaderFooterPolicyProcessor) Check(_ context.Context, path string, documen
 	return countHeaderFooterPolicyViolations(path, documentXML, profile.RulePack, profile.Header), nil
 }
 
-func (PageNumberingProcessor) Apply(_ context.Context, _ string, _ *templateprofile.Profile) (int, error) {
-	return 0, nil
+func (PageNumberingProcessor) Apply(_ context.Context, path string, profile *templateprofile.Profile) (int, error) {
+	return applyTemplateProfileHeaderFooterAndPageNumbering(path, profile, false, true)
 }
 
 func (PageNumberingProcessor) Check(_ context.Context, path string, documentXML string, profile *templateprofile.Profile) (int, error) {
@@ -265,8 +313,22 @@ func (PageNumberingProcessor) Check(_ context.Context, path string, documentXML 
 	return countPageNumberingViolations(path, documentXML, profile.RulePack), nil
 }
 
-func (HeadingNumberingProcessor) Apply(_ context.Context, _ string, _ *templateprofile.Profile) (int, error) {
-	return 0, nil
+func (HeadingNumberingProcessor) Apply(_ context.Context, path string, profile *templateprofile.Profile) (int, error) {
+	if profile == nil || len(profile.RulePack.HeadingLevels) == 0 {
+		return 0, nil
+	}
+	pkg, err := ooxmlpkg.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	count, err := ooxmlpatch.ApplyHeadingNumberingDefinitions(pkg, profile.RulePack.HeadingLevels)
+	if err != nil || count == 0 {
+		return count, err
+	}
+	if err := pkg.Write(path); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func (HeadingNumberingProcessor) Check(_ context.Context, _ string, documentXML string, profile *templateprofile.Profile) (int, error) {
@@ -276,8 +338,27 @@ func (HeadingNumberingProcessor) Check(_ context.Context, _ string, documentXML 
 	return countHeadingLevelViolations(visibleParagraphTexts(documentXML), profile.RulePack.HeadingLevels), nil
 }
 
-func (FigureTableCaptionProcessor) Apply(_ context.Context, _ string, _ *templateprofile.Profile) (int, error) {
-	return 0, nil
+func (FigureTableCaptionProcessor) Apply(_ context.Context, path string, profile *templateprofile.Profile) (int, error) {
+	if profile == nil {
+		return 0, nil
+	}
+	pkg, err := ooxmlpkg.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	content, ok := pkg.Get(documentTarget)
+	if !ok {
+		return 0, nil
+	}
+	updated, count := applyCaptionPositionRulesToDocumentXML(string(content), profile)
+	if count == 0 {
+		return 0, nil
+	}
+	pkg.Set(documentTarget, []byte(updated))
+	if err := pkg.Write(path); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func (FigureTableCaptionProcessor) Check(_ context.Context, _ string, documentXML string, profile *templateprofile.Profile) (int, error) {
@@ -505,6 +586,72 @@ func countCaptionPositionViolations(documentXML string, rules templateprofile.Ru
 	return violations
 }
 
+func applyCaptionPositionRulesToDocumentXML(documentXML string, profile *templateprofile.Profile) (string, int) {
+	rules := profile.RulePack
+	if rules.TableCaptionPosition == "" && rules.FigureCaptionPosition == "" {
+		return documentXML, 0
+	}
+	elements := templateProfileDocElementPattern.FindAllString(documentXML, -1)
+	if len(elements) == 0 {
+		return documentXML, 0
+	}
+	count := 0
+	for index := 0; index < len(elements)-1; index++ {
+		current := elements[index]
+		next := elements[index+1]
+		if rules.TableCaptionPosition == "above" && strings.HasPrefix(current, "<w:tbl") && isCaptionParagraph(next, templateProfileAnyTable) {
+			elements[index], elements[index+1] = styleCaptionParagraph(next, profile), current
+			count++
+			index++
+			continue
+		}
+		if rules.FigureCaptionPosition == "below" && isCaptionParagraph(current, templateProfileAnyFigure) && strings.Contains(next, "<w:drawing") {
+			elements[index], elements[index+1] = next, styleCaptionParagraph(current, profile)
+			count++
+			index++
+		}
+	}
+	if count == 0 {
+		return documentXML, 0
+	}
+	return replaceDocumentBodyElements(documentXML, elements), count
+}
+
+func isCaptionParagraph(element string, pattern *regexp.Regexp) bool {
+	return strings.HasPrefix(element, "<w:p") && pattern.MatchString(strings.TrimSpace(extractParagraphText(element)))
+}
+
+func styleCaptionParagraph(paragraph string, profile *templateprofile.Profile) string {
+	if profile == nil || profile.RulePack.CaptionStyleKey == "" {
+		return paragraph
+	}
+	rule, ok := resolveTemplateProfileStyle(profile.Styles, profile.RulePack.CaptionStyleKey)
+	if !ok {
+		return paragraph
+	}
+	style, ok := paragraphStyleFromTemplateProfile(rule)
+	if !ok {
+		return paragraph
+	}
+	return applyParagraphStyle(paragraph, style)
+}
+
+func replaceDocumentBodyElements(documentXML string, elements []string) string {
+	matches := templateProfileDocElementPattern.FindAllStringIndex(documentXML, -1)
+	if len(matches) != len(elements) {
+		return documentXML
+	}
+	var builder strings.Builder
+	offset := 0
+	for index, match := range matches {
+		builder.WriteString(documentXML[offset:match[0]])
+		builder.WriteString(elements[index])
+		offset = match[1]
+	}
+	builder.WriteString(documentXML[offset:])
+	return builder.String()
+}
+
 func neighborParagraphText(elements []string, index int) string {
 	if index < 0 || index >= len(elements) || !strings.HasPrefix(elements[index], "<w:p") {
 		return ""
@@ -642,8 +789,9 @@ func buildTemplateProfileRun(text string, rPr string, superscript bool) string {
 	}
 	runProperties := strings.TrimSpace(rPr)
 	if superscript {
-		runProperties = templateProfileVertAlignPattern.ReplaceAllString(runProperties, "")
-		runProperties += `<w:vertAlign w:val="superscript"/>`
+		runXML := `<w:r><w:rPr>` + runProperties + `</w:rPr><w:t>` + html.EscapeString(text) + `</w:t></w:r>`
+		updated, _ := ooxmlpatch.ApplyRunProperties(runXML, ooxmlpatch.RunPropertiesSpec{VerticalAlign: "superscript"})
+		return updated
 	}
 	if runProperties == "" {
 		return `<w:r><w:t>` + html.EscapeString(text) + `</w:t></w:r>`
@@ -706,24 +854,12 @@ func applyTableRulesToDocumentXML(documentXML string, profile *templateprofile.P
 }
 
 func applyThreeLineBorders(table string) string {
-	borders := `<w:tblBorders>` +
-		`<w:top w:val="single" w:sz="12" w:space="0" w:color="000000"/>` +
-		`<w:left w:val="nil"/>` +
-		`<w:bottom w:val="single" w:sz="12" w:space="0" w:color="000000"/>` +
-		`<w:right w:val="nil"/>` +
-		`<w:insideH w:val="single" w:sz="8" w:space="0" w:color="000000"/>` +
-		`<w:insideV w:val="nil"/>` +
-		`</w:tblBorders>`
-	if templateProfileTableBorders.MatchString(table) {
-		return templateProfileTableBorders.ReplaceAllString(table, borders)
-	}
-	if loc := templateProfileTablePrStart.FindStringIndex(table); loc != nil {
-		return table[:loc[1]] + borders + table[loc[1]:]
-	}
-	if loc := templateProfileTableStartPattern.FindStringIndex(table); loc != nil {
-		return table[:loc[1]] + `<w:tblPr>` + borders + `</w:tblPr>` + table[loc[1]:]
-	}
-	return table
+	updated, _ := ooxmlpatch.ApplyThreeLineTableBorders(table, ooxmlpatch.TableBordersSpec{
+		TopSize:    12,
+		HeaderSize: 8,
+		BottomSize: 12,
+	})
+	return updated
 }
 
 func visibleParagraphTexts(documentXML string) []string {
@@ -1270,25 +1406,33 @@ func isEmptyPageSetup(rule templateprofile.PageSetupRule) bool {
 }
 
 func applyPageSetupToLastSection(documentXML string, rule templateprofile.PageSetupRule) string {
-	sections := sectionPropertiesPattern.FindAllStringIndex(documentXML, -1)
-	if len(sections) == 0 {
-		sectPr := buildSectionProperties(rule)
-		if sectPr == "" {
-			return documentXML
-		}
-		bodyEnd := strings.LastIndex(documentXML, "</w:body>")
-		if bodyEnd < 0 {
-			return documentXML
-		}
-		return documentXML[:bodyEnd] + sectPr + documentXML[bodyEnd:]
-	}
-	last := sections[len(sections)-1]
-	existing := documentXML[last[0]:last[1]]
-	next := mergeSectionPageSetup(existing, rule)
-	if next == existing {
+	updated, changed := ooxmlpatch.ApplySectionProperties(documentXML, pageSetupRuleToSectionSpec(rule))
+	if !changed {
 		return documentXML
 	}
-	return documentXML[:last[0]] + next + documentXML[last[1]:]
+	return updated
+}
+
+func pageSetupRuleToSectionSpec(rule templateprofile.PageSetupRule) ooxmlpatch.SectionPropertiesSpec {
+	return ooxmlpatch.SectionPropertiesSpec{
+		PageWidthTwips:    parseTemplateProfileTwips(rule.PageWidthTwips),
+		PageHeightTwips:   parseTemplateProfileTwips(rule.PageHeightTwips),
+		PageOrientation:   rule.Orientation,
+		MarginTopTwips:    parseTemplateProfileTwips(rule.MarginTopTwips),
+		MarginRightTwips:  parseTemplateProfileTwips(rule.MarginRightTwips),
+		MarginBottomTwips: parseTemplateProfileTwips(rule.MarginBottomTwips),
+		MarginLeftTwips:   parseTemplateProfileTwips(rule.MarginLeftTwips),
+		HeaderMarginTwips: parseTemplateProfileTwips(rule.HeaderMarginTwips),
+		FooterMarginTwips: parseTemplateProfileTwips(rule.FooterMarginTwips),
+	}
+}
+
+func parseTemplateProfileTwips(value string) int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed < 0 {
+		return 0
+	}
+	return parsed
 }
 
 func buildSectionProperties(rule templateprofile.PageSetupRule) string {

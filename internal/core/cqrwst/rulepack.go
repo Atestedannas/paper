@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 )
 
@@ -1464,29 +1466,33 @@ func ensureHeaderFooterParts(pkg *ooxmlpkg.DocxPackage, documentXML string) Resu
 		result.FixCount++
 		result.Issues = append(result.Issues, packageIssue("cqrwst-footer-part", "CQRWST footer should use centered page fields", "word/footer1.xml"))
 	}
-	if content, ok := pkg.Get("word/_rels/document.xml.rels"); !ok {
-		pkg.Set("word/_rels/document.xml.rels", []byte(cqrwstDocumentRelsXML()))
-		result.FixCount++
-		result.Issues = append(result.Issues, packageIssue("cqrwst-document-rels", "document.xml should reference generated CQRWST header and footer", "word/_rels/document.xml.rels"))
-	} else {
-		updated := ensureDocumentRelationships(string(content))
-		if updated != string(content) {
-			pkg.Set("word/_rels/document.xml.rels", []byte(updated))
-			result.FixCount++
-			result.Issues = append(result.Issues, packageIssue("cqrwst-document-rels", "document.xml should reference generated CQRWST header and footer", "word/_rels/document.xml.rels"))
-		}
-	}
-	if content, ok := pkg.Get("[Content_Types].xml"); ok {
-		updated := ensureContentTypes(string(content))
-		if updated != string(content) {
-			pkg.Set("[Content_Types].xml", []byte(updated))
-			result.FixCount++
-			result.Issues = append(result.Issues, packageIssue("cqrwst-content-types", "Content Types should include generated header and footer parts", "[Content_Types].xml"))
-		}
+	packageFixes := ensureCQRWSTHeaderFooterRelationships(pkg, headerXML)
+	if packageFixes > 0 {
+		result.FixCount += packageFixes
+		result.Issues = append(result.Issues, packageIssue("cqrwst-package-relationships", "document relationships and content types should include generated CQRWST header and footer", "word/_rels/document.xml.rels"))
 	}
 	result.Passed = len(result.Issues) == 0
 
 	return result
+}
+
+func ensureCQRWSTHeaderFooterRelationships(pkg *ooxmlpkg.DocxPackage, headerXML string) int {
+	count := 0
+	count += ooxmlpatch.EnsureFixedRelationshipPart(pkg, ooxmlpatch.FixedRelationshipPartSpec{
+		PartName:         "word/header1.xml",
+		Content:          headerXML,
+		RelationshipID:   "rIdCQRWSTHeader1",
+		RelationshipType: ooxmlpatch.HeaderRelationshipType,
+		ContentType:      ooxmlpatch.HeaderContentType,
+	})
+	count += ooxmlpatch.EnsureFixedRelationshipPart(pkg, ooxmlpatch.FixedRelationshipPartSpec{
+		PartName:         "word/footer1.xml",
+		Content:          cqrwstFooterXML(),
+		RelationshipID:   "rIdCQRWSTFooter1",
+		RelationshipType: ooxmlpatch.FooterRelationshipType,
+		ContentType:      ooxmlpatch.FooterContentType,
+	})
+	return count
 }
 
 func ensureCQRWSTHeaderParts(pkg *ooxmlpkg.DocxPackage, headerXML string) int {
@@ -1950,22 +1956,8 @@ func removeParagraphPropertyRunProperties(paragraph string) string {
 }
 
 func applyParagraphProperties(paragraph string, style paragraphStyle) string {
-	properties := buildParagraphProperties(style)
-	if paragraphPropertiesPattern.MatchString(paragraph) {
-		return paragraphPropertiesPattern.ReplaceAllStringFunc(paragraph, func(existing string) string {
-			inner := strings.TrimSuffix(strings.TrimPrefix(existing, "<w:pPr>"), "</w:pPr>")
-			inner = spacingPattern.ReplaceAllString(inner, "")
-			inner = indentPattern.ReplaceAllString(inner, "")
-			inner = justificationPattern.ReplaceAllString(inner, "")
-			return "<w:pPr>" + properties + inner + "</w:pPr>"
-		})
-	}
-
-	openEnd := strings.Index(paragraph, ">")
-	if openEnd < 0 {
-		return paragraph
-	}
-	return paragraph[:openEnd+1] + "<w:pPr>" + properties + "</w:pPr>" + paragraph[openEnd+1:]
+	updated, _ := ooxmlpatch.ApplyParagraphProperties(paragraph, paragraphStyleToPatchSpec(style))
+	return updated
 }
 
 func buildParagraphProperties(style paragraphStyle) string {
@@ -1995,24 +1987,51 @@ func buildParagraphProperties(style paragraphStyle) string {
 }
 
 func applyRunProperties(run string, style paragraphStyle) string {
-	properties := buildRunProperties(style)
-	if runPropertiesPattern.MatchString(run) {
-		return runPropertiesPattern.ReplaceAllStringFunc(run, func(existing string) string {
-			inner := strings.TrimSuffix(strings.TrimPrefix(existing, "<w:rPr>"), "</w:rPr>")
-			inner = runFontsPattern.ReplaceAllString(inner, "")
-			inner = runSizePattern.ReplaceAllString(inner, "")
-			inner = runComplexSizePattern.ReplaceAllString(inner, "")
-			inner = runBoldPattern.ReplaceAllString(inner, "")
-			inner = runComplexBoldPattern.ReplaceAllString(inner, "")
-			return "<w:rPr>" + properties + inner + "</w:rPr>"
-		})
-	}
+	updated, _ := ooxmlpatch.ApplyRunProperties(run, paragraphStyleToRunPatchSpec(style))
+	return updated
+}
 
-	openEnd := strings.Index(run, ">")
-	if openEnd < 0 {
-		return run
+func paragraphStyleToPatchSpec(style paragraphStyle) ooxmlpatch.ParagraphPropertiesSpec {
+	spec := ooxmlpatch.ParagraphPropertiesSpec{
+		Alignment:         style.alignment,
+		LineRule:          "auto",
+		FirstLineChars:    intPointerValue(style.firstLineChars),
+		BeforeLines:       intPointerValue(style.beforeLines),
+		AfterLines:        intPointerValue(style.afterLines),
+		FirstLineCharsSet: style.firstLineChars != nil,
+		BeforeLinesSet:    style.beforeLines != nil,
+		AfterLinesSet:     style.afterLines != nil,
 	}
-	return run[:openEnd+1] + "<w:rPr>" + properties + "</w:rPr>" + run[openEnd+1:]
+	if line, err := strconv.Atoi(strings.TrimSpace(style.line)); err == nil {
+		spec.LineTwips = line
+	}
+	if spec.LineTwips == 0 && spec.BeforeLines == 0 && spec.AfterLines == 0 {
+		spec.LineRule = ""
+	}
+	return spec
+}
+
+func paragraphStyleToRunPatchSpec(style paragraphStyle) ooxmlpatch.RunPropertiesSpec {
+	size, _ := strconv.Atoi(strings.TrimSpace(style.fontSize))
+	asciiFont := style.asciiFont
+	if asciiFont == "" {
+		asciiFont = style.eastAsiaFont
+	}
+	return ooxmlpatch.RunPropertiesSpec{
+		EastAsiaFont:       style.eastAsiaFont,
+		AsciiFont:          asciiFont,
+		HAnsiFont:          asciiFont,
+		FontSizeHalfPoints: size,
+		ComplexSizeHalfPts: size,
+		Bold:               style.bold,
+	}
+}
+
+func intPointerValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func buildRunProperties(style paragraphStyle) string {

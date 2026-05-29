@@ -34,6 +34,11 @@ type PaperService struct {
 const maxFormatRulesDebugBytes = 16384
 
 var ErrLegacyWritePathDisabled = fmt.Errorf("legacy paper write path disabled")
+
+func legacyWritePathDisabled() bool {
+	return true
+}
+
 var ErrCorrectedFileNotFound = fmt.Errorf("corrected file not found")
 
 // logFormatRulesDebug 在环境变量 PAPER_DEBUG_FORMAT_RULES=1 或 true 时，把模板 format_rules（JSON）打到日志。
@@ -203,7 +208,9 @@ func (s PaperService) CheckPaperFormat(userID, paperID, templateID uuid.UUID) (*
 
 // QuickV2Fix 直接运行 V2 引擎修正格式（跳过 CheckPaperFormat，~200ms）
 func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (string, error) {
-	return "", ErrLegacyWritePathDisabled
+	if legacyWritePathDisabled() {
+		return "", ErrLegacyWritePathDisabled
+	}
 
 	start := time.Now()
 
@@ -244,7 +251,9 @@ func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (stri
 
 // FixPaperFormatByParsedRequirements 鏍规嵁瑙ｆ瀽鐨勮姹備慨澶嶈鏂囨牸寮?
 func (s PaperService) FixPaperFormatByParsedRequirements(userID, paperID uuid.UUID, requirements map[string]interface{}) (interface{}, error) {
-	return nil, ErrLegacyWritePathDisabled
+	if legacyWritePathDisabled() {
+		return nil, ErrLegacyWritePathDisabled
+	}
 
 	// 鑾峰彇璁烘枃淇℃伅
 
@@ -293,7 +302,9 @@ func (s PaperService) FixPaperFormat(userID, paperID, checkResultID uuid.UUID) (
 
 // FixPaperFormatWithOptions 按 Issue 粒度修复论文格式
 func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID uuid.UUID, options FixPaperFormatOptions) (interface{}, error) {
-	return nil, ErrLegacyWritePathDisabled
+	if legacyWritePathDisabled() {
+		return nil, ErrLegacyWritePathDisabled
+	}
 
 	// 校验 FixAll 与 IssueIDs 是否同时指定等非法组合
 	if err := validateFixPaperFormatOptions(options); err != nil {
@@ -971,7 +982,9 @@ func (s PaperService) ResolveCorrectedPaperFile(userID, paperID uuid.UUID) (stri
 
 // ExportCorrectedPaper 瀵煎嚭淇鍚庣殑璁烘枃
 func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, error) {
-	return "", ErrLegacyWritePathDisabled
+	if legacyWritePathDisabled() {
+		return "", ErrLegacyWritePathDisabled
+	}
 
 	paper, err := s.GetPaperByID(userID, paperID)
 	if err != nil {

@@ -63,8 +63,10 @@ func (h *PaperHandler) buildFixByTemplateResponse(paper *model.Paper, fixResult 
 
 // FixByTemplate 根据模板修复论文
 func (h *PaperHandler) FixByTemplate(c *gin.Context) {
-	utils.ErrorResponse(c, http.StatusGone, legacyWritePathMessage, "")
-	return
+	if legacyWritePathDisabled() {
+		utils.ErrorResponse(c, http.StatusGone, legacyWritePathMessage, "")
+		return
+	}
 
 	userID, _ := c.Get("user_id")
 	paperID, err := uuid.Parse(c.Param("id"))
