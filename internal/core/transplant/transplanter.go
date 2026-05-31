@@ -1820,7 +1820,11 @@ func normalizeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]stri
 	if headerTarget == "" {
 		return
 	}
-	pkg.Set(headerTarget, []byte(renderCQRWSTMainHeaderXML(fields)))
+	templateHeader := ""
+	if content, ok := pkg.Get(headerTarget); ok {
+		templateHeader = xmlText(string(content))
+	}
+	pkg.Set(headerTarget, []byte(renderCQRWSTMainHeaderXML(fields, templateHeader)))
 }
 
 func mainBodyHeaderReferenceID(documentXML string) string {
@@ -1881,15 +1885,52 @@ func relationshipTarget(pkg *ooxmlpkg.DocxPackage, relationshipID string) string
 	return "word/" + strings.TrimPrefix(target, "word/")
 }
 
-func renderCQRWSTMainHeaderXML(fields map[string]string) string {
-	year := coverYear(fields)
-	major := strings.TrimSpace(firstNonEmpty(fields["专业"], fields["涓撲笟"], "XXX"))
-	text := "重庆人文科技学院" + year + "届" + major + "专业本科毕业论文/设计"
+func renderCQRWSTMainHeaderXML(fields map[string]string, templateHeader string) string {
+	text := cqrwstMainHeaderText(fields, templateHeader)
 	return strings.Replace(ooxmlpatch.BuildHeaderXML(text, ooxmlpatch.HeaderFooterPolicySpec{
 		HeaderLine:   "double",
 		FontEastAsia: "宋体",
 		FontSizeHalf: 18,
 	}), `<?xml version="1.0" encoding="UTF-8"?>`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`, 1)
+}
+
+func cqrwstMainHeaderText(fields map[string]string, templateHeader string) string {
+	year := coverYear(fields)
+	major := cqrwstCoverMajor(fields)
+	docType := cqrwstHeaderDocumentType(fields, templateHeader)
+	return "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662" + year + "\u5c4a" + major + "\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a" + docType
+}
+
+func cqrwstCoverMajor(fields map[string]string) string {
+	for key, value := range fields {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if key == "\u4e13\u4e1a" || strings.Contains(key, "\u4e13\u4e1a") || strings.Contains(key, "\u6d93\u64b2\u7b1f") {
+			return value
+		}
+	}
+	return "XXX"
+}
+
+func cqrwstHeaderDocumentType(fields map[string]string, templateHeader string) string {
+	sources := make([]string, 0, len(fields)+1)
+	sources = append(sources, templateHeader)
+	for key, value := range fields {
+		sources = append(sources, key, value)
+	}
+	for _, source := range sources {
+		compact := strings.ReplaceAll(strings.TrimSpace(source), " ", "")
+		if strings.Contains(compact, "\u6bd5\u4e1a\u8bbe\u8ba1") && !strings.Contains(compact, "\u6bd5\u4e1a\u8bba\u6587/\u8bbe\u8ba1") {
+			return "\u8bbe\u8ba1"
+		}
+		if strings.Contains(compact, "\u6bd5\u4e1a\u8bba\u6587") && !strings.Contains(compact, "\u6bd5\u4e1a\u8bba\u6587/\u8bbe\u8ba1") {
+			return "\u8bba\u6587"
+		}
+	}
+	return "\u8bba\u6587"
 }
 
 func coverYear(fields map[string]string) string {

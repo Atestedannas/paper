@@ -283,7 +283,7 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 		t.Fatalf("generated output should preserve the template running header: %s", documentXML)
 	}
 	headerXML := readWorkflowDocxEntry(t, outputPath, "word/header1.xml")
-	for _, want := range []string{"重庆人文科技学院2026届护理学专业本科毕业论文/设计", `<w:jc w:val="center"/>`, `<w:bottom w:val="double"`} {
+	for _, want := range []string{"重庆人文科技学院2026届护理学专业本科毕业论文", `<w:jc w:val="center"/>`, `<w:bottom w:val="double"`} {
 		if !strings.Contains(headerXML, want) {
 			t.Fatalf("generated output header missing %s: %s", want, headerXML)
 		}
