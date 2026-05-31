@@ -110,6 +110,47 @@ func TestGeneratePatchTargetsOnlyReplaceSpecifiedTargets(t *testing.T) {
 	}
 }
 
+func TestGenerateDoesNotOverwriteGenericTemplateHeaderFooter(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>` +
+			`<w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p>` +
+			`<w:sectPr><w:headerReference w:type="default" r:id="rIdHeader"/><w:footerReference w:type="default" r:id="rIdFooter"/></w:sectPr>` +
+			`</w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>` +
+			`<Relationship Id="rIdFooter" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>` +
+			`</Relationships>`,
+		"word/header1.xml": `<w:hdr><w:p><w:r><w:t>Generic University Header</w:t></w:r></w:p></w:hdr>`,
+		"word/footer1.xml": `<w:ftr><w:p><w:r><w:t>Generic Footer</w:t></w:r></w:p></w:ftr>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{
+			CoverFields: map[string]string{"题目": "Any title", "专业": "Any major"},
+			Bindings: []blockmap.Binding{
+				{BlockID: "content_blocks", Payload: "Body from source"},
+			},
+		},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	header := readDocxEntry(t, outputPath, "word/header1.xml")
+	if !strings.Contains(header, "Generic University Header") || strings.Contains(header, "重庆人文科技学院") {
+		t.Fatalf("generic template header was overwritten: %s", header)
+	}
+	footer := readDocxEntry(t, outputPath, "word/footer1.xml")
+	if !strings.Contains(footer, "Generic Footer") || strings.Contains(footer, "NUMPAGES") {
+		t.Fatalf("generic template footer was overwritten: %s", footer)
+	}
+}
+
 func TestGenerateMissingPatchTargetReturnsError(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
@@ -976,6 +1017,76 @@ func TestGenerateRebuildsCQRWSTBodyWithMainFooterSection(t *testing.T) {
 	footerXML := readDocxEntry(t, outputPath, "word/footer3.xml")
 	if !strings.Contains(footerXML, "NUMPAGES") || strings.Contains(footerXML, "12页") {
 		t.Fatalf("main footer should use dynamic page fields instead of stale template text: %s", footerXML)
+	}
+}
+
+func TestNormalizeCQRWSTMainHeaderBuildsTextFromTemplateHeaderAndCoverFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	docxPath := filepath.Join(tmpDir, "input.docx")
+	writeTestDocx(t, docxPath, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId8"/><w:pgNumType w:start="1"/></w:sectPr></w:pPr></w:p>` +
+			`</w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId8" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>`,
+		"word/header1.xml":             `<w:hdr><w:p><w:r><w:t>` + "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662X\u5800\u5800\u5c4aX\u5800\u5800\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a\u8bbe\u8ba1" + `</w:t></w:r></w:p></w:hdr>`,
+	})
+	pkg, err := ooxmlpkg.Open(docxPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	normalizeCQRWSTMainHeader(pkg, map[string]string{
+		"\u4e13\u4e1a":             "\u62a4\u7406\u5b66",
+		"\u5b8c\u6210\u65e5\u671f": "2026\u5e745\u6708",
+	})
+
+	header, ok := pkg.Get("word/header1.xml")
+	if !ok {
+		t.Fatal("header1.xml missing")
+	}
+	text := xmlText(string(header))
+	want := "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u96622026\u5c4a\u62a4\u7406\u5b66\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a\u8bbe\u8ba1"
+	if text != want {
+		t.Fatalf("header text = %q, want %q", text, want)
+	}
+	if strings.Contains(text, "\u8bba\u6587/\u8bbe\u8ba1") {
+		t.Fatalf("header text should resolve the document type, got %q", text)
+	}
+}
+
+func TestGenerateNormalizesCQRWSTHeaderWhenTemplateMarkerOnlyExistsInHeaderPart(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId8"/><w:pgNumType w:start="1"/></w:sectPr></w:pPr></w:p>` +
+			`</w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId8" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>`,
+		"word/header1.xml":             `<w:hdr><w:p><w:r><w:t>` + "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662X\u5800\u5800\u5c4aX\u5800\u5800\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587" + `</w:t></w:r></w:p></w:hdr>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{
+			CoverFields: map[string]string{
+				"\u4e13\u4e1a":             "\u62a4\u7406\u5b66",
+				"\u5b8c\u6210\u65e5\u671f": "2026\u5e745\u6708",
+			},
+			Bindings: []blockmap.Binding{{BlockID: "content_blocks", Payload: "1 Introduction"}},
+		},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	header := readDocxEntry(t, outputPath, "word/header1.xml")
+	text := xmlText(header)
+	want := "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u96622026\u5c4a\u62a4\u7406\u5b66\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587"
+	if text != want {
+		t.Fatalf("header text = %q, want %q", text, want)
 	}
 }
 
