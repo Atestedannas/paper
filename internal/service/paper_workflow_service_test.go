@@ -99,10 +99,10 @@ func TestPaperWorkflowServiceRunJobWithoutTemplateRequiresManualReview(t *testin
 	if view.Stage != workflow.StageManualReview {
 		t.Fatalf("Stage = %s, want %s", view.Stage, workflow.StageManualReview)
 	}
-	if view.DownloadPath != "" {
-		t.Fatalf("DownloadPath = %s, want empty for unproven no-template compliance", view.DownloadPath)
-	}
 	outputPath := filepath.Join(outputRoot, created.ID.String(), "final.docx")
+	if view.DownloadPath != outputPath {
+		t.Fatalf("DownloadPath = %s, want manual-review draft path %s", view.DownloadPath, outputPath)
+	}
 	if _, err := os.Stat(outputPath); err != nil {
 		t.Fatalf("expected copied workflow output for manual review: %v", err)
 	}
