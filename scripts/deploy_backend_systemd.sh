@@ -33,6 +33,8 @@ mkdir -p "$DEPLOY_DIR"
 mkdir -p "/etc/systemd/system/${SERVICE_NAME}.d"
 cat >"/etc/systemd/system/${SERVICE_NAME}.d/override.conf" <<EOF
 [Service]
+WorkingDirectory=${DEPLOY_DIR}
+EnvironmentFile=-${DEPLOY_DIR}/.env
 Environment=SERVER_PORT=${SERVER_PORT}
 EOF
 systemctl daemon-reload
