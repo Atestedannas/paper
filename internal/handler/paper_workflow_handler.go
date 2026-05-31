@@ -149,7 +149,7 @@ func (h *PaperWorkflowHandler) DownloadJob(c *gin.Context) {
 		h.respondJobLookupError(c, err)
 		return
 	}
-	if job == nil || job.Status != string(workflow.StatusVerifiedPass) || job.DownloadPath == "" {
+	if job == nil || !jobDownloadReady(job) {
 		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "")
 		return
 	}
@@ -161,6 +161,13 @@ func (h *PaperWorkflowHandler) DownloadJob(c *gin.Context) {
 	}
 
 	c.FileAttachment(safePath, filepath.Base(safePath))
+}
+
+func jobDownloadReady(job *service.WorkflowJobView) bool {
+	if job == nil || strings.TrimSpace(job.DownloadPath) == "" {
+		return false
+	}
+	return job.Status == string(workflow.StatusVerifiedPass) || job.Status == string(workflow.StatusManualReview)
 }
 
 func (h *PaperWorkflowHandler) respondJobLookupError(c *gin.Context, err error) {

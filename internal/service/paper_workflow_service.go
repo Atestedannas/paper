@@ -208,7 +208,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 				Target:   job.Paper.FilePath,
 			}},
 		}
-		if err := workflow.NewStore(s.db).UpdateJobResult(ctx, job.ID, workflow.StatusManualReview, workflow.StageManualReview, "", result); err != nil {
+		if err := workflow.NewStore(s.db).UpdateJobResult(ctx, job.ID, workflow.StatusManualReview, workflow.StageManualReview, outputPath, result); err != nil {
 			return nil, err
 		}
 		return s.GetJobForUser(id, userID)
@@ -238,10 +238,9 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	}
 
 	stage := workflow.StageManualReview
-	downloadPath := ""
+	downloadPath := outputPath
 	if result.Status == workflow.StatusVerifiedPass {
 		stage = workflow.StageVerified
-		downloadPath = outputPath
 	}
 	if err := workflow.NewStore(s.db).UpdateJobResult(ctx, job.ID, result.Status, stage, downloadPath, result.VerifyResult); err != nil {
 		return nil, err

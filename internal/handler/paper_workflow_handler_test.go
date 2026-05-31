@@ -95,6 +95,33 @@ func TestPaperWorkflowHandlerDownloadJobReturnsFileForVerifiedPass(t *testing.T)
 	}
 }
 
+func TestPaperWorkflowHandlerDownloadJobReturnsDraftForManualReview(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "draft.docx")
+	if err := os.WriteFile(path, []byte("draft bytes"), 0644); err != nil {
+		t.Fatalf("write draft docx: %v", err)
+	}
+
+	jobID := uuid.New()
+	userID := uuid.New()
+	rec := performPaperWorkflowDownloadAsUser(t, NewPaperWorkflowHandlerWithDownloadRoot(fakePaperWorkflowService{
+		job: &service.WorkflowJobView{
+			ID:           jobID,
+			UserID:       userID,
+			Status:       string(workflow.StatusManualReview),
+			Stage:        workflow.StageManualReview,
+			DownloadPath: "draft.docx",
+		},
+	}, root), jobID.String(), userID)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Body.String() != "draft bytes" {
+		t.Fatalf("body = %q, want draft bytes", rec.Body.String())
+	}
+}
+
 func TestPaperWorkflowHandlerDownloadJobRejectsMissingFile(t *testing.T) {
 	jobID := uuid.New()
 	userID := uuid.New()
