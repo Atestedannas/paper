@@ -51,6 +51,8 @@ var tableCaptionPattern = regexp.MustCompile(`^(?:\x{8868}|\x{7eed}\x{8868})\s*\
 var headerReferencePattern = regexp.MustCompile(`<w:headerReference\b[^>]*/>`)
 var headerReferenceIDPattern = regexp.MustCompile(`<w:headerReference\b[^>]*\br:id="([^"]+)"[^>]*/>`)
 var footerReferenceIDPattern = regexp.MustCompile(`<w:footerReference\b[^>]*\br:id="([^"]+)"[^>]*/>`)
+var relationshipPattern = regexp.MustCompile(`<Relationship\b[^>]*/>`)
+var xmlAttributePattern = regexp.MustCompile(`\b([A-Za-z_:][A-Za-z0-9_.:-]*)="([^"]*)"`)
 
 type GenerateInput struct {
 	CompiledTemplate *templatecompile.CompiledTemplatePackage
@@ -126,6 +128,9 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 		pkg.Set(target, []byte(patched))
 	}
 	normalizePackageXML(pkg)
+	if packageContainsTOCField(pkg) {
+		ensureUpdateFieldsOnOpen(pkg)
+	}
 	if usesCQRWSTNormalizers {
 		normalizeCQRWSTMainHeader(pkg, coverFields)
 		normalizeCQRWSTMainFooter(pkg)
@@ -148,14 +153,60 @@ func packageUsesCQRWSTNormalizers(pkg *ooxmlpkg.DocxPackage) bool {
 	if pkg == nil {
 		return false
 	}
-	content, ok := pkg.Get(defaultPatchTarget)
-	if !ok {
+	for _, name := range pkg.Names() {
+		if !isCQRWSTDetectionPart(name) {
+			continue
+		}
+		content, ok := pkg.Get(name)
+		if ok && containsCQRWSTMarker(string(content)) {
+			return true
+		}
+	}
+	return false
+}
+
+func packageContainsTOCField(pkg *ooxmlpkg.DocxPackage) bool {
+	if pkg == nil {
 		return false
 	}
-	document := string(content)
-	return strings.Contains(document, "重庆人文科技学院") ||
-		strings.Contains(document, "本科毕业论文") ||
-		strings.Contains(document, "本科毕业设计")
+	for _, name := range pkg.Names() {
+		if !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") {
+			continue
+		}
+		content, ok := pkg.Get(name)
+		if ok && strings.Contains(string(content), `TOC \o`) {
+			return true
+		}
+	}
+	return false
+}
+
+func ensureUpdateFieldsOnOpen(pkg *ooxmlpkg.DocxPackage) {
+	if pkg == nil {
+		return
+	}
+	settingsXML := `<?xml version="1.0" encoding="UTF-8"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"></w:settings>`
+	if content, ok := pkg.Get("word/settings.xml"); ok && strings.TrimSpace(string(content)) != "" {
+		settingsXML = string(content)
+	}
+	if updated, ok := ooxmlpatch.ApplySettingsProperties(settingsXML, ooxmlpatch.SettingsPropertiesSpec{UpdateFieldsOnOpen: true}); ok {
+		pkg.Set("word/settings.xml", []byte(updated))
+	}
+}
+
+func isCQRWSTDetectionPart(name string) bool {
+	return name == defaultPatchTarget ||
+		strings.HasPrefix(name, "word/header") ||
+		strings.HasPrefix(name, "word/footer")
+}
+
+func containsCQRWSTMarker(content string) bool {
+	return strings.Contains(content, "重庆人文科技学院") ||
+		strings.Contains(content, "本科毕业论文") ||
+		strings.Contains(content, "本科毕业设计") ||
+		strings.Contains(content, "閲嶅簡浜烘枃绉戞妧瀛﹂櫌") ||
+		strings.Contains(content, "鏈姣曚笟璁烘枃") ||
+		strings.Contains(content, "鏈姣曚笟璁捐")
 }
 
 func validateInput(input GenerateInput) error {
@@ -291,10 +342,20 @@ func renderGeneratedTOC(payloads []string) string {
 		After:      624,
 		AfterLines: 200,
 	}, "Times New Roman", "黑体"))
+	builder.WriteString(tocFieldBeginParagraph())
 	for _, entry := range entries {
 		builder.WriteString(paragraphWithStyle(entry, paragraphStyle{Size: 20, FirstLine: 0, Line: 240}))
 	}
+	builder.WriteString(tocFieldEndParagraph())
 	return builder.String()
+}
+
+func tocFieldBeginParagraph() string {
+	return `<w:p><w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \o "1-3" \h \z \u </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r></w:p>`
+}
+
+func tocFieldEndParagraph() string {
+	return `<w:p><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`
 }
 
 func renderReferences(payloads []string) string {
@@ -510,12 +571,12 @@ func renderStyledPayload(text string) string {
 	case numberedHeadingPattern.MatchString(normalized):
 		level := headingLevel(normalized)
 		if level <= 1 {
-			return paragraphWithStyle(normalized, paragraphStyle{Size: 32, Bold: true, Line: 360, Before: 312, BeforeLines: 100, After: 312, AfterLines: 100, Alignment: "left", SnapToGridOff: true, AdjustRightIndZero: true, AsciiFont: "宋体", EastAsiaFont: "宋体"})
+			return paragraphWithStyle(normalized, paragraphStyle{Size: 32, Bold: true, Line: 360, Before: 312, BeforeLines: 100, After: 312, AfterLines: 100, Alignment: "left", HeadingLevel: 1, SnapToGridOff: true, AdjustRightIndZero: true, AsciiFont: "宋体", EastAsiaFont: "宋体"})
 		}
 		if level == 2 {
-			return paragraphWithStyle(normalized, paragraphStyle{Size: 30, Bold: true, Line: 360, AsciiFont: "宋体", EastAsiaFont: "宋体"})
+			return paragraphWithStyle(normalized, paragraphStyle{Size: 30, Bold: true, Line: 360, HeadingLevel: 2, AsciiFont: "宋体", EastAsiaFont: "宋体"})
 		}
-		return paragraphWithStyle(normalized, paragraphStyle{Size: 28, Bold: true, Line: 360, AsciiFont: "宋体", EastAsiaFont: "宋体"})
+		return paragraphWithStyle(normalized, paragraphStyle{Size: 28, Bold: true, Line: 360, HeadingLevel: minHeadingLevel(level, 9), AsciiFont: "宋体", EastAsiaFont: "宋体"})
 	default:
 		return paragraphWithStyle(normalized, paragraphStyle{Size: 24, FirstLine: 480, FirstLineChars: 200, Line: 360, AsciiFont: "宋体", EastAsiaFont: "宋体"})
 	}
@@ -1077,6 +1138,7 @@ type paragraphStyle struct {
 	BeforeLines        int
 	AfterLines         int
 	Alignment          string
+	HeadingLevel       int
 	KeepNext           bool
 	SnapToGridOff      bool
 	AdjustRightIndZero bool
@@ -1108,6 +1170,9 @@ func paragraphWithStyle(text string, style paragraphStyle) string {
 func transplantParagraphSpec(text string, style paragraphStyle, includeRunProperties bool) ooxmlpatch.ParagraphPropertiesSpec {
 	asciiFont, eastAsiaFont := fontsForParagraphText(text, style)
 	return ooxmlpatch.ParagraphPropertiesSpec{
+		StyleID:            headingStyleID(style.HeadingLevel),
+		OutlineLevel:       style.HeadingLevel - 1,
+		OutlineLevelSet:    style.HeadingLevel > 0,
 		Alignment:          style.Alignment,
 		LineTwips:          style.Line,
 		LineRule:           "auto",
@@ -1131,6 +1196,23 @@ func transplantParagraphSpec(text string, style paragraphStyle, includeRunProper
 		ComplexSizeHalfPts: style.Size,
 		Bold:               style.Bold,
 	}
+}
+
+func headingStyleID(level int) string {
+	if level <= 0 {
+		return ""
+	}
+	if level > 9 {
+		level = 9
+	}
+	return fmt.Sprintf("Heading%d", level)
+}
+
+func minHeadingLevel(level int, max int) int {
+	if level > max {
+		return max
+	}
+	return level
 }
 
 func runPropertiesForParagraphStyle(text string, style paragraphStyle) string {
@@ -1801,7 +1883,14 @@ func normalizeCQRWSTMainFooter(pkg *ooxmlpkg.DocxPackage) {
 	if footerTarget == "" {
 		return
 	}
+	if content, ok := pkg.Get(footerTarget); ok && footerHasPageAndNumPages(string(content)) {
+		return
+	}
 	pkg.Set(footerTarget, []byte(renderCQRWSTMainFooterXML()))
+}
+
+func footerHasPageAndNumPages(footerXML string) bool {
+	return strings.Contains(footerXML, " PAGE ") && strings.Contains(footerXML, " NUMPAGES ")
 }
 
 func normalizeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]string) {
@@ -1812,19 +1901,21 @@ func normalizeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]stri
 	if !ok {
 		return
 	}
-	headerID := mainBodyHeaderReferenceID(string(document))
-	if headerID == "" {
+	headerTargets := referencedHeaderTargets(pkg, string(document))
+	if len(headerTargets) == 0 {
 		return
 	}
-	headerTarget := relationshipTarget(pkg, headerID)
-	if headerTarget == "" {
-		return
+	for _, headerTarget := range headerTargets {
+		content, ok := pkg.Get(headerTarget)
+		if !ok {
+			continue
+		}
+		templateHeader := xmlText(string(content))
+		if !containsCQRWSTMarker(templateHeader) && !containsCQRWSTMarker(string(content)) {
+			continue
+		}
+		pkg.Set(headerTarget, []byte(renderCQRWSTMainHeaderXML(fields, templateHeader)))
 	}
-	templateHeader := ""
-	if content, ok := pkg.Get(headerTarget); ok {
-		templateHeader = xmlText(string(content))
-	}
-	pkg.Set(headerTarget, []byte(renderCQRWSTMainHeaderXML(fields, templateHeader)))
 }
 
 func mainBodyHeaderReferenceID(documentXML string) string {
@@ -1870,12 +1961,28 @@ func relationshipTarget(pkg *ooxmlpkg.DocxPackage, relationshipID string) string
 	if !ok || relationshipID == "" {
 		return ""
 	}
-	pattern := regexp.MustCompile(`<Relationship\b[^>]*\bId="` + regexp.QuoteMeta(relationshipID) + `"[^>]*\bTarget="([^"]+)"[^>]*/>`)
-	match := pattern.FindStringSubmatch(string(rels))
-	if len(match) != 2 {
-		return ""
+	for _, relationship := range relationshipPattern.FindAllString(string(rels), -1) {
+		attrs := xmlAttributes(relationship)
+		if attrs["Id"] != relationshipID {
+			continue
+		}
+		return normalizeRelationshipTarget(attrs["Target"])
 	}
-	target := strings.TrimSpace(match[1])
+	return ""
+}
+
+func xmlAttributes(fragment string) map[string]string {
+	attrs := map[string]string{}
+	for _, match := range xmlAttributePattern.FindAllStringSubmatch(fragment, -1) {
+		if len(match) == 3 {
+			attrs[match[1]] = html.UnescapeString(match[2])
+		}
+	}
+	return attrs
+}
+
+func normalizeRelationshipTarget(target string) string {
+	target = strings.TrimSpace(target)
 	if target == "" || strings.Contains(target, "://") {
 		return ""
 	}
@@ -1883,6 +1990,23 @@ func relationshipTarget(pkg *ooxmlpkg.DocxPackage, relationshipID string) string
 		return strings.TrimPrefix(target, "/")
 	}
 	return "word/" + strings.TrimPrefix(target, "word/")
+}
+
+func referencedHeaderTargets(pkg *ooxmlpkg.DocxPackage, documentXML string) []string {
+	seen := map[string]bool{}
+	targets := []string{}
+	for _, match := range headerReferenceIDPattern.FindAllStringSubmatch(documentXML, -1) {
+		if len(match) != 2 {
+			continue
+		}
+		target := relationshipTarget(pkg, match[1])
+		if target == "" || seen[target] {
+			continue
+		}
+		seen[target] = true
+		targets = append(targets, target)
+	}
+	return targets
 }
 
 func renderCQRWSTMainHeaderXML(fields map[string]string, templateHeader string) string {

@@ -204,6 +204,9 @@ func applyTemplateProfileHeaderFooterAndPageNumbering(path string, profile *temp
 			BodyStart:   profile.RulePack.BodyPageStart,
 			BodyWrapper: profile.RulePack.BodyPageWrapper,
 		}
+		if templateFooterUsesChineseTotalPages(profile.Footer) {
+			pageSpec.BodyWrapper = "chinese_total"
+		}
 	}
 	if headerSpec.Policy == "" && pageSpec.Policy == "" && pageSpec.FrontFormat == "" && pageSpec.BodyFormat == "" && pageSpec.BodyWrapper == "" && pageSpec.BodyStart == 0 {
 		return 0, nil
@@ -220,6 +223,16 @@ func applyTemplateProfileHeaderFooterAndPageNumbering(path string, profile *temp
 		return 0, err
 	}
 	return count, nil
+}
+
+func templateFooterUsesChineseTotalPages(footer templateprofile.HeaderFooterRule) bool {
+	if !footer.Exists || !footer.HasPageField || !footer.HasNumPages {
+		return false
+	}
+	normalized := strings.ReplaceAll(strings.ReplaceAll(footer.Text, " ", ""), "\u00a0", "")
+	return normalized == "" ||
+		(strings.Contains(normalized, "第") && strings.Contains(normalized, "共")) ||
+		(strings.Contains(normalized, "页") && strings.Contains(normalized, "共"))
 }
 
 func (CitationProcessor) Apply(_ context.Context, path string, profile *templateprofile.Profile) (int, error) {

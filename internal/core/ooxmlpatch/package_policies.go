@@ -44,6 +44,7 @@ var (
 	relationshipElement = regexp.MustCompile(`<Relationship\b[^>]*/>`)
 	relationshipIDAttr  = regexp.MustCompile(`\bId="(rId\d+)"`)
 	sectionStartElement = regexp.MustCompile(`(?s)<w:sectPr\b[^>]*>`)
+	stylesEndElement    = regexp.MustCompile(`</w:styles>`)
 )
 
 type HeaderFooterPolicySpec struct {
@@ -116,7 +117,8 @@ func ApplyHeadingNumberingDefinitions(pkg *ooxmlpkg.DocxPackage, levels []string
 		return 0, nil
 	}
 	pkg.Set("word/numbering.xml", []byte(headingNumberingXML(levels)))
-	pkg.Set("word/styles.xml", []byte(headingStylesXML(levels)))
+	existingStyles, _ := pkg.Get("word/styles.xml")
+	pkg.Set("word/styles.xml", []byte(mergeHeadingStylesXML(string(existingStyles), levels)))
 	ensureContentTypeOverride(pkg, "word/numbering.xml", numberingContentType)
 	ensureContentTypeOverride(pkg, "word/styles.xml", stylesContentType)
 	ensureRelationship(pkg, numberingRelationship, "numbering.xml")
@@ -381,19 +383,33 @@ func headingNumberingXML(levels []string) string {
 	var builder strings.Builder
 	builder.WriteString(`<?xml version="1.0" encoding="UTF-8"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="9000">`)
 	for index := range levels {
-		builder.WriteString(fmt.Sprintf(`<w:lvl w:ilvl="%d"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%s"/><w:pStyle w:val="ThesisHeading%d"/></w:lvl>`, index, headingLevelText(index), index+1))
+		builder.WriteString(fmt.Sprintf(`<w:lvl w:ilvl="%d"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%s"/><w:pStyle w:val="Heading%d"/></w:lvl>`, index, headingLevelText(index), index+1))
 	}
 	builder.WriteString(`</w:abstractNum><w:num w:numId="9000"><w:abstractNumId w:val="9000"/></w:num></w:numbering>`)
 	return builder.String()
 }
 
+func mergeHeadingStylesXML(existing string, levels []string) string {
+	if strings.TrimSpace(existing) == "" {
+		existing = `<?xml version="1.0" encoding="UTF-8"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"></w:styles>`
+	}
+	for index := range levels {
+		styleID := fmt.Sprintf("Heading%d", index+1)
+		stylePattern := regexp.MustCompile(fmt.Sprintf(`(?s)<w:style\b[^>]*\bw:styleId="%s"[^>]*>.*?</w:style>|<w:style\b[^>]*\bw:styleId="%s"[^>]*/>`, regexp.QuoteMeta(styleID), regexp.QuoteMeta(styleID)))
+		existing = stylePattern.ReplaceAllString(existing, "")
+	}
+	insert := headingStylesXML(levels)
+	if stylesEndElement.MatchString(existing) {
+		return stylesEndElement.ReplaceAllString(existing, insert+`</w:styles>`)
+	}
+	return existing + insert
+}
+
 func headingStylesXML(levels []string) string {
 	var builder strings.Builder
-	builder.WriteString(`<?xml version="1.0" encoding="UTF-8"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">`)
 	for index := range levels {
-		builder.WriteString(fmt.Sprintf(`<w:style w:type="paragraph" w:styleId="ThesisHeading%d"><w:name w:val="Thesis Heading %d"/><w:pPr><w:outlineLvl w:val="%d"/><w:numPr><w:ilvl w:val="%d"/><w:numId w:val="9000"/></w:numPr></w:pPr></w:style>`, index+1, index+1, index, index))
+		builder.WriteString(fmt.Sprintf(`<w:style w:type="paragraph" w:styleId="Heading%d"><w:name w:val="heading %d"/><w:basedOn w:val="Normal"/><w:uiPriority w:val="%d"/><w:qFormat/><w:pPr><w:outlineLvl w:val="%d"/><w:numPr><w:ilvl w:val="%d"/><w:numId w:val="9000"/></w:numPr></w:pPr></w:style>`, index+1, index+1, 9+index, index, index))
 	}
-	builder.WriteString(`</w:styles>`)
 	return builder.String()
 }
 

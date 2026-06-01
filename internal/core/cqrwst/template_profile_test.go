@@ -645,6 +645,48 @@ func TestFixDOCXWithTemplateProfileAppliesOddEvenHeadersAndPageNumbering(t *test
 	}
 }
 
+func TestFixDOCXWithTemplateProfilePrefersTemplateChineseTotalFooterOverDashRule(t *testing.T) {
+	docxPath := writeCQRWSTDocxWithEntries(t,
+		`<w:p><w:r><w:t>1 Introduction</w:t></w:r></w:p>`+
+			`<w:sectPr/>`,
+		map[string]string{
+			"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`,
+		},
+	)
+	profile := &templateprofile.Profile{
+		Version: templateprofile.Version,
+		Footer: templateprofile.HeaderFooterRule{
+			Exists:       true,
+			Text:         "第页 共页",
+			HasPageField: true,
+			HasNumPages:  true,
+		},
+		RulePack: templateprofile.RulePack{
+			PageNumbering:   "front_roman_body_arabic_center",
+			BodyPageFormat:  "decimal",
+			BodyPageStart:   1,
+			BodyPageWrapper: "dash",
+		},
+	}
+
+	result, err := FixDOCXWithTemplateProfile(context.Background(), docxPath, profile)
+	if err != nil {
+		t.Fatalf("FixDOCXWithTemplateProfile() error = %v", err)
+	}
+	if result.FixCount == 0 {
+		t.Fatalf("FixDOCXWithTemplateProfile() fix count = 0, want page footer fix")
+	}
+	footerXML := readCQRWSTEntry(t, docxPath, "word/footer1.xml")
+	for _, want := range []string{"第 ", "PAGE", " 页 共 ", "NUMPAGES"} {
+		if !strings.Contains(footerXML, want) {
+			t.Fatalf("footer should follow template chinese total page style %q:\n%s", want, footerXML)
+		}
+	}
+	if strings.Contains(footerXML, ">-<") {
+		t.Fatalf("footer should not use dash page wrapper when template footer has total pages:\n%s", footerXML)
+	}
+}
+
 func TestFixDOCXWithTemplateProfileAppliesHeadingNumberingDefinitionsAndCaptionPositions(t *testing.T) {
 	docxPath := writeCQRWSTDocxWithEntries(t,
 		`<w:p><w:r><w:t>1 Introduction</w:t></w:r></w:p>`+
@@ -685,7 +727,7 @@ func TestFixDOCXWithTemplateProfileAppliesHeadingNumberingDefinitionsAndCaptionP
 	if strings.Index(documentXML, "\u56fe1 \u56fe\u9898") < strings.Index(documentXML, "<w:drawing") {
 		t.Fatalf("figure caption should be moved below figure:\n%s", documentXML)
 	}
-	if !strings.Contains(numberingXML, `<w:abstractNumId w:val="9000"`) || !strings.Contains(stylesXML, `ThesisHeading1`) {
+	if !strings.Contains(numberingXML, `<w:abstractNumId w:val="9000"`) || !strings.Contains(stylesXML, `styleId="Heading1"`) {
 		t.Fatalf("heading numbering definitions missing:\nnumbering=%s\nstyles=%s", numberingXML, stylesXML)
 	}
 }

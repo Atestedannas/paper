@@ -484,6 +484,15 @@ func TestGenerateDropsSourceTableOfContentsAndBuildsCleanTOC(t *testing.T) {
 	if !strings.Contains(document, `<w:spacing w:line="240"`) || !strings.Contains(document, `<w:sz w:val="20"`) {
 		t.Fatalf("generated TOC entries should use compact typography: %s", document)
 	}
+	for _, want := range []string{`TOC \o "1-3" \h \z \u`, `w:fldCharType="begin"`, `w:fldCharType="separate"`, `w:fldCharType="end"`} {
+		if !strings.Contains(document, want) {
+			t.Fatalf("generated TOC should include real Word field %q: %s", want, document)
+		}
+	}
+	settings := readDocxEntry(t, outputPath, "word/settings.xml")
+	if !strings.Contains(settings, `<w:updateFields w:val="true"/>`) {
+		t.Fatalf("settings.xml should request field updates on open: %s", settings)
+	}
 }
 
 func TestGenerateAppliesTemplateTypographySpacing(t *testing.T) {
@@ -513,6 +522,8 @@ func TestGenerateAppliesTemplateTypographySpacing(t *testing.T) {
 	document := readDocxEntry(t, outputPath, "word/document.xml")
 	chapter := paragraphContainingText(t, document, "1 \u7eea\u8bba")
 	for _, want := range []string{
+		`<w:pStyle w:val="Heading1"/>`,
+		`<w:outlineLvl w:val="0"/>`,
 		`w:eastAsia="宋体"`,
 		`w:ascii="宋体"`,
 		`<w:b/><w:bCs/>`,
@@ -532,14 +543,14 @@ func TestGenerateAppliesTemplateTypographySpacing(t *testing.T) {
 	}
 
 	section := paragraphContainingText(t, document, "1.1 \u7814\u7a76\u80cc\u666f")
-	for _, want := range []string{`w:eastAsia="宋体"`, `w:ascii="宋体"`, `<w:b/><w:bCs/>`, `<w:sz w:val="30"/>`, `w:line="360"`} {
+	for _, want := range []string{`<w:pStyle w:val="Heading2"/>`, `<w:outlineLvl w:val="1"/>`, `w:eastAsia="宋体"`, `w:ascii="宋体"`, `<w:b/><w:bCs/>`, `<w:sz w:val="30"/>`, `w:line="360"`} {
 		if !strings.Contains(section, want) {
 			t.Fatalf("section heading missing %q: %s", want, section)
 		}
 	}
 
 	third := paragraphContainingText(t, document, "1.1.1 \u7814\u7a76\u5bf9\u8c61")
-	for _, want := range []string{`w:eastAsia="宋体"`, `w:ascii="宋体"`, `<w:b/><w:bCs/>`, `<w:sz w:val="28"/>`, `w:line="360"`} {
+	for _, want := range []string{`<w:pStyle w:val="Heading3"/>`, `<w:outlineLvl w:val="2"/>`, `w:eastAsia="宋体"`, `w:ascii="宋体"`, `<w:b/><w:bCs/>`, `<w:sz w:val="28"/>`, `w:line="360"`} {
 		if !strings.Contains(third, want) {
 			t.Fatalf("third-level heading missing %q: %s", want, third)
 		}
@@ -1020,6 +1031,51 @@ func TestGenerateRebuildsCQRWSTBodyWithMainFooterSection(t *testing.T) {
 	}
 }
 
+func TestGeneratePreservesTemplateChineseTotalFooterFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	templateFooter := `<w:ftr><w:p><w:r><w:t>第 </w:t></w:r>` +
+		`<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE \* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>0</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>` +
+		`<w:r><w:t> 页 共 </w:t></w:r>` +
+		`<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> NUMPAGES \* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>12</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>` +
+		`<w:r><w:t>页</w:t></w:r></w:p></w:ftr>`
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>本科毕业论文/设计</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:sectPr><w:footerReference w:type="default" r:id="rId11"/><w:pgNumType w:start="1"/></w:sectPr></w:pPr></w:p>` +
+			`</w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer3.xml"/></Relationships>`,
+		"word/footer3.xml":             templateFooter,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{
+			CoverFields: map[string]string{
+				"\u4e13\u4e1a":             "\u62a4\u7406\u5b66",
+				"\u5b8c\u6210\u65e5\u671f": "2026\u5e745\u6708",
+			},
+			Bindings: []blockmap.Binding{{BlockID: "content_blocks", Payload: "1 Introduction"}},
+		},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	footerXML := readDocxEntry(t, outputPath, "word/footer3.xml")
+	for _, want := range []string{"第 ", "PAGE", "0", " 页 共 ", "NUMPAGES", "12", "页"} {
+		if !strings.Contains(footerXML, want) {
+			t.Fatalf("footer should preserve template fragment %q: %s", want, footerXML)
+		}
+	}
+	if strings.Contains(footerXML, ">-<") {
+		t.Fatalf("footer should not be rewritten to dash page style: %s", footerXML)
+	}
+}
+
 func TestNormalizeCQRWSTMainHeaderBuildsTextFromTemplateHeaderAndCoverFields(t *testing.T) {
 	tmpDir := t.TempDir()
 	docxPath := filepath.Join(tmpDir, "input.docx")
@@ -1087,6 +1143,83 @@ func TestGenerateNormalizesCQRWSTHeaderWhenTemplateMarkerOnlyExistsInHeaderPart(
 	want := "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u96622026\u5c4a\u62a4\u7406\u5b66\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587"
 	if text != want {
 		t.Fatalf("header text = %q, want %q", text, want)
+	}
+}
+
+func TestGenerateNormalizesCQRWSTHeaderWhenRelationshipAttributesAreReordered(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId8"/><w:pgNumType w:start="1"/></w:sectPr></w:pPr></w:p>` +
+			`</w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="header1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Id="rId8"/></Relationships>`,
+		"word/header1.xml":             `<w:hdr><w:p><w:r><w:t>` + "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662X\u5800\u5800\u5c4aX\u5800\u5800\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587" + `</w:t></w:r></w:p></w:hdr>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{
+			CoverFields: map[string]string{
+				"\u4e13\u4e1a":             "\u62a4\u7406\u5b66",
+				"\u5b8c\u6210\u65e5\u671f": "2026\u5e745\u6708",
+			},
+			Bindings: []blockmap.Binding{{BlockID: "content_blocks", Payload: "1 Introduction"}},
+		},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	header := readDocxEntry(t, outputPath, "word/header1.xml")
+	text := xmlText(header)
+	want := "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u96622026\u5c4a\u62a4\u7406\u5b66\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587"
+	if text != want {
+		t.Fatalf("header text = %q, want %q", text, want)
+	}
+}
+
+func TestGenerateNormalizesAllReferencedCQRWSTHeaderParts(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="first" r:id="rIdFirst"/><w:headerReference w:type="default" r:id="rIdDefault"/><w:pgNumType w:start="1"/></w:sectPr></w:pPr></w:p>` +
+			`</w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdFirst" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>` +
+			`<Relationship Id="rIdDefault" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header2.xml"/>` +
+			`</Relationships>`,
+		"word/header1.xml": `<w:hdr><w:p><w:r><w:t>` + "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662X\u5800\u5800\u5c4aX\u5800\u5800\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587" + `</w:t></w:r></w:p></w:hdr>`,
+		"word/header2.xml": `<w:hdr><w:p><w:r><w:t>` + "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662X\u5800\u5800\u5c4aX\u5800\u5800\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587" + `</w:t></w:r></w:p></w:hdr>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{
+			CoverFields: map[string]string{
+				"\u4e13\u4e1a":             "\u62a4\u7406\u5b66",
+				"\u5b8c\u6210\u65e5\u671f": "2026\u5e745\u6708",
+			},
+			Bindings: []blockmap.Binding{{BlockID: "content_blocks", Payload: "1 Introduction"}},
+		},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	want := "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u96622026\u5c4a\u62a4\u7406\u5b66\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587"
+	for _, name := range []string{"word/header1.xml", "word/header2.xml"} {
+		text := xmlText(readDocxEntry(t, outputPath, name))
+		if text != want {
+			t.Fatalf("%s text = %q, want %q", name, text, want)
+		}
 	}
 }
 

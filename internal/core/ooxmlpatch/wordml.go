@@ -20,6 +20,7 @@ var (
 	keepNextElement        = regexp.MustCompile(`<w:keepNext\b[^>]*/>`)
 	snapToGridElement      = regexp.MustCompile(`<w:snapToGrid\b[^>]*/>`)
 	adjustRightIndElement  = regexp.MustCompile(`<w:adjustRightInd\b[^>]*/>`)
+	paragraphStyleElement  = regexp.MustCompile(`<w:pStyle\b[^>]*/>`)
 	outlineLevelElement    = regexp.MustCompile(`<w:outlineLvl\b[^>]*/>`)
 
 	runFontsElement       = regexp.MustCompile(`<w:rFonts\b[^>]*/>`)
@@ -36,6 +37,7 @@ var (
 	pageNumberTypeElement        = regexp.MustCompile(`<w:pgNumType\b[^>]*/>`)
 	headerFooterReferenceElement = regexp.MustCompile(`<w:(?:headerReference|footerReference)\b[^>]*/>`)
 	evenAndOddHeadersElement     = regexp.MustCompile(`<w:evenAndOddHeaders\b[^>]*/>`)
+	updateFieldsElement          = regexp.MustCompile(`<w:updateFields\b[^>]*/>`)
 )
 
 type SectionPropertiesSpec struct {
@@ -55,10 +57,14 @@ type SectionPropertiesSpec struct {
 }
 
 type SettingsPropertiesSpec struct {
-	EvenAndOddHeaders bool
+	EvenAndOddHeaders  bool
+	UpdateFieldsOnOpen bool
 }
 
 type ParagraphPropertiesSpec struct {
+	StyleID            string
+	OutlineLevel       int
+	OutlineLevelSet    bool
 	Alignment          string
 	LineTwips          int
 	LineRule           string
@@ -129,8 +135,12 @@ func ApplySectionProperties(documentXML string, spec SectionPropertiesSpec) (str
 
 func ApplySettingsProperties(settingsXML string, spec SettingsPropertiesSpec) (string, bool) {
 	updated := evenAndOddHeadersElement.ReplaceAllString(settingsXML, "")
+	updated = updateFieldsElement.ReplaceAllString(updated, "")
 	if spec.EvenAndOddHeaders {
 		updated = insertBeforeClosingTag(updated, "w:settings", `<w:evenAndOddHeaders/>`)
+	}
+	if spec.UpdateFieldsOnOpen {
+		updated = insertBeforeClosingTag(updated, "w:settings", `<w:updateFields w:val="true"/>`)
 	}
 	return updated, updated != settingsXML
 }
@@ -224,6 +234,9 @@ func updateSectionPropertiesBody(body string, spec SectionPropertiesSpec) string
 }
 
 func updateParagraphPropertiesBody(body string, spec ParagraphPropertiesSpec) string {
+	if spec.StyleID != "" {
+		body = paragraphStyleElement.ReplaceAllString(body, "")
+	}
 	body = jcElement.ReplaceAllString(body, "")
 	body = spacingElement.ReplaceAllString(body, "")
 	body = indentElement.ReplaceAllString(body, "")
@@ -231,7 +244,7 @@ func updateParagraphPropertiesBody(body string, spec ParagraphPropertiesSpec) st
 	body = keepNextElement.ReplaceAllString(body, "")
 	body = snapToGridElement.ReplaceAllString(body, "")
 	body = adjustRightIndElement.ReplaceAllString(body, "")
-	if spec.RemoveOutlineLevel {
+	if spec.RemoveOutlineLevel || spec.OutlineLevelSet {
 		body = outlineLevelElement.ReplaceAllString(body, "")
 	}
 	if spec.RunPropertiesInPPr {
@@ -239,6 +252,12 @@ func updateParagraphPropertiesBody(body string, spec ParagraphPropertiesSpec) st
 	}
 
 	var builder strings.Builder
+	if spec.StyleID != "" {
+		builder.WriteString(fmt.Sprintf(`<w:pStyle w:val="%s"/>`, spec.StyleID))
+	}
+	if spec.OutlineLevelSet {
+		builder.WriteString(fmt.Sprintf(`<w:outlineLvl w:val="%d"/>`, spec.OutlineLevel))
+	}
 	if spec.Alignment != "" {
 		builder.WriteString(fmt.Sprintf(`<w:jc w:val="%s"/>`, spec.Alignment))
 	}

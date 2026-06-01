@@ -43,13 +43,16 @@ func TestApplySectionPropertiesWritesISO29500PageSetup(t *testing.T) {
 func TestApplySettingsPropertiesWritesEvenOddHeaderSwitch(t *testing.T) {
 	settings := `<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="100"/></w:settings>`
 
-	updated, changed := ApplySettingsProperties(settings, SettingsPropertiesSpec{EvenAndOddHeaders: true})
+	updated, changed := ApplySettingsProperties(settings, SettingsPropertiesSpec{EvenAndOddHeaders: true, UpdateFieldsOnOpen: true})
 
 	if !changed {
 		t.Fatal("ApplySettingsProperties() changed = false, want true")
 	}
 	if !strings.Contains(updated, `<w:evenAndOddHeaders/>`) {
 		t.Fatalf("updated settings missing evenAndOddHeaders:\n%s", updated)
+	}
+	if !strings.Contains(updated, `<w:updateFields w:val="true"/>`) {
+		t.Fatalf("updated settings missing updateFields:\n%s", updated)
 	}
 }
 

@@ -72,3 +72,45 @@ func TestBuildHeaderFooterXMLSupportsDoubleHeaderAndChineseTotalPages(t *testing
 		}
 	}
 }
+
+func TestApplyHeadingNumberingDefinitionsMergesHeadingStylesWithoutDroppingTemplateStyles(t *testing.T) {
+	docxPath := writePatchTestDocx(t, map[string]string{
+		"word/document.xml":            `<w:document/>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`,
+		"[Content_Types].xml":          `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
+		"word/styles.xml":              `<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="TemplateCustom"><w:name w:val="Template Custom"/></w:style></w:styles>`,
+	})
+	pkg, err := ooxmlpkg.Open(docxPath)
+	if err != nil {
+		t.Fatalf("open docx: %v", err)
+	}
+
+	count, err := ApplyHeadingNumberingDefinitions(pkg, []string{"1", "1.1", "1.1.1"})
+	if err != nil {
+		t.Fatalf("ApplyHeadingNumberingDefinitions() error = %v", err)
+	}
+	if count == 0 {
+		t.Fatal("ApplyHeadingNumberingDefinitions() count = 0, want style/numbering writes")
+	}
+	styles, _ := pkg.Get("word/styles.xml")
+	numbering, _ := pkg.Get("word/numbering.xml")
+	for _, want := range []string{
+		`styleId="TemplateCustom"`,
+		`styleId="Heading1"`,
+		`<w:basedOn w:val="Normal"/>`,
+		`<w:outlineLvl w:val="0"/>`,
+		`styleId="Heading2"`,
+		`<w:outlineLvl w:val="1"/>`,
+		`styleId="Heading3"`,
+		`<w:outlineLvl w:val="2"/>`,
+	} {
+		if !strings.Contains(string(styles), want) {
+			t.Fatalf("styles.xml missing %s:\n%s", want, styles)
+		}
+	}
+	for _, want := range []string{`<w:pStyle w:val="Heading1"/>`, `<w:pStyle w:val="Heading2"/>`, `<w:pStyle w:val="Heading3"/>`} {
+		if !strings.Contains(string(numbering), want) {
+			t.Fatalf("numbering.xml missing %s:\n%s", want, numbering)
+		}
+	}
+}
