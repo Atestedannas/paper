@@ -30,6 +30,7 @@ jobs:
       PROD_SERVICE_NAME: ${{ vars.PROD_SERVICE_NAME || 'paper.service' }}
       PROD_SERVER_PORT: ${{ vars.PROD_SERVER_PORT || '8002' }}
       PROD_HEALTH_URL: ${{ vars.PROD_HEALTH_URL || 'http://127.0.0.1:8002/health' }}
+      PROD_HEALTH_RETRIES: ${{ vars.PROD_HEALTH_RETRIES || '60' }}
 
     steps:
       - name: Checkout
@@ -56,23 +57,32 @@ jobs:
 
       - name: Validate deployment secrets
         run: |
-          test -n "$PROD_HOST"
-          test -n "$PROD_PORT"
-          test -n "$PROD_USER"
-          test -n "$PROD_SSH_KEY"
+          missing=0
+          for name in PROD_HOST PROD_PORT PROD_USER PROD_SSH_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error title=Missing deployment secret::$name is not configured"
+              missing=1
+            fi
+          done
+          test "$missing" -eq 0
 
       - name: Configure SSH
         run: |
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$PROD_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           timeout 20s ssh-keyscan -p "$PROD_PORT" "$PROD_HOST" >> ~/.ssh/known_hosts || true
 
+      - name: Verify SSH connectivity
+        run: |
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ConnectionAttempts=2 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
+            "set -e; echo '[deploy] ssh connected'; mkdir -p /tmp; test -w /tmp"
+
       - name: Upload artifact
         run: |
-          timeout 2400s ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" "cat > /tmp/paper-backend-deploy.tar.gz" < output/paper-backend-deploy.tar.gz
+          timeout 180s scp -B -o BatchMode=yes -o ConnectTimeout=20 -o ConnectionAttempts=2 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PROD_PORT" -i ~/.ssh/deploy_key output/paper-backend-deploy.tar.gz "$PROD_USER@$PROD_HOST:/tmp/paper-backend-deploy.tar.gz"
 
       - name: Deploy with systemd rollback
         run: |
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
-            "rm -rf /tmp/paper-backend-deploy && mkdir -p /tmp/paper-backend-deploy && tar -xzf /tmp/paper-backend-deploy.tar.gz -C /tmp/paper-backend-deploy && chmod +x /tmp/paper-backend-deploy/paper-server /tmp/paper-backend-deploy/deploy_backend_systemd.sh && DEPLOY_DIR='$PROD_DEPLOY_DIR' SERVICE_NAME='$PROD_SERVICE_NAME' SERVER_PORT='$PROD_SERVER_PORT' HEALTH_URL='$PROD_HEALTH_URL' /tmp/paper-backend-deploy/deploy_backend_systemd.sh /tmp/paper-backend-deploy/paper-server"
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
+            "rm -rf /tmp/paper-backend-deploy && mkdir -p /tmp/paper-backend-deploy && tar -xzf /tmp/paper-backend-deploy.tar.gz -C /tmp/paper-backend-deploy && chmod +x /tmp/paper-backend-deploy/paper-server /tmp/paper-backend-deploy/deploy_backend_systemd.sh && export DEPLOY_DIR='$PROD_DEPLOY_DIR' SERVICE_NAME='$PROD_SERVICE_NAME' SERVER_PORT='$PROD_SERVER_PORT' HEALTH_URL='$PROD_HEALTH_URL' HEALTH_RETRIES='$PROD_HEALTH_RETRIES'; if [ \"\$(id -u)\" -eq 0 ]; then /tmp/paper-backend-deploy/deploy_backend_systemd.sh /tmp/paper-backend-deploy/paper-server; elif command -v sudo >/dev/null 2>&1 && sudo -n true; then sudo -n env DEPLOY_DIR=\"\$DEPLOY_DIR\" SERVICE_NAME=\"\$SERVICE_NAME\" SERVER_PORT=\"\$SERVER_PORT\" HEALTH_URL=\"\$HEALTH_URL\" HEALTH_RETRIES=\"\$HEALTH_RETRIES\" /tmp/paper-backend-deploy/deploy_backend_systemd.sh /tmp/paper-backend-deploy/paper-server; else echo '[deploy][ERROR] remote user must be root or have passwordless sudo for systemd deployment' >&2; exit 1; fi"
