@@ -71,11 +71,16 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$PROD_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+          ssh-keygen -y -f ~/.ssh/deploy_key > ~/.ssh/deploy_key.pub || {
+            echo "::error title=Invalid deployment SSH key::PROD_SSH_KEY must be an unencrypted private key accepted by ssh."
+            exit 1
+          }
+          echo "[deploy] ssh key fingerprint: $(ssh-keygen -lf ~/.ssh/deploy_key.pub)"
           timeout 20s ssh-keyscan -p "$PROD_PORT" "$PROD_HOST" >> ~/.ssh/known_hosts || true
 
       - name: Verify SSH connectivity
         run: |
-          ssh -o BatchMode=yes -o ConnectTimeout=20 -o ConnectionAttempts=2 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
+          ssh -v -o BatchMode=yes -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o ConnectTimeout=20 -o ConnectionAttempts=2 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
             "set -e; echo '[deploy] ssh connected'; mkdir -p /tmp; test -w /tmp"
 
       - name: Upload artifact
