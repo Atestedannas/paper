@@ -4,17 +4,8 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="页眉修改！12">
-      <change afterPath="$PROJECT_DIR$/docs/superpowers/plans/2026-05-24-docx-rulepack-expanded-validation.md" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/docs/superpowers/plans/2026-05-25-docx-rulepack-phase2-implementation.md" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/docs/superpowers/specs/2026-05-25-docx-rulepack-phase2-design.md" afterDir="false" />
+    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="人工修改思路">
       <change afterPath="D:/workpace/博客/front/admin/.gitignore" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.env" beforeDir="false" afterPath="$PROJECT_DIR$/.env" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/core/transplant/transplanter.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/transplant/transplanter.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/core/transplant/transplanter_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/transplant/transplanter_test.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/core/verify/verifier.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/verify/verifier.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/core/verify/verifier_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/verify/verifier_test.go" afterDir="false" />
       <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/layout/components/NavBar/components/NavbarRight.vue" beforeDir="false" />
       <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/views/dashboard/index.vue" beforeDir="false" />
       <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/views/profile/index.vue" beforeDir="false" />
@@ -178,7 +169,6 @@
   <component name="VcsManagerConfiguration">
     <option name="CHECK_CODE_SMELLS_BEFORE_PROJECT_COMMIT" value="false" />
     <option name="CHECK_NEW_TODO" value="false" />
-    <MESSAGE value="基变" />
     <MESSAGE value="NLP" />
     <MESSAGE value="rbac  权限验证" />
     <MESSAGE value="douban修改&#10;微信支付" />
@@ -203,7 +193,8 @@
     <MESSAGE value="ci  .env  配置更新后不丢失" />
     <MESSAGE value="页眉修改！" />
     <MESSAGE value="页眉修改！12" />
-    <option name="LAST_COMMIT_MESSAGE" value="页眉修改！12" />
+    <MESSAGE value="人工修改思路" />
+    <option name="LAST_COMMIT_MESSAGE" value="人工修改思路" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>
