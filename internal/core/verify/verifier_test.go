@@ -107,6 +107,212 @@ func TestVerifierRequiresFinalDeliveryWithoutComments(t *testing.T) {
 	}
 }
 
+func TestVerifierTreatsFieldShadingAsDisplayOnlyWarning(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text and a table of contents field. </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \o "1-3" \h \z \u </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:body></w:document>`,
+		"word/settings.xml": `<w:settings><w:updateFields w:val="true"/></w:settings>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !result.Passed {
+		t.Fatalf("standard field should not fail verification: %#v", result)
+	}
+	if len(result.FatalIssues) != 0 || len(result.RepairableIssues) != 0 {
+		t.Fatalf("field shading display behavior should not be fatal or repairable: %#v", result)
+	}
+	if !hasVerifyIssueKind(result.Warnings, "field_shading_display_only") {
+		t.Fatalf("Warnings = %#v, want field_shading_display_only", result.Warnings)
+	}
+}
+
+func TestVerifierWarnsManualFigureTableCaptionsAreNotDynamic(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p><w:p><w:r><w:t>图1-1 系统架构图</w:t></w:r></w:p><w:p><w:r><w:t>表1-1 数据表</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !result.Passed {
+		t.Fatalf("manual caption warning should not fail verification: %#v", result)
+	}
+	if !hasVerifyIssueKind(result.Warnings, "manual_caption_not_dynamic") {
+		t.Fatalf("Warnings = %#v, want manual_caption_not_dynamic", result.Warnings)
+	}
+}
+
+func TestVerifierReportsCaptionNumberingProblems(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>` + "\u56fe1-1 \u7cfb\u7edf\u67b6\u6784\u56fe" + `</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>` + "\u56fe1-3 \u6a21\u5757\u56fe" + `</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>` + "\u56fe2 \u7ed3\u679c\u56fe" + `</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>` + "\u88681.1 \u6570\u636e\u8868" + `</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>` + "\u88682-1 \u7edf\u8ba1\u8868" + `</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("caption numbering problems should require review: %#v", result)
+	}
+	for _, kind := range []string{"caption_number_sequence", "caption_missing_chapter_number", "caption_numbering_mixed_format"} {
+		if !hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierReportsLinkedHeaderFooterSections(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>Front matter clean text.</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rIdHeader1"/><w:footerReference w:type="default" r:id="rIdFooter1"/></w:sectPr></w:pPr></w:p>` +
+			`<w:p><w:r><w:t>Chapter one clean text.</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:sectPr></w:sectPr></w:pPr></w:p>` +
+			`<w:p><w:r><w:t>Chapter two clean text.</w:t></w:r></w:p>` +
+			`<w:sectPr><w:headerReference w:type="default" r:id="rIdHeader1"/><w:footerReference w:type="default" r:id="rIdFooter1"/></w:sectPr>` +
+			`</w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdHeader1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>` +
+			`<Relationship Id="rIdFooter1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>` +
+			`</Relationships>`,
+		"word/header1.xml": `<w:hdr><w:p><w:r><w:t>Shared header</w:t></w:r></w:p></w:hdr>`,
+		"word/footer1.xml": `<w:ftr><w:p><w:r><w:instrText> PAGE </w:instrText></w:r></w:p></w:ftr>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("linked header/footer sections should require review: %#v", result)
+	}
+	for _, kind := range []string{"section_header_footer_inherited", "linked_header_footer_sections"} {
+		if !hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierReportsFrontRomanBodyArabicPageNumberingProblems(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>Cover page text.</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:sectPr><w:footerReference w:type="default" r:id="rIdFooterCover"/><w:pgNumType w:fmt="decimal" w:start="1"/></w:sectPr></w:pPr></w:p>` +
+			`<w:p><w:r><w:t>Abstract page text.</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:sectPr><w:footerReference w:type="default" r:id="rIdFooterFront"/><w:pgNumType w:fmt="decimal" w:start="1"/></w:sectPr></w:pPr></w:p>` +
+			`<w:p><w:r><w:t>Chapter one body text.</w:t></w:r></w:p>` +
+			`<w:sectPr><w:footerReference w:type="default" r:id="rIdFooterBody"/><w:pgNumType w:fmt="upperRoman" w:start="3"/></w:sectPr>` +
+			`</w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdFooterCover" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>` +
+			`<Relationship Id="rIdFooterFront" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer2.xml"/>` +
+			`<Relationship Id="rIdFooterBody" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer3.xml"/>` +
+			`</Relationships>`,
+		"word/footer1.xml": `<w:ftr><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:instrText> PAGE </w:instrText></w:r></w:p></w:ftr>`,
+		"word/footer2.xml": `<w:ftr><w:p><w:r><w:instrText> PAGE </w:instrText></w:r></w:p></w:ftr>`,
+		"word/footer3.xml": `<w:ftr><w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:r><w:t>3</w:t></w:r></w:p></w:ftr>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("bad page numbering should require review: %#v", result)
+	}
+	for _, kind := range []string{"cover_page_number_present", "front_page_number_not_roman", "body_page_number_not_decimal_start", "footer_page_number_not_centered", "manual_page_number_not_dynamic"} {
+		if !hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierReportsTableFormattingProblems(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p>` +
+			`<w:tbl><w:tblPr><w:tblpPr w:tblpX="1"/><w:tblW w:w="0" w:type="auto"/><w:tblBorders><w:left w:val="single"/><w:right w:val="single"/><w:insideV w:val="single"/></w:tblBorders></w:tblPr>` +
+			`<w:tr><w:tc><w:tcPr><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:jc w:val="left"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="Arial"/><w:sz w:val="24"/></w:rPr><w:t>Header</w:t></w:r></w:p></w:tc></w:tr>` +
+			`<w:tr><w:tc><w:p><w:r><w:t>Body</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
+			`</w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("bad table formatting should require review: %#v", result)
+	}
+	for _, kind := range []string{"table_three_line_format", "table_layout_not_centered", "table_repeating_header_missing", "table_cell_style_mismatch"} {
+		if !hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierReportsImageFormulaAndReferenceProblems(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:drawing><wp:anchor><wp:extent cx="8000000" cy="2000000"/></wp:anchor></w:drawing></w:r></w:p>` +
+			`<w:p><w:r><w:t>` + "\u56fe2 \u7cfb\u7edf\u67b6\u6784\u56fe" + `</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>` + "\u5982\u56fe2-1\u548c\u88683-1\u6240\u793a\uff0c\u5f0f(2-1)\u53ef\u5f97\u5230\u7ed3\u679c\u3002" + `</w:t></w:r></w:p>` +
+			`<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="dxa"/><w:jc w:val="left"/><w:tblBorders><w:top w:val="nil"/><w:bottom w:val="nil"/></w:tblBorders></w:tblPr>` +
+			`<w:tr><w:tc><w:p><m:oMath><m:r><m:t>E=mc2</m:t></m:r></m:oMath></w:p></w:tc><w:tc><w:p><w:pPr><w:jc w:val="left"/></w:pPr><w:r><w:t>(2-1)</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
+			`</w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("image/formula/reference problems should require review: %#v", result)
+	}
+	for _, kind := range []string{
+		"floating_image_anchor",
+		"image_width_over_text_area",
+		"image_keep_with_caption_missing",
+		"figure_caption_missing_chapter_number",
+		"manual_formula_number_not_dynamic",
+		"formula_layout_mismatch",
+		"manual_cross_reference",
+	} {
+		if !hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierReportsFieldsNotMarkedForUpdate(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> SEQ \u56fe \* ARABIC </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:body></w:document>`,
+		"word/settings.xml": `<w:settings></w:settings>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("refreshable fields without updateFields should require review: %#v", result)
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "fields_not_marked_for_update") {
+		t.Fatalf("RepairableIssues = %#v, want fields_not_marked_for_update", result.RepairableIssues)
+	}
+}
+
 func TestVerifierReportsCQRWSTRepairableIssues(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
 		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>1.1研究背景</w:t></w:r></w:p></w:body></w:document>`,

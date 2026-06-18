@@ -53,6 +53,11 @@ var headerReferenceIDPattern = regexp.MustCompile(`<w:headerReference\b[^>]*\br:
 var footerReferenceIDPattern = regexp.MustCompile(`<w:footerReference\b[^>]*\br:id="([^"]+)"[^>]*/>`)
 var relationshipPattern = regexp.MustCompile(`<Relationship\b[^>]*/>`)
 var xmlAttributePattern = regexp.MustCompile(`\b([A-Za-z_:][A-Za-z0-9_.:-]*)="([^"]*)"`)
+var shadingPattern = regexp.MustCompile(`<w:shd\b[^>]*/>`)
+var documentBackgroundPattern = regexp.MustCompile(`<w:background\b[^>]*/>`)
+var pageBreakBeforePattern = regexp.MustCompile(`<w:pageBreakBefore\b[^>]*/>`)
+var keepLinesPattern = regexp.MustCompile(`<w:keepLines\b[^>]*/>`)
+var widowControlPattern = regexp.MustCompile(`<w:widowControl\b[^>]*/>`)
 
 type GenerateInput struct {
 	CompiledTemplate *templatecompile.CompiledTemplatePackage
@@ -114,12 +119,16 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 				patched = rebuilt
 			} else {
 				patched = fillCoverTableFields(patched, coverFields)
+				patched = fillCoverTextBoxFields(patched, coverFields)
 			}
 		}
 		if target == defaultPatchTarget && !fullBodyRebuilt && strings.TrimSpace(replacements.fallbackReferences) != "" {
 			patched = injectParagraphsAfterHeading(patched, replacements.fallbackReferences, []string{"References", "参考文献"})
 		}
 		patched = normalizeRendererIncompatibleXML(patched)
+		if target == defaultPatchTarget {
+			patched = titleCaseEnglishAbstractBodies(patched)
+		}
 		if target == defaultPatchTarget {
 			if err := validateXML(patched); err != nil {
 				return fmt.Errorf("generated %s is invalid XML: %w", target, err)
@@ -128,9 +137,7 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 		pkg.Set(target, []byte(patched))
 	}
 	normalizePackageXML(pkg)
-	if packageContainsTOCField(pkg) {
-		ensureUpdateFieldsOnOpen(pkg)
-	}
+	ensureUpdateFieldsOnOpen(pkg)
 	if usesCQRWSTNormalizers {
 		normalizeCQRWSTMainHeader(pkg, coverFields)
 		normalizeCQRWSTMainFooter(pkg)
@@ -165,7 +172,7 @@ func packageUsesCQRWSTNormalizers(pkg *ooxmlpkg.DocxPackage) bool {
 	return false
 }
 
-func packageContainsTOCField(pkg *ooxmlpkg.DocxPackage) bool {
+func packageContainsRefreshableField(pkg *ooxmlpkg.DocxPackage) bool {
 	if pkg == nil {
 		return false
 	}
@@ -174,7 +181,7 @@ func packageContainsTOCField(pkg *ooxmlpkg.DocxPackage) bool {
 			continue
 		}
 		content, ok := pkg.Get(name)
-		if ok && strings.Contains(string(content), `TOC \o`) {
+		if ok && refreshableFieldPattern.Match(content) {
 			return true
 		}
 	}
@@ -550,6 +557,9 @@ func renderStyledPayload(text string) string {
 	if isTableXML(normalized) {
 		return renderCleanTableFromOOXML(normalized)
 	}
+	if isRawParagraphXML(normalized) {
+		return normalizeRendererIncompatibleXML(normalized)
+	}
 	switch {
 	case isTOCHeading(normalized):
 		return pageBreakParagraph() + centerParagraph(normalized, 32, true)
@@ -617,6 +627,20 @@ func renderTableCaption(text string, keepNext bool) string {
 func isTableXML(text string) bool {
 	text = strings.TrimSpace(text)
 	return strings.HasPrefix(text, "<w:tbl") && strings.Contains(text, "</w:tbl>")
+}
+
+func isRawParagraphXML(text string) bool {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "<w:p") || !strings.Contains(text, "</w:p>") {
+		return false
+	}
+	return strings.Contains(text, "<w:fldChar") ||
+		strings.Contains(text, "<w:instrText") ||
+		strings.Contains(text, "<w:bookmarkStart") ||
+		strings.Contains(text, "<w:bookmarkEnd") ||
+		strings.Contains(text, "<w:hyperlink") ||
+		strings.Contains(text, "<w:drawing") ||
+		strings.Contains(text, "<w:pict")
 }
 
 func renderCleanTableFromOOXML(tableXML string) string {
@@ -1441,13 +1465,64 @@ func fillCoverTableFields(content string, fields map[string]string) string {
 	})
 }
 
+func fillCoverTextBoxFields(content string, fields map[string]string) string {
+	if len(fields) == 0 {
+		return content
+	}
+	fields = coverFieldsWithDefaults(fields)
+	return textBoxContentPattern.ReplaceAllStringFunc(content, func(textBox string) string {
+		paragraphs := paragraphPattern.FindAllString(textBox, -1)
+		if len(paragraphs) < 2 {
+			return textBox
+		}
+		updated := textBox
+		for i := 0; i < len(paragraphs)-1; i++ {
+			label := strings.TrimSpace(xmlText(paragraphs[i]))
+			value := strings.TrimSpace(fields[label])
+			if value == "" {
+				continue
+			}
+			nextText := strings.TrimSpace(xmlText(paragraphs[i+1]))
+			if !isCoverTextBoxPlaceholder(nextText) {
+				continue
+			}
+			replacement := replaceParagraphTextPreservingStyle(paragraphs[i+1], value)
+			updated = strings.Replace(updated, paragraphs[i+1], replacement, 1)
+			paragraphs[i+1] = replacement
+		}
+		return updated
+	})
+}
+
+func isCoverTextBoxPlaceholder(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return true
+	}
+	if strings.Contains(text, "XXXX") || strings.Contains(text, "____") {
+		return true
+	}
+	for _, r := range text {
+		switch r {
+		case 'X', 'x', '_', '-', '—', '－':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 var tableRowPattern = regexp.MustCompile(`(?s)<w:tr(?:\s[^>]*)?>.*?</w:tr>`)
 var tableCellPattern = regexp.MustCompile(`(?s)<w:tc(?:\s[^>]*)?>.*?</w:tc>`)
 var paragraphPropertyPattern = regexp.MustCompile(`(?s)<w:pPr(?:\s[^>]*)?>.*?</w:pPr>`)
 var runPropertyPattern = regexp.MustCompile(`(?s)<w:rPr(?:\s[^>]*)?>.*?</w:rPr>`)
 var pictPattern = regexp.MustCompile(`(?s)<w:pict>.*?</w:pict>`)
+var textBoxContentPattern = regexp.MustCompile(`(?s)<w:txbxContent>.*?</w:txbxContent>|<v:textbox\b[^>]*>.*?</v:textbox>`)
+var refreshableFieldPattern = regexp.MustCompile(`(?is)<w:instrText\b[^>]*>\s*(?:TOC|REF|PAGEREF|NOTEREF|SEQ|HYPERLINK)\b`)
 var textElementPattern = regexp.MustCompile(`(?s)<w:t(?:\s[^>]*)?>.*?</w:t>`)
 var tagPattern = regexp.MustCompile(`(?s)<[^>]+>`)
+var floatingDrawingAnchorStartPattern = regexp.MustCompile(`<wp:anchor\b[^>]*>`)
 
 func xmlText(fragment string) string {
 	texts := textElementPattern.FindAllString(fragment, -1)
@@ -1517,6 +1592,7 @@ func fillCQRWSTTemplateCover(content string, fields map[string]string) string {
 	content = cleanCQRWSTCoverInstructionArtifacts(content)
 	content = compactCQRWSTCoverBlankParagraphs(content)
 	content = fillCoverTableFields(content, fields)
+	content = fillCoverTextBoxFields(content, fields)
 	return fillCoverDate(content, fields)
 }
 
@@ -1790,6 +1866,11 @@ func firstNonEmpty(values ...string) string {
 func normalizeRendererIncompatibleXML(content string) string {
 	content = strings.ReplaceAll(content, `w:val="start"`, `w:val="left"`)
 	content = strings.ReplaceAll(content, `w:val='start'`, `w:val='left'`)
+	content = removeWhiteDocumentBackground(content)
+	content = removeWhiteShading(content)
+	content = normalizeParagraphPaginationControls(content)
+	content = promoteNavigationHeadingParagraphs(content)
+	content = normalizeImageParagraphs(content)
 	if cover, ok := extractCQRWSTCoverPart(content); ok {
 		return content[:cover.suffixStart] + normalizeRendererIncompatibleTables(content[cover.suffixStart:])
 	}
@@ -1865,6 +1946,212 @@ func normalizePackageXML(pkg *ooxmlpkg.DocxPackage) {
 		}
 		pkg.Set(name, []byte(normalizeRendererIncompatibleXML(string(content))))
 	}
+}
+
+func removeWhiteDocumentBackground(content string) string {
+	return documentBackgroundPattern.ReplaceAllStringFunc(content, func(background string) string {
+		attrs := xmlAttributes(background)
+		color := strings.ToLower(strings.TrimSpace(firstNonEmpty(attrs["w:color"], attrs["color"])))
+		if color == "ffffff" || color == "fff" || color == "auto" {
+			return ""
+		}
+		return background
+	})
+}
+
+func removeWhiteShading(content string) string {
+	return shadingPattern.ReplaceAllStringFunc(content, func(shading string) string {
+		attrs := xmlAttributes(shading)
+		fill := strings.ToLower(strings.TrimSpace(firstNonEmpty(attrs["w:fill"], attrs["fill"])))
+		if fill == "ffffff" || fill == "fff" || fill == "auto" {
+			return ""
+		}
+		return shading
+	})
+}
+
+func normalizeParagraphPaginationControls(content string) string {
+	return paragraphPattern.ReplaceAllStringFunc(content, func(paragraph string) string {
+		if strings.Contains(paragraph, "<w:sectPr") {
+			return paragraph
+		}
+		text := strings.TrimSpace(xmlText(paragraph))
+		if text == "" && paragraphHasPaginationControl(paragraph) {
+			if paragraphContainsNonTextObject(paragraph) {
+				paragraph = pageBreakBeforePattern.ReplaceAllString(paragraph, "")
+				paragraph = keepLinesPattern.ReplaceAllString(paragraph, "")
+				paragraph = widowControlPattern.ReplaceAllString(paragraph, "")
+				return paragraph
+			}
+			return ""
+		}
+		if isNavigationHeadingText(text) || isTableCaption(text) {
+			return paragraph
+		}
+		paragraph = pageBreakBeforePattern.ReplaceAllString(paragraph, "")
+		paragraph = keepLinesPattern.ReplaceAllString(paragraph, "")
+		paragraph = widowControlPattern.ReplaceAllString(paragraph, "")
+		return paragraph
+	})
+}
+
+func paragraphContainsNonTextObject(paragraph string) bool {
+	return strings.Contains(paragraph, "<w:pict") ||
+		strings.Contains(paragraph, "<w:drawing") ||
+		strings.Contains(paragraph, "<w:object") ||
+		strings.Contains(paragraph, "<v:shape") ||
+		strings.Contains(paragraph, "<w:txbxContent")
+}
+
+func paragraphHasPaginationControl(paragraph string) bool {
+	return strings.Contains(paragraph, "<w:pageBreakBefore") ||
+		strings.Contains(paragraph, "<w:keepNext") ||
+		strings.Contains(paragraph, "<w:keepLines") ||
+		strings.Contains(paragraph, "<w:widowControl")
+}
+
+func promoteNavigationHeadingParagraphs(content string) string {
+	return paragraphPattern.ReplaceAllStringFunc(content, func(paragraph string) string {
+		text := strings.TrimSpace(xmlText(paragraph))
+		if !isNavigationHeadingText(text) {
+			return paragraph
+		}
+		alignment := ""
+		if strings.Contains(paragraph, `<w:jc w:val="center"`) {
+			alignment = "center"
+		}
+		updated, ok := ooxmlpatch.ApplyParagraphProperties(paragraph, ooxmlpatch.ParagraphPropertiesSpec{
+			StyleID:         "Heading1",
+			OutlineLevel:    0,
+			OutlineLevelSet: true,
+			Alignment:       alignment,
+		})
+		if !ok {
+			return paragraph
+		}
+		return updated
+	})
+}
+
+func isNavigationHeadingText(text string) bool {
+	compact := strings.Join(strings.Fields(strings.TrimSpace(text)), "")
+	switch compact {
+	case "摘要", "Abstract", "参考文献", "致谢":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeImageParagraphs(content string) string {
+	return paragraphPattern.ReplaceAllStringFunc(content, func(paragraph string) string {
+		if !paragraphContainsNonTextObject(paragraph) || !strings.Contains(paragraph, "<w:drawing") {
+			return paragraph
+		}
+		paragraph = floatingDrawingAnchorStartPattern.ReplaceAllString(paragraph, "<wp:inline>")
+		paragraph = strings.ReplaceAll(paragraph, "</wp:anchor>", "</wp:inline>")
+		updated, ok := ooxmlpatch.ApplyParagraphProperties(paragraph, ooxmlpatch.ParagraphPropertiesSpec{
+			Alignment: "center",
+			KeepNext:  true,
+		})
+		if !ok {
+			return paragraph
+		}
+		return updated
+	})
+}
+
+func titleCaseEnglishAbstractBodies(content string) string {
+	inEnglishAbstract := false
+	return paragraphPattern.ReplaceAllStringFunc(content, func(paragraph string) string {
+		text := strings.TrimSpace(xmlText(paragraph))
+		if text == "" {
+			return paragraph
+		}
+		switch {
+		case isEnglishAbstractHeading(text):
+			inEnglishAbstract = true
+			return paragraph
+		case inEnglishAbstract && isEnglishAbstractStop(text):
+			inEnglishAbstract = false
+			return paragraph
+		case inEnglishAbstract && isMostlyASCII(text):
+			titled := titleCaseEnglishAbstractText(text)
+			if titled != text {
+				return replaceParagraphTextPreservingStyle(paragraph, titled)
+			}
+		}
+		return paragraph
+	})
+}
+
+func isEnglishAbstractHeading(text string) bool {
+	normalized := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(text, ":"), "："))
+	return strings.EqualFold(normalized, "Abstract")
+}
+
+func isEnglishAbstractStop(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	lower := strings.ToLower(trimmed)
+	return strings.HasPrefix(lower, "key words") ||
+		strings.HasPrefix(lower, "keywords") ||
+		strings.HasPrefix(trimmed, "1 ") ||
+		numberedHeadingPattern.MatchString(trimmed) ||
+		strings.Contains(trimmed, "参考文献") ||
+		strings.Contains(trimmed, "致谢")
+}
+
+func titleCaseEnglishAbstractText(text string) string {
+	var builder strings.Builder
+	for i := 0; i < len(text); {
+		if !isASCIILetter(text[i]) {
+			builder.WriteByte(text[i])
+			i++
+			continue
+		}
+		start := i
+		for i < len(text) && isEnglishWordByte(text[i]) {
+			i++
+		}
+		builder.WriteString(titleCaseEnglishToken(text[start:i]))
+	}
+	return builder.String()
+}
+
+func titleCaseEnglishToken(token string) string {
+	if token == "" || shouldPreserveEnglishToken(token) {
+		return token
+	}
+	lower := strings.ToLower(token)
+	return strings.ToUpper(lower[:1]) + lower[1:]
+}
+
+func shouldPreserveEnglishToken(token string) bool {
+	if strings.Contains(token, "-") {
+		return true
+	}
+	if token == "pH" {
+		return true
+	}
+	letters := 0
+	upper := 0
+	for i := 0; i < len(token); i++ {
+		if isASCIILetter(token[i]) {
+			letters++
+			if token[i] >= 'A' && token[i] <= 'Z' {
+				upper++
+			}
+		}
+	}
+	return letters > 1 && letters == upper
+}
+
+func isEnglishWordByte(b byte) bool {
+	return isASCIILetter(b) || (b >= '0' && b <= '9') || b == '\'' || b == '-' || b == '/'
+}
+
+func isASCIILetter(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 func normalizeCQRWSTMainFooter(pkg *ooxmlpkg.DocxPackage) {

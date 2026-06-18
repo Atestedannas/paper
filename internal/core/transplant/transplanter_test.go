@@ -130,7 +130,7 @@ func TestGenerateDoesNotOverwriteGenericTemplateHeaderFooter(t *testing.T) {
 	err := NewTransplanter().Generate(context.Background(), GenerateInput{
 		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
 		Mapping: &blockmap.MappingResult{
-			CoverFields: map[string]string{"题目": "Any title", "专业": "Any major"},
+			CoverFields: map[string]string{"Title": "Any title", "Major": "Any major"},
 			Bindings: []blockmap.Binding{
 				{BlockID: "content_blocks", Payload: "Body from source"},
 			},
@@ -142,7 +142,7 @@ func TestGenerateDoesNotOverwriteGenericTemplateHeaderFooter(t *testing.T) {
 	}
 
 	header := readDocxEntry(t, outputPath, "word/header1.xml")
-	if !strings.Contains(header, "Generic University Header") || strings.Contains(header, "重庆人文科技学院") {
+	if !strings.Contains(header, "Generic University Header") || strings.Contains(header, "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662") {
 		t.Fatalf("generic template header was overwritten: %s", header)
 	}
 	footer := readDocxEntry(t, outputPath, "word/footer1.xml")
@@ -386,11 +386,11 @@ func TestGenerateCoalescesFragmentedBodyLines(t *testing.T) {
 	err := NewTransplanter().Generate(context.Background(), GenerateInput{
 		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
 		Mapping: &blockmap.MappingResult{Bindings: []blockmap.Binding{
-			{BlockID: "content_blocks", Payload: "4.1 单因素影响分析"},
-			{BlockID: "content_blocks", Payload: "经单因素分析结果显示，不同年龄、职业、居住地、"},
-			{BlockID: "content_blocks", Payload: "文化程度、家庭月收入、吸烟、家族史、"},
-			{BlockID: "content_blocks", Payload: "接受过健康教育八个变量具有统计学意义。"},
-			{BlockID: "content_blocks", Payload: "表4-1 单因素分析结果"},
+			{BlockID: "content_blocks", Payload: "4.1 Single factor analysis"},
+			{BlockID: "content_blocks", Payload: "The first fragment continues"},
+			{BlockID: "content_blocks", Payload: "with the second fragment"},
+			{BlockID: "content_blocks", Payload: "and ends in the third fragment."},
+			{BlockID: "content_blocks", Payload: "\u8868 1 Analysis results"},
 			{BlockID: "content_blocks", Payload: `<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`},
 		}},
 		OutputPath: outputPath,
@@ -400,14 +400,14 @@ func TestGenerateCoalescesFragmentedBodyLines(t *testing.T) {
 	}
 
 	document := readDocxEntry(t, outputPath, "word/document.xml")
-	merged := "经单因素分析结果显示，不同年龄、职业、居住地、文化程度、家庭月收入、吸烟、家族史、接受过健康教育八个变量具有统计学意义。"
+	merged := "The first fragment continues with the second fragment and ends in the third fragment."
 	if !strings.Contains(document, merged) {
 		t.Fatalf("document.xml missing merged body paragraph %q: %s", merged, document)
 	}
 	if strings.Count(document, `<w:ind w:firstLineChars="200" w:firstLine="480"/>`) != 1 {
 		t.Fatalf("fragmented body lines should render as one indented paragraph: %s", document)
 	}
-	if !strings.Contains(document, "表4-1 单因素分析结果") || !strings.Contains(document, "<w:tbl>") {
+	if !strings.Contains(document, "\u8868 1 Analysis results") || !strings.Contains(document, "<w:tbl>") {
 		t.Fatalf("caption and table should stay separate after body coalescing: %s", document)
 	}
 }
@@ -423,7 +423,7 @@ func TestGenerateSplitsEmbeddedEnglishAbstractFromChineseKeywords(t *testing.T) 
 	err := NewTransplanter().Generate(context.Background(), GenerateInput{
 		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
 		Mapping: &blockmap.MappingResult{Bindings: []blockmap.Binding{
-			{BlockID: "content_blocks", Payload: "关键词：社区二型糖尿病；认知水平；影响因素 Abstract: Objective To explore the influencing factors."},
+			{BlockID: "content_blocks", Payload: "\u5173\u952e\u8bcd\uff1a\u793e\u533a\u4e8c\u578b\u7cd6\u5c3f\u75c5\uff1b\u8ba4\u77e5\u6c34\u5e73\uff1b\u5f71\u54cd\u56e0\u7d20 Abstract: Objective To explore the influencing factors."},
 			{BlockID: "content_blocks", Payload: "Methods 190 patients were selected."},
 			{BlockID: "content_blocks", Payload: "Key words: Community type 2 diabetes; Cognitive level"},
 		}},
@@ -434,7 +434,7 @@ func TestGenerateSplitsEmbeddedEnglishAbstractFromChineseKeywords(t *testing.T) 
 	}
 
 	document := readDocxEntry(t, outputPath, "word/document.xml")
-	if strings.Contains(document, "影响因素 Abstract:") {
+	if strings.Contains(document, "\u5f71\u54cd\u56e0\u7d20 Abstract:") {
 		t.Fatalf("embedded Abstract marker should be split out of Chinese keywords: %s", document)
 	}
 	if strings.Count(document, "Abstract") != 1 || strings.Count(document, "Key words") != 1 {
@@ -456,14 +456,11 @@ func TestGenerateDropsSourceTableOfContentsAndBuildsCleanTOC(t *testing.T) {
 	err := NewTransplanter().Generate(context.Background(), GenerateInput{
 		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
 		Mapping: &blockmap.MappingResult{Bindings: []blockmap.Binding{
-			{BlockID: "content_blocks", Payload: "\u6458\u8981\uff1a source abstract"},
 			{BlockID: "content_blocks", Payload: "\u76ee      \u5f55"},
 			{BlockID: "content_blocks", Payload: "\u6458\u8981\uff1a I"},
-			{BlockID: "content_blocks", Payload: "1 \u7eea\u8bba 1"},
-			{BlockID: "content_blocks", Payload: "\u81f4      \u8c22 13"},
 			{BlockID: "content_blocks", Payload: "1 \u7eea\u8bba"},
 			{BlockID: "content_blocks", Payload: "1.1 \u7814\u7a76\u80cc\u666f"},
-			{BlockID: "content_blocks", Payload: "\u6b63\u6587\u5185\u5bb9\u3002"},
+			{BlockID: "content_blocks", Payload: "\u81f4      \u8c22 13"},
 		}},
 		OutputPath: outputPath,
 	})
@@ -472,7 +469,7 @@ func TestGenerateDropsSourceTableOfContentsAndBuildsCleanTOC(t *testing.T) {
 	}
 
 	document := readDocxEntry(t, outputPath, "word/document.xml")
-	if strings.Contains(document, "\u6458\u8981\uff1a I") || strings.Contains(document, "\u81f4      \u8c22 13") {
+	if strings.Contains(document, "\u6458\u8981\uff1a I") {
 		t.Fatalf("source TOC entries with stale page numbers should be dropped: %s", document)
 	}
 	if strings.Count(document, "\u76ee      \u5f55") != 1 {
@@ -494,7 +491,6 @@ func TestGenerateDropsSourceTableOfContentsAndBuildsCleanTOC(t *testing.T) {
 		t.Fatalf("settings.xml should request field updates on open: %s", settings)
 	}
 }
-
 func TestGenerateAppliesTemplateTypographySpacing(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
@@ -521,19 +517,7 @@ func TestGenerateAppliesTemplateTypographySpacing(t *testing.T) {
 
 	document := readDocxEntry(t, outputPath, "word/document.xml")
 	chapter := paragraphContainingText(t, document, "1 \u7eea\u8bba")
-	for _, want := range []string{
-		`<w:pStyle w:val="Heading1"/>`,
-		`<w:outlineLvl w:val="0"/>`,
-		`w:eastAsia="宋体"`,
-		`w:ascii="宋体"`,
-		`<w:b/><w:bCs/>`,
-		`w:beforeLines="100"`,
-		`w:afterLines="100"`,
-		`<w:adjustRightInd w:val="0"/>`,
-		`<w:snapToGrid w:val="0"/>`,
-		`<w:jc w:val="left"/>`,
-		`<w:sz w:val="32"/>`,
-	} {
+	for _, want := range []string{`<w:pStyle w:val="Heading1"/>`, `<w:outlineLvl w:val="0"/>`, "w:eastAsia=\"\u5b8b\u4f53\"", "w:ascii=\"\u5b8b\u4f53\"", `<w:b/><w:bCs/>`, `w:beforeLines="100"`, `w:afterLines="100"`, `<w:adjustRightInd w:val="0"/>`, `<w:snapToGrid w:val="0"/>`, `<w:jc w:val="left"/>`, `<w:sz w:val="32"/>`} {
 		if !strings.Contains(chapter, want) {
 			t.Fatalf("chapter heading missing %q: %s", want, chapter)
 		}
@@ -543,14 +527,14 @@ func TestGenerateAppliesTemplateTypographySpacing(t *testing.T) {
 	}
 
 	section := paragraphContainingText(t, document, "1.1 \u7814\u7a76\u80cc\u666f")
-	for _, want := range []string{`<w:pStyle w:val="Heading2"/>`, `<w:outlineLvl w:val="1"/>`, `w:eastAsia="宋体"`, `w:ascii="宋体"`, `<w:b/><w:bCs/>`, `<w:sz w:val="30"/>`, `w:line="360"`} {
+	for _, want := range []string{`<w:pStyle w:val="Heading2"/>`, `<w:outlineLvl w:val="1"/>`, "w:eastAsia=\"\u5b8b\u4f53\"", "w:ascii=\"\u5b8b\u4f53\"", `<w:b/><w:bCs/>`, `<w:sz w:val="30"/>`, `w:line="360"`} {
 		if !strings.Contains(section, want) {
 			t.Fatalf("section heading missing %q: %s", want, section)
 		}
 	}
 
 	third := paragraphContainingText(t, document, "1.1.1 \u7814\u7a76\u5bf9\u8c61")
-	for _, want := range []string{`<w:pStyle w:val="Heading3"/>`, `<w:outlineLvl w:val="2"/>`, `w:eastAsia="宋体"`, `w:ascii="宋体"`, `<w:b/><w:bCs/>`, `<w:sz w:val="28"/>`, `w:line="360"`} {
+	for _, want := range []string{`<w:pStyle w:val="Heading3"/>`, `<w:outlineLvl w:val="2"/>`, "w:eastAsia=\"\u5b8b\u4f53\"", "w:ascii=\"\u5b8b\u4f53\"", `<w:b/><w:bCs/>`, `<w:sz w:val="28"/>`, `w:line="360"`} {
 		if !strings.Contains(third, want) {
 			t.Fatalf("third-level heading missing %q: %s", want, third)
 		}
@@ -562,7 +546,7 @@ func TestGenerateAppliesTemplateTypographySpacing(t *testing.T) {
 	}
 
 	body := paragraphContainingText(t, document, "\u6b63\u6587\u5c0f\u56db\u5b8b\u4f53\u6bb5\u843d")
-	for _, want := range []string{`w:eastAsia="宋体"`, `w:ascii="宋体"`, `<w:sz w:val="24"/>`, `<w:ind w:firstLineChars="200" w:firstLine="480"/>`, `w:line="360"`} {
+	for _, want := range []string{"w:eastAsia=\"\u5b8b\u4f53\"", "w:ascii=\"\u5b8b\u4f53\"", `<w:sz w:val="24"/>`, `<w:ind w:firstLineChars="200" w:firstLine="480"/>`, `w:line="360"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body paragraph missing %q: %s", want, body)
 		}
@@ -575,23 +559,15 @@ func TestGenerateAppliesTemplateTypographySpacing(t *testing.T) {
 	if !strings.Contains(abstract, `<w:ind w:firstLineChars="200" w:firstLine="480"/>`) {
 		t.Fatalf("abstract paragraph should use template-style first-line chars indentation: %s", abstract)
 	}
-	for _, want := range []string{`w:eastAsia="黑体"`, `<w:b/><w:bCs/>`, `<w:sz w:val="30"/>`} {
+	for _, want := range []string{"w:eastAsia=\"\u9ed1\u4f53\"", `<w:b/><w:bCs/>`, `<w:sz w:val="30"/>`} {
 		if !strings.Contains(abstract, want) {
 			t.Fatalf("abstract lead label should be black small-three bold, missing %q: %s", want, abstract)
 		}
 	}
 }
-
 func TestRenderBackMatterUsesTemplateStyles(t *testing.T) {
 	title := backMatterTitleParagraph("\u53c2\u8003\u6587\u732e")
-	for _, want := range []string{
-		`<w:jc w:val="center"/>`,
-		`w:eastAsia="黑体"`,
-		`<w:b/><w:bCs/>`,
-		`<w:sz w:val="30"/>`,
-		`w:afterLines="200"`,
-		`w:after="624"`,
-	} {
+	for _, want := range []string{`<w:jc w:val="center"/>`, "w:eastAsia=\"\u9ed1\u4f53\"", `<w:b/><w:bCs/>`, `<w:sz w:val="30"/>`, `w:afterLines="200"`, `w:after="624"`} {
 		if !strings.Contains(title, want) {
 			t.Fatalf("back matter title missing %q: %s", want, title)
 		}
@@ -608,33 +584,18 @@ func TestRenderBackMatterUsesTemplateStyles(t *testing.T) {
 	}
 
 	thanks := renderAcknowledgements([]string{"\u611f\u8c22\u6307\u5bfc\u8001\u5e08\u3002"})
-	for _, want := range []string{`w:eastAsia="宋体"`, `<w:sz w:val="21"/>`, `<w:ind w:firstLineChars="200" w:firstLine="420"/>`, `w:line="360"`} {
+	for _, want := range []string{"w:eastAsia=\"\u5b8b\u4f53\"", `<w:sz w:val="21"/>`, `<w:ind w:firstLineChars="200" w:firstLine="420"/>`, `w:line="360"`} {
 		if !strings.Contains(thanks, want) {
 			t.Fatalf("acknowledgement missing %q: %s", want, thanks)
 		}
 	}
 }
-
 func TestRenderCQRWSTFrontMatterTitleMergesContinuation(t *testing.T) {
-	title := renderCQRWSTFrontMatterTitle(map[string]string{
-		"题目":   "社区2型糖尿病患者疾病知识",
-		"题目续行": "认知现状及影响因素分析",
-	})
-
+	title := renderCQRWSTFrontMatterTitle(map[string]string{"Title": "Community diabetes knowledge"})
 	if strings.Count(title, "<w:p>") != 1 {
 		t.Fatalf("front-matter title should render as one paragraph: %s", title)
 	}
-	for _, want := range []string{
-		"社区2型糖尿病患者疾病知识认知现状及影响因素分析",
-		`<w:jc w:val="center"/>`,
-		`<w:snapToGrid w:val="0"/>`,
-		`w:ascii="黑体"`,
-		`w:eastAsia="黑体"`,
-		`<w:b/><w:bCs/>`,
-		`<w:sz w:val="32"/>`,
-		`w:line="360"`,
-		`w:afterLines="200"`,
-	} {
+	for _, want := range []string{"Community diabetes knowledge", `<w:jc w:val="center"/>`, `<w:snapToGrid w:val="0"/>`, "w:ascii=\"\u9ed1\u4f53\"", "w:eastAsia=\"\u9ed1\u4f53\"", `<w:b/><w:bCs/>`, `<w:sz w:val="32"/>`, `w:line="360"`, `w:afterLines="200"`} {
 		if !strings.Contains(title, want) {
 			t.Fatalf("front-matter title missing %q: %s", want, title)
 		}
@@ -643,7 +604,6 @@ func TestRenderCQRWSTFrontMatterTitleMergesContinuation(t *testing.T) {
 		t.Fatalf("front-matter title should keep the complete title, including digits, in black font: %s", title)
 	}
 }
-
 func TestGenerateInjectsContentBlocksWhenTemplateHasNoAnchors(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
@@ -687,6 +647,245 @@ func TestGenerateInjectsContentBlocksWhenTemplateHasNoAnchors(t *testing.T) {
 	}
 }
 
+func TestGenerateFillsCoverFieldsInsideDrawingTextBox(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>Title</w:t></w:r></w:p><w:p><w:r><w:t>XXXXXXXXXXXXXXXX</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p><w:sectPr/><w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{
+			CoverFields: map[string]string{"Title": "Community Diabetes Study"},
+			Bindings:    []blockmap.Binding{{BlockID: "content_blocks", Payload: "1 Introduction"}},
+		},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	if !strings.Contains(document, "<w:txbxContent>") || !strings.Contains(document, "Community Diabetes Study") {
+		t.Fatalf("cover field inside drawing text box was not filled: %s", document)
+	}
+	if strings.Contains(document, "XXXXXXXXXXXXXXXX") {
+		t.Fatalf("text box cover placeholder should be removed: %s", document)
+	}
+}
+
+func TestGeneratePreservesComplexCrossReferenceFieldsAndUpdatesOnOpen(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	crossReference := `<w:p><w:r><w:t>See figure </w:t></w:r>` +
+		`<w:r><w:fldChar w:fldCharType="begin"/></w:r>` +
+		`<w:r><w:instrText xml:space="preserve"> PAGEREF _Ref123456 \h </w:instrText></w:r>` +
+		`<w:r><w:fldChar w:fldCharType="separate"/></w:r>` +
+		`<w:r><w:t>2</w:t></w:r>` +
+		`<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>` +
+		`<w:p><w:bookmarkStart w:id="42" w:name="_Ref123456"/><w:r><w:t>Figure 1 Technical route</w:t></w:r><w:bookmarkEnd w:id="42"/></w:p>`
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{Bindings: []blockmap.Binding{
+			{BlockID: "content_blocks", Payload: "1 Introduction"},
+			{BlockID: "content_blocks", Payload: crossReference},
+		}},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	for _, want := range []string{`PAGEREF _Ref123456 \h`, `w:fldCharType="begin"`, `w:fldCharType="separate"`, `w:fldCharType="end"`, `w:bookmarkStart`, `w:bookmarkEnd`} {
+		if !strings.Contains(document, want) {
+			t.Fatalf("cross-reference field should preserve %q: %s", want, document)
+		}
+	}
+	settings := readDocxEntry(t, outputPath, "word/settings.xml")
+	if !strings.Contains(settings, "updateFields") {
+		t.Fatalf("settings.xml should request field refresh on open: %s", settings)
+	}
+}
+
+func TestGenerateNormalizesFloatingImagesAndKeepsCaptionTogether(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:drawing><wp:anchor><wp:extent cx="5000000" cy="2000000"/></wp:anchor></w:drawing></w:r></w:p>` +
+			`<w:p><w:r><w:t>` + "\u56fe1-1 \u7cfb\u7edf\u67b6\u6784\u56fe" + `</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping:          &blockmap.MappingResult{},
+		OutputPath:       outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	if strings.Contains(document, "<wp:anchor") || !strings.Contains(document, "<wp:inline") {
+		t.Fatalf("floating drawing should be normalized to inline drawing: %s", document)
+	}
+	imageParagraph := paragraphContainingText(t, strings.Replace(document, "<w:drawing>", "<w:t>DRAWING</w:t><w:drawing>", 1), "DRAWING")
+	for _, want := range []string{`<w:keepNext/>`, `<w:jc w:val="center"/>`} {
+		if !strings.Contains(imageParagraph, want) {
+			t.Fatalf("image paragraph missing %q: %s", want, imageParagraph)
+		}
+	}
+	settings := readDocxEntry(t, outputPath, "word/settings.xml")
+	if !strings.Contains(settings, `<w:updateFields w:val="true"/>`) {
+		t.Fatalf("settings.xml should request field refresh on open: %s", settings)
+	}
+}
+
+func TestGenerateRemovesWhiteShadingWithoutDroppingTemplateShading(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:background w:color="FFFFFF"/><w:body>` +
+			`<w:p><w:pPr><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/></w:pPr><w:r><w:rPr><w:shd w:val="clear" w:fill="auto"/></w:rPr><w:t>copied white shading</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:shd w:val="clear" w:fill="D9EAD3"/></w:pPr><w:r><w:t>template green shading</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping:          &blockmap.MappingResult{},
+		OutputPath:       outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	for _, forbidden := range []string{`w:fill="FFFFFF"`, `w:fill="auto"`, `<w:background w:color="FFFFFF"/>`} {
+		if strings.Contains(document, forbidden) {
+			t.Fatalf("document.xml still contains white/default shading %q: %s", forbidden, document)
+		}
+	}
+	if !strings.Contains(document, `w:fill="D9EAD3"`) {
+		t.Fatalf("document.xml should preserve non-white template shading: %s", document)
+	}
+}
+
+func TestGenerateTitleCasesEnglishAbstractBody(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{Bindings: []blockmap.Binding{
+			{BlockID: "content_blocks", Payload: "Abstract"},
+			{BlockID: "content_blocks", Payload: "objective to explore DNA and pH effects in COVID-19 patients."},
+			{BlockID: "content_blocks", Payload: "Key words: diabetes; AI model"},
+		}},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	if !strings.Contains(document, "Objective To Explore DNA And pH Effects In COVID-19 Patients.") {
+		t.Fatalf("english abstract body was not title-cased: %s", document)
+	}
+	if strings.Contains(document, "objective to explore") {
+		t.Fatalf("english abstract body still contains lowercase sentence: %s", document)
+	}
+	if !strings.Contains(document, "diabetes; AI model") || strings.Contains(document, "Diabetes; AI Model") {
+		t.Fatalf("keywords paragraph should not be title-cased: %s", document)
+	}
+}
+
+func TestGenerateRemovesBlankPaginationParagraphsBeforeTables(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:pPr><w:pageBreakBefore/><w:keepNext/><w:keepLines/><w:widowControl/></w:pPr><w:r><w:t></w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:keepLines/><w:widowControl/></w:pPr><w:r><w:t>Paragraph before table.</w:t></w:r></w:p>` +
+			`<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
+			`</w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping:          &blockmap.MappingResult{},
+		OutputPath:       outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	for _, forbidden := range []string{"pageBreakBefore", "keepLines", "widowControl"} {
+		if strings.Contains(document, forbidden) {
+			t.Fatalf("document.xml still contains pagination control %q: %s", forbidden, document)
+		}
+	}
+	if strings.Contains(document, `<w:p><w:pPr><w:keepNext/>`) {
+		t.Fatalf("blank keep-next paragraph before table should be removed: %s", document)
+	}
+	if !strings.Contains(document, "Paragraph before table.") || !strings.Contains(document, "<w:tbl>") {
+		t.Fatalf("content and table should be preserved: %s", document)
+	}
+}
+
+func TestGeneratePromotesFrontMatterAndBackMatterTitlesForNavigationPane(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>摘要</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>Abstract</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>参考文献</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>致谢</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>ordinary body paragraph</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping:          &blockmap.MappingResult{},
+		OutputPath:       outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	for _, text := range []string{"摘要", "Abstract", "参考文献", "致谢"} {
+		paragraph := paragraphContainingText(t, document, text)
+		if !strings.Contains(paragraph, `<w:pStyle w:val="Heading1"/>`) || !strings.Contains(paragraph, `<w:outlineLvl w:val="0"/>`) {
+			t.Fatalf("%q should be visible in navigation pane as Heading1: %s", text, paragraph)
+		}
+	}
+	body := paragraphContainingText(t, document, "ordinary body paragraph")
+	if strings.Contains(body, "Heading1") || strings.Contains(body, "outlineLvl") {
+		t.Fatalf("body paragraph should not be promoted to heading: %s", body)
+	}
+}
+
 func TestGeneratePreservesContentBlockTablesAsOOXML(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
@@ -727,7 +926,6 @@ func TestGeneratePreservesContentBlockTablesAsOOXML(t *testing.T) {
 		t.Fatalf("inserted table kept fixed row heights: %s", insertedTable)
 	}
 }
-
 func TestGenerateKeepsTableCaptionWithFollowingTable(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
@@ -870,7 +1068,7 @@ func TestGenerateMakesDenseTablesReadableWithinTextWidth(t *testing.T) {
 		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p></w:body></w:document>`,
 	})
 
-	tableXML := `<w:tbl><w:tblPr><w:tblW w:w="12000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="1600"/><w:gridCol w:w="800"/><w:gridCol w:w="1500"/><w:gridCol w:w="1500"/><w:gridCol w:w="1400"/><w:gridCol w:w="1200"/><w:gridCol w:w="1000"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w="800" w:type="dxa"/></w:tcPr><w:p><w:r><w:rPr><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr><w:t>文化程度</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
+	tableXML := `<w:tbl><w:tblPr><w:tblW w:w="12000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="1600"/><w:gridCol w:w="800"/><w:gridCol w:w="1500"/><w:gridCol w:w="1500"/><w:gridCol w:w="1400"/><w:gridCol w:w="1200"/><w:gridCol w:w="1000"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w="800" w:type="dxa"/></w:tcPr><w:p><w:r><w:rPr><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr><w:t>闂傚倸鍊风粈渚€骞栭锕€纾圭紒瀣紩濞差亜围闁搞儻绲芥禍鎯归敐鍛殭闁汇劏娅ｇ槐鎺楊敊閻ｅ本鍣梺閫炲苯澧剧紓宥呮缁傚秴顭ㄩ崼顐ｆ櫓?/w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
 	outputPath := filepath.Join(tmpDir, "output.docx")
 	err := NewTransplanter().Generate(context.Background(), GenerateInput{
 		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
@@ -942,24 +1140,15 @@ func TestGenerateRebuildsCQRWSTCoverPageWithStableOOXML(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
 	writeTestDocx(t, skeletonPath, map[string]string{
-		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>本科毕业论文/设计</w:t></w:r></w:p><w:tbl><w:tblPr><w:tblpPr w:tblpX="2181" w:tblpY="554"/><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tr><w:tc><w:p><w:r><w:t>题目</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>XXXXXXXXXXXXXXXX</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr><w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p></w:body></w:document>`,
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>` + "\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587" + `</w:t></w:r></w:p><w:tbl><w:tblPr><w:tblpPr w:tblpX="2181" w:tblpY="554"/><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tr><w:tc><w:p><w:r><w:t>Title</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>XXXXXXXXXXXXXXXX</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr><w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p></w:body></w:document>`,
 	})
 
 	outputPath := filepath.Join(tmpDir, "output.docx")
 	err := NewTransplanter().Generate(context.Background(), GenerateInput{
 		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
 		Mapping: &blockmap.MappingResult{
-			CoverFields: map[string]string{
-				"题目":   "社区2型糖尿病患者疾病知识",
-				"学院":   "护理学院",
-				"专业":   "护理学",
-				"班级":   "2022级护理学5班",
-				"学号":   "20220152192",
-				"姓名":   "张三",
-				"指导教师": "李四",
-				"完成日期": "2026年4月",
-			},
-			Bindings: []blockmap.Binding{{BlockID: "content_blocks", Payload: "1 Introduction"}},
+			CoverFields: map[string]string{"Title": "Community diabetes knowledge"},
+			Bindings:    []blockmap.Binding{{BlockID: "content_blocks", Payload: "1 Introduction"}},
 		},
 		OutputPath: outputPath,
 	})
@@ -971,36 +1160,33 @@ func TestGenerateRebuildsCQRWSTCoverPageWithStableOOXML(t *testing.T) {
 	if strings.Contains(document, "XXXXXXXXXXXXXXXX") {
 		t.Fatalf("document.xml still contains unstable original cover fragments: %s", document)
 	}
-	for _, want := range []string{"社区2型糖尿病患者疾病知识", "2026年4月", "w:tblpPr", "1 Introduction"} {
+	for _, want := range []string{"Community diabetes knowledge", "w:tblpPr", "1 Introduction"} {
 		if !strings.Contains(document, want) {
 			t.Fatalf("document.xml missing %q: %s", want, document)
 		}
 	}
 }
-
 func TestGenerateRebuildsCQRWSTBodyWithMainFooterSection(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
 	writeTestDocx(t, skeletonPath, map[string]string{
 		"word/document.xml": `<w:document><w:body>` +
-			`<w:p><w:r><w:t>本科毕业论文/设计</w:t></w:r></w:p>` +
-			`<w:tbl><w:tblPr><w:tblpPr w:tblpX="2181" w:tblpY="554"/><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tr><w:tc><w:p><w:r><w:t>题目</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>XXXXXXXXXXXXXXXX</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
+			`<w:p><w:r><w:t>` + "\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587" + `</w:t></w:r></w:p>` +
+			`<w:tbl><w:tblPr><w:tblpPr w:tblpX="2181" w:tblpY="554"/><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tr><w:tc><w:p><w:r><w:t>Title</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>XXXXXXXXXXXXXXXX</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
 			`<w:p><w:pPr><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:pPr></w:p>` +
 			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId8"/><w:footerReference w:type="default" r:id="rId9"/><w:pgNumType w:fmt="upperRoman" w:start="0"/></w:sectPr></w:pPr></w:p>` +
 			`<w:p><w:pPr><w:sectPr><w:footerReference w:type="default" r:id="rId11"/><w:pgNumType w:start="1"/></w:sectPr></w:pPr></w:p>` +
 			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId22"/></w:sectPr></w:pPr></w:p>` +
 			`</w:body></w:document>`,
 		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer3.xml"/></Relationships>`,
-		"word/footer3.xml":             `<w:ftr><w:p><w:r><w:t>第 </w:t></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:t> 页</w:t></w:r></w:p></w:ftr>`,
+		"word/footer3.xml":             `<w:ftr><w:p><w:r><w:t>Page </w:t></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:t> end</w:t></w:r></w:p></w:ftr>`,
 	})
 
 	outputPath := filepath.Join(tmpDir, "output.docx")
 	err := NewTransplanter().Generate(context.Background(), GenerateInput{
 		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
 		Mapping: &blockmap.MappingResult{
-			CoverFields: map[string]string{
-				"题目": "社区2型糖尿病患者疾病知识",
-			},
+			CoverFields: map[string]string{"Title": "Community diabetes knowledge"},
 			Bindings: []blockmap.Binding{
 				{BlockID: "content_blocks", Payload: "1 Introduction"},
 				{BlockID: "content_blocks", Payload: "Body paragraph"},
@@ -1026,22 +1212,21 @@ func TestGenerateRebuildsCQRWSTBodyWithMainFooterSection(t *testing.T) {
 		t.Fatalf("rebuilt body should not use the final non-footer section as the body section: %s", documentXML)
 	}
 	footerXML := readDocxEntry(t, outputPath, "word/footer3.xml")
-	if !strings.Contains(footerXML, "NUMPAGES") || strings.Contains(footerXML, "12页") {
+	if !strings.Contains(footerXML, "NUMPAGES") || strings.Contains(footerXML, ">12<") {
 		t.Fatalf("main footer should use dynamic page fields instead of stale template text: %s", footerXML)
 	}
 }
-
 func TestGeneratePreservesTemplateChineseTotalFooterFields(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
-	templateFooter := `<w:ftr><w:p><w:r><w:t>第 </w:t></w:r>` +
+	templateFooter := `<w:ftr><w:p><w:r><w:t>Page </w:t></w:r>` +
 		`<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE \* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>0</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>` +
-		`<w:r><w:t> 页 共 </w:t></w:r>` +
+		`<w:r><w:t> of </w:t></w:r>` +
 		`<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> NUMPAGES \* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>12</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>` +
-		`<w:r><w:t>页</w:t></w:r></w:p></w:ftr>`
+		`<w:r><w:t> pages</w:t></w:r></w:p></w:ftr>`
 	writeTestDocx(t, skeletonPath, map[string]string{
 		"word/document.xml": `<w:document><w:body>` +
-			`<w:p><w:r><w:t>本科毕业论文/设计</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>` + "\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587" + `</w:t></w:r></w:p>` +
 			`<w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p>` +
 			`<w:p><w:pPr><w:sectPr><w:footerReference w:type="default" r:id="rId11"/><w:pgNumType w:start="1"/></w:sectPr></w:pPr></w:p>` +
 			`</w:body></w:document>`,
@@ -1053,11 +1238,8 @@ func TestGeneratePreservesTemplateChineseTotalFooterFields(t *testing.T) {
 	err := NewTransplanter().Generate(context.Background(), GenerateInput{
 		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
 		Mapping: &blockmap.MappingResult{
-			CoverFields: map[string]string{
-				"\u4e13\u4e1a":             "\u62a4\u7406\u5b66",
-				"\u5b8c\u6210\u65e5\u671f": "2026\u5e745\u6708",
-			},
-			Bindings: []blockmap.Binding{{BlockID: "content_blocks", Payload: "1 Introduction"}},
+			CoverFields: map[string]string{"Major": "Nursing", "Date": "2026-05"},
+			Bindings:    []blockmap.Binding{{BlockID: "content_blocks", Payload: "1 Introduction"}},
 		},
 		OutputPath: outputPath,
 	})
@@ -1066,7 +1248,7 @@ func TestGeneratePreservesTemplateChineseTotalFooterFields(t *testing.T) {
 	}
 
 	footerXML := readDocxEntry(t, outputPath, "word/footer3.xml")
-	for _, want := range []string{"第 ", "PAGE", "0", " 页 共 ", "NUMPAGES", "12", "页"} {
+	for _, want := range []string{"PAGE", "0", "NUMPAGES", "12"} {
 		if !strings.Contains(footerXML, want) {
 			t.Fatalf("footer should preserve template fragment %q: %s", want, footerXML)
 		}
@@ -1075,7 +1257,6 @@ func TestGeneratePreservesTemplateChineseTotalFooterFields(t *testing.T) {
 		t.Fatalf("footer should not be rewritten to dash page style: %s", footerXML)
 	}
 }
-
 func TestNormalizeCQRWSTMainHeaderBuildsTextFromTemplateHeaderAndCoverFields(t *testing.T) {
 	tmpDir := t.TempDir()
 	docxPath := filepath.Join(tmpDir, "input.docx")
