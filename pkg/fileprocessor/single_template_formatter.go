@@ -2,6 +2,7 @@ package fileprocessor
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"log"
 	"os"
@@ -37,12 +38,31 @@ var runSingleTemplatePostProcessor = func(ctx context.Context, cfg SingleTemplat
 
 func defaultSingleTemplateBaseFormatter(ctx context.Context, cfg SingleTemplateFormatConfig) (string, error) {
 	outputPath, err := runSingleTemplateTemplateCloneFormatter(ctx, cfg)
-	if err == nil {
+	if err == nil && docxXMLPartsAreValid(outputPath) == nil {
 		return outputPath, nil
 	}
 
+	if err == nil {
+		err = docxXMLPartsAreValid(outputPath)
+	}
 	log.Printf("[single-template] template clone formatter failed, falling back to strict formatter: %v", err)
 	return runSingleTemplateStrictFallbackFormatter(ctx, cfg)
+}
+
+func docxXMLPartsAreValid(path string) error {
+	pkg, err := openDocxPackage(path)
+	if err != nil {
+		return err
+	}
+	for name, content := range pkg.entries {
+		if filepath.Ext(name) != ".xml" {
+			continue
+		}
+		if err := xml.Unmarshal(content, new(any)); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // FormatSingleTemplateDocument routes through the template-base formatter first,

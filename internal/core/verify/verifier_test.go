@@ -237,6 +237,31 @@ func TestVerifierReportsFrontRomanBodyArabicPageNumberingProblems(t *testing.T) 
 	}
 }
 
+func TestVerifierAllowsSharedRunningHeaderAcrossSections(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rIdHeader1"/><w:footerReference w:type="default" r:id="rIdFooter1"/></w:sectPr></w:pPr></w:p>` +
+			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rIdHeader1"/><w:footerReference w:type="default" r:id="rIdFooter2"/></w:sectPr></w:pPr></w:p>` +
+			`</w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdHeader1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>` +
+			`<Relationship Id="rIdFooter1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>` +
+			`<Relationship Id="rIdFooter2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer2.xml"/>` +
+			`</Relationships>`,
+		"word/header1.xml": `<w:hdr><w:p><w:r><w:t>Shared header</w:t></w:r></w:p></w:hdr>`,
+		"word/footer1.xml": `<w:ftr><w:p><w:r><w:instrText> PAGE </w:instrText></w:r></w:p></w:ftr>`,
+		"word/footer2.xml": `<w:ftr><w:p><w:r><w:instrText> PAGE </w:instrText></w:r></w:p></w:ftr>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.RepairableIssues, "linked_header_footer_sections") {
+		t.Fatalf("shared running header should not require review: %#v", result.RepairableIssues)
+	}
+}
+
 func TestVerifierReportsTableFormattingProblems(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
 		"word/document.xml": `<w:document><w:body>` +
@@ -261,10 +286,40 @@ func TestVerifierReportsTableFormattingProblems(t *testing.T) {
 	}
 }
 
+func TestVerifierSkipsCoverLayoutTables(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p>` +
+			`<w:tbl><w:tblPr><w:tblpPr w:tblpX="1"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>` +
+			`<w:tr><w:tc><w:p><w:r><w:t>题目</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>论文题目</w:t></w:r></w:p></w:tc></w:tr>` +
+			`<w:tr><w:tc><w:p><w:r><w:t>学院</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>护理学院</w:t></w:r></w:p></w:tc></w:tr>` +
+			`<w:tr><w:tc><w:p><w:r><w:t>指导教师</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>教师</w:t></w:r></w:p></w:tc></w:tr>` +
+			`</w:tbl></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	for _, kind := range []string{"table_three_line_format", "table_layout_not_centered", "table_repeating_header_missing", "table_cell_style_mismatch"} {
+		if hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("cover layout table should not raise %s: %#v", kind, result.RepairableIssues)
+		}
+	}
+}
+
+func TestVerifierAllowsCompactTableCellSize(t *testing.T) {
+	table := `<w:tbl><w:tr><w:tc><w:tcPr><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:spacing w:line="240"/><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:eastAsia="SimSun"/><w:sz w:val="16"/></w:rPr><w:t>P</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
+	if !tableCellsFollowStyle(table) {
+		t.Fatalf("compact 8pt table text should be accepted")
+	}
+}
+
 func TestVerifierReportsImageFormulaAndReferenceProblems(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
 		"word/document.xml": `<w:document><w:body>` +
 			`<w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>1 绪论</w:t></w:r></w:p>` +
 			`<w:p><w:r><w:drawing><wp:anchor><wp:extent cx="8000000" cy="2000000"/></wp:anchor></w:drawing></w:r></w:p>` +
 			`<w:p><w:r><w:t>` + "\u56fe2 \u7cfb\u7edf\u67b6\u6784\u56fe" + `</w:t></w:r></w:p>` +
 			`<w:p><w:r><w:t>` + "\u5982\u56fe2-1\u548c\u88683-1\u6240\u793a\uff0c\u5f0f(2-1)\u53ef\u5f97\u5230\u7ed3\u679c\u3002" + `</w:t></w:r></w:p>` +
@@ -287,11 +342,13 @@ func TestVerifierReportsImageFormulaAndReferenceProblems(t *testing.T) {
 		"figure_caption_missing_chapter_number",
 		"manual_formula_number_not_dynamic",
 		"formula_layout_mismatch",
-		"manual_cross_reference",
 	} {
 		if !hasVerifyIssueKind(result.RepairableIssues, kind) {
 			t.Fatalf("RepairableIssues = %#v, want %s", result.RepairableIssues, kind)
 		}
+	}
+	if !hasVerifyIssueKind(result.Warnings, "manual_cross_reference") {
+		t.Fatalf("Warnings = %#v, want manual_cross_reference", result.Warnings)
 	}
 }
 
@@ -368,6 +425,25 @@ func TestVerifierPassesCleanDocument(t *testing.T) {
 	}
 	if len(result.FatalIssues) != 0 || len(result.RepairableIssues) != 0 || len(result.Warnings) != 0 {
 		t.Fatalf("Verify() result has unexpected issues: %#v", result)
+	}
+}
+
+func TestVerifierSkipsCoverLogoCaptionCheck(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1000000" cy="1000000"/></wp:inline></w:drawing></w:r></w:p>` +
+			`<w:p><w:r><w:t>本科毕业论文/设计</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>1 绪论</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>正文</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.RepairableIssues, "image_keep_with_caption_missing") {
+		t.Fatalf("cover logo should not require a figure caption: %#v", result.RepairableIssues)
 	}
 }
 

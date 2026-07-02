@@ -412,9 +412,6 @@ func addSectionHeaderFooterIssues(document string, result *Result) {
 			if len(match) != 2 {
 				continue
 			}
-			if seenHeaders[match[1]] > 0 {
-				linked = true
-			}
 			seenHeaders[match[1]]++
 		}
 		for _, match := range footerIDs {
@@ -574,6 +571,9 @@ func addTableFormattingIssues(document string, result *Result) {
 		return
 	}
 	for _, table := range verifyTablePattern.FindAllString(document, -1) {
+		if isCoverLayoutTable(table) {
+			continue
+		}
 		if !tableHasThreeLineBorders(table) {
 			appendRepairableIssueOnce(result, "table_three_line_format", "table borders are not in three-line format; keep top/header/bottom rules and remove vertical/extra inner rules.", documentTarget)
 		}
@@ -587,6 +587,17 @@ func addTableFormattingIssues(document string, result *Result) {
 			appendRepairableIssueOnce(result, "table_cell_style_mismatch", "table cell text should use Chinese Songti/English Times New Roman, compact size, single spacing, horizontal and vertical centering.", documentTarget)
 		}
 	}
+}
+
+func isCoverLayoutTable(table string) bool {
+	text := verifyXMLText(table)
+	matches := 0
+	for _, marker := range []string{"题目", "学院", "专业", "班级", "学号", "姓名", "指导教师"} {
+		if strings.Contains(text, marker) || strings.Contains(table, ">"+marker+"<") {
+			matches++
+		}
+	}
+	return matches >= 2 || strings.Contains(text, "题目") || strings.Contains(table, ">题目<")
 }
 
 func tableHasThreeLineBorders(table string) bool {
@@ -649,7 +660,7 @@ func tableCellsFollowStyle(table string) bool {
 		if !strings.Contains(cell, `w:eastAsia="宋体"`) && !strings.Contains(cell, `w:eastAsia="SimSun"`) {
 			return false
 		}
-		if !strings.Contains(cell, `<w:sz w:val="18"`) && !strings.Contains(cell, `<w:sz w:val="21"`) {
+		if !strings.Contains(cell, `<w:sz w:val="16"`) && !strings.Contains(cell, `<w:sz w:val="18"`) && !strings.Contains(cell, `<w:sz w:val="21"`) {
 			return false
 		}
 	}
@@ -670,9 +681,16 @@ func addImageFormulaReferenceIssues(document string, result *Result) {
 		return
 	}
 	paragraphs := verifyParagraphPattern.FindAllString(document, -1)
+	bodyStarted := false
 	for index, paragraph := range paragraphs {
 		text := strings.TrimSpace(verifyXMLText(paragraph))
+		if strings.HasPrefix(strings.Join(strings.Fields(text), ""), "1绪论") || strings.HasPrefix(strings.ToLower(strings.Join(strings.Fields(text), " ")), "1 introduction") {
+			bodyStarted = true
+		}
 		if strings.Contains(paragraph, "<w:drawing") || strings.Contains(paragraph, "<w:pict") {
+			if !bodyStarted {
+				continue
+			}
 			if strings.Contains(paragraph, "<wp:anchor") {
 				appendRepairableIssueOnce(result, "floating_image_anchor", "image uses floating/anchored layout; use inline layout so it stays fixed in the paragraph.", documentTarget)
 			}
@@ -693,7 +711,7 @@ func addImageFormulaReferenceIssues(document string, result *Result) {
 			continue
 		}
 		if manualObjectReferencePattern.MatchString(text) && !paragraphHasReferenceField(paragraph) {
-			appendRepairableIssueOnce(result, "manual_cross_reference", "body text appears to contain manually typed figure/table/formula references; use Word cross-reference fields so references update automatically.", documentTarget)
+			appendWarningIssueOnce(result, "manual_cross_reference", "body text appears to contain manually typed figure/table/formula references; Word cross-reference fields would update more safely after edits.", documentTarget)
 		}
 	}
 
@@ -708,6 +726,18 @@ func addImageFormulaReferenceIssues(document string, result *Result) {
 			appendRepairableIssueOnce(result, "formula_layout_mismatch", "formula layout should center the formula and right-align the formula number, usually with a borderless equation table.", documentTarget)
 		}
 	}
+}
+
+func appendWarningIssueOnce(result *Result, kind string, message string, target string) {
+	if result == nil || hasIssueKind(result.Warnings, kind) {
+		return
+	}
+	result.Warnings = append(result.Warnings, Issue{
+		Kind:     kind,
+		Severity: "warning",
+		Message:  message,
+		Target:   target,
+	})
 }
 
 func imageWidthOverTextArea(paragraph string) bool {
@@ -937,8 +967,12 @@ func (v *Verifier) configureRenderGateFromEnv() {
 		return
 	}
 	v.renderOptions = &renderverify.Options{
-		Enabled: true,
-		Strict:  envBoolDefault("RENDER_VERIFY_STRICT", true),
+		Enabled:         true,
+		Strict:          envBoolDefault("RENDER_VERIFY_STRICT", true),
+		CheckPageFooter: true,
+	}
+	if python := strings.TrimSpace(os.Getenv("PDF_TEXT_PYTHON")); python != "" {
+		v.renderOptions.TextExtractor = renderverify.PythonPDFTextExtractor{Binary: python}
 	}
 	v.goldenPath = strings.TrimSpace(os.Getenv("GOLDEN_TEMPLATE_PATH"))
 }

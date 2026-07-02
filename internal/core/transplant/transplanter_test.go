@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -1175,6 +1176,7 @@ func TestGenerateRebuildsCQRWSTBodyWithMainFooterSection(t *testing.T) {
 			`<w:tbl><w:tblPr><w:tblpPr w:tblpX="2181" w:tblpY="554"/><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tr><w:tc><w:p><w:r><w:t>Title</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>XXXXXXXXXXXXXXXX</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
 			`<w:p><w:pPr><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></w:pPr></w:p>` +
 			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId8"/><w:footerReference w:type="default" r:id="rId9"/><w:pgNumType w:fmt="upperRoman" w:start="0"/></w:sectPr></w:pPr></w:p>` +
+			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId8"/><w:footerReference w:type="default" r:id="rId9"/><w:pgNumType w:fmt="upperRoman" w:start="1"/></w:sectPr></w:pPr></w:p>` +
 			`<w:p><w:pPr><w:sectPr><w:footerReference w:type="default" r:id="rId11"/><w:pgNumType w:start="1"/></w:sectPr></w:pPr></w:p>` +
 			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId22"/></w:sectPr></w:pPr></w:p>` +
 			`</w:body></w:document>`,
@@ -1188,6 +1190,7 @@ func TestGenerateRebuildsCQRWSTBodyWithMainFooterSection(t *testing.T) {
 		Mapping: &blockmap.MappingResult{
 			CoverFields: map[string]string{"Title": "Community diabetes knowledge"},
 			Bindings: []blockmap.Binding{
+				{BlockID: "content_blocks", Payload: "1 Introduction"},
 				{BlockID: "content_blocks", Payload: "1 Introduction"},
 				{BlockID: "content_blocks", Payload: "Body paragraph"},
 			},
@@ -1204,6 +1207,37 @@ func TestGenerateRebuildsCQRWSTBodyWithMainFooterSection(t *testing.T) {
 	}
 	if !strings.Contains(documentXML, `<w:headerReference w:type="default" r:id="rId8"`) {
 		t.Fatalf("rebuilt body should preserve the template running header section: %s", documentXML)
+	}
+	if strings.Count(documentXML, "<w:sectPr") < 3 {
+		t.Fatalf("rebuilt body should keep cover, front matter, and body sections: %s", documentXML)
+	}
+	if !strings.Contains(documentXML, `<w:pgNumType w:fmt="upperRoman"`) {
+		t.Fatalf("rebuilt body should preserve front-matter roman page numbering: %s", documentXML)
+	}
+	if !strings.Contains(documentXML, `<w:pgNumType w:fmt="upperRoman" w:start="1"`) {
+		t.Fatalf("front-matter page numbering should start at 1: %s", documentXML)
+	}
+	if !regexp.MustCompile(`(?s)<w:sectPr\b[^>]*>.*w:footerReference.*w:pgNumType w:fmt="upperRoman" w:start="1"`).MatchString(documentXML) {
+		t.Fatalf("front-matter roman page numbering should keep a visible footer reference: %s", documentXML)
+	}
+	if regexp.MustCompile(`(?s)<w:p><w:pPr><w:sectPr\b[^>]*>.*w:fmt="upperRoman".*</w:sectPr></w:pPr></w:p>`).MatchString(documentXML) {
+		t.Fatalf("front-matter section break should not create an empty paragraph: %s", documentXML)
+	}
+	firstTitle := strings.Index(documentXML, "Community diabetes knowledge")
+	secondTitle := -1
+	if firstTitle >= 0 {
+		next := strings.Index(documentXML[firstTitle+1:], "Community diabetes knowledge")
+		if next >= 0 {
+			secondTitle = firstTitle + 1 + next
+		}
+	}
+	secondHeading := strings.LastIndex(documentXML, "1 Introduction")
+	if secondTitle < 0 || secondHeading < 0 || strings.Index(documentXML, `<w:pgNumType w:fmt="upperRoman"`) > secondHeading {
+		t.Fatalf("front-matter section break should be before the real body heading: %s", documentXML)
+	}
+	coverSectionIndex := strings.Index(documentXML, `<w:pgSz w:w="11906" w:h="16838"`)
+	if coverSectionIndex < 0 || coverSectionIndex > secondTitle {
+		t.Fatalf("front-matter title should start after the cover section break: %s", documentXML)
 	}
 	if !strings.Contains(documentXML, `<w:pgNumType w:start="1"`) {
 		t.Fatalf("rebuilt body footer should restart at page 1: %s", documentXML)

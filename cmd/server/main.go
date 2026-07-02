@@ -99,6 +99,8 @@ func main() {
 	configHandler := handler.NewConfigHandler()
 	billingHandler := handler.NewBillingHandler()
 	paperWorkflowHandler := handler.NewPaperWorkflowHandler(service.NewPaperWorkflowService(database.DB))
+	dataPermissionHandler := handler.NewDataPermissionHandler()
+	permissionPackageHandler := handler.NewPermissionPackageHandler()
 
 	// New handlers
 	adminOrderHandler := handler.NewAdminOrderHandler()
@@ -133,7 +135,10 @@ func main() {
 		{
 			auth.POST("/register", authHandler.Register)
 			auth.POST("/login", authHandler.Login)
-			auth.POST("/refresh", authHandler.RefreshToken)                                       // Add refresh token route
+			auth.POST("/refresh", authHandler.RefreshToken) // Add refresh token route
+			auth.POST("/forgot-password", authHandler.SendResetCode)
+			auth.POST("/verify-reset-code", authHandler.VerifyResetCode)
+			auth.POST("/reset-password", authHandler.ResetPasswordByCode)
 			auth.POST("/logout", middleware.AuthMiddleware(cfg, database.DB), authHandler.Logout) // Add logout route
 			auth.GET("/profile", middleware.AuthMiddleware(cfg, database.DB), authHandler.GetProfile)
 			auth.PUT("/profile", middleware.AuthMiddleware(cfg, database.DB), authHandler.UpdateProfile)
@@ -302,6 +307,27 @@ func main() {
 			admin.POST("/users/set-super-admin", adminHandler.SetUserAsSuperAdmin)           // Set user as super admin
 
 			// Paper management
+			admin.GET("/users/:user_id/data-scope", dataPermissionHandler.GetUserDataScope)
+			admin.PUT("/users/:user_id/data-scope", dataPermissionHandler.SetUserDataScope)
+			admin.GET("/users/:user_id/data-filter", dataPermissionHandler.GetUserDataFilter)
+			admin.GET("/users/:user_id/field-permissions", dataPermissionHandler.GetUserFieldPermissions)
+			admin.GET("/data-rules", dataPermissionHandler.GetDataRules)
+			admin.POST("/data-rules", dataPermissionHandler.CreateDataRule)
+			admin.GET("/data-rules/check-access", dataPermissionHandler.CheckDataAccess)
+			admin.GET("/data-rules/:id", dataPermissionHandler.GetDataRuleByID)
+			admin.PUT("/data-rules/:id", dataPermissionHandler.UpdateDataRule)
+			admin.DELETE("/data-rules/:id", dataPermissionHandler.DeleteDataRule)
+			admin.GET("/permission-packages", permissionPackageHandler.GetPackages)
+			admin.POST("/permission-packages", permissionPackageHandler.CreatePackage)
+			admin.GET("/permission-packages/roles/:role_id/packages", permissionPackageHandler.GetRolePackages)
+			admin.GET("/permission-packages/:id", permissionPackageHandler.GetPackageByID)
+			admin.PUT("/permission-packages/:id", permissionPackageHandler.UpdatePackage)
+			admin.DELETE("/permission-packages/:id", permissionPackageHandler.DeletePackage)
+			admin.GET("/permission-packages/:id/permissions", permissionPackageHandler.GetPackagePermissions)
+			admin.POST("/permission-packages/:id/permissions", permissionPackageHandler.AddPackagePermissions)
+			admin.DELETE("/permission-packages/:id/permissions", permissionPackageHandler.RemovePackagePermissions)
+			admin.POST("/permission-packages/:id/assign/:role_id", permissionPackageHandler.AssignPackageToRole)
+			admin.POST("/permission-packages/:id/clone", permissionPackageHandler.ClonePackage)
 			admin.GET("/papers", adminHandler.GetPapers)
 			admin.DELETE("/papers/:id", adminHandler.DeletePaper)
 			admin.POST("/papers/batch-delete", adminHandler.BatchDeletePapers)
@@ -378,6 +404,8 @@ func main() {
 		// Public routes (no authentication)
 		apiV1.GET("/config/public/paper-check", configHandler.GetPaperCheckConfigPublic) // Publicly get paper format check config
 		apiV1.GET("/config/public/contact", configHandler.GetContactInfo)                // Publicly get contact info
+		apiV1.GET("/config/public/billing", billingHandler.GetServiceConfig)
+		apiV1.GET("/config/public/billing/check", billingHandler.CheckServicePricing)
 
 		apiV1.POST("/payment/wechat/callback", paymentHandler.HandleWechatCallback)
 		apiV1.POST("/payment/alipay/callback", paymentHandler.HandleAlipayCallback)
@@ -388,6 +416,9 @@ func main() {
 			auth.POST("/register", authHandler.Register)
 			auth.POST("/login", authHandler.Login)
 			auth.POST("/refresh", authHandler.RefreshToken)
+			auth.POST("/forgot-password", authHandler.SendResetCode)
+			auth.POST("/verify-reset-code", authHandler.VerifyResetCode)
+			auth.POST("/reset-password", authHandler.ResetPasswordByCode)
 			auth.POST("/logout", middleware.AuthMiddleware(cfg, database.DB), authHandler.Logout)
 			auth.GET("/profile", middleware.AuthMiddleware(cfg, database.DB), authHandler.GetProfile)
 			auth.PUT("/profile", middleware.AuthMiddleware(cfg, database.DB), authHandler.UpdateProfile)
@@ -411,6 +442,10 @@ func main() {
 			// File download
 			auth.GET("/papers/:id/file", middleware.AuthMiddleware(cfg, database.DB), middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetPaperFile)
 			auth.GET("/papers/:id/corrected-file", middleware.AuthMiddleware(cfg, database.DB), middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetCorrectedPaperFile)
+
+			auth.GET("/payment/check-paper", middleware.AuthMiddleware(cfg, database.DB), paymentCheckHandler.CheckPaperPaymentStatus)
+			auth.GET("/payment/check-service", middleware.AuthMiddleware(cfg, database.DB), paymentCheckHandler.CheckServicePaymentStatus)
+			auth.GET("/payment/free-checks", middleware.AuthMiddleware(cfg, database.DB), paymentCheckHandler.GetUserFreeChecks)
 
 			// System config
 			auth.GET("/config/system", configHandler.GetSystemConfig)          // Get system config
@@ -580,6 +615,31 @@ func main() {
 			batch.PUT("/update-status", batchHandler.BatchUpdateStatus)
 			batch.DELETE("/delete", batchHandler.BatchDelete)
 			batch.POST("/quick-action", batchHandler.QuickAction)
+		}
+
+		adminCompat := apiV1.Group("/admin", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware(), middleware.AdminRBACMiddleware())
+		{
+			adminCompat.GET("/users/:user_id/data-scope", dataPermissionHandler.GetUserDataScope)
+			adminCompat.PUT("/users/:user_id/data-scope", dataPermissionHandler.SetUserDataScope)
+			adminCompat.GET("/users/:user_id/data-filter", dataPermissionHandler.GetUserDataFilter)
+			adminCompat.GET("/users/:user_id/field-permissions", dataPermissionHandler.GetUserFieldPermissions)
+			adminCompat.GET("/data-rules", dataPermissionHandler.GetDataRules)
+			adminCompat.POST("/data-rules", dataPermissionHandler.CreateDataRule)
+			adminCompat.GET("/data-rules/check-access", dataPermissionHandler.CheckDataAccess)
+			adminCompat.GET("/data-rules/:id", dataPermissionHandler.GetDataRuleByID)
+			adminCompat.PUT("/data-rules/:id", dataPermissionHandler.UpdateDataRule)
+			adminCompat.DELETE("/data-rules/:id", dataPermissionHandler.DeleteDataRule)
+			adminCompat.GET("/permission-packages", permissionPackageHandler.GetPackages)
+			adminCompat.POST("/permission-packages", permissionPackageHandler.CreatePackage)
+			adminCompat.GET("/permission-packages/roles/:role_id/packages", permissionPackageHandler.GetRolePackages)
+			adminCompat.GET("/permission-packages/:id", permissionPackageHandler.GetPackageByID)
+			adminCompat.PUT("/permission-packages/:id", permissionPackageHandler.UpdatePackage)
+			adminCompat.DELETE("/permission-packages/:id", permissionPackageHandler.DeletePackage)
+			adminCompat.GET("/permission-packages/:id/permissions", permissionPackageHandler.GetPackagePermissions)
+			adminCompat.POST("/permission-packages/:id/permissions", permissionPackageHandler.AddPackagePermissions)
+			adminCompat.DELETE("/permission-packages/:id/permissions", permissionPackageHandler.RemovePackagePermissions)
+			adminCompat.POST("/permission-packages/:id/assign/:role_id", permissionPackageHandler.AssignPackageToRole)
+			adminCompat.POST("/permission-packages/:id/clone", permissionPackageHandler.ClonePackage)
 		}
 
 		// Admin routes

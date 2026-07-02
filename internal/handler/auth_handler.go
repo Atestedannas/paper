@@ -1,9 +1,13 @@
 package handler
 
 import (
+	"crypto/rand"
+	"encoding/binary"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -11,10 +15,26 @@ import (
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/config"
 	"github.com/paper-format-checker/backend/internal/middleware"
+	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
 	"github.com/paper-format-checker/backend/internal/utils"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
+
+var passwordResetMu sync.Mutex
+var passwordResetCodes = map[string]passwordResetCode{}
+var passwordResetTokens = map[string]passwordResetToken{}
+
+type passwordResetCode struct {
+	Code      string
+	ExpiresAt time.Time
+}
+
+type passwordResetToken struct {
+	Email     string
+	ExpiresAt time.Time
+}
 
 // AuthHandler 认证处理器
 type AuthHandler struct {
@@ -618,6 +638,96 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	utils.Success(c, gin.H{"message": "password changed successfully"})
 }
 
+func (h *AuthHandler) SendResetCode(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.BadRequest(c, err.Error())
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if _, err := h.userService.GetUserByEmail(email); err != nil {
+		utils.NotFound(c, "user not found")
+		return
+	}
+
+	code := randomSixDigitCode()
+	passwordResetMu.Lock()
+	passwordResetCodes[email] = passwordResetCode{Code: code, ExpiresAt: time.Now().Add(10 * time.Minute)}
+	passwordResetMu.Unlock()
+
+	// ponytail: return code until a real mailer is wired in.
+	utils.Success(c, gin.H{"reset_code": code, "expires_in": 600})
+}
+
+func (h *AuthHandler) VerifyResetCode(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+		Code  string `json:"code" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.BadRequest(c, err.Error())
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	passwordResetMu.Lock()
+	entry, ok := passwordResetCodes[email]
+	if !ok || entry.Code != req.Code || time.Now().After(entry.ExpiresAt) {
+		passwordResetMu.Unlock()
+		utils.BadRequest(c, "invalid or expired reset code")
+		return
+	}
+	delete(passwordResetCodes, email)
+	token := uuid.NewString()
+	passwordResetTokens[token] = passwordResetToken{Email: email, ExpiresAt: time.Now().Add(10 * time.Minute)}
+	passwordResetMu.Unlock()
+
+	utils.Success(c, gin.H{"reset_token": token, "expires_in": 600})
+}
+
+func (h *AuthHandler) ResetPasswordByCode(c *gin.Context) {
+	var req struct {
+		ResetToken  string `json:"reset_token" binding:"required"`
+		NewPassword string `json:"new_password" binding:"required,min=8,max=20"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.BadRequest(c, err.Error())
+		return
+	}
+	if !h.isPasswordComplex(req.NewPassword) {
+		utils.BadRequest(c, "password must contain uppercase, lowercase, digit, and special character")
+		return
+	}
+
+	passwordResetMu.Lock()
+	entry, ok := passwordResetTokens[req.ResetToken]
+	if !ok || time.Now().After(entry.ExpiresAt) {
+		passwordResetMu.Unlock()
+		utils.BadRequest(c, "invalid or expired reset token")
+		return
+	}
+	delete(passwordResetTokens, req.ResetToken)
+	passwordResetMu.Unlock()
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), 12)
+	if err != nil {
+		utils.InternalServerError(c, "failed to hash password")
+		return
+	}
+	if err := h.db.Model(&model.User{}).Where("email = ?", entry.Email).Updates(map[string]interface{}{
+		"password_hash": string(hash),
+		"updated_at":    time.Now(),
+	}).Error; err != nil {
+		utils.InternalServerError(c, "failed to reset password")
+		return
+	}
+
+	utils.Success(c, gin.H{"message": "password reset successfully"})
+}
+
 // RefreshToken 刷新访问令牌
 func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	// 解析请求数据
@@ -764,4 +874,12 @@ func (h *AuthHandler) isPasswordComplex(password string) bool {
 	}
 
 	return lower && upper && digit && special
+}
+
+func randomSixDigitCode() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "000000"
+	}
+	return fmt.Sprintf("%06d", binary.BigEndian.Uint64(b[:])%1000000)
 }

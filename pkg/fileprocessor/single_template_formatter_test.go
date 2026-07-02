@@ -117,6 +117,46 @@ func TestDefaultSingleTemplateBaseFormatterFallsBackToStrictFormatter(t *testing
 	}
 }
 
+func TestDefaultSingleTemplateBaseFormatterFallsBackWhenTemplateCloneWritesInvalidXML(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := SingleTemplateFormatConfig{
+		UserPaperPath: filepath.Join(tmpDir, "user.docx"),
+		TemplatePath:  filepath.Join(tmpDir, "template.docx"),
+		OutputPath:    filepath.Join(tmpDir, "formatted.docx"),
+	}
+
+	var calls []string
+	restoreTemplateClone := swapSingleTemplateTemplateCloneFormatter(func(_ context.Context, cfg SingleTemplateFormatConfig) (string, error) {
+		calls = append(calls, "template-clone")
+		writeTinyDocxFixture(t, tmpDir, "formatted.docx", map[string]string{
+			"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
+			"word/document.xml":   `<w:document><w:body></w:txbxContent></w:body></w:document>`,
+		})
+		return cfg.OutputPath, nil
+	})
+	defer restoreTemplateClone()
+
+	restoreStrict := swapSingleTemplateStrictFallbackFormatter(func(_ context.Context, cfg SingleTemplateFormatConfig) (string, error) {
+		calls = append(calls, "strict")
+		writeTinyDocxFixture(t, tmpDir, "formatted.docx", map[string]string{
+			"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
+			"word/document.xml":   `<w:document></w:document>`,
+		})
+		return cfg.OutputPath, nil
+	})
+	defer restoreStrict()
+
+	if _, err := defaultSingleTemplateBaseFormatter(context.Background(), cfg); err != nil {
+		t.Fatalf("defaultSingleTemplateBaseFormatter() error = %v", err)
+	}
+	if want := []string{"template-clone", "strict"}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("formatter calls = %#v, want %#v", calls, want)
+	}
+	if err := docxXMLPartsAreValid(cfg.OutputPath); err != nil {
+		t.Fatalf("fallback output should be valid XML: %v", err)
+	}
+}
+
 func TestFormatSingleTemplateDocumentDefaultRunnerDoesNotInjectTemplateInstructionText(t *testing.T) {
 	tmpDir := t.TempDir()
 	userPath := filepath.Join(tmpDir, "user.docx")

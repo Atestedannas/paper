@@ -50,3 +50,27 @@ func TestMainDoesNotKillExistingProcessOnPortConflict(t *testing.T) {
 		t.Fatal("server startup should fail fast when the configured port is already in use")
 	}
 }
+
+func TestMainRegistersFrontendRequiredRoutes(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	text := string(source)
+
+	for _, route := range []string{
+		`"/forgot-password"`,
+		`"/verify-reset-code"`,
+		`"/reset-password"`,
+		`"/config/public/billing"`,
+		`"/permission-packages"`,
+		`"/data-rules"`,
+		`"/users/:user_id/data-scope"`,
+		`"/users/:user_id/data-filter"`,
+		`"/users/:user_id/field-permissions"`,
+	} {
+		if !strings.Contains(text, route) {
+			t.Fatalf("main.go does not register frontend route fragment %s", route)
+		}
+	}
+}

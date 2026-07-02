@@ -2,11 +2,15 @@ package renderverify
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"rsc.io/pdf"
@@ -46,15 +50,16 @@ type SamePageRule struct {
 }
 
 type Options struct {
-	Enabled        bool
-	Strict         bool
-	OutputDir      string
-	Renderer       Renderer
-	TextExtractor  TextExtractor
-	RequiredText   []string
-	ForbiddenText  []string
-	SamePageRules  []SamePageRule
-	AllowBlankPage map[int]bool
+	Enabled         bool
+	Strict          bool
+	OutputDir       string
+	Renderer        Renderer
+	TextExtractor   TextExtractor
+	RequiredText    []string
+	ForbiddenText   []string
+	SamePageRules   []SamePageRule
+	AllowBlankPage  map[int]bool
+	CheckPageFooter bool
 }
 
 type Result struct {
@@ -154,8 +159,13 @@ func (r LibreOfficeRenderer) RenderPDF(ctx context.Context, docxPath string, out
 	base := strings.TrimSuffix(filepath.Base(absDocx), filepath.Ext(absDocx))
 	expected := filepath.Join(outputDir, base+".pdf")
 	_ = os.Remove(expected)
+	profileDir, cleanupProfile, err := createLibreOfficeProfileDir(outputDir)
+	if err != nil {
+		return PDFArtifact{}, err
+	}
+	defer cleanupProfile()
 
-	cmd := exec.CommandContext(ctx, soffice, "--headless", "--convert-to", "pdf", "--outdir", outputDir, absDocx)
+	cmd := exec.CommandContext(ctx, soffice, "--headless", "--norestore", "--invisible", libreOfficeUserInstallationArg(profileDir), "--convert-to", "pdf", "--outdir", outputDir, absDocx)
 	if runtime.GOOS != "windows" {
 		cmd.Env = append(os.Environ(), "HOME=/tmp")
 	} else {
@@ -169,6 +179,22 @@ func (r LibreOfficeRenderer) RenderPDF(ctx context.Context, docxPath string, out
 		return PDFArtifact{}, fmt.Errorf("soffice output missing at %s: %w, output: %s", expected, err, strings.TrimSpace(string(output)))
 	}
 	return PDFArtifact{Path: expected}, nil
+}
+
+func createLibreOfficeProfileDir(outputDir string) (string, func(), error) {
+	profileDir, err := os.MkdirTemp(outputDir, "lo-profile-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create libreoffice profile dir: %w", err)
+	}
+	return profileDir, func() { _ = os.RemoveAll(profileDir) }, nil
+}
+
+func libreOfficeUserInstallationArg(profileDir string) string {
+	path := filepath.ToSlash(profileDir)
+	if runtime.GOOS == "windows" && !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return "-env:UserInstallation=" + (&url.URL{Scheme: "file", Path: path}).String()
 }
 
 func (r LibreOfficeRenderer) resolveBinary() (string, error) {
@@ -286,6 +312,80 @@ func validateRenderedText(result *Result, options Options) {
 			})
 		}
 	}
+	if options.CheckPageFooter {
+		validateChineseTotalFooter(result)
+	}
+}
+
+type PythonPDFTextExtractor struct {
+	Binary string
+}
+
+func (e PythonPDFTextExtractor) ExtractPageTexts(pdfPath string) ([]string, error) {
+	binary := strings.TrimSpace(e.Binary)
+	if binary == "" {
+		binary = strings.TrimSpace(os.Getenv("PDF_TEXT_PYTHON"))
+	}
+	if binary == "" {
+		return nil, fmt.Errorf("PDF_TEXT_PYTHON is not configured")
+	}
+	script := `import json, sys
+import pdfplumber
+with pdfplumber.open(sys.argv[1]) as pdf:
+    sys.stdout.buffer.write(json.dumps([(page.extract_text() or "") for page in pdf.pages], ensure_ascii=False).encode("utf-8"))
+`
+	output, err := exec.Command(binary, "-c", script, pdfPath).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("pdfplumber extract: %w, output: %s", err, strings.TrimSpace(string(output)))
+	}
+	return parsePythonPDFTextOutput(output)
+}
+
+func parsePythonPDFTextOutput(output []byte) ([]string, error) {
+	var pages []string
+	if err := json.Unmarshal(output, &pages); err != nil {
+		return nil, err
+	}
+	return pages, nil
+}
+
+var chineseTotalFooterPattern = regexp.MustCompile(`第(\d+)页共(\d+)页`)
+
+func validateChineseTotalFooter(result *Result) {
+	if result == nil || result.PageCount == 0 {
+		return
+	}
+	maxCurrent := 0
+	total := 0
+	targetPage := 0
+	for index, text := range result.PageTexts {
+		match := chineseTotalFooterPattern.FindStringSubmatch(normalizeText(text))
+		if len(match) != 3 {
+			continue
+		}
+		current, err := strconv.Atoi(match[1])
+		if err != nil {
+			continue
+		}
+		pageTotal, err := strconv.Atoi(match[2])
+		if err != nil {
+			continue
+		}
+		if current > maxCurrent {
+			maxCurrent = current
+			total = pageTotal
+			targetPage = index + 1
+		}
+	}
+	if maxCurrent == 0 || total == maxCurrent {
+		return
+	}
+	result.Issues = append(result.Issues, Issue{
+		Kind:     "page_footer_total_mismatch",
+		Severity: SeverityError,
+		Message:  fmt.Sprintf("rendered footer total page count is %d, but numbered body has %d pages", total, maxCurrent),
+		Target:   fmt.Sprintf("page:%d", targetPage),
+	})
 }
 
 func findPage(pageTexts []string, needle string) int {

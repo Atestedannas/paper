@@ -4,17 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/core/blockmap"
 	"github.com/paper-format-checker/backend/internal/core/cqrwst"
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/paperast"
 	"github.com/paper-format-checker/backend/internal/core/paperparse"
 	"github.com/paper-format-checker/backend/internal/core/repaircontract"
@@ -40,6 +43,13 @@ const defaultWorkflowOutputRoot = "uploads/workflow_outputs"
 const defaultCQRWSTTemplatePath = "uploads/template.docx"
 const cqrwstTemplatePathEnv = "CQRWST_TEMPLATE_PATH"
 const cqrwstTemplateTransplantEnabledEnv = "CQRWST_TEMPLATE_TRANSPLANT_ENABLED"
+
+var renderedChineseTotalFooterPattern = regexp.MustCompile(`第(\d+)页共(\d+)页`)
+var numPagesFieldBlockPattern = regexp.MustCompile(`(?s)<w:r><w:fldChar\b[^>]*w:fldCharType="begin"[^>]*/></w:r>\s*<w:r><w:instrText\b[^>]*>\s*NUMPAGES\b.*?</w:instrText></w:r>\s*<w:r><w:fldChar\b[^>]*w:fldCharType="separate"[^>]*/></w:r>\s*<w:r><w:t\b[^>]*>.*?</w:t></w:r>\s*<w:r><w:fldChar\b[^>]*w:fldCharType="end"[^>]*/></w:r>`)
+var manualCaptionLinePattern = regexp.MustCompile(`^\s*([图表])\s*(\d+)(?:[-.．](\d+))?\s+(.+)$`)
+var workflowParagraphPattern = regexp.MustCompile(`(?s)<w:p\b[^>]*>.*?</w:p>`)
+var workflowTextRunPattern = regexp.MustCompile(`(?s)<w:t\b[^>]*>.*?</w:t>`)
+var workflowTextValuePattern = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
 
 type WorkflowJobView struct {
 	ID                 uuid.UUID `json:"id"`
@@ -228,6 +238,22 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	if err != nil {
 		return nil, err
 	}
+	if repaired, repairErr := repairRenderedPageFooterTotal(outputPath, result.VerifyResult); repairErr != nil {
+		return nil, repairErr
+	} else if repaired {
+		result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if repaired, repairErr := repairManualCaptionFields(outputPath, result.VerifyResult); repairErr != nil {
+		return nil, repairErr
+	} else if repaired {
+		result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
+		if err != nil {
+			return nil, err
+		}
+	}
 	if result.Status != workflow.StatusVerifiedPass && shouldRunCQRWSTPostFix() {
 		if _, fixErr := cqrwst.FixDOCXWithTemplateProfileAndSemanticAI(ctx, outputPath, profile, newDeepSeekSemanticBlockClient()); fixErr == nil {
 			result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
@@ -266,6 +292,169 @@ func (s *paperWorkflowService) persistWorkflowContracts(ctx context.Context, job
 			"mapping_contract_json":   repaircontract.Marshal(contract),
 			"updated_at":              time.Now().UTC(),
 		}).Error
+}
+
+func repairRenderedPageFooterTotal(outputPath string, result verify.Result) (bool, error) {
+	if !hasWorkflowIssue(result.RepairableIssues, "render_page_footer_total_mismatch") || result.RenderResult == nil {
+		return false, nil
+	}
+	total := renderedBodyPageTotal(result.RenderResult.PageTexts)
+	if total <= 0 {
+		return false, nil
+	}
+	pkg, err := ooxmlpkg.Open(outputPath)
+	if err != nil {
+		return false, err
+	}
+	changed := false
+	for _, name := range pkg.Names() {
+		if !strings.HasPrefix(name, "word/footer") || !strings.HasSuffix(name, ".xml") {
+			continue
+		}
+		content, ok := pkg.Get(name)
+		if !ok || !strings.Contains(string(content), "NUMPAGES") {
+			continue
+		}
+		updated := numPagesFieldBlockPattern.ReplaceAllString(string(content), `<w:r><w:t>`+strconv.Itoa(total)+`</w:t></w:r>`)
+		if updated == string(content) {
+			continue
+		}
+		pkg.Set(name, []byte(updated))
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+	return true, pkg.Write(outputPath)
+}
+
+func repairManualCaptionFields(outputPath string, result verify.Result) (bool, error) {
+	if !hasWorkflowIssue(result.Warnings, "manual_caption_not_dynamic") {
+		return false, nil
+	}
+	pkg, err := ooxmlpkg.Open(outputPath)
+	if err != nil {
+		return false, err
+	}
+	content, ok := pkg.Get("word/document.xml")
+	if !ok {
+		return false, nil
+	}
+	updated, changed := replaceManualCaptionFields(string(content))
+	if !changed {
+		return false, nil
+	}
+	pkg.Set("word/document.xml", []byte(updated))
+	return true, pkg.Write(outputPath)
+}
+
+func replaceManualCaptionFields(documentXML string) (string, bool) {
+	changed := false
+	updated := workflowParagraphPattern.ReplaceAllStringFunc(documentXML, func(paragraph string) string {
+		replaced, ok := replaceManualCaptionParagraph(paragraph)
+		if ok {
+			changed = true
+			return replaced
+		}
+		return paragraph
+	})
+	return updated, changed
+}
+
+func replaceManualCaptionParagraph(paragraph string) (string, bool) {
+	if strings.Contains(paragraph, "<w:instrText") && strings.Contains(paragraph, "SEQ") {
+		return paragraph, false
+	}
+	textRun := workflowTextRunPattern.FindStringIndex(paragraph)
+	if textRun == nil {
+		return paragraph, false
+	}
+	firstText := workflowTextValue(paragraph[textRun[0]:textRun[1]])
+	match := manualCaptionLinePattern.FindStringSubmatch(strings.TrimSpace(firstText))
+	if len(match) != 5 {
+		return paragraph, false
+	}
+	runStart := strings.LastIndex(paragraph[:textRun[0]], "<w:r")
+	if runStart < 0 {
+		return paragraph, false
+	}
+	runEndRelative := strings.Index(paragraph[textRun[1]:], "</w:r>")
+	if runEndRelative < 0 {
+		return paragraph, false
+	}
+	runEnd := textRun[1] + runEndRelative + len("</w:r>")
+	rPr := firstRunProperties(paragraph[runStart:runEnd])
+	replacement := captionFieldRuns(match[1], match[2], match[3], match[4], rPr)
+	return paragraph[:runStart] + replacement + paragraph[runEnd:], true
+}
+
+func workflowTextValue(textRun string) string {
+	match := workflowTextValuePattern.FindStringSubmatch(textRun)
+	if len(match) != 2 {
+		return ""
+	}
+	return html.UnescapeString(match[1])
+}
+
+func firstRunProperties(run string) string {
+	start := strings.Index(run, "<w:rPr>")
+	end := strings.Index(run, "</w:rPr>")
+	if start < 0 || end < start {
+		return ""
+	}
+	return run[start : end+len("</w:rPr>")]
+}
+
+func captionFieldRuns(label string, chapter string, ordinal string, title string, rPr string) string {
+	prefix := label
+	instruction := " SEQ " + label + ` \* ARABIC `
+	if chapter != "" {
+		prefix += chapter + "-"
+		instruction = " SEQ " + label + ` \* ARABIC \s 1 `
+	}
+	return workflowTextRun(prefix, rPr) +
+		workflowFieldCharRun("begin", rPr) +
+		workflowInstrRun(instruction, rPr) +
+		workflowFieldCharRun("separate", rPr) +
+		workflowTextRun(ordinal, rPr) +
+		workflowFieldCharRun("end", rPr) +
+		workflowTextRun(" "+title, rPr)
+}
+
+func workflowTextRun(text string, rPr string) string {
+	return `<w:r>` + rPr + `<w:t xml:space="preserve">` + html.EscapeString(text) + `</w:t></w:r>`
+}
+
+func workflowInstrRun(instruction string, rPr string) string {
+	return `<w:r>` + rPr + `<w:instrText xml:space="preserve">` + html.EscapeString(instruction) + `</w:instrText></w:r>`
+}
+
+func workflowFieldCharRun(fieldType string, rPr string) string {
+	return `<w:r>` + rPr + `<w:fldChar w:fldCharType="` + fieldType + `"/></w:r>`
+}
+
+func renderedBodyPageTotal(pageTexts []string) int {
+	maxPage := 0
+	for _, text := range pageTexts {
+		match := renderedChineseTotalFooterPattern.FindStringSubmatch(strings.Join(strings.Fields(text), ""))
+		if len(match) != 3 {
+			continue
+		}
+		current, err := strconv.Atoi(match[1])
+		if err == nil && current > maxPage {
+			maxPage = current
+		}
+	}
+	return maxPage
+}
+
+func hasWorkflowIssue(issues []verify.Issue, kind string) bool {
+	for _, issue := range issues {
+		if issue.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *paperWorkflowService) GetJob(id string) (*WorkflowJobView, error) {

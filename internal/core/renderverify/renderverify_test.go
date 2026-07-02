@@ -3,7 +3,9 @@ package renderverify
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +61,56 @@ func TestCheckStrictRenderFailureIsFatal(t *testing.T) {
 	}
 	if len(result.Issues) != 1 || result.Issues[0].Severity != SeverityFatal {
 		t.Fatalf("Issues = %#v, want fatal render issue", result.Issues)
+	}
+}
+
+func TestCheckChineseTotalFooterMismatchFails(t *testing.T) {
+	result, err := Check(context.Background(), "paper.docx", Options{
+		Enabled:         true,
+		Strict:          true,
+		Renderer:        fakeRenderer{},
+		TextExtractor:   fakeExtractor{pages: []string{"封面", "正文 第1页 共24页", "致谢 第2页 共24页"}},
+		CheckPageFooter: true,
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatal("Passed = true, want false")
+	}
+	if len(result.Issues) != 1 || result.Issues[0].Kind != "page_footer_total_mismatch" {
+		t.Fatalf("Issues = %#v, want page_footer_total_mismatch", result.Issues)
+	}
+}
+
+func TestParsePythonPDFTextOutput(t *testing.T) {
+	pages, err := parsePythonPDFTextOutput([]byte(`["封面","正文 第1页 共24页"]`))
+	if err != nil {
+		t.Fatalf("parsePythonPDFTextOutput() error = %v", err)
+	}
+	if len(pages) != 2 || pages[1] != "正文 第1页 共24页" {
+		t.Fatalf("pages = %#v", pages)
+	}
+}
+
+func TestLibreOfficeUserInstallationArg(t *testing.T) {
+	arg := libreOfficeUserInstallationArg(filepath.Join("tmp", "lo profile"))
+	if !strings.HasPrefix(arg, "-env:UserInstallation=file:") || !strings.Contains(arg, "lo%20profile") {
+		t.Fatalf("libreOfficeUserInstallationArg() = %q", arg)
+	}
+}
+
+func TestCreateLibreOfficeProfileDirCleanup(t *testing.T) {
+	profileDir, cleanup, err := createLibreOfficeProfileDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("createLibreOfficeProfileDir() error = %v", err)
+	}
+	if _, err := os.Stat(profileDir); err != nil {
+		t.Fatalf("profile dir should exist before cleanup: %v", err)
+	}
+	cleanup()
+	if _, err := os.Stat(profileDir); !os.IsNotExist(err) {
+		t.Fatalf("profile dir should be removed after cleanup, stat error = %v", err)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/paperast"
+	"github.com/paper-format-checker/backend/internal/core/renderverify"
 	"github.com/paper-format-checker/backend/internal/core/repaircontract"
 	"github.com/paper-format-checker/backend/internal/core/templatecontract"
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
@@ -246,6 +247,9 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 	}
 
 	documentXML := readWorkflowDocumentXML(t, outputPath)
+	if !strings.Contains(documentXML, "SEQ 表") {
+		t.Fatalf("generated output should convert manual table captions to SEQ fields: %s", documentXML)
+	}
 	for _, want := range []string{"<w:pict", "<w:tblpPr", "护理学院", "护理学", "2022级护理学5班", "20220152192", "冉怡琴", "杨严政", "认知现状及影响因素分析"} {
 		if !strings.Contains(documentXML, want) {
 			t.Fatalf("generated output should preserve template cover and field %q: %s", want, documentXML)
@@ -289,8 +293,10 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 		}
 	}
 	footerXML := readWorkflowDocxEntry(t, outputPath, "word/footer3.xml")
-	if !strings.Contains(footerXML, "NUMPAGES") || strings.Contains(footerXML, "12页") {
-		t.Fatalf("generated output should use dynamic total page count in the main footer: %s", footerXML)
+	hasDynamicTotal := strings.Contains(footerXML, "NUMPAGES") && !strings.Contains(footerXML, "12页")
+	hasMaterializedTotal := !strings.Contains(footerXML, "NUMPAGES") && strings.Contains(footerXML, ">18<")
+	if !hasDynamicTotal && !hasMaterializedTotal {
+		t.Fatalf("generated output should use a dynamic or render-corrected total page count in the main footer: %s", footerXML)
 	}
 	thanksTitle := paragraphContainingWorkflow(documentXML, "致      谢")
 	if thanksTitle == "" {
@@ -299,6 +305,59 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 	for _, want := range []string{`<w:jc w:val="center"/>`, `w:eastAsia="黑体"`, `<w:b/>`, `<w:sz w:val="30"/>`} {
 		if !strings.Contains(thanksTitle, want) {
 			t.Fatalf("acknowledgement title missing %s: %s", want, thanksTitle)
+		}
+	}
+}
+
+func TestRepairRenderedPageFooterTotalMaterializesBodyTotal(t *testing.T) {
+	tmpDir := t.TempDir()
+	docxPath := filepath.Join(tmpDir, "paper.docx")
+	writeWorkflowDocxPackage(t, docxPath, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
+		"word/footer3.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>第 </w:t></w:r>` +
+			`<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE \* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>18</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>` +
+			`<w:r><w:t> 页 共 </w:t></w:r>` +
+			`<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> NUMPAGES \* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>24</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>` +
+			`<w:r><w:t> 页</w:t></w:r></w:p></w:ftr>`,
+	})
+
+	repaired, err := repairRenderedPageFooterTotal(docxPath, verify.Result{
+		RepairableIssues: []verify.Issue{{Kind: "render_page_footer_total_mismatch"}},
+		RenderResult:     &renderverify.Result{PageTexts: []string{"正文 第1页 共24页", "致谢 第18页 共24页"}},
+	})
+	if err != nil {
+		t.Fatalf("repairRenderedPageFooterTotal() error = %v", err)
+	}
+	if !repaired {
+		t.Fatal("repairRenderedPageFooterTotal() repaired = false")
+	}
+	footerXML := readWorkflowDocxEntry(t, docxPath, "word/footer3.xml")
+	if strings.Contains(footerXML, "NUMPAGES") || !strings.Contains(footerXML, ">18<") {
+		t.Fatalf("footer should materialize body total 18 and remove NUMPAGES: %s", footerXML)
+	}
+}
+
+func TestRepairManualCaptionFieldsConvertsTableCaptionToSEQ(t *testing.T) {
+	tmpDir := t.TempDir()
+	docxPath := filepath.Join(tmpDir, "paper.docx")
+	writeWorkflowDocxPackage(t, docxPath, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
+		"word/document.xml":   `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>表3-1 社区2型糖尿病患者基本特征分布</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	repaired, err := repairManualCaptionFields(docxPath, verify.Result{
+		Warnings: []verify.Issue{{Kind: "manual_caption_not_dynamic"}},
+	})
+	if err != nil {
+		t.Fatalf("repairManualCaptionFields() error = %v", err)
+	}
+	if !repaired {
+		t.Fatal("repairManualCaptionFields() repaired = false")
+	}
+	documentXML := readWorkflowDocxEntry(t, docxPath, "word/document.xml")
+	for _, want := range []string{"SEQ 表", `\s 1`, ">表3-<", ">1<", "社区2型糖尿病患者基本特征分布", "<w:b/>"} {
+		if !strings.Contains(documentXML, want) {
+			t.Fatalf("document XML missing %q: %s", want, documentXML)
 		}
 	}
 }
@@ -734,6 +793,29 @@ func loadWorkflowJob(t *testing.T, db *gorm.DB, id uuid.UUID) model.PaperWorkflo
 func writeMinimalWorkflowDocx(t *testing.T, path string, body string) {
 	t.Helper()
 	writeWorkflowDocxParagraphs(t, path, []string{body})
+}
+
+func writeWorkflowDocxPackage(t *testing.T, path string, entries map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("create docx dir: %v", err)
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create docx: %v", err)
+	}
+	defer file.Close()
+	zipWriter := zip.NewWriter(file)
+	defer zipWriter.Close()
+	for name, content := range entries {
+		writer, err := zipWriter.Create(name)
+		if err != nil {
+			t.Fatalf("create zip entry %s: %v", name, err)
+		}
+		if _, err := writer.Write([]byte(content)); err != nil {
+			t.Fatalf("write zip entry %s: %v", name, err)
+		}
+	}
 }
 
 func writeWorkflowDocxParagraphs(t *testing.T, path string, paragraphs []string) {

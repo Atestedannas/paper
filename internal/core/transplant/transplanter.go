@@ -1708,12 +1708,18 @@ func rebuildCQRWSTDocumentBody(content string, fields map[string]string, bodyPar
 		return ""
 	}
 
+	frontSectPr := selectCQRWSTFrontMatterSectPr(content, matches)
 	finalSectPr := selectCQRWSTBodySectPr(content, matches)
+	frontMatterParagraphs, mainBodyParagraphs := splitCQRWSTFrontMatterAndBody(strings.TrimSpace(bodyParagraphs))
 	var builder strings.Builder
 	builder.WriteString(content[:bodyStart+len("<w:body>")])
 	builder.WriteString(fillCQRWSTTemplateCover(cover.cover, fields))
 	builder.WriteString(renderCQRWSTFrontMatterTitle(fields))
-	builder.WriteString(strings.TrimSpace(bodyParagraphs))
+	if strings.TrimSpace(frontSectPr) != "" && frontSectPr != finalSectPr {
+		frontMatterParagraphs = appendSectPrToLastParagraph(frontMatterParagraphs, frontSectPr)
+	}
+	builder.WriteString(frontMatterParagraphs)
+	builder.WriteString(mainBodyParagraphs)
 	if strings.TrimSpace(references) != "" {
 		builder.WriteString(pageBreakParagraph())
 		builder.WriteString(backMatterTitleParagraph("参考文献"))
@@ -1727,6 +1733,45 @@ func rebuildCQRWSTDocumentBody(content string, fields map[string]string, bodyPar
 	builder.WriteString(finalSectPr)
 	builder.WriteString(content[bodyEnd:])
 	return builder.String()
+}
+
+func splitCQRWSTFrontMatterAndBody(bodyXML string) (string, string) {
+	paragraphs := paragraphPattern.FindAllStringIndex(bodyXML, -1)
+	bodyStart := -1
+	seenBodyHeading := 0
+	for _, match := range paragraphs {
+		text := strings.Join(strings.Fields(xmlText(bodyXML[match[0]:match[1]])), " ")
+		compact := strings.Join(strings.Fields(text), "")
+		if strings.HasPrefix(compact, "1绪论") || strings.HasPrefix(strings.ToLower(text), "1 introduction") {
+			seenBodyHeading++
+			if seenBodyHeading >= 2 {
+				bodyStart = match[0]
+				break
+			}
+		}
+	}
+	if bodyStart <= 0 {
+		return bodyXML, ""
+	}
+	return strings.TrimSpace(bodyXML[:bodyStart]), strings.TrimSpace(bodyXML[bodyStart:])
+}
+
+func appendSectPrToLastParagraph(fragment string, sectPr string) string {
+	matches := paragraphPattern.FindAllStringIndex(fragment, -1)
+	if len(matches) == 0 || strings.TrimSpace(sectPr) == "" {
+		return fragment + sectPr
+	}
+	last := matches[len(matches)-1]
+	paragraph := fragment[last[0]:last[1]]
+	if strings.Contains(paragraph, "<w:sectPr") {
+		return fragment
+	}
+	if end := strings.LastIndex(paragraph, "</w:pPr>"); end >= 0 {
+		paragraph = paragraph[:end] + sectPr + paragraph[end:]
+	} else if start := strings.Index(paragraph, ">"); start >= 0 {
+		paragraph = paragraph[:start+1] + `<w:pPr>` + sectPr + `</w:pPr>` + paragraph[start+1:]
+	}
+	return fragment[:last[0]] + paragraph + fragment[last[1]:]
 }
 
 func renderCQRWSTFrontMatterTitle(fields map[string]string) string {
@@ -1771,6 +1816,41 @@ func selectCQRWSTBodySectPr(content string, matches [][]int) string {
 	return ensureSectPrHeaderReference(content[matches[len(matches)-1][0]:matches[len(matches)-1][1]], headerReference)
 }
 
+func selectCQRWSTFrontMatterSectPr(content string, matches [][]int) string {
+	if len(matches) == 0 {
+		return ""
+	}
+	headerReference := firstCQRWSTHeaderReference(content, matches)
+	footerReference := firstCQRWSTRomanFooterReference(content, matches)
+	for _, match := range matches {
+		sectPr := content[match[0]:match[1]]
+		if (strings.Contains(sectPr, `w:fmt="upperRoman"`) || strings.Contains(sectPr, `w:fmt="lowerRoman"`)) && strings.Contains(sectPr, `w:start="1"`) {
+			return ensureSectPrFooterReference(ensureSectPrHeaderReference(sectPr, headerReference), footerReference)
+		}
+	}
+	for _, match := range matches {
+		sectPr := content[match[0]:match[1]]
+		if strings.Contains(sectPr, `w:fmt="upperRoman"`) || strings.Contains(sectPr, `w:fmt="lowerRoman"`) {
+			sectPr = regexp.MustCompile(`<w:pgNumType\b[^>]*/>`).ReplaceAllString(sectPr, `<w:pgNumType w:fmt="upperRoman" w:start="1"/>`)
+			return ensureSectPrFooterReference(ensureSectPrHeaderReference(sectPr, headerReference), footerReference)
+		}
+	}
+	return ""
+}
+
+func firstCQRWSTRomanFooterReference(content string, matches [][]int) string {
+	for _, match := range matches {
+		sectPr := content[match[0]:match[1]]
+		if !(strings.Contains(sectPr, `w:fmt="upperRoman"`) || strings.Contains(sectPr, `w:fmt="lowerRoman"`)) {
+			continue
+		}
+		if footer := regexp.MustCompile(`<w:footerReference\b[^>]*/>`).FindString(sectPr); footer != "" {
+			return footer
+		}
+	}
+	return ""
+}
+
 func firstCQRWSTHeaderReference(content string, matches [][]int) string {
 	for _, match := range matches {
 		sectPr := content[match[0]:match[1]]
@@ -1790,6 +1870,17 @@ func ensureSectPrHeaderReference(sectPr string, headerReference string) string {
 		return sectPr
 	}
 	return sectPr[:start+1] + headerReference + sectPr[start+1:]
+}
+
+func ensureSectPrFooterReference(sectPr string, footerReference string) string {
+	if strings.TrimSpace(footerReference) == "" || strings.Contains(sectPr, "<w:footerReference") {
+		return sectPr
+	}
+	start := strings.Index(sectPr, ">")
+	if start < 0 {
+		return sectPr
+	}
+	return sectPr[:start+1] + footerReference + sectPr[start+1:]
 }
 
 func renderCQRWSTCoverPage(fields map[string]string) string {
