@@ -15,7 +15,7 @@ const (
 )
 
 type TokenBlacklist struct {
-	ID        uuid.UUID `gorm:"type:uuid;primary_key;default:uuid_generate_v4()" json:"id"`
+	ID        uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
 	Token     string    `gorm:"type:varchar(1000);uniqueIndex;not null" json:"token"`
 	TokenType TokenType `gorm:"type:varchar(20);not null;index" json:"token_type"`
 	UserID    uuid.UUID `gorm:"type:uuid;not null;index" json:"user_id"`

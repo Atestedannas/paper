@@ -8,6 +8,7 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8002/health}"
 HEALTH_RETRIES="${HEALTH_RETRIES:-60}"
 ARTIFACT_PATH="${1:-/tmp/paper-server.new}"
 APP_PATH="${DEPLOY_DIR}/paper-server"
+ARTIFACT_DIR="$(cd "$(dirname "$ARTIFACT_PATH")" && pwd)"
 BACKUP_PATH="${APP_PATH}.backup-$(date +%Y%m%d-%H%M%S)"
 
 log() {
@@ -96,6 +97,9 @@ systemctl stop "$SERVICE_NAME" || true
 
 log "install new binary -> ${APP_PATH}"
 install -m 0755 -o root -g root "$ARTIFACT_PATH" "$APP_PATH"
+if [ -f "${ARTIFACT_DIR}/config/casbin_model.conf" ]; then
+  install -D -m 0644 -o root -g root "${ARTIFACT_DIR}/config/casbin_model.conf" "${DEPLOY_DIR}/config/casbin_model.conf"
+fi
 
 log "start ${SERVICE_NAME}"
 if ! systemctl start "$SERVICE_NAME"; then

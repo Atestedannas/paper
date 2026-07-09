@@ -51,7 +51,9 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o output/paper-server ./cmd/server
           chmod +x output/paper-server scripts/deploy_backend_systemd.sh
           cp scripts/deploy_backend_systemd.sh output/deploy_backend_systemd.sh
-          tar -cf - -C output paper-server deploy_backend_systemd.sh | gzip -9 > output/paper-backend-deploy.tar.gz
+          mkdir -p output/config
+          cp config/casbin_model.conf output/config/casbin_model.conf
+          tar -cf - -C output paper-server deploy_backend_systemd.sh config/casbin_model.conf | gzip -9 > output/paper-backend-deploy.tar.gz
           ls -lh output/paper-server
           ls -lh output/paper-backend-deploy.tar.gz
 
