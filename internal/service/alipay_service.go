@@ -178,7 +178,11 @@ func (s *AlipayService) gatewayURL() string {
 
 // ExchangeCodeForToken 用授权码换取访问令牌
 func (s *AlipayService) ExchangeCodeForToken(code string) (*AlipayAccessToken, error) {
-	params := s.buildAccessTokenParams(code)
+	return s.ExchangeCodeForTokenWithRedirectURL(code, s.config.RedirectURL)
+}
+
+func (s *AlipayService) ExchangeCodeForTokenWithRedirectURL(code, redirectURL string) (*AlipayAccessToken, error) {
+	params := s.buildAccessTokenParamsWithRedirectURL(code, redirectURL)
 
 	if s.config.AppPrivateKey != "" {
 		sign, err := s.generateSign(params)
@@ -204,6 +208,10 @@ func (s *AlipayService) ExchangeCodeForToken(code string) (*AlipayAccessToken, e
 }
 
 func (s *AlipayService) buildAccessTokenParams(code string) url.Values {
+	return s.buildAccessTokenParamsWithRedirectURL(code, s.config.RedirectURL)
+}
+
+func (s *AlipayService) buildAccessTokenParamsWithRedirectURL(code, redirectURL string) url.Values {
 	params := url.Values{}
 	params.Set("app_id", s.config.AppID)
 	params.Set("method", "alipay.system.oauth.token")
@@ -214,7 +222,7 @@ func (s *AlipayService) buildAccessTokenParams(code string) url.Values {
 	params.Set("version", "1.0")
 	params.Set("grant_type", "authorization_code")
 	params.Set("code", code)
-	params.Set("redirect_uri", s.config.RedirectURL)
+	params.Set("redirect_uri", redirectURL)
 	params.Set("scope", s.effectiveScope())
 	return params
 }
@@ -429,14 +437,26 @@ func (s *AlipayService) GenerateQRCodeURLWithState(state string) (string, error)
 	return s.buildAuthorizeURL(state)
 }
 
+func (s *AlipayService) GenerateQRSessionURLWithState(state string) (string, error) {
+	return s.buildAuthorizeURLWithRedirect(state, s.effectiveQRRedirectURL())
+}
+
+func (s *AlipayService) QRRedirectURL() string {
+	return s.effectiveQRRedirectURL()
+}
+
 func (s *AlipayService) buildAuthorizeURL(state string) (string, error) {
+	return s.buildAuthorizeURLWithRedirect(state, s.config.RedirectURL)
+}
+
+func (s *AlipayService) buildAuthorizeURLWithRedirect(state, redirect string) (string, error) {
 	if strings.TrimSpace(s.config.AppID) == "" {
 		return "", fmt.Errorf("alipay login is not configured: missing app id")
 	}
-	if strings.TrimSpace(s.config.RedirectURL) == "" {
+	if strings.TrimSpace(redirect) == "" {
 		return "", fmt.Errorf("alipay login is not configured: missing redirect url")
 	}
-	redirectURL, err := url.Parse(strings.TrimSpace(s.config.RedirectURL))
+	redirectURL, err := url.Parse(strings.TrimSpace(redirect))
 	if err != nil || redirectURL.Scheme != "https" || redirectURL.Host == "" {
 		return "", fmt.Errorf("alipay login redirect url must be a public https url")
 	}
@@ -446,12 +466,20 @@ func (s *AlipayService) buildAuthorizeURL(state string) (string, error) {
 
 	params := url.Values{}
 	params.Add("app_id", s.config.AppID)
-	params.Add("redirect_uri", s.config.RedirectURL)
+	params.Add("redirect_uri", redirect)
 	params.Add("response_type", "code")
 	params.Add("scope", s.effectiveScope())
 	params.Add("state", state)
 
 	return fmt.Sprintf("%s?%s", s.config.AuthorizeURL, params.Encode()), nil
+}
+
+func (s *AlipayService) effectiveQRRedirectURL() string {
+	redirect := strings.TrimSpace(s.config.QRRedirectURL)
+	if redirect != "" {
+		return redirect
+	}
+	return s.config.RedirectURL
 }
 
 func (s *AlipayService) effectiveScope() string {

@@ -82,6 +82,14 @@ func (s *AlipayQRLoginSessionStore) Get(sessionID string) (*AlipayQRLoginSession
 	return &copySession, true
 }
 
+func (s *AlipayQRLoginSessionStore) HasState(state string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	_, ok := s.stateToID[state]
+	return ok
+}
+
 func (s *AlipayQRLoginSessionStore) AuthorizeByState(state, accessToken, refreshToken, tokenType string, expiresIn int64, user *model.User) (*AlipayQRLoginSession, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -42,6 +42,24 @@ func TestAlipayQRCodeURLUsesAuthUserScope(t *testing.T) {
 	}
 }
 
+func TestAlipayQRSessionURLCanUseBackendRedirectURL(t *testing.T) {
+	cfg := testAlipayConfig()
+	cfg.Alipay.RedirectURL = "https://example.com/auth/callback/alipay"
+	cfg.Alipay.QRRedirectURL = "https://example.com/api/v1/auth/alipay/callback"
+
+	loginURL, err := NewAlipayService(cfg).GenerateQRSessionURLWithState("alipay_qr_session-1")
+	if err != nil {
+		t.Fatalf("GenerateQRSessionURLWithState returned error: %v", err)
+	}
+	parsed, err := url.Parse(loginURL)
+	if err != nil {
+		t.Fatalf("generated invalid url: %v", err)
+	}
+	if got := parsed.Query().Get("redirect_uri"); got != cfg.Alipay.QRRedirectURL {
+		t.Fatalf("redirect_uri = %q, want QR redirect %q", got, cfg.Alipay.QRRedirectURL)
+	}
+}
+
 func TestAlipayQRCodeURLRequiresRedirectURL(t *testing.T) {
 	cfg := testAlipayConfig()
 	cfg.Alipay.RedirectURL = ""

@@ -123,6 +123,7 @@ type AlipayConfig struct {
 	NotifyURL            string `mapstructure:"notify_url"`
 	ReturnURL            string `mapstructure:"return_url"`
 	RedirectURL          string `mapstructure:"redirect_url"`
+	QRRedirectURL        string `mapstructure:"qr_redirect_url"`
 	Scope                string `mapstructure:"scope"`
 	AuthorizeURL         string `mapstructure:"authorize_url"`
 	GatewayURL           string `mapstructure:"gateway_url"`
@@ -190,6 +191,7 @@ func LoadConfig(configPath string) (*Config, error) {
 			NotifyURL:         "",
 			ReturnURL:         "",
 			RedirectURL:       "",
+			QRRedirectURL:     "",
 			Scope:             "auth_user",
 			AuthorizeURL:      "https://openauth.alipay.com/oauth2/publicAppAuthorize.htm",
 			GatewayURL:        "https://openapi.alipay.com/gateway.do",
@@ -330,6 +332,9 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 	if alipayRedirectURL := os.Getenv("ALIPAY_REDIRECT_URL"); alipayRedirectURL != "" {
 		config.Alipay.RedirectURL = alipayRedirectURL
+	}
+	if alipayQRRedirectURL := os.Getenv("ALIPAY_QR_REDIRECT_URL"); alipayQRRedirectURL != "" {
+		config.Alipay.QRRedirectURL = alipayQRRedirectURL
 	}
 	if alipayScope := os.Getenv("ALIPAY_SCOPE"); alipayScope != "" {
 		config.Alipay.Scope = alipayScope

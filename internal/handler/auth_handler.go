@@ -65,7 +65,7 @@ func NewAuthHandler(config *config.Config, db *gorm.DB) *AuthHandler {
 // GetAlipayQRSession creates a pollable QR login session.
 func (h *AuthHandler) GetAlipayQRSession(c *gin.Context) {
 	session := service.NewAlipayQRLoginSession(10 * time.Minute)
-	alipayAuthURL, err := h.alipayService.GenerateQRCodeURLWithState(session.State)
+	alipayAuthURL, err := h.alipayService.GenerateQRSessionURLWithState(session.State)
 	if err != nil {
 		utils.InternalServerError(c, "failed to generate alipay auth url: "+err.Error())
 		return
@@ -366,7 +366,11 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 	alipayService := service.NewAlipayService(h.config)
 
 	// 用授权码换取访问令牌
-	token, err := alipayService.ExchangeCodeForToken(code)
+	redirectURL := h.config.Alipay.RedirectURL
+	if h.alipayQRSessionStore.HasState(state) {
+		redirectURL = alipayService.QRRedirectURL()
+	}
+	token, err := alipayService.ExchangeCodeForTokenWithRedirectURL(code, redirectURL)
 	if err != nil {
 		if h.failAlipayQRSession(c, state, "failed to exchange code for token: "+err.Error()) {
 			return
