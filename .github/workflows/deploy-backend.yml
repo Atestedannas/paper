@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: production-backend
@@ -85,11 +86,21 @@ jobs:
           ssh -v -o BatchMode=yes -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o ConnectTimeout=20 -o ConnectionAttempts=2 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
             "set -e; echo '[deploy] ssh connected'; mkdir -p /tmp; test -w /tmp"
 
-      - name: Upload artifact
+      - name: Store deploy artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-backend-deploy
+          path: output/paper-backend-deploy.tar.gz
+          retention-days: 1
+
+      - name: Download artifact on server
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACTS_URL: ${{ github.api_url }}/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts
         run: |
-          set -eux
-          ls -lh output/paper-backend-deploy.tar.gz
-          timeout 600s ssh -v -T \
+          artifact_url="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$ARTIFACTS_URL" | jq -r '.artifacts[] | select(.name=="paper-backend-deploy") | .archive_download_url' | head -n1)"
+          test -n "$artifact_url"
+          ssh -T \
             -o BatchMode=yes \
             -o ConnectTimeout=20 \
             -o ServerAliveInterval=10 \
@@ -100,8 +111,7 @@ jobs:
             -p "$PROD_PORT" \
             -i ~/.ssh/deploy_key \
             "$PROD_USER@$PROD_HOST" \
-            "rm -f /tmp/paper-backend-deploy.tar.gz; cat > /tmp/paper-backend-deploy.tar.gz; ls -lh /tmp/paper-backend-deploy.tar.gz" \
-            < output/paper-backend-deploy.tar.gz
+            "set -e; rm -rf /tmp/paper-backend-artifact /tmp/paper-backend-artifact.zip; mkdir -p /tmp/paper-backend-artifact; curl -fsSL -H 'Authorization: Bearer $GH_TOKEN' '$artifact_url' -o /tmp/paper-backend-artifact.zip; python3 -m zipfile -e /tmp/paper-backend-artifact.zip /tmp/paper-backend-artifact; mv /tmp/paper-backend-artifact/paper-backend-deploy.tar.gz /tmp/paper-backend-deploy.tar.gz; ls -lh /tmp/paper-backend-deploy.tar.gz"
 
       - name: Deploy with systemd rollback
         run: |
