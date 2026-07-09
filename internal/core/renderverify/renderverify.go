@@ -39,6 +39,10 @@ type Renderer interface {
 	RenderPDF(ctx context.Context, docxPath string, outputDir string) (PDFArtifact, error)
 }
 
+type Rasterizer interface {
+	RasterizePDF(ctx context.Context, pdfPath string, outputDir string) ([]string, error)
+}
+
 type TextExtractor interface {
 	ExtractPageTexts(pdfPath string) ([]string, error)
 }
@@ -54,6 +58,8 @@ type Options struct {
 	Strict          bool
 	OutputDir       string
 	Renderer        Renderer
+	Rasterizer      Rasterizer
+	PNGOutputDir    string
 	TextExtractor   TextExtractor
 	RequiredText    []string
 	ForbiddenText   []string
@@ -66,6 +72,7 @@ type Result struct {
 	Enabled   bool     `json:"enabled"`
 	Passed    bool     `json:"passed"`
 	PDFPath   string   `json:"pdf_path,omitempty"`
+	PNGPaths  []string `json:"png_paths,omitempty"`
 	PageCount int      `json:"page_count"`
 	Issues    []Issue  `json:"issues,omitempty"`
 	PageTexts []string `json:"-"`
@@ -121,6 +128,24 @@ func Check(ctx context.Context, docxPath string, options Options) (Result, error
 		return result, nil
 	}
 	result.PDFPath = artifact.Path
+
+	if strings.TrimSpace(options.PNGOutputDir) != "" {
+		rasterizer := options.Rasterizer
+		if rasterizer == nil {
+			rasterizer = PopplerRasterizer{}
+		}
+		pngPaths, err := rasterizer.RasterizePDF(ctx, artifact.Path, options.PNGOutputDir)
+		if err != nil {
+			result.Issues = append(result.Issues, Issue{
+				Kind:     "render_png",
+				Severity: severityForStrict(options.Strict),
+				Message:  fmt.Sprintf("render PDF pages to PNG failed: %v", err),
+				Target:   artifact.Path,
+			})
+		} else {
+			result.PNGPaths = pngPaths
+		}
+	}
 
 	pageTexts, err := extractor.ExtractPageTexts(artifact.Path)
 	if err != nil {
@@ -179,6 +204,89 @@ func (r LibreOfficeRenderer) RenderPDF(ctx context.Context, docxPath string, out
 		return PDFArtifact{}, fmt.Errorf("soffice output missing at %s: %w, output: %s", expected, err, strings.TrimSpace(string(output)))
 	}
 	return PDFArtifact{Path: expected}, nil
+}
+
+type PopplerRasterizer struct {
+	Binary string
+	DPI    int
+}
+
+func (r PopplerRasterizer) RasterizePDF(ctx context.Context, pdfPath string, outputDir string) ([]string, error) {
+	binary, err := r.resolveBinary()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create png output dir: %w", err)
+	}
+	dpi := r.DPI
+	if dpi <= 0 {
+		dpi = 120
+	}
+	prefix := filepath.Join(outputDir, "page")
+	for _, old := range mustGlob(prefix + "-*.png") {
+		_ = os.Remove(old)
+	}
+	cmd := exec.CommandContext(ctx, binary, "-png", "-r", strconv.Itoa(dpi), pdfPath, prefix)
+	if runtime.GOOS == "windows" {
+		cmd.Env = append(os.Environ(), "PATH="+filepath.Dir(binary)+";"+os.Getenv("PATH"))
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("pdftoppm: %w, binary=%s pdf_exists=%t output_dir_exists=%t prefix=%s output: %s", err, binary, fileExists(pdfPath), dirExists(outputDir), prefix, strings.TrimSpace(string(output)))
+	}
+	paths := mustGlob(prefix + "-*.png")
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("pdftoppm produced no PNG pages")
+	}
+	return paths, nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func (r PopplerRasterizer) resolveBinary() (string, error) {
+	if strings.TrimSpace(r.Binary) != "" {
+		if _, err := os.Stat(r.Binary); err == nil {
+			return r.Binary, nil
+		}
+		return "", fmt.Errorf("configured pdftoppm binary missing: %s", r.Binary)
+	}
+	if custom := strings.TrimSpace(os.Getenv("PDFTOPPM_BIN")); custom != "" {
+		if _, err := os.Stat(custom); err == nil {
+			return custom, nil
+		}
+		return "", fmt.Errorf("PDFTOPPM_BIN set but file missing: %s", custom)
+	}
+	if runtime.GOOS == "windows" {
+		if home, err := os.UserHomeDir(); err == nil {
+			candidate := filepath.Join(home, ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "native", "poppler", "Library", "bin", "pdftoppm.exe")
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
+		}
+	}
+	for _, candidate := range []string{"pdftoppm.exe", "pdftoppm"} {
+		if path, err := exec.LookPath(candidate); err == nil && !strings.HasSuffix(strings.ToLower(path), ".cmd") {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("pdftoppm not found")
+}
+
+func mustGlob(pattern string) []string {
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil
+	}
+	return paths
 }
 
 func createLibreOfficeProfileDir(outputDir string) (string, func(), error) {
@@ -294,6 +402,7 @@ func validateRenderedText(result *Result, options Options) {
 	for _, rule := range options.SamePageRules {
 		leftPage := findPage(result.PageTexts, rule.LeftText)
 		rightPage := findPage(result.PageTexts, rule.RightText)
+		sharedPage := findSharedPage(result.PageTexts, rule.LeftText, rule.RightText)
 		if leftPage == 0 || rightPage == 0 {
 			result.Issues = append(result.Issues, Issue{
 				Kind:     "same_page_landmark_missing",
@@ -303,7 +412,7 @@ func validateRenderedText(result *Result, options Options) {
 			})
 			continue
 		}
-		if leftPage != rightPage {
+		if sharedPage == 0 {
 			result.Issues = append(result.Issues, Issue{
 				Kind:     "same_page_rule_failed",
 				Severity: SeverityError,
@@ -395,6 +504,21 @@ func findPage(pageTexts []string, needle string) int {
 	}
 	for index, pageText := range pageTexts {
 		if strings.Contains(normalizeText(pageText), needle) {
+			return index + 1
+		}
+	}
+	return 0
+}
+
+func findSharedPage(pageTexts []string, left string, right string) int {
+	left = normalizeText(left)
+	right = normalizeText(right)
+	if left == "" || right == "" {
+		return 0
+	}
+	for index, pageText := range pageTexts {
+		text := normalizeText(pageText)
+		if strings.Contains(text, left) && strings.Contains(text, right) {
 			return index + 1
 		}
 	}

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -46,10 +47,22 @@ const cqrwstTemplateTransplantEnabledEnv = "CQRWST_TEMPLATE_TRANSPLANT_ENABLED"
 
 var renderedChineseTotalFooterPattern = regexp.MustCompile(`第(\d+)页共(\d+)页`)
 var numPagesFieldBlockPattern = regexp.MustCompile(`(?s)<w:r><w:fldChar\b[^>]*w:fldCharType="begin"[^>]*/></w:r>\s*<w:r><w:instrText\b[^>]*>\s*NUMPAGES\b.*?</w:instrText></w:r>\s*<w:r><w:fldChar\b[^>]*w:fldCharType="separate"[^>]*/></w:r>\s*<w:r><w:t\b[^>]*>.*?</w:t></w:r>\s*<w:r><w:fldChar\b[^>]*w:fldCharType="end"[^>]*/></w:r>`)
+var materializedTotalPagePattern = regexp.MustCompile(`(?s)(共\s*</w:t></w:r>\s*<w:r><w:t\b[^>]*>)\d+(</w:t>)`)
 var manualCaptionLinePattern = regexp.MustCompile(`^\s*([图表])\s*(\d+)(?:[-.．](\d+))?\s+(.+)$`)
+var captionReferencePattern = regexp.MustCompile(`([图表])\s*(\d+)(?:[-.．](\d+))?`)
+var continuedTableCaptionLinePattern = regexp.MustCompile(`^\s*\x{7eed}\x{8868}\s*(\d+)[-.\x{ff0e}](\d+)\s+(.+)$`)
 var workflowParagraphPattern = regexp.MustCompile(`(?s)<w:p\b[^>]*>.*?</w:p>`)
+var workflowRunPattern = regexp.MustCompile(`(?s)<w:r\b[^>]*>.*?</w:r>`)
 var workflowTextRunPattern = regexp.MustCompile(`(?s)<w:t\b[^>]*>.*?</w:t>`)
 var workflowTextValuePattern = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
+var workflowBookmarkStartIDPattern = regexp.MustCompile(`<w:bookmarkStart\b[^>]*\bw:id="(\d+)"`)
+var workflowBookmarkStartPattern = regexp.MustCompile(`<w:bookmarkStart\b[^>]*\bw:name="([^"]+)"[^>]*/>`)
+var workflowAlternateContentPattern = regexp.MustCompile(`(?s)<mc:AlternateContent\b.*?</mc:AlternateContent>`)
+var workflowDrawingExtentPattern = regexp.MustCompile(`<(?:wp:extent|a:ext)\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"[^>]*/>`)
+var renderedCurrentBodyPagePattern = regexp.MustCompile(`\x{7b2c}\s*(\d+)\s*\x{9875}\s*\x{5171}`)
+var renderedHeadingPattern = regexp.MustCompile(`^(\d+(?:\.\d+){0,2})\s*(\S.*)$`)
+var renderedHeadingNumberPattern = regexp.MustCompile(`^\d+(?:\.\d+){0,2}$`)
+var renderedTOCEntryWithPagePattern = regexp.MustCompile(`\s\d+$`)
 
 type WorkflowJobView struct {
 	ID                 uuid.UUID `json:"id"`
@@ -59,6 +72,23 @@ type WorkflowJobView struct {
 	Status             string    `json:"status"`
 	Stage              string    `json:"stage"`
 	DownloadPath       string    `json:"download_path"`
+	DownloadURL        string    `json:"download_url,omitempty"`
+}
+
+type CompiledTemplateView struct {
+	ID              uuid.UUID `json:"id"`
+	SchoolID        string    `json:"school_id"`
+	TemplateName    string    `json:"template_name"`
+	TemplateVersion string    `json:"template_version"`
+	SkeletonPath    string    `json:"skeleton_path"`
+	Status          string    `json:"status"`
+}
+
+type CompileTemplateInput struct {
+	SchoolID     string
+	TemplateName string
+	Version      string
+	FilePath     string
 }
 
 type CreatePaperJobInput struct {
@@ -71,6 +101,7 @@ type CreatePaperJobInput struct {
 }
 
 type PaperWorkflowService interface {
+	CompileTemplate(ctx context.Context, input CompileTemplateInput) (*CompiledTemplateView, error)
 	CreatePaperJob(ctx context.Context, input CreatePaperJobInput) (*WorkflowJobView, error)
 	RunJob(ctx context.Context, id string, userID uuid.UUID) (*WorkflowJobView, error)
 	GetJob(id string) (*WorkflowJobView, error)
@@ -91,6 +122,64 @@ func NewPaperWorkflowServiceWithOutputRoot(db *gorm.DB, outputRoot string) Paper
 		outputRoot = defaultWorkflowOutputRoot
 	}
 	return &paperWorkflowService{db: db, outputRoot: outputRoot}
+}
+
+func (s *paperWorkflowService) CompileTemplate(ctx context.Context, input CompileTemplateInput) (*CompiledTemplateView, error) {
+	if err := s.validateReady(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.ensureWorkflowTables(ctx); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(input.FilePath) == "" {
+		return nil, ErrInvalidPaperUpload
+	}
+	if strings.TrimSpace(input.SchoolID) == "" {
+		input.SchoolID = "single-template"
+	}
+	if strings.TrimSpace(input.TemplateName) == "" {
+		input.TemplateName = filepath.Base(input.FilePath)
+	}
+	if strings.TrimSpace(input.Version) == "" {
+		input.Version = "runtime"
+	}
+
+	compiled, err := templatecompile.NewCompiler().Compile(ctx, input.FilePath, templatecompile.CompileOptions{
+		SchoolID:     input.SchoolID,
+		TemplateName: input.TemplateName,
+		Version:      input.Version,
+		OutputDir:    filepath.Join(s.outputRoot, "_compiled_templates"),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	record := model.CompiledTemplate{
+		ID:                    uuid.New(),
+		SchoolID:              compiled.Manifest.SchoolID,
+		TemplateName:          compiled.Manifest.TemplateName,
+		TemplateVersion:       compiled.Manifest.Version,
+		SourceFilePath:        input.FilePath,
+		SkeletonPath:          compiled.SkeletonPath,
+		ManifestJSON:          mustWorkflowJSON(compiled.Manifest),
+		BlockCatalogJSON:      mustWorkflowJSON(compiled.BlockCatalog),
+		StyleProfilesJSON:     mustWorkflowJSON(compiled.StyleProfiles),
+		MappingContractJSON:   mustWorkflowJSON(compiled.MappingContract),
+		VerificationRulesJSON: mustWorkflowJSON(compiled.VerificationRules),
+		PatchTargetsJSON:      mustWorkflowJSON(compiled.PatchTargets),
+		Status:                "compiled",
+	}
+	if err := s.db.WithContext(ctx).Create(&record).Error; err != nil {
+		return nil, err
+	}
+	return &CompiledTemplateView{
+		ID:              record.ID,
+		SchoolID:        record.SchoolID,
+		TemplateName:    record.TemplateName,
+		TemplateVersion: record.TemplateVersion,
+		SkeletonPath:    record.SkeletonPath,
+		Status:          record.Status,
+	}, nil
 }
 
 func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreatePaperJobInput) (*WorkflowJobView, error) {
@@ -254,6 +343,30 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			return nil, err
 		}
 	}
+	if repaired, repairErr := repairManualCrossReferenceFields(outputPath, result.VerifyResult); repairErr != nil {
+		return nil, repairErr
+	} else if repaired {
+		result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if repaired, repairErr := repairRenderedPageFooterTotal(outputPath, result.VerifyResult); repairErr != nil {
+		return nil, repairErr
+	} else if repaired {
+		result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if repaired, repairErr := repairRenderedTOCPageNumbers(outputPath, result.VerifyResult); repairErr != nil {
+		return nil, repairErr
+	} else if repaired {
+		result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
+		if err != nil {
+			return nil, err
+		}
+	}
 	if result.Status != workflow.StatusVerifiedPass && shouldRunCQRWSTPostFix() {
 		if _, fixErr := cqrwst.FixDOCXWithTemplateProfileAndSemanticAI(ctx, outputPath, profile, newDeepSeekSemanticBlockClient()); fixErr == nil {
 			result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
@@ -312,10 +425,15 @@ func repairRenderedPageFooterTotal(outputPath string, result verify.Result) (boo
 			continue
 		}
 		content, ok := pkg.Get(name)
-		if !ok || !strings.Contains(string(content), "NUMPAGES") {
+		if !ok {
 			continue
 		}
-		updated := numPagesFieldBlockPattern.ReplaceAllString(string(content), `<w:r><w:t>`+strconv.Itoa(total)+`</w:t></w:r>`)
+		updated := string(content)
+		if strings.Contains(updated, "NUMPAGES") {
+			updated = numPagesFieldBlockPattern.ReplaceAllString(updated, `<w:r><w:t>`+strconv.Itoa(total)+`</w:t></w:r>`)
+		} else {
+			updated = materializedTotalPagePattern.ReplaceAllString(updated, `${1}`+strconv.Itoa(total)+`${2}`)
+		}
 		if updated == string(content) {
 			continue
 		}
@@ -326,6 +444,137 @@ func repairRenderedPageFooterTotal(outputPath string, result verify.Result) (boo
 		return false, nil
 	}
 	return true, pkg.Write(outputPath)
+}
+
+func repairRenderedTOCPageNumbers(outputPath string, result verify.Result) (bool, error) {
+	if result.RenderResult == nil || len(result.RenderResult.PageTexts) == 0 {
+		return false, nil
+	}
+	pageByHeading := renderedHeadingPages(result.RenderResult.PageTexts)
+	if len(pageByHeading) == 0 {
+		return false, nil
+	}
+	pkg, err := ooxmlpkg.Open(outputPath)
+	if err != nil {
+		return false, err
+	}
+	content, ok := pkg.Get("word/document.xml")
+	if !ok {
+		return false, nil
+	}
+	updated, changed := replaceTOCCachedPageNumbers(string(content), pageByHeading)
+	if !changed {
+		return false, nil
+	}
+	pkg.Set("word/document.xml", []byte(updated))
+	return true, pkg.Write(outputPath)
+}
+
+func replaceTOCCachedPageNumbers(documentXML string, pageByHeading map[string]int) (string, bool) {
+	inTOC := false
+	changed := false
+	updated := workflowParagraphPattern.ReplaceAllStringFunc(documentXML, func(paragraph string) string {
+		if strings.Contains(paragraph, `TOC \o "1-3"`) || strings.Contains(paragraph, " TOC ") {
+			inTOC = true
+			return paragraph
+		}
+		if inTOC && strings.Contains(paragraph, `w:fldCharType="end"`) {
+			inTOC = false
+			return paragraph
+		}
+		if !inTOC || strings.Contains(paragraph, "<w:instrText") {
+			return paragraph
+		}
+		text := tocCacheHeadingText(paragraph)
+		key := canonicalRenderedHeadingKey(text)
+		page := pageByHeading[key]
+		if key == "" || page <= 0 || renderedTOCEntryWithPagePattern.MatchString(text) {
+			return paragraph
+		}
+		changed = true
+		return replaceFirstWorkflowText(paragraph, text+"    "+strconv.Itoa(page))
+	})
+	return updated, changed
+}
+
+func tocCacheHeadingText(paragraph string) string {
+	text := strings.TrimSpace(workflowParagraphText(paragraph))
+	if !strings.Contains(paragraph, "<w:tab") {
+		return text
+	}
+	matches := workflowTextValuePattern.FindAllStringSubmatch(paragraph, -1)
+	if len(matches) == 0 || len(matches[0]) < 2 {
+		return text
+	}
+	return strings.TrimSpace(html.UnescapeString(matches[0][1]))
+}
+
+func renderedHeadingPages(pageTexts []string) map[string]int {
+	pages := map[string]int{}
+	for _, pageText := range pageTexts {
+		bodyPage := renderedCurrentBodyPage(pageText)
+		if bodyPage <= 0 {
+			continue
+		}
+		for _, line := range strings.Split(pageText, "\n") {
+			key := canonicalRenderedHeadingKey(line)
+			if key != "" && pages[key] == 0 {
+				pages[key] = bodyPage
+			}
+		}
+	}
+	return pages
+}
+
+func renderedCurrentBodyPage(pageText string) int {
+	match := renderedCurrentBodyPagePattern.FindStringSubmatch(pageText)
+	if len(match) != 2 {
+		return 0
+	}
+	page, _ := strconv.Atoi(match[1])
+	return page
+}
+
+func canonicalRenderedHeadingKey(text string) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	fields := strings.Fields(text)
+	if len(fields) >= 3 && fields[0] == fields[1] && renderedHeadingNumberPattern.MatchString(fields[0]) {
+		text = fields[0] + " " + strings.Join(fields[2:], " ")
+	}
+	match := renderedHeadingPattern.FindStringSubmatch(text)
+	if len(match) != 3 {
+		return ""
+	}
+	return strings.ReplaceAll(match[1]+" "+match[2], " ", "")
+}
+
+func replaceFirstWorkflowText(paragraph string, text string) string {
+	if strings.Contains(paragraph, "<w:tab") {
+		return replaceTOCTabbedWorkflowText(paragraph, text)
+	}
+	match := workflowTextValuePattern.FindStringSubmatchIndex(paragraph)
+	if len(match) < 4 {
+		return paragraph
+	}
+	return paragraph[:match[2]] + html.EscapeString(text) + paragraph[match[3]:]
+}
+
+func replaceTOCTabbedWorkflowText(paragraph string, text string) string {
+	fields := strings.Fields(text)
+	if len(fields) < 2 {
+		return paragraph
+	}
+	page := fields[len(fields)-1]
+	heading := strings.Join(fields[:len(fields)-1], " ")
+	matches := workflowTextValuePattern.FindAllStringSubmatchIndex(paragraph, -1)
+	if len(matches) < 2 {
+		return paragraph
+	}
+	first := matches[0]
+	last := matches[len(matches)-1]
+	updated := paragraph[:last[2]] + html.EscapeString(page) + paragraph[last[3]:]
+	first = workflowTextValuePattern.FindAllStringSubmatchIndex(updated, -1)[0]
+	return updated[:first[2]] + html.EscapeString(heading) + updated[first[3]:]
 }
 
 func repairManualCaptionFields(outputPath string, result verify.Result) (bool, error) {
@@ -350,10 +599,21 @@ func repairManualCaptionFields(outputPath string, result verify.Result) (bool, e
 
 func replaceManualCaptionFields(documentXML string) (string, bool) {
 	changed := false
+	nextBookmarkID := nextWorkflowBookmarkID(documentXML)
+	lastTableBookmark := ""
 	updated := workflowParagraphPattern.ReplaceAllStringFunc(documentXML, func(paragraph string) string {
-		replaced, ok := replaceManualCaptionParagraph(paragraph)
+		if replaced, ok := replaceContinuedTableCaptionParagraph(paragraph, lastTableBookmark); ok {
+			changed = true
+			return replaced
+		}
+		replaced, ok := replaceManualCaptionParagraph(paragraph, nextBookmarkID)
 		if ok {
 			changed = true
+			text := strings.TrimSpace(workflowParagraphText(paragraph))
+			if match := manualCaptionLinePattern.FindStringSubmatch(text); len(match) == 5 && match[1] == "\u8868" {
+				lastTableBookmark = workflowCaptionBookmarkName(match[1], match[2], match[3])
+			}
+			nextBookmarkID++
 			return replaced
 		}
 		return paragraph
@@ -361,7 +621,31 @@ func replaceManualCaptionFields(documentXML string) (string, bool) {
 	return updated, changed
 }
 
-func replaceManualCaptionParagraph(paragraph string) (string, bool) {
+func replaceContinuedTableCaptionParagraph(paragraph string, bookmark string) (string, bool) {
+	if bookmark == "" || strings.Contains(paragraph, "<w:instrText") {
+		return paragraph, false
+	}
+	textRun := workflowTextRunPattern.FindStringIndex(paragraph)
+	if textRun == nil {
+		return paragraph, false
+	}
+	firstText := workflowTextValue(paragraph[textRun[0]:textRun[1]])
+	match := continuedTableCaptionLinePattern.FindStringSubmatch(strings.TrimSpace(firstText))
+	if len(match) != 4 {
+		return paragraph, false
+	}
+	runStart, runEnd, ok := workflowRunBoundsContaining(paragraph, textRun[0], textRun[1])
+	if !ok {
+		return paragraph, false
+	}
+	rPr := firstRunProperties(paragraph[runStart:runEnd])
+	replacement := workflowTextRun("\u7eed", rPr) +
+		workflowRefFieldRuns(bookmark, "\u8868"+match[1]+"-"+match[2], rPr) +
+		workflowTextRun(" "+match[3], rPr)
+	return paragraph[:runStart] + replacement + paragraph[runEnd:], true
+}
+
+func replaceManualCaptionParagraph(paragraph string, bookmarkID int) (string, bool) {
 	if strings.Contains(paragraph, "<w:instrText") && strings.Contains(paragraph, "SEQ") {
 		return paragraph, false
 	}
@@ -374,18 +658,27 @@ func replaceManualCaptionParagraph(paragraph string) (string, bool) {
 	if len(match) != 5 {
 		return paragraph, false
 	}
-	runStart := strings.LastIndex(paragraph[:textRun[0]], "<w:r")
-	if runStart < 0 {
+	runStart, runEnd, ok := workflowRunBoundsContaining(paragraph, textRun[0], textRun[1])
+	if !ok {
 		return paragraph, false
 	}
-	runEndRelative := strings.Index(paragraph[textRun[1]:], "</w:r>")
-	if runEndRelative < 0 {
-		return paragraph, false
-	}
-	runEnd := textRun[1] + runEndRelative + len("</w:r>")
 	rPr := firstRunProperties(paragraph[runStart:runEnd])
-	replacement := captionFieldRuns(match[1], match[2], match[3], match[4], rPr)
-	return paragraph[:runStart] + replacement + paragraph[runEnd:], true
+	bookmarkName := workflowCaptionBookmarkName(match[1], match[2], match[3])
+	replacement := fmt.Sprintf(`<w:bookmarkStart w:id="%d" w:name="%s"/>`, bookmarkID, bookmarkName) +
+		captionFieldRuns(match[1], match[2], match[3], "", rPr) +
+		fmt.Sprintf(`<w:bookmarkEnd w:id="%d"/>`, bookmarkID) +
+		workflowTextRun(" "+match[4], rPr)
+	replaced := paragraph[:runStart] + replacement + paragraph[runEnd:]
+	return replaced, true
+}
+
+func workflowRunBoundsContaining(paragraph string, start int, end int) (int, int, bool) {
+	for _, bounds := range workflowRunPattern.FindAllStringIndex(paragraph, -1) {
+		if len(bounds) == 2 && bounds[0] <= start && bounds[1] >= end {
+			return bounds[0], bounds[1], true
+		}
+	}
+	return 0, 0, false
 }
 
 func workflowTextValue(textRun string) string {
@@ -394,6 +687,16 @@ func workflowTextValue(textRun string) string {
 		return ""
 	}
 	return html.UnescapeString(match[1])
+}
+
+func workflowParagraphText(paragraph string) string {
+	var builder strings.Builder
+	for _, match := range workflowTextValuePattern.FindAllStringSubmatch(paragraph, -1) {
+		if len(match) == 2 {
+			builder.WriteString(html.UnescapeString(match[1]))
+		}
+	}
+	return builder.String()
 }
 
 func firstRunProperties(run string) string {
@@ -412,13 +715,16 @@ func captionFieldRuns(label string, chapter string, ordinal string, title string
 		prefix += chapter + "-"
 		instruction = " SEQ " + label + ` \* ARABIC \s 1 `
 	}
-	return workflowTextRun(prefix, rPr) +
+	result := workflowTextRun(prefix, rPr) +
 		workflowFieldCharRun("begin", rPr) +
 		workflowInstrRun(instruction, rPr) +
 		workflowFieldCharRun("separate", rPr) +
 		workflowTextRun(ordinal, rPr) +
-		workflowFieldCharRun("end", rPr) +
-		workflowTextRun(" "+title, rPr)
+		workflowFieldCharRun("end", rPr)
+	if title != "" {
+		result += workflowTextRun(" "+title, rPr)
+	}
+	return result
 }
 
 func workflowTextRun(text string, rPr string) string {
@@ -431,6 +737,152 @@ func workflowInstrRun(instruction string, rPr string) string {
 
 func workflowFieldCharRun(fieldType string, rPr string) string {
 	return `<w:r>` + rPr + `<w:fldChar w:fldCharType="` + fieldType + `"/></w:r>`
+}
+
+func repairManualCrossReferenceFields(outputPath string, result verify.Result) (bool, error) {
+	if !hasWorkflowIssue(result.Warnings, "manual_cross_reference") {
+		return false, nil
+	}
+	pkg, err := ooxmlpkg.Open(outputPath)
+	if err != nil {
+		return false, err
+	}
+	content, ok := pkg.Get("word/document.xml")
+	if !ok {
+		return false, nil
+	}
+	updated, changed := replaceManualCrossReferenceFields(string(content))
+	if !changed {
+		return false, nil
+	}
+	pkg.Set("word/document.xml", []byte(updated))
+	return true, pkg.Write(outputPath)
+}
+
+func replaceManualCrossReferenceFields(documentXML string) (string, bool) {
+	bookmarks := workflowCaptionBookmarks(documentXML)
+	if len(bookmarks) == 0 {
+		return documentXML, false
+	}
+	changed := false
+	updated := workflowParagraphPattern.ReplaceAllStringFunc(documentXML, func(paragraph string) string {
+		if paragraphHasWorkflowReferenceField(paragraph) {
+			return paragraph
+		}
+		text := strings.TrimSpace(workflowParagraphText(paragraph))
+		if manualCaptionLinePattern.MatchString(text) || strings.HasPrefix(text, "续表") {
+			return paragraph
+		}
+		replaced := workflowRunPattern.ReplaceAllStringFunc(paragraph, func(run string) string {
+			runText := workflowTextValue(run)
+			if runText == "" {
+				return run
+			}
+			rPr := firstRunProperties(run)
+			converted, ok := replaceCaptionReferencesInText(runText, rPr, bookmarks)
+			if !ok {
+				return run
+			}
+			changed = true
+			return converted
+		})
+		return replaced
+	})
+	return updated, changed
+}
+
+func workflowCaptionBookmarks(documentXML string) map[string]string {
+	bookmarks := map[string]string{}
+	for _, paragraph := range workflowParagraphPattern.FindAllString(documentXML, -1) {
+		text := strings.TrimSpace(workflowParagraphText(paragraph))
+		match := captionReferencePattern.FindStringSubmatch(text)
+		if len(match) != 4 || !strings.HasPrefix(text, match[0]) {
+			continue
+		}
+		nameMatch := workflowBookmarkStartPattern.FindStringSubmatch(paragraph)
+		if len(nameMatch) != 2 {
+			continue
+		}
+		bookmarks[workflowCaptionReferenceKey(match[1], match[2], match[3])] = nameMatch[1]
+	}
+	return bookmarks
+}
+
+func replaceCaptionReferencesInText(text string, rPr string, bookmarks map[string]string) (string, bool) {
+	matches := captionReferencePattern.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return "", false
+	}
+	var builder strings.Builder
+	position := 0
+	changed := false
+	for _, match := range matches {
+		if len(match) < 8 {
+			continue
+		}
+		label := text[match[2]:match[3]]
+		chapter := text[match[4]:match[5]]
+		ordinal := ""
+		if match[6] >= 0 && match[7] >= 0 {
+			ordinal = text[match[6]:match[7]]
+		}
+		key := workflowCaptionReferenceKey(label, chapter, ordinal)
+		bookmark := bookmarks[key]
+		if bookmark == "" {
+			continue
+		}
+		builder.WriteString(workflowTextRun(text[position:match[0]], rPr))
+		display := text[match[0]:match[1]]
+		builder.WriteString(workflowRefFieldRuns(bookmark, display, rPr))
+		position = match[1]
+		changed = true
+	}
+	if !changed {
+		return "", false
+	}
+	builder.WriteString(workflowTextRun(text[position:], rPr))
+	return builder.String(), true
+}
+
+func workflowRefFieldRuns(bookmark string, display string, rPr string) string {
+	return workflowFieldCharRun("begin", rPr) +
+		workflowInstrRun(" REF "+bookmark+` \h `, rPr) +
+		workflowFieldCharRun("separate", rPr) +
+		workflowTextRun(display, rPr) +
+		workflowFieldCharRun("end", rPr)
+}
+
+func paragraphHasWorkflowReferenceField(paragraph string) bool {
+	return strings.Contains(paragraph, " REF ") || strings.Contains(paragraph, " PAGEREF ")
+}
+
+func nextWorkflowBookmarkID(documentXML string) int {
+	next := 1
+	for _, match := range workflowBookmarkStartIDPattern.FindAllStringSubmatch(documentXML, -1) {
+		if len(match) != 2 {
+			continue
+		}
+		id, err := strconv.Atoi(match[1])
+		if err == nil && id >= next {
+			next = id + 1
+		}
+	}
+	return next
+}
+
+func workflowCaptionBookmarkName(label string, chapter string, ordinal string) string {
+	prefix := "CQRWST_Fig"
+	if label == "表" {
+		prefix = "CQRWST_Tbl"
+	}
+	return "_" + prefix + "_" + chapter + "_" + ordinal
+}
+
+func workflowCaptionReferenceKey(label string, chapter string, ordinal string) string {
+	if ordinal == "" {
+		return label + chapter
+	}
+	return label + chapter + "-" + ordinal
 }
 
 func renderedBodyPageTotal(pageTexts []string) int {
@@ -560,11 +1012,107 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 	}); err != nil {
 		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("generate final paper from template skeleton: %w", err))
 	}
+	if err := preserveSourceDrawingGroups(sourcePath, outputPath); err != nil {
+		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("preserve source drawings: %w", err))
+	}
 	if missing := missingGeneratedSourceContent(ctx, parsed, outputPath); len(missing) > 0 {
 		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("generated template output lost source content: %s", strings.Join(missing, " | ")))
 	}
 
 	return profile, nil
+}
+
+func preserveSourceDrawingGroups(sourcePath string, outputPath string) error {
+	source, err := ooxmlpkg.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	output, err := ooxmlpkg.Open(outputPath)
+	if err != nil {
+		return err
+	}
+	sourceXML, sourceOK := source.Get("word/document.xml")
+	outputXML, outputOK := output.Get("word/document.xml")
+	if !sourceOK || !outputOK {
+		return nil
+	}
+	updated := string(outputXML)
+	figureOrdinals := map[string]int{}
+	for _, bounds := range workflowAlternateContentPattern.FindAllStringIndex(string(sourceXML), -1) {
+		block := normalizeWorkflowDrawingWidth(string(sourceXML)[bounds[0]:bounds[1]])
+		if !strings.Contains(block, "<w:drawing") {
+			continue
+		}
+		heading := precedingWorkflowHeading(string(sourceXML)[:bounds[0]])
+		if heading == "" {
+			continue
+		}
+		headingMatch := renderedHeadingPattern.FindStringSubmatch(heading)
+		if len(headingMatch) != 3 {
+			continue
+		}
+		chapter := strings.Split(headingMatch[1], ".")[0]
+		figureOrdinals[chapter]++
+		caption := fmt.Sprintf("\u56fe%s-%d %s", chapter, figureOrdinals[chapter], headingMatch[2])
+		drawingText := compactWorkflowText(workflowParagraphText(block))
+		updated = workflowParagraphPattern.ReplaceAllStringFunc(updated, func(paragraph string) string {
+			text := compactWorkflowText(workflowParagraphText(paragraph))
+			if drawingText != "" && text == drawingText {
+				return ""
+			}
+			if compactWorkflowText(heading) != text {
+				return paragraph
+			}
+			return paragraph +
+				`<w:p><w:pPr><w:jc w:val="center"/><w:keepNext/></w:pPr><w:r>` + block + `</w:r></w:p>` +
+				`<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:line="300" w:lineRule="auto"/></w:pPr>` +
+				workflowTextRun(caption, `<w:rPr><w:rFonts w:ascii="宋体" w:eastAsia="宋体" w:hAnsi="宋体"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr>`) +
+				`</w:p>`
+		})
+	}
+	if updated == string(outputXML) {
+		return nil
+	}
+	output.Set("word/document.xml", []byte(updated))
+	return output.Write(outputPath)
+}
+
+func normalizeWorkflowDrawingWidth(block string) string {
+	const maxWidth = 5800000
+	extentIndex := 0
+	return workflowDrawingExtentPattern.ReplaceAllStringFunc(block, func(extent string) string {
+		extentIndex++
+		if extentIndex > 3 {
+			return extent
+		}
+		match := workflowDrawingExtentPattern.FindStringSubmatch(extent)
+		if len(match) != 3 {
+			return extent
+		}
+		width, widthErr := strconv.Atoi(match[1])
+		height, heightErr := strconv.Atoi(match[2])
+		if widthErr != nil || heightErr != nil || width <= maxWidth {
+			return extent
+		}
+		scaledHeight := height * maxWidth / width
+		extent = strings.Replace(extent, `cx="`+match[1]+`"`, fmt.Sprintf(`cx="%d"`, maxWidth), 1)
+		return strings.Replace(extent, `cy="`+match[2]+`"`, fmt.Sprintf(`cy="%d"`, scaledHeight), 1)
+	})
+}
+
+func precedingWorkflowHeading(prefix string) string {
+	paragraphs := workflowParagraphPattern.FindAllString(prefix, -1)
+	for index := len(paragraphs) - 1; index >= 0; index-- {
+		text := strings.TrimSpace(workflowParagraphText(paragraphs[index]))
+		if renderedHeadingPattern.MatchString(text) {
+			return text
+		}
+	}
+	return ""
+}
+
+func compactWorkflowText(text string) string {
+	return strings.Join(strings.Fields(text), "")
 }
 
 func cqrwstTemplateTransplantEnabled() bool {
@@ -703,7 +1251,45 @@ func joinContentBlockText(blocks []paperparse.ContentBlock) string {
 }
 
 func normalizeContentText(text string) string {
-	return strings.Join(strings.Fields(text), " ")
+	normalized := strings.Join(strings.Fields(text), " ")
+	return normalizeHeadingNumberSpacing(normalized)
+}
+
+func normalizeHeadingNumberSpacing(text string) string {
+	var out strings.Builder
+	out.Grow(len(text) + 8)
+	for i := 0; i < len(text); {
+		if (i == 0 || isASCIIWhitespace(text[i-1])) && text[i] >= '1' && text[i] <= '9' {
+			j := i + 1
+			dots := 0
+			lastDot := false
+			for j < len(text) && ((text[j] >= '0' && text[j] <= '9') || text[j] == '.') {
+				if text[j] == '.' {
+					dots++
+					lastDot = true
+				} else {
+					lastDot = false
+				}
+				j++
+			}
+			validHeadingNumber := (dots == 0 && j-i == 1) || (dots > 0 && dots <= 2 && !lastDot)
+			if validHeadingNumber {
+				out.WriteString(text[i:j])
+				if j < len(text) && !isASCIIWhitespace(text[j]) && !(text[j] >= '0' && text[j] <= '9') {
+					out.WriteByte(' ')
+				}
+				i = j
+				continue
+			}
+		}
+		out.WriteByte(text[i])
+		i++
+	}
+	return out.String()
+}
+
+func isASCIIWhitespace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
 func (s *paperWorkflowService) getJobView(query any, args ...any) (*WorkflowJobView, error) {
@@ -713,7 +1299,7 @@ func (s *paperWorkflowService) getJobView(query any, args ...any) (*WorkflowJobV
 		return nil, err
 	}
 
-	return &WorkflowJobView{
+	view := &WorkflowJobView{
 		ID:                 job.ID,
 		PaperID:            job.PaperID,
 		UserID:             job.UserID,
@@ -721,7 +1307,23 @@ func (s *paperWorkflowService) getJobView(query any, args ...any) (*WorkflowJobV
 		Status:             job.Status,
 		Stage:              job.Stage,
 		DownloadPath:       job.DownloadPath,
-	}, nil
+	}
+	if view.Status == string(workflow.StatusVerifiedPass) {
+		view.DownloadURL = workflowJobDownloadURL(view.ID)
+	}
+	return view, nil
+}
+
+func workflowJobDownloadURL(id uuid.UUID) string {
+	return "/api/v2/jobs/" + id.String() + "/download"
+}
+
+func mustWorkflowJSON(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
 }
 
 func copyFile(src string, dst string) error {

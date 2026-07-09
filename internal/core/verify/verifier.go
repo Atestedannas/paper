@@ -2,9 +2,12 @@ package verify
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"html"
+	"io"
 	"os"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,6 +23,7 @@ import (
 )
 
 const documentTarget = "word/document.xml"
+const wordprocessingMLNamespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 var placeholderPattern = regexp.MustCompile(`\{\{[^{}]+\}\}`)
 var visibleReviewFieldPattern = regexp.MustCompile(`(?is)<w:instrText\b[^>]*>\s*(?:TOC|REF|PAGEREF|NOTEREF)\b`)
@@ -39,6 +43,7 @@ var imageExtentPattern = regexp.MustCompile(`<wp:extent\b[^>]*\bcx="(\d+)"[^>]*/
 var formulaNumberPattern = regexp.MustCompile(`[\(（]\s*\d+(?:[-.．]\d+)?\s*[\)）]`)
 var manualObjectReferencePattern = regexp.MustCompile(`(?:图|表)\s*\d+(?:[-.．]\d+)?|式\s*[\(（]\s*\d+(?:[-.．]\d+)?\s*[\)）]`)
 var manualCaptionPattern = regexp.MustCompile(`^(?:图|表)\s*\d+(?:[-.．]\d+)*\s*\S+`)
+var continuedTableCaptionPattern = regexp.MustCompile(`^续表\s*\d+(?:[-.．]\d+)*\s*\S+`)
 
 type Issue struct {
 	Kind     string
@@ -682,7 +687,18 @@ func addImageFormulaReferenceIssues(document string, result *Result) {
 	}
 	paragraphs := verifyParagraphPattern.FindAllString(document, -1)
 	bodyStarted := false
+	inTOC := false
 	for index, paragraph := range paragraphs {
+		if strings.Contains(paragraph, `TOC \o "1-3"`) || strings.Contains(paragraph, " TOC ") {
+			inTOC = true
+			continue
+		}
+		if inTOC {
+			if strings.Contains(paragraph, `w:fldCharType="end"`) {
+				inTOC = false
+			}
+			continue
+		}
 		text := strings.TrimSpace(verifyXMLText(paragraph))
 		if strings.HasPrefix(strings.Join(strings.Fields(text), ""), "1绪论") || strings.HasPrefix(strings.ToLower(strings.Join(strings.Fields(text), " ")), "1 introduction") {
 			bodyStarted = true
@@ -698,6 +714,9 @@ func addImageFormulaReferenceIssues(document string, result *Result) {
 				appendRepairableIssueOnce(result, "image_width_over_text_area", "image width appears larger than the page text area; scale it proportionally within the text area.", documentTarget)
 			}
 			nextCaption := nextNonBlankParagraphText(paragraphs, index+1)
+			if strings.Contains(paragraph, "<wpg:wgp") {
+				continue
+			}
 			if nextCaption == "" || !strings.HasPrefix(strings.TrimSpace(nextCaption), "图") || !strings.Contains(paragraph, "<w:keepNext") {
 				appendRepairableIssueOnce(result, "image_keep_with_caption_missing", "image paragraph should be kept with the following figure caption so they do not split across pages.", documentTarget)
 			}
@@ -764,7 +783,8 @@ func nextNonBlankParagraphText(paragraphs []string, start int) string {
 }
 
 func isCaptionText(text string) bool {
-	return captionTextPattern.MatchString(strings.TrimSpace(text))
+	text = strings.TrimSpace(text)
+	return captionTextPattern.MatchString(text) || continuedTableCaptionPattern.MatchString(text)
 }
 
 func paragraphHasReferenceField(paragraph string) bool {
@@ -836,6 +856,7 @@ func checkFinalDeliveryOOXML(pkg *ooxmlpkg.DocxPackage, result *Result) {
 				Target:   name,
 			})
 		}
+		addWordXMLStructureIssues(name, content, result)
 	}
 	if _, ok := pkg.Get("word/comments.xml"); ok {
 		result.RepairableIssues = append(result.RepairableIssues, Issue{
@@ -845,6 +866,464 @@ func checkFinalDeliveryOOXML(pkg *ooxmlpkg.DocxPackage, result *Result) {
 			Target:   "word/comments.xml",
 		})
 	}
+	addNotePackageIssues(pkg, result)
+	addStyleNumberingPackageIssues(pkg, result)
+	addEvenHeaderFooterSwitchIssues(pkg, result)
+	addHeaderFooterRelationshipIssues(pkg, result)
+	addHeaderFooterContentTypeIssues(pkg, result)
+	addMediaContentTypeIssues(pkg, result)
+	addStyleReferenceIssues(pkg, result)
+	addNumberingReferenceIssues(pkg, result)
+	addBookmarkPairingIssues(pkg, result)
+	addBookmarkReferenceIssues(pkg, result)
+	addRelationshipTargetIssues(pkg, result)
+}
+
+func addStyleNumberingPackageIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
+	contentTypesBytes, _ := pkg.Get("[Content_Types].xml")
+	relsBytes, _ := pkg.Get("word/_rels/document.xml.rels")
+	contentTypes := string(contentTypesBytes)
+	rels := string(relsBytes)
+	for _, part := range []struct {
+		name        string
+		kind        string
+		contentType string
+		relType     string
+	}{
+		{"word/styles.xml", "styles", "wordprocessingml.styles+xml", "/relationships/styles"},
+		{"word/numbering.xml", "numbering", "wordprocessingml.numbering+xml", "/relationships/numbering"},
+		{"word/fontTable.xml", "font_table", "wordprocessingml.fontTable+xml", "/relationships/fontTable"},
+		{"word/theme/theme1.xml", "theme", "theme+xml", "/relationships/theme"},
+		{"word/settings.xml", "settings", "wordprocessingml.settings+xml", "/relationships/settings"},
+		{"word/webSettings.xml", "web_settings", "wordprocessingml.webSettings+xml", "/relationships/webSettings"},
+	} {
+		if _, ok := pkg.Get(part.name); !ok {
+			continue
+		}
+		if !strings.Contains(contentTypes, `PartName="/`+part.name+`"`) || !strings.Contains(contentTypes, part.contentType) {
+			appendRepairableIssueOnce(result, part.kind+"_content_type_missing", part.kind+" part exists but [Content_Types].xml does not declare its OOXML content type.", "[Content_Types].xml")
+		}
+		if !strings.Contains(rels, part.relType) || !strings.Contains(rels, strings.TrimPrefix(part.name, "word/")) {
+			appendRepairableIssueOnce(result, part.kind+"_relationship_missing", part.kind+" part exists but word/_rels/document.xml.rels does not link it from the main document.", "word/_rels/document.xml.rels")
+		}
+	}
+}
+
+func addEvenHeaderFooterSwitchIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
+	documentBytes, _ := pkg.Get("word/document.xml")
+	documentXML := string(documentBytes)
+	if !strings.Contains(documentXML, `w:type="even"`) || !(strings.Contains(documentXML, "<w:headerReference") || strings.Contains(documentXML, "<w:footerReference")) {
+		return
+	}
+	settingsBytes, _ := pkg.Get("word/settings.xml")
+	if !strings.Contains(string(settingsBytes), "<w:evenAndOddHeaders") {
+		appendRepairableIssueOnce(result, "even_headers_not_enabled", "document uses even-page header/footer references but settings.xml does not enable even/odd headers.", "word/settings.xml")
+	}
+}
+
+func addHeaderFooterRelationshipIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
+	documentBytes, _ := pkg.Get("word/document.xml")
+	documentXML := string(documentBytes)
+	if !strings.Contains(documentXML, "Reference") {
+		return
+	}
+	rels := documentRelationshipsByID(pkg)
+	for _, ref := range regexp.MustCompile(`<w:(headerReference|footerReference)\b[^>]*/>`).FindAllStringSubmatch(documentXML, -1) {
+		if len(ref) < 2 {
+			continue
+		}
+		rid := attributeValue(ref[0], "r:id")
+		if rid == "" {
+			appendRepairableIssueOnce(result, "header_footer_reference_relationship_missing", "header/footer reference is missing an r:id relationship.", documentTarget)
+			continue
+		}
+		attrs, ok := rels[rid]
+		if !ok {
+			appendRepairableIssueOnce(result, "header_footer_reference_relationship_missing", "header/footer reference points to a missing relationship: "+rid, "word/_rels/document.xml.rels")
+			continue
+		}
+		want := "/relationships/" + strings.TrimSuffix(ref[1], "Reference")
+		if !strings.Contains(attrs["Type"], want) {
+			appendRepairableIssueOnce(result, "header_footer_reference_type_mismatch", "header/footer reference relationship has the wrong OOXML type: "+rid, "word/_rels/document.xml.rels")
+		}
+	}
+}
+
+func documentRelationshipsByID(pkg *ooxmlpkg.DocxPackage) map[string]map[string]string {
+	rels := map[string]map[string]string{}
+	if pkg == nil {
+		return rels
+	}
+	contentBytes, ok := pkg.Get("word/_rels/document.xml.rels")
+	if !ok {
+		return rels
+	}
+	decoder := xml.NewDecoder(strings.NewReader(string(contentBytes)))
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return rels
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || start.Name.Local != "Relationship" {
+			continue
+		}
+		attrs := xmlAttrs(start)
+		if id := attrs["Id"]; id != "" {
+			rels[id] = attrs
+		}
+	}
+}
+
+func addHeaderFooterContentTypeIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
+	contentTypesBytes, _ := pkg.Get("[Content_Types].xml")
+	contentTypes := string(contentTypesBytes)
+	for _, attrs := range documentRelationshipsByID(pkg) {
+		relType := attrs["Type"]
+		partKind := ""
+		contentType := ""
+		switch {
+		case strings.Contains(relType, "/relationships/header"):
+			partKind = "header"
+			contentType = "wordprocessingml.header+xml"
+		case strings.Contains(relType, "/relationships/footer"):
+			partKind = "footer"
+			contentType = "wordprocessingml.footer+xml"
+		default:
+			continue
+		}
+		target := strings.TrimSpace(attrs["Target"])
+		if target == "" {
+			continue
+		}
+		part := resolveRelationshipTarget("word/_rels/document.xml.rels", target)
+		if part == "" {
+			continue
+		}
+		if !strings.Contains(contentTypes, `PartName="/`+part+`"`) || !strings.Contains(contentTypes, contentType) {
+			appendRepairableIssueOnce(result, "header_footer_content_type_missing", partKind+" part exists but [Content_Types].xml does not declare its OOXML content type.", "[Content_Types].xml")
+		}
+	}
+}
+
+func addMediaContentTypeIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
+	contentTypesBytes, _ := pkg.Get("[Content_Types].xml")
+	contentTypes := string(contentTypesBytes)
+	defaults := map[string]bool{}
+	for _, match := range regexp.MustCompile(`<Default\b[^>]*\bExtension="([^"]+)"`).FindAllStringSubmatch(contentTypes, -1) {
+		if len(match) == 2 {
+			defaults[strings.ToLower(match[1])] = true
+		}
+	}
+	for _, name := range pkg.Names() {
+		if !strings.HasPrefix(name, "word/media/") {
+			continue
+		}
+		ext := ""
+		if dot := strings.LastIndex(name, "."); dot >= 0 {
+			ext = strings.ToLower(name[dot+1:])
+		}
+		if defaults[ext] || strings.Contains(contentTypes, `PartName="/`+name+`"`) {
+			continue
+		}
+		appendRepairableIssueOnce(result, "media_content_type_missing", "media part exists but [Content_Types].xml does not declare its extension or part: "+name, "[Content_Types].xml")
+	}
+}
+
+func addStyleReferenceIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
+	stylesBytes, _ := pkg.Get("word/styles.xml")
+	defined := map[string]bool{}
+	for _, match := range regexp.MustCompile(`<w:style\b[^>]*\bw:styleId="([^"]+)"`).FindAllStringSubmatch(string(stylesBytes), -1) {
+		if len(match) == 2 {
+			defined[match[1]] = true
+		}
+	}
+	if len(defined) == 0 {
+		return
+	}
+	refPattern := regexp.MustCompile(`<w:(?:pStyle|rStyle|tblStyle)\b[^>]*\bw:val="([^"]+)"`)
+	for _, name := range pkg.Names() {
+		if !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") || name == "word/styles.xml" {
+			continue
+		}
+		content, ok := pkg.Get(name)
+		if !ok {
+			continue
+		}
+		for _, match := range refPattern.FindAllStringSubmatch(string(content), -1) {
+			if len(match) == 2 && !defined[match[1]] {
+				appendRepairableIssueOnce(result, "style_reference_missing", "Word XML references a style that is not defined in styles.xml: "+match[1], name)
+			}
+		}
+	}
+}
+
+func addNumberingReferenceIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
+	numberingBytes, hasNumbering := pkg.Get("word/numbering.xml")
+	abstractIDs := map[string]bool{}
+	numToAbstract := map[string]string{}
+	if hasNumbering {
+		numberingXML := string(numberingBytes)
+		for _, match := range regexp.MustCompile(`<w:abstractNum\b[^>]*\bw:abstractNumId="([^"]+)"`).FindAllStringSubmatch(numberingXML, -1) {
+			if len(match) == 2 {
+				abstractIDs[match[1]] = true
+			}
+		}
+		for _, match := range regexp.MustCompile(`(?s)<w:num\b[^>]*\bw:numId="([^"]+)"[^>]*>.*?<w:abstractNumId\b[^>]*\bw:val="([^"]+)"`).FindAllStringSubmatch(numberingXML, -1) {
+			if len(match) == 3 {
+				numToAbstract[match[1]] = match[2]
+				if !abstractIDs[match[2]] {
+					appendRepairableIssueOnce(result, "numbering_abstract_missing", "numbering.xml maps a numId to a missing abstractNumId: "+match[2], "word/numbering.xml")
+				}
+			}
+		}
+	}
+	for _, name := range pkg.Names() {
+		if !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") || name == "word/numbering.xml" {
+			continue
+		}
+		content, ok := pkg.Get(name)
+		if !ok || !strings.Contains(string(content), "<w:numId") {
+			continue
+		}
+		for _, match := range regexp.MustCompile(`<w:numId\b[^>]*\bw:val="([^"]+)"`).FindAllStringSubmatch(string(content), -1) {
+			if len(match) == 2 && (!hasNumbering || numToAbstract[match[1]] == "") {
+				appendRepairableIssueOnce(result, "numbering_reference_missing", "Word XML references a numId that is not defined in numbering.xml: "+match[1], name)
+			}
+		}
+	}
+}
+
+func addBookmarkReferenceIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
+	bookmarks := map[string]bool{}
+	instructionRefs := map[string]string{}
+	for _, name := range pkg.Names() {
+		if !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") {
+			continue
+		}
+		content, ok := pkg.Get(name)
+		if !ok {
+			continue
+		}
+		text := string(content)
+		for _, match := range regexp.MustCompile(`<w:bookmarkStart\b[^>]*\bw:name="([^"]+)"`).FindAllStringSubmatch(text, -1) {
+			if len(match) == 2 {
+				bookmarks[match[1]] = true
+			}
+		}
+		for _, match := range regexp.MustCompile(`(?is)<w:instrText\b[^>]*>\s*(?:REF|PAGEREF|NOTEREF)\s+([^\\\s<]+)`).FindAllStringSubmatch(text, -1) {
+			if len(match) == 2 {
+				instructionRefs[match[1]] = name
+			}
+		}
+	}
+	for ref, target := range instructionRefs {
+		if strings.HasPrefix(ref, "_Toc") {
+			continue
+		}
+		if !bookmarks[ref] {
+			appendRepairableIssueOnce(result, "bookmark_reference_missing", "Word field references a missing bookmark: "+ref, target)
+		}
+	}
+}
+
+func addBookmarkPairingIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
+	for _, name := range pkg.Names() {
+		if !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") {
+			continue
+		}
+		content, ok := pkg.Get(name)
+		if !ok || !strings.Contains(string(content), "bookmark") {
+			continue
+		}
+		starts := map[string]bool{}
+		ends := map[string]bool{}
+		for _, match := range regexp.MustCompile(`<w:bookmarkStart\b[^>]*\bw:id="([^"]+)"`).FindAllStringSubmatch(string(content), -1) {
+			if len(match) == 2 {
+				starts[match[1]] = true
+			}
+		}
+		for _, match := range regexp.MustCompile(`<w:bookmarkEnd\b[^>]*\bw:id="([^"]+)"`).FindAllStringSubmatch(string(content), -1) {
+			if len(match) == 2 {
+				ends[match[1]] = true
+			}
+		}
+		for id := range starts {
+			if !ends[id] {
+				appendRepairableIssueOnce(result, "bookmark_pair_missing", "Word bookmarkStart is missing a matching bookmarkEnd: "+id, name)
+			}
+		}
+		for id := range ends {
+			if !starts[id] {
+				appendRepairableIssueOnce(result, "bookmark_pair_missing", "Word bookmarkEnd is missing a matching bookmarkStart: "+id, name)
+			}
+		}
+	}
+}
+
+func addRelationshipTargetIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
+	entries := map[string]bool{}
+	for _, name := range pkg.Names() {
+		entries[name] = true
+	}
+	for _, relsName := range pkg.Names() {
+		if !strings.HasSuffix(relsName, ".rels") {
+			continue
+		}
+		contentBytes, ok := pkg.Get(relsName)
+		if !ok {
+			continue
+		}
+		decoder := xml.NewDecoder(strings.NewReader(string(contentBytes)))
+		for {
+			token, err := decoder.Token()
+			if err != nil {
+				break
+			}
+			start, ok := token.(xml.StartElement)
+			if !ok || start.Name.Local != "Relationship" {
+				continue
+			}
+			attrs := xmlAttrs(start)
+			if strings.EqualFold(attrs["TargetMode"], "External") {
+				continue
+			}
+			target := strings.TrimSpace(attrs["Target"])
+			if target == "" || strings.HasPrefix(target, "#") {
+				continue
+			}
+			resolved := resolveRelationshipTarget(relsName, target)
+			if resolved != "" && !entries[resolved] {
+				appendRepairableIssueOnce(result, "relationship_target_missing", "OOXML relationship target is missing: "+target, relsName)
+			}
+		}
+	}
+}
+
+func xmlAttrs(start xml.StartElement) map[string]string {
+	attrs := map[string]string{}
+	for _, attr := range start.Attr {
+		attrs[attr.Name.Local] = attr.Value
+	}
+	return attrs
+}
+
+func resolveRelationshipTarget(relsName string, target string) string {
+	if relsName == "_rels/.rels" {
+		return strings.TrimPrefix(path.Clean(target), "/")
+	}
+	before, _, ok := strings.Cut(relsName, "/_rels/")
+	if !ok {
+		return ""
+	}
+	return strings.TrimPrefix(path.Clean(path.Join(before, target)), "/")
+}
+
+func addNotePackageIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
+	contentTypesBytes, _ := pkg.Get("[Content_Types].xml")
+	relsBytes, _ := pkg.Get("word/_rels/document.xml.rels")
+	contentTypes := string(contentTypesBytes)
+	rels := string(relsBytes)
+	for _, note := range []struct {
+		part        string
+		kind        string
+		contentType string
+		relType     string
+	}{
+		{"word/footnotes.xml", "footnotes", "wordprocessingml.footnotes+xml", "/relationships/footnotes"},
+		{"word/endnotes.xml", "endnotes", "wordprocessingml.endnotes+xml", "/relationships/endnotes"},
+	} {
+		if _, ok := pkg.Get(note.part); !ok {
+			continue
+		}
+		if !strings.Contains(contentTypes, `PartName="/`+note.part+`"`) || !strings.Contains(contentTypes, note.contentType) {
+			appendRepairableIssueOnce(result, note.kind+"_content_type_missing", note.kind+" part exists but [Content_Types].xml does not declare its OOXML content type.", "[Content_Types].xml")
+		}
+		if !strings.Contains(rels, note.relType) || !strings.Contains(rels, strings.TrimPrefix(note.part, "word/")) {
+			appendRepairableIssueOnce(result, note.kind+"_relationship_missing", note.kind+" part exists but word/_rels/document.xml.rels does not link it from the main document.", "word/_rels/document.xml.rels")
+		}
+	}
+}
+
+func addWordXMLStructureIssues(name string, content string, result *Result) {
+	if result == nil || !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") || !strings.Contains(content, "xmlns:w=") {
+		return
+	}
+	decoder := xml.NewDecoder(strings.NewReader(content))
+	runDepth := 0
+	runPropertiesDepth := 0
+	textBoxDepth := 0
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			if err != io.EOF {
+				result.FatalIssues = append(result.FatalIssues, Issue{
+					Kind:     "invalid_word_xml",
+					Severity: "fatal",
+					Message:  "Word XML is not well-formed and may fail to open or render",
+					Target:   name,
+				})
+			}
+			return
+		}
+		switch typed := token.(type) {
+		case xml.StartElement:
+			if typed.Name.Space != wordprocessingMLNamespace {
+				continue
+			}
+			switch typed.Name.Local {
+			case "txbxContent":
+				textBoxDepth++
+			case "r":
+				if runDepth > 0 && textBoxDepth == 0 {
+					appendFatalIssueOnce(result, "nested_word_run", "Word XML contains a run nested inside another run, which can break Word/LibreOffice compatibility.", name)
+				}
+				runDepth++
+			case "rPr":
+				if runDepth > 0 {
+					runPropertiesDepth++
+				}
+			case "bookmarkStart":
+				if runPropertiesDepth > 0 {
+					appendFatalIssueOnce(result, "bookmark_in_run_properties", "Word XML contains a bookmark inside run properties instead of document content.", name)
+				}
+			case "ins", "del", "moveFrom", "moveTo":
+				appendRepairableIssueOnce(result, "tracked_changes_not_finalized", "final delivery still contains tracked changes; accept or reject revisions before proving thesis format compliance.", name)
+			case "commentRangeStart", "commentReference":
+				appendRepairableIssueOnce(result, "comments_not_finalized", "final delivery still contains Word comment anchors; remove comments before proving thesis format compliance.", name)
+			}
+		case xml.EndElement:
+			if typed.Name.Space != wordprocessingMLNamespace {
+				continue
+			}
+			switch typed.Name.Local {
+			case "txbxContent":
+				if textBoxDepth > 0 {
+					textBoxDepth--
+				}
+			case "rPr":
+				if runPropertiesDepth > 0 {
+					runPropertiesDepth--
+				}
+			case "r":
+				if runDepth > 0 {
+					runDepth--
+				}
+			}
+		}
+	}
+}
+
+func appendFatalIssueOnce(result *Result, kind string, message string, target string) {
+	if result == nil || hasIssueKind(result.FatalIssues, kind) {
+		return
+	}
+	result.FatalIssues = append(result.FatalIssues, Issue{
+		Kind:     kind,
+		Severity: "fatal",
+		Message:  message,
+		Target:   target,
+	})
 }
 
 func (v *Verifier) checkCQRWST(ctx context.Context, docxPath string) (cqrwst.Result, error) {
@@ -973,6 +1452,13 @@ func (v *Verifier) configureRenderGateFromEnv() {
 	}
 	if python := strings.TrimSpace(os.Getenv("PDF_TEXT_PYTHON")); python != "" {
 		v.renderOptions.TextExtractor = renderverify.PythonPDFTextExtractor{Binary: python}
+	}
+	if pngDir := strings.TrimSpace(os.Getenv("RENDER_VERIFY_PNG_OUTPUT_DIR")); pngDir != "" {
+		v.renderOptions.PNGOutputDir = pngDir
+		v.renderOptions.Rasterizer = renderverify.PopplerRasterizer{
+			Binary: strings.TrimSpace(os.Getenv("PDFTOPPM_BIN")),
+			DPI:    envInt("RENDER_VERIFY_PNG_DPI", 120),
+		}
 	}
 	v.goldenPath = strings.TrimSpace(os.Getenv("GOLDEN_TEMPLATE_PATH"))
 }

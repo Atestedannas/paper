@@ -1,6 +1,9 @@
 package paperast
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestExtractDocumentXMLBuildsSemanticAST(t *testing.T) {
 	xml := `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
@@ -40,6 +43,31 @@ func TestValidateRejectsEmptyAST(t *testing.T) {
 
 	if len(issues) == 0 {
 		t.Fatal("Validate() issues = nil, want empty AST issue")
+	}
+}
+
+func TestExtractDocumentXMLAcceptsInsertedTextAndDropsDeletedText(t *testing.T) {
+	xml := `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+		`<w:p><w:r><w:t>Before </w:t></w:r>` +
+		`<w:ins><w:r><w:t>accepted source text</w:t></w:r></w:ins>` +
+		`<w:del><w:r><w:t>deleted normal text</w:t></w:r><w:r><w:delText>deleted tracked text</w:delText></w:r></w:del>` +
+		`<w:moveFrom><w:r><w:t>moved away text</w:t></w:r></w:moveFrom>` +
+		`<w:r><w:t> After</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+
+	snapshot := ExtractDocumentXML(xml)
+
+	if len(snapshot.Nodes) != 1 {
+		t.Fatalf("nodes = %d, want 1", len(snapshot.Nodes))
+	}
+	text := snapshot.Nodes[0].Text
+	if !strings.Contains(text, "Before accepted source text After") {
+		t.Fatalf("extracted text = %q, want accepted inserted text", text)
+	}
+	for _, forbidden := range []string{"deleted normal text", "deleted tracked text", "moved away text"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("extracted text contains rejected review text %q: %q", forbidden, text)
+		}
 	}
 }
 

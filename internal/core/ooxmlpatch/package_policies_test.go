@@ -43,6 +43,34 @@ func TestEnsureFixedRelationshipPartWritesPartRelsAndContentType(t *testing.T) {
 	}
 }
 
+func TestEnsurePartRelationshipLinksExistingPart(t *testing.T) {
+	docxPath := writePatchTestDocx(t, map[string]string{
+		"word/document.xml":            `<w:document/>`,
+		"word/settings.xml":            `<w:settings><w:updateFields w:val="true"/></w:settings>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`,
+		"[Content_Types].xml":          `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
+	})
+	pkg, err := ooxmlpkg.Open(docxPath)
+	if err != nil {
+		t.Fatalf("open docx: %v", err)
+	}
+
+	count := EnsurePartRelationship(pkg, "word/settings.xml", SettingsRelationshipType, SettingsContentType)
+
+	if count != 2 {
+		t.Fatalf("EnsurePartRelationship() count = %d, want 2", count)
+	}
+	settings, _ := pkg.Get("word/settings.xml")
+	rels, _ := pkg.Get("word/_rels/document.xml.rels")
+	types, _ := pkg.Get("[Content_Types].xml")
+	if string(settings) != `<w:settings><w:updateFields w:val="true"/></w:settings>` {
+		t.Fatalf("settings content changed: %s", settings)
+	}
+	if !strings.Contains(string(rels), SettingsRelationshipType) || !strings.Contains(string(types), SettingsContentType) {
+		t.Fatalf("settings package links missing:\nrels=%s\ntypes=%s", rels, types)
+	}
+}
+
 func TestBuildHeaderFooterXMLSupportsDoubleHeaderAndChineseTotalPages(t *testing.T) {
 	header := BuildHeaderXML("重庆人文科技学院2026届护理学专业本科毕业论文/设计", HeaderFooterPolicySpec{
 		HeaderLine:   "double",
@@ -79,6 +107,7 @@ func TestApplyHeadingNumberingDefinitionsMergesHeadingStylesWithoutDroppingTempl
 		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`,
 		"[Content_Types].xml":          `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
 		"word/styles.xml":              `<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="TemplateCustom"><w:name w:val="Template Custom"/></w:style></w:styles>`,
+		"word/numbering.xml":           `<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="3"><w:lvl w:ilvl="0"><w:lvlText w:val="Article %1"/></w:lvl></w:abstractNum><w:num w:numId="7"><w:abstractNumId w:val="3"/></w:num></w:numbering>`,
 	})
 	pkg, err := ooxmlpkg.Open(docxPath)
 	if err != nil {
@@ -108,7 +137,10 @@ func TestApplyHeadingNumberingDefinitionsMergesHeadingStylesWithoutDroppingTempl
 			t.Fatalf("styles.xml missing %s:\n%s", want, styles)
 		}
 	}
-	for _, want := range []string{`<w:pStyle w:val="Heading1"/>`, `<w:pStyle w:val="Heading2"/>`, `<w:pStyle w:val="Heading3"/>`} {
+	if strings.Contains(string(styles), `w:numId w:val="9000"`) {
+		t.Fatalf("Heading styles should not auto-number already numbered heading text:\n%s", styles)
+	}
+	for _, want := range []string{`w:abstractNumId="3"`, `w:numId="7"`, `Article %1`, `<w:pStyle w:val="Heading1"/>`, `<w:pStyle w:val="Heading2"/>`, `<w:pStyle w:val="Heading3"/>`} {
 		if !strings.Contains(string(numbering), want) {
 			t.Fatalf("numbering.xml missing %s:\n%s", want, numbering)
 		}

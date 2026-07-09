@@ -267,6 +267,35 @@ func TestParserPreservesRealOOXMLParagraphText(t *testing.T) {
 	}
 }
 
+func TestParserAcceptsInsertedTextAndDropsDeletedText(t *testing.T) {
+	docPath := filepath.Join(t.TempDir(), "reviewed-source.docx")
+	documentXML := `<?xml version="1.0" encoding="UTF-8"?>` +
+		`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+		`<w:p><w:r><w:t>1 Introduction</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>Body before </w:t></w:r>` +
+		`<w:ins><w:r><w:t>accepted source text</w:t></w:r></w:ins>` +
+		`<w:del><w:r><w:t>deleted source normal text</w:t></w:r><w:r><w:delText>deleted source tracked text</w:delText></w:r></w:del>` +
+		`<w:moveFrom><w:r><w:t>moved away source text</w:t></w:r></w:moveFrom>` +
+		`<w:r><w:t> after.</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	createTestDocxWithDocumentXML(t, docPath, documentXML)
+
+	paper, err := NewParser().Parse(context.Background(), docPath)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	text := strings.Join(paper.Body, "\n")
+	if !strings.Contains(text, "Body before accepted source text after.") {
+		t.Fatalf("Body = %#v, want accepted inserted text", paper.Body)
+	}
+	for _, forbidden := range []string{"deleted source", "moved away source"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("Body contains rejected review text %q: %#v", forbidden, paper.Body)
+		}
+	}
+}
+
 func TestParserMarshalsSnakeCaseJSON(t *testing.T) {
 	paper := ParsedPaper{
 		CoverFields:      map[string]string{"题目": "测试"},

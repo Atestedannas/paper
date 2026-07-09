@@ -243,6 +243,7 @@ func Extract(templatePath string) (*Profile, error) {
 		Confidence:  0.76,
 	}
 	paras := collectParagraphs(string(documentXML))
+	profile.RulePack = extractLocalRulePack(paras)
 	for index, para := range paras {
 		key := classifyParagraph(para.Text)
 		if key == "" {
@@ -260,6 +261,22 @@ func Extract(templatePath string) (*Profile, error) {
 		}
 	}
 	return profile, nil
+}
+
+func extractLocalRulePack(paras []paragraph) RulePack {
+	var rules RulePack
+	for _, para := range paras {
+		text := normalizeLabel(para.Text)
+		if strings.Contains(text, "\u6587\u732e\u5f15\u7528") &&
+			strings.Contains(text, "\u4e0a\u6807") &&
+			strings.Contains(text, "[1]") {
+			rules.CitationStyle = "superscript_bracket"
+		}
+		if strings.Contains(strings.ToUpper(text), "GB7714") || strings.Contains(strings.ToUpper(text), "GB/T7714") {
+			rules.ReferenceStandard = "GB/T 7714"
+		}
+	}
+	return rules
 }
 
 func AttachAISummary(ctx context.Context, profile *Profile, client ChatClient) {

@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,8 +19,13 @@ import (
 )
 
 type fakePaperWorkflowService struct {
-	job *service.WorkflowJobView
-	err error
+	job      *service.WorkflowJobView
+	template *service.CompiledTemplateView
+	err      error
+}
+
+func (f fakePaperWorkflowService) CompileTemplate(context.Context, service.CompileTemplateInput) (*service.CompiledTemplateView, error) {
+	return f.template, f.err
 }
 
 func (f fakePaperWorkflowService) CreatePaperJob(context.Context, service.CreatePaperJobInput) (*service.WorkflowJobView, error) {
@@ -35,6 +42,49 @@ func (f fakePaperWorkflowService) GetJob(id string) (*service.WorkflowJobView, e
 
 func (f fakePaperWorkflowService) GetJobForUser(id string, userID uuid.UUID) (*service.WorkflowJobView, error) {
 	return f.job, f.err
+}
+
+func TestPaperWorkflowHandlerRunJobReturnsFrontendDownloadURL(t *testing.T) {
+	jobID := uuid.New()
+	userID := uuid.New()
+	downloadURL := "/api/v2/jobs/" + jobID.String() + "/download"
+	rec := performPaperWorkflowRunAsUser(t, NewPaperWorkflowHandler(fakePaperWorkflowService{
+		job: &service.WorkflowJobView{
+			ID:          jobID,
+			UserID:      userID,
+			Status:      string(workflow.StatusVerifiedPass),
+			Stage:       workflow.StageVerified,
+			DownloadURL: downloadURL,
+		},
+	}), jobID.String(), userID)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if body := rec.Body.String(); !containsWorkflowHandlerText(body, `"job_id":"`+jobID.String()+`"`) || !containsWorkflowHandlerText(body, `"download_url":"`+downloadURL+`"`) {
+		t.Fatalf("body = %q, want frontend job_id and download_url", body)
+	}
+}
+
+func TestPaperWorkflowHandlerCompileTemplateReturnsFrontendTemplateID(t *testing.T) {
+	templateID := uuid.New()
+	userID := uuid.New()
+	rec := performPaperWorkflowCompileAsUser(t, NewPaperWorkflowHandler(fakePaperWorkflowService{
+		template: &service.CompiledTemplateView{
+			ID:              templateID,
+			SchoolID:        "school",
+			TemplateName:    "template.docx",
+			TemplateVersion: "runtime",
+			Status:          "compiled",
+		},
+	}), userID)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if body := rec.Body.String(); !containsWorkflowHandlerText(body, `"template_id":"`+templateID.String()+`"`) {
+		t.Fatalf("body = %q, want frontend template_id", body)
+	}
 }
 
 func TestPaperWorkflowHandlerDownloadJobServiceNilReturnsConflict(t *testing.T) {
@@ -252,6 +302,64 @@ func performPaperWorkflowDownload(t *testing.T, handler *PaperWorkflowHandler, j
 
 func performPaperWorkflowDownloadAsUser(t *testing.T, handler *PaperWorkflowHandler, jobID string, userID uuid.UUID) *httptest.ResponseRecorder {
 	return performPaperWorkflowDownloadWithUserValue(t, handler, jobID, userID)
+}
+
+func performPaperWorkflowRunAsUser(t *testing.T, handler *PaperWorkflowHandler, jobID string, userID uuid.UUID) *httptest.ResponseRecorder {
+	t.Helper()
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("user_id", userID)
+		c.Next()
+	})
+	router.POST("/jobs/:job_id/run", handler.RunJob)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/jobs/"+jobID+"/run", nil)
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func performPaperWorkflowCompileAsUser(t *testing.T, handler *PaperWorkflowHandler, userID uuid.UUID) *httptest.ResponseRecorder {
+	t.Helper()
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	tmpDir := t.TempDir()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("template", "template.docx")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write([]byte("docx")); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("user_id", userID)
+		c.Next()
+	})
+	router.POST("/templates/compile", handler.CompileTemplate)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/templates/compile", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	router.ServeHTTP(rec, req)
+	return rec
 }
 
 func performPaperWorkflowDownloadWithUserValue(t *testing.T, handler *PaperWorkflowHandler, jobID string, userID any) *httptest.ResponseRecorder {

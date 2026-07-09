@@ -32,7 +32,57 @@ func NewPaperWorkflowHandlerWithDownloadRoot(svc service.PaperWorkflowService, r
 }
 
 func (h *PaperWorkflowHandler) CompileTemplate(c *gin.Context) {
-	utils.ErrorResponse(c, http.StatusNotImplemented, "template compile is not implemented", "")
+	if h == nil || h.svc == nil {
+		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "")
+		return
+	}
+
+	if _, ok := authenticatedUserID(c); !ok {
+		utils.ErrorResponse(c, http.StatusUnauthorized, "user not authenticated", "")
+		return
+	}
+
+	file, err := c.FormFile("template")
+	if err != nil {
+		file, err = c.FormFile("file")
+	}
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "template file is required", err.Error())
+		return
+	}
+	if !strings.EqualFold(filepath.Ext(file.Filename), ".docx") {
+		utils.ErrorResponse(c, http.StatusBadRequest, "only .docx files are supported", "")
+		return
+	}
+
+	safeName := filepath.Base(file.Filename)
+	inputDir := filepath.Join("uploads", "workflow_templates")
+	if err := os.MkdirAll(inputDir, 0755); err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "failed to prepare template directory", err.Error())
+		return
+	}
+	inputPath := filepath.Join(inputDir, uuid.New().String()+"_"+safeName)
+	if err := c.SaveUploadedFile(file, inputPath); err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "failed to save template file", err.Error())
+		return
+	}
+
+	template, err := h.svc.CompileTemplate(c.Request.Context(), service.CompileTemplateInput{
+		SchoolID:     strings.TrimSpace(c.PostForm("school_id")),
+		TemplateName: strings.TrimSpace(c.PostForm("template_name")),
+		Version:      strings.TrimSpace(c.PostForm("version")),
+		FilePath:     inputPath,
+	})
+	if err != nil {
+		_ = os.Remove(inputPath)
+		h.respondWorkflowError(c, err)
+		return
+	}
+
+	utils.CreatedResponse(c, "template compiled", gin.H{
+		"template":    template,
+		"template_id": template.ID.String(),
+	})
 }
 
 func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
@@ -197,8 +247,8 @@ func (h *PaperWorkflowHandler) jobResponse(job *service.WorkflowJobView) gin.H {
 		return payload
 	}
 	payload["job_id"] = job.ID.String()
-	if job.Status == string(workflow.StatusVerifiedPass) {
-		payload["download_url"] = "/api/v2/jobs/" + job.ID.String() + "/download"
+	if strings.TrimSpace(job.DownloadURL) != "" {
+		payload["download_url"] = job.DownloadURL
 	}
 	return payload
 }

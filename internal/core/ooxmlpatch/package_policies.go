@@ -21,15 +21,19 @@ const (
 	footerContentType     = "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"
 	stylesRelationship    = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
 	numberingRelationship = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"
+	settingsRelationship  = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"
 	stylesContentType     = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"
 	numberingContentType  = "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"
+	settingsContentType   = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"
 )
 
 const (
-	HeaderRelationshipType = headerRelationship
-	FooterRelationshipType = footerRelationship
-	HeaderContentType      = headerContentType
-	FooterContentType      = footerContentType
+	HeaderRelationshipType   = headerRelationship
+	FooterRelationshipType   = footerRelationship
+	SettingsRelationshipType = settingsRelationship
+	HeaderContentType        = headerContentType
+	FooterContentType        = footerContentType
+	SettingsContentType      = settingsContentType
 )
 
 type FixedRelationshipPartSpec struct {
@@ -44,6 +48,7 @@ var (
 	relationshipElement = regexp.MustCompile(`<Relationship\b[^>]*/>`)
 	relationshipIDAttr  = regexp.MustCompile(`\bId="(rId\d+)"`)
 	sectionStartElement = regexp.MustCompile(`(?s)<w:sectPr\b[^>]*>`)
+	numberingEndElement = regexp.MustCompile(`</w:numbering>`)
 	stylesEndElement    = regexp.MustCompile(`</w:styles>`)
 )
 
@@ -116,7 +121,8 @@ func ApplyHeadingNumberingDefinitions(pkg *ooxmlpkg.DocxPackage, levels []string
 	if len(levels) == 0 {
 		return 0, nil
 	}
-	pkg.Set("word/numbering.xml", []byte(headingNumberingXML(levels)))
+	existingNumbering, _ := pkg.Get("word/numbering.xml")
+	pkg.Set("word/numbering.xml", []byte(mergeHeadingNumberingXML(string(existingNumbering), levels)))
 	existingStyles, _ := pkg.Get("word/styles.xml")
 	pkg.Set("word/styles.xml", []byte(mergeHeadingStylesXML(string(existingStyles), levels)))
 	ensureContentTypeOverride(pkg, "word/numbering.xml", numberingContentType)
@@ -143,6 +149,26 @@ func EnsureFixedRelationshipPart(pkg *ooxmlpkg.DocxPackage, spec FixedRelationsh
 	ensureContentTypeOverride(pkg, spec.PartName, spec.ContentType)
 	afterTypes, _ := pkg.Get(contentTypesTarget)
 	if string(beforeTypes) != string(afterTypes) {
+		count++
+	}
+	return count
+}
+
+func EnsurePartRelationship(pkg *ooxmlpkg.DocxPackage, partName string, relationshipType string, contentType string) int {
+	if pkg == nil || partName == "" || relationshipType == "" || contentType == "" {
+		return 0
+	}
+	count := 0
+	beforeTypes, _ := pkg.Get(contentTypesTarget)
+	ensureContentTypeOverride(pkg, partName, contentType)
+	afterTypes, _ := pkg.Get(contentTypesTarget)
+	if string(beforeTypes) != string(afterTypes) {
+		count++
+	}
+	beforeRels, _ := pkg.Get(documentRelationshipsTarget)
+	ensureRelationship(pkg, relationshipType, strings.TrimPrefix(partName, "word/"))
+	afterRels, _ := pkg.Get(documentRelationshipsTarget)
+	if string(beforeRels) != string(afterRels) {
 		count++
 	}
 	return count
@@ -381,12 +407,25 @@ func footerXML(page PageNumberingPolicySpec) string {
 
 func headingNumberingXML(levels []string) string {
 	var builder strings.Builder
-	builder.WriteString(`<?xml version="1.0" encoding="UTF-8"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="9000">`)
+	builder.WriteString(`<w:abstractNum w:abstractNumId="9000">`)
 	for index := range levels {
 		builder.WriteString(fmt.Sprintf(`<w:lvl w:ilvl="%d"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%s"/><w:pStyle w:val="Heading%d"/></w:lvl>`, index, headingLevelText(index), index+1))
 	}
-	builder.WriteString(`</w:abstractNum><w:num w:numId="9000"><w:abstractNumId w:val="9000"/></w:num></w:numbering>`)
+	builder.WriteString(`</w:abstractNum><w:num w:numId="9000"><w:abstractNumId w:val="9000"/></w:num>`)
 	return builder.String()
+}
+
+func mergeHeadingNumberingXML(existing string, levels []string) string {
+	if strings.TrimSpace(existing) == "" {
+		existing = `<?xml version="1.0" encoding="UTF-8"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"></w:numbering>`
+	}
+	existing = regexp.MustCompile(`(?s)<w:abstractNum\b[^>]*\bw:abstractNumId="9000"[^>]*>.*?</w:abstractNum>`).ReplaceAllString(existing, "")
+	existing = regexp.MustCompile(`(?s)<w:num\b[^>]*\bw:numId="9000"[^>]*>.*?</w:num>`).ReplaceAllString(existing, "")
+	insert := headingNumberingXML(levels)
+	if numberingEndElement.MatchString(existing) {
+		return numberingEndElement.ReplaceAllString(existing, insert+`</w:numbering>`)
+	}
+	return existing + insert
 }
 
 func mergeHeadingStylesXML(existing string, levels []string) string {
@@ -408,7 +447,7 @@ func mergeHeadingStylesXML(existing string, levels []string) string {
 func headingStylesXML(levels []string) string {
 	var builder strings.Builder
 	for index := range levels {
-		builder.WriteString(fmt.Sprintf(`<w:style w:type="paragraph" w:styleId="Heading%d"><w:name w:val="heading %d"/><w:basedOn w:val="Normal"/><w:uiPriority w:val="%d"/><w:qFormat/><w:pPr><w:outlineLvl w:val="%d"/><w:numPr><w:ilvl w:val="%d"/><w:numId w:val="9000"/></w:numPr></w:pPr></w:style>`, index+1, index+1, 9+index, index, index))
+		builder.WriteString(fmt.Sprintf(`<w:style w:type="paragraph" w:styleId="Heading%d"><w:name w:val="heading %d"/><w:basedOn w:val="Normal"/><w:uiPriority w:val="%d"/><w:qFormat/><w:pPr><w:outlineLvl w:val="%d"/></w:pPr></w:style>`, index+1, index+1, 9+index, index))
 	}
 	return builder.String()
 }

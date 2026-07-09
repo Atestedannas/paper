@@ -67,6 +67,7 @@ var headingPattern = regexp.MustCompile(`^(\d+(?:\.\d+)*)(?:\.)?[\s　]+(.+)$`)
 var bodyElementPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
 var ooxmlTextElementPattern = regexp.MustCompile(`(?s)<w:t(?:\s[^>]*)?>(.*?)</w:t>`)
 var ooxmlTagPattern = regexp.MustCompile(`(?s)<[^>]+>`)
+var rejectedReviewMarkupPattern = regexp.MustCompile(`(?s)<w:(?:del|moveFrom)\b[^>]*>.*?</w:(?:del|moveFrom)>`)
 
 type bodyElement struct {
 	kind string
@@ -225,6 +226,7 @@ func extractBodyElements(ctx context.Context, content []byte) ([]bodyElement, er
 }
 
 func looseTextFromOOXMLFragment(fragment string) string {
+	fragment = rejectedReviewMarkupPattern.ReplaceAllString(fragment, "")
 	texts := ooxmlTextElementPattern.FindAllStringSubmatch(fragment, -1)
 	var builder strings.Builder
 	for _, text := range texts {
@@ -240,6 +242,7 @@ func textFromOOXMLFragment(content []byte) (string, error) {
 	decoder := xml.NewDecoder(bytes.NewReader(content))
 	var builder strings.Builder
 	inText := false
+	rejectedDepth := 0
 
 	for {
 		token, err := decoder.Token()
@@ -247,19 +250,30 @@ func textFromOOXMLFragment(content []byte) (string, error) {
 			switch value := token.(type) {
 			case xml.StartElement:
 				switch value.Name.Local {
+				case "del", "moveFrom":
+					rejectedDepth++
 				case "t":
-					inText = true
+					if rejectedDepth == 0 {
+						inText = true
+					}
 				case "tab":
-					builder.WriteByte('\t')
+					if rejectedDepth == 0 {
+						builder.WriteByte('\t')
+					}
 				case "br":
-					builder.WriteByte('\n')
+					if rejectedDepth == 0 {
+						builder.WriteByte('\n')
+					}
 				}
 			case xml.EndElement:
-				if value.Name.Local == "t" {
+				if (value.Name.Local == "del" || value.Name.Local == "moveFrom") && rejectedDepth > 0 {
+					rejectedDepth--
+					inText = false
+				} else if value.Name.Local == "t" {
 					inText = false
 				}
 			case xml.CharData:
-				if inText {
+				if inText && rejectedDepth == 0 {
 					builder.Write([]byte(value))
 				}
 			}

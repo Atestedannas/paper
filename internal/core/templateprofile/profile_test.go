@@ -43,6 +43,9 @@ func TestExtractDetectsTemplateSectionPageBreaksHeaderFooterAndStyles(t *testing
 	if !profile.Footer.Exists || !profile.Footer.HasPageField || !profile.Footer.HasNumPages {
 		t.Fatalf("footer not extracted correctly: %#v", profile.Footer)
 	}
+	if profile.RulePack.CitationStyle != "superscript_bracket" || profile.RulePack.ReferenceStandard != "GB/T 7714" {
+		t.Fatalf("local rule pack not extracted correctly: %#v", profile.RulePack)
+	}
 	if profile.PageSetup.PageWidthTwips != "11906" ||
 		profile.PageSetup.PageHeightTwips != "16838" ||
 		profile.PageSetup.MarginTopTwips != "1701" ||
@@ -187,6 +190,7 @@ func writeTemplateProfileDocx(t *testing.T, path string) {
 			`<w:p><w:pPr><w:sectPr><w:type w:val="nextPage"/></w:sectPr></w:pPr><w:r><w:t>目录</w:t></w:r></w:p>` +
 			`<w:p><w:pPr><w:pageBreakBefore/><w:spacing w:beforeLines="100" w:afterLines="100" w:line="360"/><w:rPr><w:rFonts w:eastAsia="宋体" w:ascii="Times New Roman"/><w:sz w:val="32"/><w:b/></w:rPr></w:pPr><w:r><w:t>1 绪论</w:t></w:r></w:p>` +
 			`<w:p><w:pPr><w:spacing w:line="360"/><w:ind w:firstLineChars="200"/><w:rPr><w:rFonts w:eastAsia="宋体" w:ascii="Times New Roman"/><w:sz w:val="24"/></w:rPr></w:pPr><w:r><w:t>正文。</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>文献引用：按照其在正文中出现的先后顺序以方括号加阿拉伯数字连续编码，如[1]、[2]，以上标形式进行标注。GB7714-2015</w:t></w:r></w:p>` +
 			`<w:p><w:r><w:br w:type="page"/></w:r></w:p>` +
 			`<w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:rFonts w:eastAsia="宋体" w:ascii="Times New Roman"/><w:sz w:val="28"/><w:b/></w:rPr></w:pPr><w:r><w:t>参考文献</w:t></w:r></w:p>` +
 			`<w:p><w:r><w:br w:type="page"/></w:r></w:p>` +

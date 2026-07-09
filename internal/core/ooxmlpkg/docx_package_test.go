@@ -82,6 +82,30 @@ func TestDocxPackageSetWritesNewAndReplacedEntries(t *testing.T) {
 	}
 }
 
+func TestDocxPackageDeleteRemovesEntry(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "minimal.docx")
+	createMinimalDocx(t, srcPath)
+	pkg, err := Open(srcPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	pkg.Delete("word/document.xml")
+
+	outPath := filepath.Join(tmpDir, "deleted.docx")
+	if err := pkg.Write(outPath); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	reopened, err := Open(outPath)
+	if err != nil {
+		t.Fatalf("Open(written) error = %v", err)
+	}
+	if _, ok := reopened.Get("word/document.xml"); ok {
+		t.Fatal("word/document.xml still exists after Delete")
+	}
+}
+
 func createMinimalDocx(t *testing.T, path string) {
 	t.Helper()
 

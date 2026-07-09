@@ -56,6 +56,22 @@ func TestApplySettingsPropertiesWritesEvenOddHeaderSwitch(t *testing.T) {
 	}
 }
 
+func TestApplySettingsPropertiesPreservesExistingSwitches(t *testing.T) {
+	settings := `<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:evenAndOddHeaders/></w:settings>`
+
+	updated, changed := ApplySettingsProperties(settings, SettingsPropertiesSpec{UpdateFieldsOnOpen: true})
+
+	if !changed {
+		t.Fatal("ApplySettingsProperties() changed = false, want true")
+	}
+	if !strings.Contains(updated, `<w:evenAndOddHeaders/>`) {
+		t.Fatalf("updated settings should preserve evenAndOddHeaders:\n%s", updated)
+	}
+	if !strings.Contains(updated, `<w:updateFields w:val="true"/>`) {
+		t.Fatalf("updated settings missing updateFields:\n%s", updated)
+	}
+}
+
 func TestApplyParagraphAndRunPropertiesWritesPreciseWordprocessingML(t *testing.T) {
 	paragraph := `<w:p><w:pPr><w:jc w:val="left"/><w:spacing w:line="240"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="宋体"/><w:sz w:val="21"/></w:rPr><w:t>摘要</w:t></w:r></w:p>`
 

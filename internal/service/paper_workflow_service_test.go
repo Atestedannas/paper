@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -229,8 +230,35 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 	if err != nil {
 		t.Fatalf("CreatePaperJob() error = %v", err)
 	}
-	if _, err := svc.RunJob(context.Background(), created.ID.String(), userID); err != nil {
+	view, err := svc.RunJob(context.Background(), created.ID.String(), userID)
+	if err != nil {
 		t.Fatalf("RunJob() error = %v", err)
+	}
+	job := loadWorkflowJob(t, db, view.ID)
+	var verifyResult verify.Result
+	if err := json.Unmarshal([]byte(job.VerifyResultJSON), &verifyResult); err != nil {
+		t.Fatalf("VerifyResultJSON is invalid: %v", err)
+	}
+	if view.Status != string(workflow.StatusVerifiedPass) {
+		t.Fatalf("Status = %s, want %s, verify=%s", view.Status, workflow.StatusVerifiedPass, job.VerifyResultJSON)
+	}
+	if renderverify.DefaultEnabled() {
+		if verifyResult.RenderResult == nil || !verifyResult.RenderResult.Enabled || !verifyResult.RenderResult.Passed || verifyResult.RenderResult.PageCount == 0 {
+			t.Fatalf("render result should pass for real CQRWST fixture: %#v", verifyResult.RenderResult)
+		}
+		if len(verifyResult.RenderResult.Issues) != 0 || hasWorkflowIssue(verifyResult.RepairableIssues, "render_page_footer_total_mismatch") {
+			t.Fatalf("render result should not leave footer/page issues: render=%#v repairable=%#v", verifyResult.RenderResult.Issues, verifyResult.RepairableIssues)
+		}
+		renderedPageTexts := workflowRenderedPageTexts(t, verifyResult.RenderResult)
+		assertWorkflowRenderedTOCHasPageNumbers(t, renderedPageTexts)
+		assertWorkflowRenderedHeadingsAreNotDoubleNumbered(t, renderedPageTexts)
+		assertWorkflowRenderedHeadingNumbersHaveSpacing(t, renderedPageTexts)
+		assertWorkflowRenderedTextHasNoTemplateResidue(t, renderedPageTexts)
+	}
+	for _, kind := range []string{"manual_caption_not_dynamic", "manual_cross_reference"} {
+		if hasWorkflowIssue(verifyResult.Warnings, kind) {
+			t.Fatalf("VerifyResultJSON warnings = %#v, did not want %s", verifyResult.Warnings, kind)
+		}
 	}
 
 	outputPath := filepath.Join(outputRoot, created.ID.String(), "final.docx")
@@ -250,12 +278,25 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 	if !strings.Contains(documentXML, "SEQ 表") {
 		t.Fatalf("generated output should convert manual table captions to SEQ fields: %s", documentXML)
 	}
+	if !strings.Contains(documentXML, "REF _CQRWST_Tbl") {
+		t.Fatalf("generated output should convert manual table references to REF fields: %s", documentXML)
+	}
 	for _, want := range []string{"<w:pict", "<w:tblpPr", "护理学院", "护理学", "2022级护理学5班", "20220152192", "冉怡琴", "杨严政", "认知现状及影响因素分析"} {
 		if !strings.Contains(documentXML, want) {
 			t.Fatalf("generated output should preserve template cover and field %q: %s", want, documentXML)
 		}
 	}
-	for _, forbidden := range []string{"202X", "20XX", "XXXX", "封面格式不要调整", "选题题目一般不超过"} {
+	for _, forbidden := range []string{
+		"202X",
+		"20XX",
+		"XXXX",
+		"\u5c01\u9762\u683c\u5f0f\u4e0d\u8981\u8c03\u6574",
+		"\u9009\u9898\u9898\u76ee\u4e00\u822c\u4e0d\u8d85\u8fc7",
+		"\u6b63\u6587\u683c\u5f0f\u8303\u4f8b",
+		"\u9644\u5f55A",
+		"\u9644\u5f55B",
+		"\u65e0\u9644\u5f55\u5185\u5bb9\u53ef\u5220\u9664",
+	} {
 		if strings.Contains(documentXML, forbidden) {
 			t.Fatalf("generated output should remove cover placeholder/instruction %q: %s", forbidden, documentXML)
 		}
@@ -280,11 +321,224 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 	if dateIndex < 0 || frontTitleIndex < 0 || abstractIndex < 0 || frontTitleIndex > abstractIndex {
 		t.Fatalf("generated output should keep front-matter title between cover date and abstract: %s", documentXML)
 	}
+	paragraphs := workflowParagraphs(documentXML)
+	if len(paragraphs) < 25 {
+		t.Fatalf("generated output should contain cover and front matter paragraphs, got %d", len(paragraphs))
+	}
+	assertWorkflowParagraphHasStyle(t, paragraphs[3], workflowParagraphStyle{Font: "\u5b8b\u4f53", Size: "44", Bold: true, Center: true})
+	assertWorkflowParagraphHasStyle(t, paragraphs[5], workflowParagraphStyle{Font: "\u5b8b\u4f53", Size: "44", Bold: true, Center: true})
+	assertWorkflowParagraphHasStyle(t, paragraphs[21], workflowParagraphStyle{Font: "\u9ed1\u4f53", Size: "30", Bold: true, Line: "360", FirstLineChars: "200", AfterLines: "200"})
+	assertWorkflowParagraphHasStyle(t, paragraphs[21], workflowParagraphStyle{Font: "\u5b8b\u4f53", Size: "24", Line: "360", FirstLineChars: "200", AfterLines: "200"})
+	assertWorkflowParagraphHasStyle(t, paragraphs[22], workflowParagraphStyle{Font: "\u9ed1\u4f53", Size: "30", Bold: true, Line: "360", FirstLineChars: "200", AfterLines: "200"})
+	assertWorkflowParagraphHasStyle(t, paragraphs[22], workflowParagraphStyle{Font: "\u5b8b\u4f53", Size: "24", Line: "360", FirstLineChars: "200", AfterLines: "200"})
+	assertWorkflowParagraphHasStyle(t, paragraphs[23], workflowParagraphStyle{Font: "Times New Roman", Size: "30", Bold: true, Line: "360", FirstLineChars: "200", AfterLines: "200"})
+	assertWorkflowParagraphHasStyle(t, paragraphs[23], workflowParagraphStyle{Font: "Times New Roman", Size: "24", Line: "360", FirstLineChars: "200", AfterLines: "200"})
+	cnKeywordsText := workflowDocumentText(paragraphs[22])
+	cnKeywordsPrefix := "\u5173\u952e\u8bcd\uff1a"
+	if !strings.HasPrefix(cnKeywordsText, cnKeywordsPrefix) {
+		t.Fatalf("generated output should keep Chinese keyword label: %s", cnKeywordsText)
+	}
+	cnKeywordBody := strings.TrimSpace(strings.TrimPrefix(cnKeywordsText, cnKeywordsPrefix))
+	if strings.Contains(cnKeywordBody, ";") {
+		t.Fatalf("Chinese keywords should use full-width semicolon separators: %s", cnKeywordsText)
+	}
+	cnKeywords := strings.Split(cnKeywordBody, "\uff1b")
+	if len(cnKeywords) < 3 || len(cnKeywords) > 5 {
+		t.Fatalf("Chinese keywords should contain 3-5 entries, got %d: %s", len(cnKeywords), cnKeywordsText)
+	}
+	for _, keyword := range cnKeywords {
+		if strings.TrimSpace(keyword) == "" {
+			t.Fatalf("Chinese keywords should not contain empty entries: %s", cnKeywordsText)
+		}
+	}
+	enKeywords := paragraphContainingWorkflow(documentXML, "Key words:")
+	if enKeywords == "" {
+		t.Fatalf("generated output missing English keywords paragraph: %s", documentXML)
+	}
+	assertWorkflowParagraphHasStyle(t, enKeywords, workflowParagraphStyle{Font: "Times New Roman", Size: "30", Bold: true, Line: "360", FirstLineChars: "200", AfterLines: "200"})
+	assertWorkflowParagraphHasStyle(t, enKeywords, workflowParagraphStyle{Font: "Times New Roman", Size: "24", Line: "360", FirstLineChars: "200", AfterLines: "200"})
+	enKeywordsText := workflowDocumentText(enKeywords)
+	enKeywordBody := strings.TrimSpace(strings.TrimPrefix(enKeywordsText, "Key words:"))
+	enKeywordParts := strings.Split(enKeywordBody, ";")
+	if len(enKeywordParts) < 3 || len(enKeywordParts) > 5 {
+		t.Fatalf("English keywords should contain 3-5 entries, got %d: %s", len(enKeywordParts), enKeywordsText)
+	}
+	for _, keyword := range enKeywordParts {
+		if strings.TrimSpace(keyword) == "" {
+			t.Fatalf("English keywords should not contain empty entries: %s", enKeywordsText)
+		}
+	}
+	tocTitle := paragraphContainingWorkflow(documentXML, "\u76ee      \u5f55")
+	if tocTitle == "" {
+		t.Fatalf("generated output missing table-of-contents title: %s", documentXML)
+	}
+	for _, want := range []string{`<w:jc w:val="center"/>`, `w:eastAsia="` + "\u9ed1\u4f53" + `"`, `<w:sz w:val="32"/>`, `w:line="360"`, `w:afterLines="200"`} {
+		if !strings.Contains(tocTitle, want) {
+			t.Fatalf("table-of-contents title missing %s: %s", want, tocTitle)
+		}
+	}
+	if got := strings.Count(documentXML, `TOC \o "1-3" \h \z \u`); got != 1 {
+		t.Fatalf("generated output should contain exactly one dynamic TOC field, got %d: %s", got, documentXML)
+	}
+	settingsXML := readWorkflowDocxEntry(t, outputPath, "word/settings.xml")
+	if !strings.Contains(settingsXML, `<w:updateFields w:val="true"/>`) {
+		t.Fatalf("generated output should ask Word/LibreOffice to refresh fields on open: %s", settingsXML)
+	}
+	contentTypesXML := readWorkflowDocxEntry(t, outputPath, "[Content_Types].xml")
+	relsXML := readWorkflowDocxEntry(t, outputPath, "word/_rels/document.xml.rels")
+	for _, want := range []string{
+		`PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"`,
+		`PartName="/word/endnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"`,
+		`Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"`,
+		`Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes" Target="endnotes.xml"`,
+	} {
+		if !strings.Contains(contentTypesXML+relsXML, want) {
+			t.Fatalf("generated output missing note package plumbing %q:\ncontent-types=%s\nrels=%s", want, contentTypesXML, relsXML)
+		}
+	}
+	for name, root := range map[string]string{"word/footnotes.xml": "footnote", "word/endnotes.xml": "endnote"} {
+		noteXML := readWorkflowDocxEntry(t, outputPath, name)
+		for _, want := range []string{`<w:` + root + ` w:type="separator"`, `<w:` + root + ` w:type="continuationSeparator"`} {
+			if !strings.Contains(noteXML, want) {
+				t.Fatalf("%s missing %s: %s", name, want, noteXML)
+			}
+		}
+	}
+	for _, want := range []string{
+		`<Default Extension="png" ContentType="image/png"/>`,
+		`<Default Extension="wmf" ContentType="image/x-wmf"/>`,
+		`<Default Extension="bin" ContentType="application/vnd.openxmlformats-officedocument.oleObject"/>`,
+	} {
+		if !strings.Contains(contentTypesXML, want) {
+			t.Fatalf("generated output missing media content type %s: %s", want, contentTypesXML)
+		}
+	}
+	mediaTargets := regexp.MustCompile(`Type="http://schemas\.openxmlformats\.org/officeDocument/2006/relationships/(?:image|oleObject)" Target="([^"]+)"`).FindAllStringSubmatch(relsXML, -1)
+	if len(mediaTargets) < 11 {
+		t.Fatalf("generated output should preserve image and embedded object relationships, got %d: %s", len(mediaTargets), relsXML)
+	}
+	outputPkg, err := ooxmlpkg.Open(outputPath)
+	if err != nil {
+		t.Fatalf("open generated output package: %v", err)
+	}
+	for _, match := range mediaTargets {
+		if _, ok := outputPkg.Get("word/" + match[1]); !ok {
+			t.Fatalf("generated output relationship target missing: %s", match[1])
+		}
+	}
+	tocEntry := workflowParagraphMatchingText(documentXML, regexp.MustCompile(`^\s*1\s+\S+`))
+	if tocEntry == "" || strings.Contains(tocEntry, `<w:pStyle w:val="Heading1"/>`) {
+		t.Fatalf("generated output missing compact generated TOC entry before body heading: %s", tocEntry)
+	}
+	for _, want := range []string{`w:eastAsia="` + "\u5b8b\u4f53" + `"`, `<w:sz w:val="20"/>`, `w:line="240"`} {
+		if !strings.Contains(tocEntry, want) {
+			t.Fatalf("table-of-contents entry missing %s: %s", want, tocEntry)
+		}
+	}
+	chapterHeading := workflowParagraphMatchingTextAndXML(documentXML, regexp.MustCompile(`^\s*1\s+\S+`), `<w:pStyle w:val="Heading1"/>`)
+	if chapterHeading == "" {
+		t.Fatalf("generated output missing first-level numbered body heading: %s", documentXML)
+	}
+	for _, want := range []string{`<w:pStyle w:val="Heading1"/>`, `<w:outlineLvl w:val="0"/>`, `<w:sz w:val="32"/>`, `<w:b/><w:bCs/>`, `<w:jc w:val="left"/>`, `w:beforeLines="100"`, `w:afterLines="100"`} {
+		if !strings.Contains(chapterHeading, want) {
+			t.Fatalf("first-level numbered body heading missing %q: %s", want, chapterHeading)
+		}
+	}
+	secondLevelHeading := workflowParagraphMatchingTextAndXML(documentXML, regexp.MustCompile(`^\s*1\.1\s*\S+`), `<w:pStyle w:val="Heading2"/>`)
+	if secondLevelHeading == "" {
+		t.Fatalf("generated output missing second-level numbered body heading: %s", documentXML)
+	}
+	for _, want := range []string{`<w:pStyle w:val="Heading2"/>`, `<w:outlineLvl w:val="1"/>`, `<w:sz w:val="30"/>`, `<w:b/><w:bCs/>`, `w:line="360"`} {
+		if !strings.Contains(secondLevelHeading, want) {
+			t.Fatalf("second-level numbered body heading missing %q: %s", want, secondLevelHeading)
+		}
+	}
+	thirdLevelHeading := workflowParagraphMatchingTextAndXML(documentXML, regexp.MustCompile(`^\s*2\.1\.1\s*\S+`), `<w:pStyle w:val="Heading3"/>`)
+	if thirdLevelHeading == "" {
+		t.Fatalf("generated output missing third-level numbered body heading: %s", documentXML)
+	}
+	for _, want := range []string{`<w:pStyle w:val="Heading3"/>`, `<w:outlineLvl w:val="2"/>`, `<w:sz w:val="28"/>`, `<w:b/><w:bCs/>`, `w:line="360"`} {
+		if !strings.Contains(thirdLevelHeading, want) {
+			t.Fatalf("third-level numbered body heading missing %q: %s", want, thirdLevelHeading)
+		}
+	}
+	bodyParagraph := paragraphContainingWorkflow(documentXML, "\u7cd6\u5c3f\u75c5\u662f\u4e00\u7ec4")
+	if bodyParagraph == "" {
+		t.Fatalf("generated output missing representative body paragraph: %s", documentXML)
+	}
+	assertWorkflowParagraphHasStyle(t, bodyParagraph, workflowParagraphStyle{Font: "\u5b8b\u4f53", Size: "24", Line: "360", FirstLineChars: "200"})
+	if strings.Contains(bodyParagraph, `<w:pStyle w:val="Heading`) || strings.Contains(bodyParagraph, `<w:b`) {
+		t.Fatalf("body paragraph should remain normal non-bold text, got: %s", bodyParagraph)
+	}
+	if got := regexp.MustCompile(`(?s)<w:r\b[^>]*>.*?<w:vertAlign w:val="superscript"/>.*?<w:t>\[\d+(?:-\d+)?\]</w:t>.*?</w:r>`).FindAllString(documentXML, -1); len(got) < 5 {
+		t.Fatalf("generated output should keep body citations as superscript bracket references, got %d", len(got))
+	}
+	contentTables := workflowTablesContaining(documentXML, `<w:tblHeader/>`)
+	if len(contentTables) == 0 {
+		t.Fatalf("generated output should contain normalized body tables: %s", documentXML)
+	}
+	for _, table := range contentTables {
+		for _, want := range []string{
+			`<w:jc w:val="center"/>`,
+			`<w:tblLayout w:type="fixed"/>`,
+			`<w:top w:val="single" w:sz="12" w:space="0" w:color="000000"/>`,
+			`<w:bottom w:val="single" w:sz="12" w:space="0" w:color="000000"/>`,
+			`<w:insideH w:val="single" w:sz="4" w:space="0" w:color="000000"/>`,
+			`<w:left w:val="nil"/>`,
+			`<w:right w:val="nil"/>`,
+			`<w:insideV w:val="nil"/>`,
+			`<w:tblGrid>`,
+		} {
+			if !strings.Contains(table, want) {
+				t.Fatalf("normalized body table missing %q: %s", want, table)
+			}
+		}
+		if strings.Contains(table, "cantSplit") {
+			t.Fatalf("normalized body table should allow row splitting across pages: %s", table)
+		}
+	}
+	continuedTableCaptions := workflowParagraphsMatchingText(documentXML, regexp.MustCompile(`^\s*`+"\u7eed\u8868"+`\d+[-.．]\d+\s+`))
+	if len(continuedTableCaptions) < 3 {
+		t.Fatalf("generated output should preserve continued-table captions, got %d", len(continuedTableCaptions))
+	}
+	for _, caption := range continuedTableCaptions {
+		assertWorkflowParagraphHasStyle(t, caption, workflowParagraphStyle{Font: "\u5b8b\u4f53", Size: "21", Center: true, Line: "300"})
+		if !strings.Contains(caption, "<w:keepNext/>") || strings.Contains(caption, "firstLine") {
+			t.Fatalf("continued-table caption should stay centered with following table and no body indent: %s", caption)
+		}
+	}
 	if !strings.Contains(documentXML, `<w:footerReference w:type="default" r:id="rId11"`) || !strings.Contains(documentXML, `<w:pgNumType w:start="1"`) {
 		t.Fatalf("generated output should preserve main-body footer starting at page 1: %s", documentXML)
 	}
 	if !strings.Contains(documentXML, `<w:headerReference w:type="default" r:id="rId8"`) {
 		t.Fatalf("generated output should preserve the template running header: %s", documentXML)
+	}
+	sectPrs := regexp.MustCompile(`(?s)<w:sectPr\b[^>]*/>|<w:sectPr\b[^>]*>.*?</w:sectPr>`).FindAllString(documentXML, -1)
+	if len(sectPrs) < 3 {
+		t.Fatalf("generated output should keep cover/front/body sections: %s", documentXML)
+	}
+	for _, sectPr := range sectPrs {
+		if !strings.Contains(sectPr, `<w:pgSz w:w="11906" w:h="16838"/>`) {
+			t.Fatalf("generated output section should use A4 page size: %s", sectPr)
+		}
+	}
+	if !strings.Contains(sectPrs[0], `<w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"`) {
+		t.Fatalf("generated output should preserve cover page margins: %s", sectPrs[0])
+	}
+	if strings.Contains(sectPrs[0], "headerReference") || strings.Contains(sectPrs[0], "footerReference") {
+		t.Fatalf("generated output cover section should not inherit running header/footer: %s", sectPrs[0])
+	}
+	if !strings.Contains(sectPrs[1], `<w:pgNumType w:fmt="upperRoman" w:start="1"/>`) {
+		t.Fatalf("generated output should preserve front-matter Roman page numbering: %s", sectPrs[1])
+	}
+	if !strings.Contains(sectPrs[1], `<w:footerReference w:type="default" r:id="rId9"`) || !regexp.MustCompile(`Id="rId9"[^>]+/footer"[^>]+Target="footer1\.xml"`).MatchString(relsXML) {
+		t.Fatalf("generated output should route front-matter pages to footer1: sect=%s rels=%s", sectPrs[1], relsXML)
+	}
+	if !strings.Contains(sectPrs[2], `<w:pgMar w:top="1418" w:right="1134" w:bottom="1134" w:left="1418"`) || !strings.Contains(sectPrs[2], `<w:pgNumType w:start="1"/>`) {
+		t.Fatalf("generated output should preserve body margins and restart page numbering: %s", sectPrs[2])
+	}
+	if !strings.Contains(sectPrs[2], `<w:footerReference w:type="default" r:id="rId11"`) || !regexp.MustCompile(`Id="rId11"[^>]+/footer"[^>]+Target="footer3\.xml"`).MatchString(relsXML) {
+		t.Fatalf("generated output should route body pages to footer3: sect=%s rels=%s", sectPrs[2], relsXML)
 	}
 	headerXML := readWorkflowDocxEntry(t, outputPath, "word/header1.xml")
 	for _, want := range []string{"重庆人文科技学院2026届护理学专业本科毕业论文", `<w:jc w:val="center"/>`, `<w:bottom w:val="double"`} {
@@ -292,11 +546,56 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 			t.Fatalf("generated output header missing %s: %s", want, headerXML)
 		}
 	}
+	frontFooterXML := readWorkflowDocxEntry(t, outputPath, "word/footer1.xml")
+	for _, want := range []string{`<w:jc w:val="center"/>`, ` PAGE `} {
+		if !strings.Contains(frontFooterXML, want) {
+			t.Fatalf("generated output front-matter footer missing %s: %s", want, frontFooterXML)
+		}
+	}
+	for _, forbidden := range []string{"NUMPAGES", "第", "共"} {
+		if strings.Contains(frontFooterXML, forbidden) {
+			t.Fatalf("front-matter footer should be a standalone Roman PAGE footer, found %q: %s", forbidden, frontFooterXML)
+		}
+	}
+	if strings.Contains(frontFooterXML, "<w:pict") {
+		t.Fatalf("front-matter footer should not use VML text boxes because they drift in LibreOffice rendering: %s", frontFooterXML)
+	}
 	footerXML := readWorkflowDocxEntry(t, outputPath, "word/footer3.xml")
 	hasDynamicTotal := strings.Contains(footerXML, "NUMPAGES") && !strings.Contains(footerXML, "12页")
-	hasMaterializedTotal := !strings.Contains(footerXML, "NUMPAGES") && strings.Contains(footerXML, ">18<")
+	hasMaterializedTotal := !strings.Contains(footerXML, "NUMPAGES") && regexp.MustCompile(`>\d+<`).MatchString(footerXML) && !strings.Contains(footerXML, ">12<")
 	if !hasDynamicTotal && !hasMaterializedTotal {
 		t.Fatalf("generated output should use a dynamic or render-corrected total page count in the main footer: %s", footerXML)
+	}
+	referencesTitle := paragraphContainingWorkflow(documentXML, "参考文献")
+	if referencesTitle == "" {
+		t.Fatal("generated output missing references title")
+	}
+	for _, want := range []string{`<w:pStyle w:val="Heading1"/>`, `<w:outlineLvl w:val="0"/>`, `<w:jc w:val="center"/>`, `w:eastAsia="黑体"`, `<w:b/>`, `<w:sz w:val="30"/>`} {
+		if !strings.Contains(referencesTitle, want) {
+			t.Fatalf("references title missing %s: %s", want, referencesTitle)
+		}
+	}
+	firstReference := workflowParagraphMatchingText(documentXML, regexp.MustCompile(`^\[1\]`))
+	if firstReference == "" {
+		t.Fatal("generated output missing first reference entry")
+	}
+	if strings.Contains(firstReference, `w:vertAlign w:val="superscript"`) {
+		t.Fatalf("reference list marker should not be superscripted: %s", firstReference)
+	}
+	referenceParagraphs := workflowParagraphsMatchingText(documentXML, regexp.MustCompile(`^\[\d+\]`))
+	if len(referenceParagraphs) < 10 {
+		t.Fatalf("generated output should preserve at least 10 reference entries, got %d", len(referenceParagraphs))
+	}
+	for index, paragraph := range referenceParagraphs {
+		want := "[" + strconv.Itoa(index+1) + "]"
+		if !strings.HasPrefix(workflowDocumentText(paragraph), want) {
+			t.Fatalf("reference entries should be continuously numbered, want %s at index %d: %s", want, index, paragraph)
+		}
+	}
+	for _, want := range []string{`w:eastAsia="宋体"`, `w:ascii="Times New Roman"`, `<w:sz w:val="21"/>`, `w:line="288"`} {
+		if !strings.Contains(firstReference, want) {
+			t.Fatalf("first reference entry missing %s: %s", want, firstReference)
+		}
 	}
 	thanksTitle := paragraphContainingWorkflow(documentXML, "致      谢")
 	if thanksTitle == "" {
@@ -337,6 +636,63 @@ func TestRepairRenderedPageFooterTotalMaterializesBodyTotal(t *testing.T) {
 	}
 }
 
+func TestRepairRenderedPageFooterTotalUpdatesMaterializedBodyTotal(t *testing.T) {
+	tmpDir := t.TempDir()
+	docxPath := filepath.Join(tmpDir, "paper.docx")
+	writeWorkflowDocxPackage(t, docxPath, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
+		"word/footer3.xml":    `<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>第 </w:t></w:r><w:r><w:t>1</w:t></w:r><w:r><w:t> 页 共 </w:t></w:r><w:r><w:t>18</w:t></w:r><w:r><w:t> 页</w:t></w:r></w:p></w:ftr>`,
+	})
+
+	repaired, err := repairRenderedPageFooterTotal(docxPath, verify.Result{
+		RepairableIssues: []verify.Issue{{Kind: "render_page_footer_total_mismatch"}},
+		RenderResult:     &renderverify.Result{PageTexts: []string{"正文 第1页 共18页", "致谢 第19页 共18页"}},
+	})
+	if err != nil {
+		t.Fatalf("repairRenderedPageFooterTotal() error = %v", err)
+	}
+	if !repaired {
+		t.Fatal("repairRenderedPageFooterTotal() repaired = false")
+	}
+	footerXML := readWorkflowDocxEntry(t, docxPath, "word/footer3.xml")
+	if !strings.Contains(footerXML, ">19<") || strings.Contains(footerXML, ">18<") {
+		t.Fatalf("footer should update materialized body total to 19: %s", footerXML)
+	}
+}
+
+func TestRepairRenderedTOCPageNumbersMaterializesCachedEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	docxPath := filepath.Join(tmpDir, "paper.docx")
+	writeWorkflowDocxPackage(t, docxPath, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \o "1-3" \h \z \u </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r></w:p>` +
+			`<w:p><w:r><w:t>1 ` + "\u7eea\u8bba" + `</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>0</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>1.1 ` + "\u7814\u7a76\u80cc\u666f" + `</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>0</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	repaired, err := repairRenderedTOCPageNumbers(docxPath, verify.Result{
+		RenderResult: &renderverify.Result{PageTexts: []string{
+			"\u76ee\u5f55",
+			"1 1 \u7eea\u8bba\n1.1 1.1 \u7814\u7a76\u80cc\u666f\n\u7b2c1\u9875 \u517119\u9875",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("repairRenderedTOCPageNumbers() error = %v", err)
+	}
+	if !repaired {
+		t.Fatal("repairRenderedTOCPageNumbers() repaired = false")
+	}
+	documentXML := readWorkflowDocxEntry(t, docxPath, "word/document.xml")
+	for _, want := range []string{"1 \u7eea\u8bba", "1.1 \u7814\u7a76\u80cc\u666f", "<w:tab/>", ">1<"} {
+		if !strings.Contains(documentXML, want) {
+			t.Fatalf("TOC cache missing %q: %s", want, documentXML)
+		}
+	}
+}
+
 func TestRepairManualCaptionFieldsConvertsTableCaptionToSEQ(t *testing.T) {
 	tmpDir := t.TempDir()
 	docxPath := filepath.Join(tmpDir, "paper.docx")
@@ -356,6 +712,62 @@ func TestRepairManualCaptionFieldsConvertsTableCaptionToSEQ(t *testing.T) {
 	}
 	documentXML := readWorkflowDocxEntry(t, docxPath, "word/document.xml")
 	for _, want := range []string{"SEQ 表", `\s 1`, ">表3-<", ">1<", "社区2型糖尿病患者基本特征分布", "<w:b/>"} {
+		if !strings.Contains(documentXML, want) {
+			t.Fatalf("document XML missing %q: %s", want, documentXML)
+		}
+	}
+	if strings.Contains(documentXML, "<w:rPr><w:bookmarkStart") {
+		t.Fatalf("bookmark should not be written inside run properties: %s", documentXML)
+	}
+}
+
+func TestReplaceManualCaptionFieldsLinksContinuedCaptionToPreviousTable(t *testing.T) {
+	documentXML := `<w:document><w:body>` +
+		`<w:p><w:r><w:t>` + "\u88684-2 \u56de\u5f52\u5206\u6790" + `</w:t></w:r></w:p>` +
+		`<w:tbl/>` +
+		`<w:p><w:r><w:t>` + "\u7eed\u88684-2 \u56de\u5f52\u5206\u6790" + `</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+
+	updated, changed := replaceManualCaptionFields(documentXML)
+	if !changed {
+		t.Fatal("replaceManualCaptionFields() changed = false")
+	}
+	for _, want := range []string{
+		`SEQ ` + "\u8868",
+		`w:name="_CQRWST_Tbl_4_2"`,
+		`REF _CQRWST_Tbl_4_2`,
+		`>` + "\u7eed" + `<`,
+		`>` + "\u88684-2" + `<`,
+		`<w:bookmarkEnd w:id="1"/><w:r><w:t xml:space="preserve"> ` + "\u56de\u5f52\u5206\u6790",
+	} {
+		if !strings.Contains(updated, want) {
+			t.Fatalf("updated XML missing %q: %s", want, updated)
+		}
+	}
+}
+
+func TestRepairManualCrossReferenceFieldsConvertsTableReferenceToREF(t *testing.T) {
+	tmpDir := t.TempDir()
+	docxPath := filepath.Join(tmpDir, "paper.docx")
+	writeWorkflowDocxPackage(t, docxPath, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:bookmarkStart w:id="1" w:name="_CQRWST_Tbl_3_2"/><w:r><w:t>表3-2 疾病认知水平整体现状</w:t></w:r><w:bookmarkEnd w:id="1"/></w:p>` +
+			`<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>患者整体认知水平较低。见表3-2</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	repaired, err := repairManualCrossReferenceFields(docxPath, verify.Result{
+		Warnings: []verify.Issue{{Kind: "manual_cross_reference"}},
+	})
+	if err != nil {
+		t.Fatalf("repairManualCrossReferenceFields() error = %v", err)
+	}
+	if !repaired {
+		t.Fatal("repairManualCrossReferenceFields() repaired = false")
+	}
+	documentXML := readWorkflowDocxEntry(t, docxPath, "word/document.xml")
+	for _, want := range []string{"REF _CQRWST_Tbl_3_2", ">表3-2<", "患者整体认知水平较低。见", "<w:b/>"} {
 		if !strings.Contains(documentXML, want) {
 			t.Fatalf("document XML missing %q: %s", want, documentXML)
 		}
@@ -410,6 +822,147 @@ func TestPaperWorkflowServiceRunJobUsesConfiguredTemplateSkeleton(t *testing.T) 
 	}
 	if strings.Contains(documentXML, "{{content_blocks}}") {
 		t.Fatalf("download docx still contains template placeholders: %s", documentXML)
+	}
+}
+
+func TestPaperWorkflowServiceRunJobFinalizesTemplateReviewMarkup(t *testing.T) {
+	db := openPaperWorkflowServiceTestDB(t)
+	outputRoot := t.TempDir()
+	inputPath := filepath.Join(t.TempDir(), "paper.docx")
+	writeWorkflowDocxParagraphs(t, inputPath, []string{
+		"1 Introduction",
+		"Body from parsed source",
+	})
+	templatePath := filepath.Join(t.TempDir(), "template-review.docx")
+	writeWorkflowDocxPackage(t, templatePath, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+			`<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+			`<Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>` +
+			`</Types>`,
+		"_rels/.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdComments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>` +
+			`</Relationships>`,
+		"word/settings.xml": `<w:settings></w:settings>`,
+		"word/comments.xml": `<w:comments><w:comment w:id="0"><w:p><w:r><w:t>review note</w:t></w:r></w:p></w:comment></w:comments>`,
+		"word/document.xml": `<?xml version="1.0" encoding="UTF-8"?>` +
+			`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:commentRangeStart w:id="0"/><w:r><w:t>TEMPLATE-SKELETON-MARKER</w:t></w:r>` +
+			`<w:ins><w:r><w:t>accepted review text</w:t></w:r></w:ins>` +
+			`<w:del><w:r><w:delText>deleted review text</w:delText></w:r></w:del>` +
+			`<w:r><w:commentReference w:id="0"/></w:r><w:commentRangeEnd w:id="0"/></w:p>` +
+			`<w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+	t.Setenv("CQRWST_TEMPLATE_PATH", templatePath)
+	t.Setenv("CQRWST_TEMPLATE_TRANSPLANT_ENABLED", "true")
+	t.Setenv("DEEPSEEK_ENABLED", "false")
+	userID := uuid.New()
+
+	svc := NewPaperWorkflowServiceWithOutputRoot(db, outputRoot)
+	created, err := svc.CreatePaperJob(context.Background(), CreatePaperJobInput{
+		UserID:   userID,
+		Title:    "paper.docx",
+		FilePath: inputPath,
+		FileName: "paper.docx",
+		FileSize: 123,
+		FileType: "docx",
+	})
+	if err != nil {
+		t.Fatalf("CreatePaperJob() error = %v", err)
+	}
+
+	view, err := svc.RunJob(context.Background(), created.ID.String(), userID)
+	if err != nil {
+		t.Fatalf("RunJob() error = %v", err)
+	}
+	if view.Status != string(workflow.StatusVerifiedPass) {
+		t.Fatalf("Status = %s, want %s", view.Status, workflow.StatusVerifiedPass)
+	}
+	documentXML := readWorkflowDocumentXML(t, view.DownloadPath)
+	relsXML := readWorkflowDocxEntry(t, view.DownloadPath, "word/_rels/document.xml.rels")
+	contentTypesXML := readWorkflowDocxEntry(t, view.DownloadPath, "[Content_Types].xml")
+	pkg, err := ooxmlpkg.Open(view.DownloadPath)
+	if err != nil {
+		t.Fatalf("open output docx: %v", err)
+	}
+	if _, ok := pkg.Get("word/comments.xml"); ok {
+		t.Fatal("output should remove comments.xml")
+	}
+	for _, forbidden := range []string{"commentRange", "commentReference", "<w:ins", "<w:del", "deleted review text", "comments"} {
+		if strings.Contains(documentXML+relsXML+contentTypesXML, forbidden) {
+			t.Fatalf("output still contains review markup %q:\n%s", forbidden, documentXML)
+		}
+	}
+	for _, want := range []string{"accepted review text", "Introduction", "Body from parsed source"} {
+		if !strings.Contains(documentXML, want) {
+			t.Fatalf("output missing %q after review finalization: %s", want, documentXML)
+		}
+	}
+}
+
+func TestPaperWorkflowServiceRunJobFinalizesSourceReviewMarkup(t *testing.T) {
+	db := openPaperWorkflowServiceTestDB(t)
+	outputRoot := t.TempDir()
+	inputPath := filepath.Join(t.TempDir(), "paper-source-review.docx")
+	writeWorkflowDocxPackage(t, inputPath, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+			`<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+			`<Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>` +
+			`</Types>`,
+		"_rels/.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdComments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>` +
+			`</Relationships>`,
+		"word/comments.xml": `<w:comments><w:comment w:id="0"><w:p><w:r><w:t>source review note</w:t></w:r></w:p></w:comment></w:comments>`,
+		"word/document.xml": `<?xml version="1.0" encoding="UTF-8"?>` +
+			`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:commentRangeStart w:id="0"/><w:r><w:t>1 Introduction</w:t></w:r><w:r><w:commentReference w:id="0"/></w:r><w:commentRangeEnd w:id="0"/></w:p>` +
+			`<w:p><w:r><w:t>Body before </w:t></w:r>` +
+			`<w:ins><w:r><w:t>accepted source text</w:t></w:r></w:ins>` +
+			`<w:del><w:r><w:t>deleted source normal text</w:t></w:r><w:r><w:delText>deleted source tracked text</w:delText></w:r></w:del>` +
+			`<w:moveFrom><w:r><w:t>moved away source text</w:t></w:r></w:moveFrom>` +
+			`<w:r><w:t> after.</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+	templatePath := filepath.Join(t.TempDir(), "template.docx")
+	writeWorkflowTemplateDocx(t, templatePath)
+	t.Setenv("CQRWST_TEMPLATE_PATH", templatePath)
+	t.Setenv("CQRWST_TEMPLATE_TRANSPLANT_ENABLED", "true")
+	t.Setenv("DEEPSEEK_ENABLED", "false")
+	userID := uuid.New()
+
+	svc := NewPaperWorkflowServiceWithOutputRoot(db, outputRoot)
+	created, err := svc.CreatePaperJob(context.Background(), CreatePaperJobInput{
+		UserID:   userID,
+		Title:    "paper.docx",
+		FilePath: inputPath,
+		FileName: "paper.docx",
+		FileSize: 123,
+		FileType: "docx",
+	})
+	if err != nil {
+		t.Fatalf("CreatePaperJob() error = %v", err)
+	}
+
+	view, err := svc.RunJob(context.Background(), created.ID.String(), userID)
+	if err != nil {
+		t.Fatalf("RunJob() error = %v", err)
+	}
+	if view.Status != string(workflow.StatusVerifiedPass) {
+		t.Fatalf("Status = %s, want %s", view.Status, workflow.StatusVerifiedPass)
+	}
+	documentXML := readWorkflowDocumentXML(t, view.DownloadPath)
+	text := workflowDocumentText(documentXML)
+	for _, want := range []string{"1 Introduction", "Body before accepted source text after."} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output text missing %q: %s", want, text)
+		}
+	}
+	for _, forbidden := range []string{"commentRange", "commentReference", "<w:ins", "<w:del", "<w:moveFrom", "deleted source", "moved away source", "source review note"} {
+		if strings.Contains(documentXML, forbidden) || strings.Contains(text, forbidden) {
+			t.Fatalf("output still contains source review markup/text %q:\n%s", forbidden, documentXML)
+		}
 	}
 }
 
@@ -562,6 +1115,17 @@ func TestPaperWorkflowServiceRunJobFallsBackWhenTemplateDropsSourceContent(t *te
 	}
 }
 
+func TestNormalizeContentTextAllowsHeadingSpacingRepairs(t *testing.T) {
+	source := normalizeContentText("1.2\u7814\u7a76\u76ee\u7684")
+	generated := normalizeContentText("1.2 \u7814\u7a76\u76ee\u7684")
+	if source != generated {
+		t.Fatalf("heading spacing repair should not look like content loss: source=%q generated=%q", source, generated)
+	}
+	if got := normalizeContentText("190\u4f8b\u60a3\u8005"); got != "190\u4f8b\u60a3\u8005" {
+		t.Fatalf("numeric-leading body text should not be rewritten as a heading: %q", got)
+	}
+}
+
 func workflowTestHasContractStep(contract repaircontract.Contract, stepID string) bool {
 	for _, step := range contract.Steps {
 		if step.ID == stepID {
@@ -608,6 +1172,41 @@ func TestPaperWorkflowServiceGetJobReturnsView(t *testing.T) {
 	}
 	if view.DownloadPath != "out/final.docx" {
 		t.Fatalf("DownloadPath = %s, want out/final.docx", view.DownloadPath)
+	}
+	if view.DownloadURL != "/api/v2/jobs/"+jobID.String()+"/download" {
+		t.Fatalf("DownloadURL = %s, want v2 job download URL", view.DownloadURL)
+	}
+}
+
+func TestPaperWorkflowServiceCompileTemplatePersistsRecord(t *testing.T) {
+	db := openPaperWorkflowServiceTestDB(t)
+	templatePath := filepath.Join(t.TempDir(), "template.docx")
+	writeWorkflowDocxPackage(t, templatePath, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
+		"word/document.xml":   `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	view, err := NewPaperWorkflowServiceWithOutputRoot(db, t.TempDir()).CompileTemplate(context.Background(), CompileTemplateInput{
+		SchoolID:     "school",
+		TemplateName: "template",
+		Version:      "v1",
+		FilePath:     templatePath,
+	})
+	if err != nil {
+		t.Fatalf("CompileTemplate() error = %v", err)
+	}
+	if view.ID == uuid.Nil || view.Status != "compiled" {
+		t.Fatalf("compiled template view = %+v, want persisted compiled template", view)
+	}
+	var record model.CompiledTemplate
+	if err := db.First(&record, "id = ?", view.ID).Error; err != nil {
+		t.Fatalf("compiled template not persisted: %v", err)
+	}
+	if record.SchoolID != "school" || record.TemplateName != "template" || record.TemplateVersion != "v1" {
+		t.Fatalf("compiled template record = %+v, want input metadata", record)
+	}
+	if _, err := os.Stat(record.SkeletonPath); err != nil {
+		t.Fatalf("compiled skeleton missing: %v", err)
 	}
 }
 
@@ -953,6 +1552,184 @@ func paragraphContainingWorkflow(documentXML string, text string) string {
 		}
 	}
 	return ""
+}
+
+func workflowParagraphMatchingText(documentXML string, pattern *regexp.Regexp) string {
+	for _, paragraph := range regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`).FindAllString(documentXML, -1) {
+		if pattern.MatchString(workflowDocumentText(paragraph)) {
+			return paragraph
+		}
+	}
+	return ""
+}
+
+func workflowParagraphsMatchingText(documentXML string, pattern *regexp.Regexp) []string {
+	var matches []string
+	for _, paragraph := range regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`).FindAllString(documentXML, -1) {
+		if pattern.MatchString(workflowDocumentText(paragraph)) {
+			matches = append(matches, paragraph)
+		}
+	}
+	return matches
+}
+
+func workflowParagraphMatchingTextAndXML(documentXML string, pattern *regexp.Regexp, xmlFragment string) string {
+	for _, paragraph := range regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`).FindAllString(documentXML, -1) {
+		if strings.Contains(paragraph, xmlFragment) && pattern.MatchString(workflowDocumentText(paragraph)) {
+			return paragraph
+		}
+	}
+	return ""
+}
+
+func workflowTablesContaining(documentXML string, fragment string) []string {
+	var tables []string
+	for _, table := range regexp.MustCompile(`(?s)<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`).FindAllString(documentXML, -1) {
+		if strings.Contains(table, fragment) {
+			tables = append(tables, table)
+		}
+	}
+	return tables
+}
+
+func workflowParagraphs(documentXML string) []string {
+	return regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`).FindAllString(documentXML, -1)
+}
+
+type workflowParagraphStyle struct {
+	Font           string
+	Size           string
+	Bold           bool
+	Center         bool
+	Line           string
+	FirstLineChars string
+	AfterLines     string
+}
+
+func assertWorkflowParagraphHasStyle(t *testing.T, paragraph string, style workflowParagraphStyle) {
+	t.Helper()
+	if style.Font != "" && !strings.Contains(paragraph, `"`+style.Font+`"`) {
+		t.Fatalf("paragraph missing font %q: %s", style.Font, paragraph)
+	}
+	if style.Size != "" && !strings.Contains(paragraph, `<w:sz w:val="`+style.Size+`"`) {
+		t.Fatalf("paragraph missing size %s: %s", style.Size, paragraph)
+	}
+	if style.Bold && !strings.Contains(paragraph, `<w:b`) {
+		t.Fatalf("paragraph missing bold: %s", paragraph)
+	}
+	if style.Center && !strings.Contains(paragraph, `<w:jc w:val="center"`) {
+		t.Fatalf("paragraph missing center alignment: %s", paragraph)
+	}
+	if style.Line != "" && !strings.Contains(paragraph, `w:line="`+style.Line+`"`) {
+		t.Fatalf("paragraph missing line spacing %s: %s", style.Line, paragraph)
+	}
+	if style.FirstLineChars != "" && !strings.Contains(paragraph, `w:firstLineChars="`+style.FirstLineChars+`"`) {
+		t.Fatalf("paragraph missing first-line indent %s chars: %s", style.FirstLineChars, paragraph)
+	}
+	if style.AfterLines != "" && !strings.Contains(paragraph, `w:afterLines="`+style.AfterLines+`"`) {
+		t.Fatalf("paragraph missing after spacing %s lines: %s", style.AfterLines, paragraph)
+	}
+}
+
+func workflowRenderedPageTexts(t *testing.T, result *renderverify.Result) []string {
+	t.Helper()
+	if result == nil || strings.TrimSpace(result.PDFPath) == "" {
+		t.Fatal("render result missing PDF path")
+	}
+	if python := strings.TrimSpace(os.Getenv("PDF_TEXT_PYTHON")); python != "" {
+		pages, err := (renderverify.PythonPDFTextExtractor{Binary: python}).ExtractPageTexts(result.PDFPath)
+		if err != nil {
+			t.Fatalf("extract rendered PDF text with Python: %v", err)
+		}
+		return pages
+	}
+	pages, err := (renderverify.RscPDFTextExtractor{}).ExtractPageTexts(result.PDFPath)
+	if err != nil {
+		t.Fatalf("extract rendered PDF text: %v", err)
+	}
+	return pages
+}
+
+func assertWorkflowRenderedTOCHasPageNumbers(t *testing.T, pageTexts []string) {
+	t.Helper()
+	for _, pageText := range pageTexts {
+		if !strings.Contains(pageText, "\u76ee") || !strings.Contains(pageText, "\u5f55") {
+			continue
+		}
+		for _, pattern := range []*regexp.Regexp{
+			regexp.MustCompile(`1\s+` + "\u7eea\u8bba" + `.*\d+`),
+			regexp.MustCompile(`1\.1\s+` + "\u7814\u7a76\u80cc\u666f" + `.*\d+`),
+			regexp.MustCompile(`5\s+` + "\u7ed3\u8bba/\u603b\u7ed3" + `.*\d+`),
+		} {
+			if !pattern.MatchString(pageText) {
+				t.Fatalf("rendered TOC page missing numbered entry %s:\n%s", pattern, pageText)
+			}
+		}
+		return
+	}
+	t.Fatalf("rendered PDF missing TOC page: %#v", pageTexts)
+}
+
+func assertWorkflowRenderedHeadingsAreNotDoubleNumbered(t *testing.T, pageTexts []string) {
+	t.Helper()
+	allText := strings.Join(pageTexts, "\n")
+	for _, pattern := range []*regexp.Regexp{
+		regexp.MustCompile(`(^|\n)1\s+1\s+` + "\u7eea\u8bba"),
+		regexp.MustCompile(`(^|\n)1\.1\s+1\.1\s+`),
+		regexp.MustCompile(`(^|\n)2\.1\.1\s+2\.1\.1\s+`),
+	} {
+		if pattern.MatchString(allText) {
+			t.Fatalf("rendered headings should not contain duplicated numbering %s:\n%s", pattern, allText)
+		}
+	}
+}
+
+func assertWorkflowRenderedHeadingNumbersHaveSpacing(t *testing.T, pageTexts []string) {
+	t.Helper()
+	allText := strings.Join(pageTexts, "\n")
+	for _, pattern := range []*regexp.Regexp{
+		regexp.MustCompile(`(^|\n)1\.2` + "\u7814\u7a76\u76ee\u7684"),
+		regexp.MustCompile(`(^|\n)3` + "\u7814\u7a76\u7ed3\u679c"),
+		regexp.MustCompile(`(^|\n)5\.1` + "\u5355\u56e0\u7d20"),
+	} {
+		if pattern.MatchString(allText) {
+			t.Fatalf("rendered headings should have a space after numbering %s:\n%s", pattern, allText)
+		}
+	}
+}
+
+func assertWorkflowRenderedTextHasNoTemplateResidue(t *testing.T, pageTexts []string) {
+	t.Helper()
+	allText := strings.Join(pageTexts, "\n")
+	for _, want := range []*regexp.Regexp{
+		regexp.MustCompile("\u6458\\s*\u8981"),
+		regexp.MustCompile("\u76ee\\s*\u5f55"),
+		regexp.MustCompile(`1\s+` + "\u7eea\u8bba"),
+		regexp.MustCompile("\u53c2\u8003\u6587\u732e"),
+	} {
+		if !want.MatchString(allText) {
+			t.Fatalf("rendered PDF text missing required thesis landmark %q:\n%s", want, allText)
+		}
+	}
+	romanFooterLine := regexp.MustCompile(`(?m)^(?:I|II|III|IV|V|VI|VII|VIII|IX|X)$`)
+	for index, pageText := range pageTexts {
+		if got := len(romanFooterLine.FindAllString(pageText, -1)); got > 1 {
+			t.Fatalf("rendered PDF page %d has duplicate Roman front-matter page numbers:\n%s", index+1, pageText)
+		}
+	}
+	for _, forbidden := range []string{
+		"202X",
+		"20XX",
+		"XXXX",
+		"\u5c01\u9762\u683c\u5f0f\u4e0d\u8981\u8c03\u6574",
+		"\u9009\u9898\u9898\u76ee\u4e00\u822c\u4e0d\u8d85\u8fc7",
+		"\u6b63\u6587\u683c\u5f0f\u8303\u4f8b",
+		"\u65e0\u9644\u5f55\u5185\u5bb9\u53ef\u5220\u9664",
+	} {
+		if strings.Contains(allText, forbidden) {
+			t.Fatalf("rendered PDF text should not expose template residue %q:\n%s", forbidden, allText)
+		}
+	}
 }
 
 func workflowDocumentText(documentXML string) string {

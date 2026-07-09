@@ -134,12 +134,13 @@ func ApplySectionProperties(documentXML string, spec SectionPropertiesSpec) (str
 }
 
 func ApplySettingsProperties(settingsXML string, spec SettingsPropertiesSpec) (string, bool) {
-	updated := evenAndOddHeadersElement.ReplaceAllString(settingsXML, "")
-	updated = updateFieldsElement.ReplaceAllString(updated, "")
+	updated := settingsXML
 	if spec.EvenAndOddHeaders {
+		updated = evenAndOddHeadersElement.ReplaceAllString(updated, "")
 		updated = insertBeforeClosingTag(updated, "w:settings", `<w:evenAndOddHeaders/>`)
 	}
 	if spec.UpdateFieldsOnOpen {
+		updated = updateFieldsElement.ReplaceAllString(updated, "")
 		updated = insertBeforeClosingTag(updated, "w:settings", `<w:updateFields w:val="true"/>`)
 	}
 	return updated, updated != settingsXML

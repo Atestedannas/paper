@@ -78,6 +78,55 @@ func TestGenerateEscapesXMLPayload(t *testing.T) {
 	}
 }
 
+func TestGenerateFinalizesTemplateReviewMarkup(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/></Types>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdComments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>` +
+			`</Relationships>`,
+		"word/comments.xml": `<w:comments><w:comment w:id="0"><w:p><w:r><w:t>review note</w:t></w:r></w:p></w:comment></w:comments>`,
+		"word/document.xml": `<w:document><w:body><w:p>` +
+			`<w:commentRangeStart w:id="0"/>` +
+			`<w:r><w:t>{{abstract_cn_body}}</w:t></w:r>` +
+			`<w:ins><w:r><w:t>accepted text</w:t></w:r></w:ins>` +
+			`<w:del><w:r><w:delText>deleted text</w:delText></w:r></w:del>` +
+			`<w:r><w:commentReference w:id="0"/></w:r>` +
+			`<w:commentRangeEnd w:id="0"/>` +
+			`</w:p></w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{Bindings: []blockmap.Binding{
+			{BlockID: "abstract_cn_body", Payload: "clean body"},
+		}},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	rels := readDocxEntry(t, outputPath, "word/_rels/document.xml.rels")
+	types := readDocxEntry(t, outputPath, "[Content_Types].xml")
+	if _, ok := openTestPackage(t, outputPath).Get("word/comments.xml"); ok {
+		t.Fatal("generated docx should remove comments.xml")
+	}
+	for _, forbidden := range []string{"commentRange", "commentReference", "<w:ins", "<w:del", "deleted text", "comments"} {
+		if strings.Contains(document+rels+types, forbidden) {
+			t.Fatalf("generated docx still contains review markup %q:\n%s", forbidden, document)
+		}
+	}
+	for _, want := range []string{"clean body", "accepted text"} {
+		if !strings.Contains(document, want) {
+			t.Fatalf("generated docx missing %q after finalizing review markup: %s", want, document)
+		}
+	}
+}
+
 func TestGeneratePatchTargetsOnlyReplaceSpecifiedTargets(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
@@ -479,7 +528,8 @@ func TestGenerateDropsSourceTableOfContentsAndBuildsCleanTOC(t *testing.T) {
 	if strings.Count(document, "1 \u7eea\u8bba") < 2 {
 		t.Fatalf("heading should appear in generated TOC and body: %s", document)
 	}
-	if !strings.Contains(document, `<w:spacing w:line="240"`) || !strings.Contains(document, `<w:sz w:val="20"`) {
+	if !strings.Contains(document, `<w:spacing w:line="240"`) || !strings.Contains(document, `<w:sz w:val="20"`) ||
+		!strings.Contains(document, `<w:tab w:val="right" w:leader="dot" w:pos="9000"/>`) || !strings.Contains(document, `<w:tab/>`) {
 		t.Fatalf("generated TOC entries should use compact typography: %s", document)
 	}
 	for _, want := range []string{`TOC \o "1-3" \h \z \u`, `w:fldCharType="begin"`, `w:fldCharType="separate"`, `w:fldCharType="end"`} {
@@ -505,9 +555,10 @@ func TestGenerateAppliesTemplateTypographySpacing(t *testing.T) {
 		Mapping: &blockmap.MappingResult{Bindings: []blockmap.Binding{
 			{BlockID: "content_blocks", Payload: "\u6458\u8981\uff1a abstract text"},
 			{BlockID: "content_blocks", Payload: "1 \u7eea\u8bba"},
-			{BlockID: "content_blocks", Payload: "1.1 \u7814\u7a76\u80cc\u666f"},
+			{BlockID: "content_blocks", Payload: "1.1\u7814\u7a76\u80cc\u666f"},
 			{BlockID: "content_blocks", Payload: "1.1.1 \u7814\u7a76\u5bf9\u8c61"},
 			{BlockID: "content_blocks", Payload: "5.5 \u603b\u7ed3"},
+			{BlockID: "content_blocks", Payload: "190\u4f8b\u60a3\u8005\u7eb3\u5165\u7814\u7a76\u3002"},
 			{BlockID: "content_blocks", Payload: "\u6b63\u6587\u5c0f\u56db\u5b8b\u4f53\u6bb5\u843d\u3002"},
 		}},
 		OutputPath: outputPath,
@@ -528,6 +579,9 @@ func TestGenerateAppliesTemplateTypographySpacing(t *testing.T) {
 	}
 
 	section := paragraphContainingText(t, document, "1.1 \u7814\u7a76\u80cc\u666f")
+	if strings.Contains(document, "1.1\u7814\u7a76\u80cc\u666f") {
+		t.Fatalf("numbered heading should normalize spacing after the number: %s", document)
+	}
 	for _, want := range []string{`<w:pStyle w:val="Heading2"/>`, `<w:outlineLvl w:val="1"/>`, "w:eastAsia=\"\u5b8b\u4f53\"", "w:ascii=\"\u5b8b\u4f53\"", `<w:b/><w:bCs/>`, `<w:sz w:val="30"/>`, `w:line="360"`} {
 		if !strings.Contains(section, want) {
 			t.Fatalf("section heading missing %q: %s", want, section)
@@ -544,6 +598,11 @@ func TestGenerateAppliesTemplateTypographySpacing(t *testing.T) {
 	mixed := paragraphContainingText(t, document, "5.5 \u603b\u7ed3")
 	if strings.Contains(mixed, `Times New Roman`) {
 		t.Fatalf("numbered Chinese heading should not fall back to Times New Roman: %s", mixed)
+	}
+
+	numericBody := paragraphContainingText(t, document, "190\u4f8b\u60a3\u8005")
+	if strings.Contains(numericBody, "Heading") || strings.Contains(numericBody, "outlineLvl") {
+		t.Fatalf("numeric-leading body paragraph should not be promoted to heading: %s", numericBody)
 	}
 
 	body := paragraphContainingText(t, document, "\u6b63\u6587\u5c0f\u56db\u5b8b\u4f53\u6bb5\u843d")
@@ -578,10 +637,17 @@ func TestRenderBackMatterUsesTemplateStyles(t *testing.T) {
 	if strings.Count(references, "<w:p>") != 2 {
 		t.Fatalf("references should render each entry as its own paragraph: %s", references)
 	}
+	if strings.Contains(references, `<w:vertAlign w:val="superscript"/>`) {
+		t.Fatalf("reference list marker should not be superscripted: %s", references)
+	}
 	for _, want := range []string{`<w:sz w:val="21"/>`, `w:line="288"`} {
 		if !strings.Contains(references, want) {
 			t.Fatalf("references missing %q: %s", want, references)
 		}
+	}
+	body := renderParagraphs([]string{"Body text [1] and [3-4]."})
+	if strings.Count(body, `<w:vertAlign w:val="superscript"/>`) != 2 {
+		t.Fatalf("body citations should be superscripted: %s", body)
 	}
 
 	thanks := renderAcknowledgements([]string{"\u611f\u8c22\u6307\u5bfc\u8001\u5e08\u3002"})
@@ -966,6 +1032,71 @@ func TestGenerateKeepsTableCaptionWithFollowingTable(t *testing.T) {
 	}
 }
 
+func TestGenerateStartsLongTablesOnFreshPage(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{Bindings: []blockmap.Binding{
+			{BlockID: "content_blocks", Payload: "\u88684-1 \u5355\u56e0\u7d20\u5206\u6790"},
+			{BlockID: "content_blocks", Payload: testTableRows(8)},
+			{BlockID: "content_blocks", Payload: "\u7eed\u88684-1 \u5355\u56e0\u7d20\u5206\u6790"},
+			{BlockID: "content_blocks", Payload: testTableRows(8)},
+		}},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	captionStart := strings.Index(document, "\u88684-1")
+	if captionStart < 0 {
+		t.Fatalf("document missing table caption: %s", document)
+	}
+	pageBreak := `<w:br w:type="page"/>`
+	if strings.Count(document, pageBreak) != 1 || strings.Index(document, pageBreak) > captionStart {
+		t.Fatalf("long table caption should start after a page break: %s", document)
+	}
+	continuedStart := strings.Index(document, "\u7eed\u88684-1")
+	if continuedStart < 0 {
+		t.Fatalf("document missing continued table caption: %s", document)
+	}
+}
+
+func TestGenerateNormalizesContinuedTableCaptionNumber(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{Bindings: []blockmap.Binding{
+			{BlockID: "content_blocks", Payload: "\u88684-4 \u591a\u5206\u7c7blogistic\u56de\u5f52\u5206\u6790"},
+			{BlockID: "content_blocks", Payload: testTableRows(2)},
+			{BlockID: "content_blocks", Payload: "\u7eed\u88684-2 \u591a\u5206\u7c7blogistic\u56de\u5f52\u5206\u6790"},
+			{BlockID: "content_blocks", Payload: testTableRows(2)},
+		}},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	if !strings.Contains(document, "\u7eed\u88684-4 \u591a\u5206\u7c7blogistic\u56de\u5f52\u5206\u6790") || strings.Contains(document, "\u7eed\u88684-2") {
+		t.Fatalf("continued caption should follow previous table number: %s", document)
+	}
+}
+
 func TestGeneratePreservesTableMergeStructure(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
@@ -1180,7 +1311,8 @@ func TestGenerateRebuildsCQRWSTBodyWithMainFooterSection(t *testing.T) {
 			`<w:p><w:pPr><w:sectPr><w:footerReference w:type="default" r:id="rId11"/><w:pgNumType w:start="1"/></w:sectPr></w:pPr></w:p>` +
 			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId22"/></w:sectPr></w:pPr></w:p>` +
 			`</w:body></w:document>`,
-		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer3.xml"/></Relationships>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/><Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer3.xml"/></Relationships>`,
+		"word/footer1.xml":             `<w:ftr><w:p><w:r><w:pict><v:shape><v:textbox><w:txbxContent><w:p><w:r><w:instrText> PAGE </w:instrText></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p></w:ftr>`,
 		"word/footer3.xml":             `<w:ftr><w:p><w:r><w:t>Page </w:t></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:t> end</w:t></w:r></w:p></w:ftr>`,
 	})
 
@@ -1248,6 +1380,10 @@ func TestGenerateRebuildsCQRWSTBodyWithMainFooterSection(t *testing.T) {
 	footerXML := readDocxEntry(t, outputPath, "word/footer3.xml")
 	if !strings.Contains(footerXML, "NUMPAGES") || strings.Contains(footerXML, ">12<") {
 		t.Fatalf("main footer should use dynamic page fields instead of stale template text: %s", footerXML)
+	}
+	frontFooterXML := readDocxEntry(t, outputPath, "word/footer1.xml")
+	if strings.Contains(frontFooterXML, "<w:pict") || !strings.Contains(frontFooterXML, " PAGE ") || strings.Contains(frontFooterXML, "NUMPAGES") {
+		t.Fatalf("front-matter footer should use one plain Roman PAGE field without VML text boxes: %s", frontFooterXML)
 	}
 }
 func TestGeneratePreservesTemplateChineseTotalFooterFields(t *testing.T) {
@@ -1438,6 +1574,62 @@ func TestGenerateNormalizesAllReferencedCQRWSTHeaderParts(t *testing.T) {
 	}
 }
 
+func TestGeneratePreservesComplexHeaderFooterReferences(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:sectPr><w:headerReference w:type="first" r:id="rIdFirstHeader"/><w:headerReference w:type="even" r:id="rIdEvenHeader"/><w:headerReference w:type="default" r:id="rIdDefaultHeader"/><w:footerReference w:type="first" r:id="rIdFirstFooter"/><w:footerReference w:type="even" r:id="rIdEvenFooter"/><w:footerReference w:type="default" r:id="rIdDefaultFooter"/><w:pgNumType w:start="1"/></w:sectPr></w:pPr></w:p>` +
+			`</w:body></w:document>`,
+		"word/settings.xml": `<w:settings><w:evenAndOddHeaders/></w:settings>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdFirstHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>` +
+			`<Relationship Id="rIdEvenHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header2.xml"/>` +
+			`<Relationship Id="rIdDefaultHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header3.xml"/>` +
+			`<Relationship Id="rIdFirstFooter" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>` +
+			`<Relationship Id="rIdEvenFooter" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer2.xml"/>` +
+			`<Relationship Id="rIdDefaultFooter" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer3.xml"/>` +
+			`</Relationships>`,
+		"word/header1.xml": `<w:hdr><w:p><w:r><w:t>first header</w:t></w:r></w:p></w:hdr>`,
+		"word/header2.xml": `<w:hdr><w:p><w:r><w:t>even header</w:t></w:r></w:p></w:hdr>`,
+		"word/header3.xml": `<w:hdr><w:p><w:r><w:t>default header</w:t></w:r></w:p></w:hdr>`,
+		"word/footer1.xml": `<w:ftr><w:p><w:r><w:t>first footer</w:t></w:r></w:p></w:ftr>`,
+		"word/footer2.xml": `<w:ftr><w:p><w:r><w:t>even footer</w:t></w:r></w:p></w:ftr>`,
+		"word/footer3.xml": `<w:ftr><w:p><w:r><w:t>default footer</w:t></w:r></w:p></w:ftr>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{
+			Bindings: []blockmap.Binding{{BlockID: "content_blocks", Payload: "1 Introduction"}},
+		},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	documentXML := readDocxEntry(t, outputPath, "word/document.xml")
+	settingsXML := readDocxEntry(t, outputPath, "word/settings.xml")
+	for _, want := range []string{
+		`<w:headerReference w:type="first" r:id="rIdFirstHeader"/>`,
+		`<w:headerReference w:type="even" r:id="rIdEvenHeader"/>`,
+		`<w:headerReference w:type="default" r:id="rIdDefaultHeader"/>`,
+		`<w:footerReference w:type="first" r:id="rIdFirstFooter"/>`,
+		`<w:footerReference w:type="even" r:id="rIdEvenFooter"/>`,
+		`<w:footerReference w:type="default" r:id="rIdDefaultFooter"/>`,
+	} {
+		if !strings.Contains(documentXML, want) {
+			t.Fatalf("document XML missing %s: %s", want, documentXML)
+		}
+	}
+	if !strings.Contains(settingsXML, `<w:evenAndOddHeaders/>`) {
+		t.Fatalf("settings XML missing evenAndOddHeaders: %s", settingsXML)
+	}
+}
+
 func TestGenerateInjectsReferencesAfterTemplateReferenceHeading(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
@@ -1591,15 +1783,31 @@ func writeTestDocx(t *testing.T, path string, entries map[string]string) {
 func readDocxEntry(t *testing.T, path, name string) string {
 	t.Helper()
 
-	pkg, err := ooxmlpkg.Open(path)
-	if err != nil {
-		t.Fatalf("open docx %s: %v", path, err)
-	}
+	pkg := openTestPackage(t, path)
 	content, ok := pkg.Get(name)
 	if !ok {
 		t.Fatalf("missing docx entry %s", name)
 	}
 	return string(content)
+}
+
+func testTableRows(rows int) string {
+	var builder strings.Builder
+	builder.WriteString(`<w:tbl>`)
+	for i := 0; i < rows; i++ {
+		builder.WriteString(`<w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr>`)
+	}
+	builder.WriteString(`</w:tbl>`)
+	return builder.String()
+}
+
+func openTestPackage(t *testing.T, path string) *ooxmlpkg.DocxPackage {
+	t.Helper()
+	pkg, err := ooxmlpkg.Open(path)
+	if err != nil {
+		t.Fatalf("open docx %s: %v", path, err)
+	}
+	return pkg
 }
 
 func paragraphContainingText(t *testing.T, document string, text string) string {

@@ -89,6 +89,48 @@ func TestVerifierRejectsRendererIncompatibleStartAlignment(t *testing.T) {
 	}
 }
 
+func TestVerifierRejectsNestedWordRun(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:r><w:t>bad</w:t></w:r></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.FatalIssues, "nested_word_run") {
+		t.Fatalf("FatalIssues = %#v, want nested_word_run", result.FatalIssues)
+	}
+}
+
+func TestVerifierAllowsTextBoxRunsInsideOuterRun(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:pict><w:txbxContent><w:p><w:r><w:t>textbox</w:t></w:r></w:p></w:txbxContent></w:pict></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.FatalIssues, "nested_word_run") {
+		t.Fatalf("FatalIssues = %#v, did not want nested_word_run", result.FatalIssues)
+	}
+}
+
+func TestVerifierRejectsBookmarkInsideRunProperties(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:rPr><w:bookmarkStart w:id="1" w:name="_Bad"/></w:rPr><w:t>bad</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.FatalIssues, "bookmark_in_run_properties") {
+		t.Fatalf("FatalIssues = %#v, want bookmark_in_run_properties", result.FatalIssues)
+	}
+}
+
 func TestVerifierRequiresFinalDeliveryWithoutComments(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
 		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
@@ -107,10 +149,478 @@ func TestVerifierRequiresFinalDeliveryWithoutComments(t *testing.T) {
 	}
 }
 
+func TestVerifierRequiresFinalDeliveryWithoutTrackedChanges(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:ins w:id="1"><w:r><w:t>inserted text</w:t></w:r></w:ins></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatal("Verify() Passed = true, want false")
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "tracked_changes_not_finalized") {
+		t.Fatalf("RepairableIssues = %#v, want tracked_changes_not_finalized", result.RepairableIssues)
+	}
+}
+
+func TestVerifierReportsDanglingFootnotePartPackageLinks(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml":  `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/footnotes.xml": `<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:footnote w:id="1"><w:p><w:r><w:t>note</w:t></w:r></w:p></w:footnote></w:footnotes>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	for _, kind := range []string{"footnotes_content_type_missing", "footnotes_relationship_missing"} {
+		if !hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierAcceptsLinkedFootnoteAndEndnoteParts(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml":          `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/><Override PartName="/word/endnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"/></Types>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdFoot" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/><Relationship Id="rIdEnd" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes" Target="endnotes.xml"/></Relationships>`,
+		"word/document.xml":            `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/footnotes.xml":           `<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:footnote w:id="1"><w:p><w:r><w:t>note</w:t></w:r></w:p></w:footnote></w:footnotes>`,
+		"word/endnotes.xml":            `<w:endnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:endnote w:id="1"><w:p><w:r><w:t>note</w:t></w:r></w:p></w:endnote></w:endnotes>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	for _, kind := range []string{"footnotes_content_type_missing", "footnotes_relationship_missing", "endnotes_content_type_missing", "endnotes_relationship_missing"} {
+		if hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, did not want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierReportsDanglingStylesAndNumberingPackageLinks(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>`,
+		"word/document.xml":   `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/styles.xml":     `<w:styles><w:style w:type="paragraph" w:styleId="Normal"/></w:styles>`,
+		"word/numbering.xml":  `<w:numbering/>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	for _, kind := range []string{"styles_content_type_missing", "styles_relationship_missing", "numbering_content_type_missing", "numbering_relationship_missing"} {
+		if !hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierAllowsLinkedStylesAndNumberingParts(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+			`<Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>` +
+			`</Relationships>`,
+		"word/document.xml":  `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/styles.xml":    `<w:styles><w:style w:type="paragraph" w:styleId="Normal"/></w:styles>`,
+		"word/numbering.xml": `<w:numbering/>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	for _, kind := range []string{"styles_content_type_missing", "styles_relationship_missing", "numbering_content_type_missing", "numbering_relationship_missing"} {
+		if hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, did not want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierReportsDanglingFontTableAndThemePackageLinks(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml":   `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>`,
+		"word/document.xml":     `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/fontTable.xml":    `<w:fonts/>`,
+		"word/theme/theme1.xml": `<a:theme/>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	for _, kind := range []string{"font_table_content_type_missing", "font_table_relationship_missing", "theme_content_type_missing", "theme_relationship_missing"} {
+		if !hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierAllowsLinkedFontTableAndThemeParts(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/><Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/></Types>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdFonts" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/>` +
+			`<Relationship Id="rIdTheme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>` +
+			`</Relationships>`,
+		"word/document.xml":     `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/fontTable.xml":    `<w:fonts/>`,
+		"word/theme/theme1.xml": `<a:theme/>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	for _, kind := range []string{"font_table_content_type_missing", "font_table_relationship_missing", "theme_content_type_missing", "theme_relationship_missing"} {
+		if hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, did not want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierReportsDanglingSettingsAndWebSettingsPackageLinks(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml":  `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>`,
+		"word/document.xml":    `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/settings.xml":    `<w:settings/>`,
+		"word/webSettings.xml": `<w:webSettings/>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	for _, kind := range []string{"settings_content_type_missing", "settings_relationship_missing", "web_settings_content_type_missing", "web_settings_relationship_missing"} {
+		if !hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierAllowsLinkedSettingsAndWebSettingsParts(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/><Override PartName="/word/webSettings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.webSettings+xml"/></Types>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>` +
+			`<Relationship Id="rIdWebSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/webSettings" Target="webSettings.xml"/>` +
+			`</Relationships>`,
+		"word/document.xml":    `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/settings.xml":    `<w:settings/>`,
+		"word/webSettings.xml": `<w:webSettings/>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	for _, kind := range []string{"settings_content_type_missing", "settings_relationship_missing", "web_settings_content_type_missing", "web_settings_relationship_missing"} {
+		if hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, did not want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierReportsMissingNumberingReference(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>` +
+			`</Relationships>`,
+		"word/document.xml":  `<w:document><w:body><w:p><w:pPr><w:numPr><w:numId w:val="42"/></w:numPr></w:pPr><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/numbering.xml": `<w:numbering><w:abstractNum w:abstractNumId="1"/><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "numbering_reference_missing") {
+		t.Fatalf("RepairableIssues = %#v, want numbering_reference_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierReportsMissingAbstractNumberingDefinition(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>` +
+			`</Relationships>`,
+		"word/document.xml":  `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/numbering.xml": `<w:numbering><w:num w:numId="42"><w:abstractNumId w:val="99"/></w:num></w:numbering>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "numbering_abstract_missing") {
+		t.Fatalf("RepairableIssues = %#v, want numbering_abstract_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierReportsMissingBookmarkReference(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r><w:r><w:instrText xml:space="preserve"> REF _MissingBookmark \h </w:instrText></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "bookmark_reference_missing") {
+		t.Fatalf("RepairableIssues = %#v, want bookmark_reference_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierAllowsExistingBookmarkReference(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:bookmarkStart w:id="1" w:name="_Tbl_1"/><w:r><w:t>Clean final document with enough text.</w:t></w:r><w:bookmarkEnd w:id="1"/></w:p><w:p><w:r><w:instrText xml:space="preserve"> REF _Tbl_1 \h </w:instrText></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.RepairableIssues, "bookmark_reference_missing") {
+		t.Fatalf("RepairableIssues = %#v, did not want bookmark_reference_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierReportsUnpairedBookmark(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:bookmarkStart w:id="7" w:name="_Broken"/><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "bookmark_pair_missing") {
+		t.Fatalf("RepairableIssues = %#v, want bookmark_pair_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierAllowsPairedBookmark(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:bookmarkStart w:id="7" w:name="_OK"/><w:r><w:t>Clean final document with enough text.</w:t></w:r><w:bookmarkEnd w:id="7"/></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.RepairableIssues, "bookmark_pair_missing") {
+		t.Fatalf("RepairableIssues = %#v, did not want bookmark_pair_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierReportsMissingRelationshipTarget(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml":            `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdImg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/missing.png"/></Relationships>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "relationship_target_missing") {
+		t.Fatalf("RepairableIssues = %#v, want relationship_target_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierAllowsExternalRelationshipTarget(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml":            `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdLink" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com" TargetMode="External"/></Relationships>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.RepairableIssues, "relationship_target_missing") {
+		t.Fatalf("RepairableIssues = %#v, did not want relationship_target_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierReportsMissingHeaderFooterRelationshipID(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml":            `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rIdMissing"/></w:sectPr></w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "header_footer_reference_relationship_missing") {
+		t.Fatalf("RepairableIssues = %#v, want header_footer_reference_relationship_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierReportsHeaderFooterRelationshipTypeMismatch(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml":            `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rIdHeader"/></w:sectPr></w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>`,
+		"word/footer1.xml":             `<w:ftr/>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "header_footer_reference_type_mismatch") {
+		t.Fatalf("RepairableIssues = %#v, want header_footer_reference_type_mismatch", result.RepairableIssues)
+	}
+}
+
+func TestVerifierReportsHeaderFooterContentTypeMissing(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml":          `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>`,
+		"word/document.xml":            `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rIdHeader"/></w:sectPr></w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>`,
+		"word/header1.xml":             `<w:hdr/>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "header_footer_content_type_missing") {
+		t.Fatalf("RepairableIssues = %#v, want header_footer_content_type_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierAllowsHeaderFooterContentTypes(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/></Types>`,
+		"word/document.xml":   `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rIdHeader"/><w:footerReference w:type="default" r:id="rIdFooter"/></w:sectPr></w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>` +
+			`<Relationship Id="rIdFooter" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>` +
+			`</Relationships>`,
+		"word/header1.xml": `<w:hdr/>`,
+		"word/footer1.xml": `<w:ftr/>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.RepairableIssues, "header_footer_content_type_missing") {
+		t.Fatalf("RepairableIssues = %#v, did not want header_footer_content_type_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierReportsMissingMediaContentType(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml":   `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>`,
+		"word/document.xml":     `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/media/image1.png": "png",
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "media_content_type_missing") {
+		t.Fatalf("RepairableIssues = %#v, want media_content_type_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierAllowsMediaContentTypeDefault(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml":   `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/></Types>`,
+		"word/document.xml":     `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/media/image1.png": "png",
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.RepairableIssues, "media_content_type_missing") {
+		t.Fatalf("RepairableIssues = %#v, did not want media_content_type_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierReportsMissingStyleReference(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/styles.xml":   `<w:styles><w:style w:type="paragraph" w:styleId="Normal"/></w:styles>`,
+		"word/document.xml": `<w:document><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "style_reference_missing") {
+		t.Fatalf("RepairableIssues = %#v, want style_reference_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierAllowsDefinedStyleReference(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/styles.xml":   `<w:styles><w:style w:type="paragraph" w:styleId="Heading1"/></w:styles>`,
+		"word/document.xml": `<w:document><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.RepairableIssues, "style_reference_missing") {
+		t.Fatalf("RepairableIssues = %#v, did not want style_reference_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierRequiresEvenOddHeaderSwitchForEvenReferences(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="even" r:id="rIdEvenHeader"/><w:footerReference w:type="default" r:id="rIdFooter"/></w:sectPr></w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !hasVerifyIssueKind(result.RepairableIssues, "even_headers_not_enabled") {
+		t.Fatalf("RepairableIssues = %#v, want even_headers_not_enabled", result.RepairableIssues)
+	}
+}
+
+func TestVerifierAllowsEvenReferencesWhenSwitchIsEnabled(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml":          `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`,
+		"word/document.xml":            `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="even" r:id="rIdEvenHeader"/><w:footerReference w:type="default" r:id="rIdFooter"/></w:sectPr></w:body></w:document>`,
+		"word/settings.xml":            `<w:settings><w:evenAndOddHeaders/></w:settings>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.RepairableIssues, "even_headers_not_enabled") {
+		t.Fatalf("RepairableIssues = %#v, did not want even_headers_not_enabled", result.RepairableIssues)
+	}
+}
+
 func TestVerifierTreatsFieldShadingAsDisplayOnlyWarning(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
-		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text and a table of contents field. </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \o "1-3" \h \z \u </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:body></w:document>`,
-		"word/settings.xml": `<w:settings><w:updateFields w:val="true"/></w:settings>`,
+		"[Content_Types].xml":          `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`,
+		"word/document.xml":            `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text and a table of contents field. </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \o "1-3" \h \z \u </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:body></w:document>`,
+		"word/settings.xml":            `<w:settings><w:updateFields w:val="true"/></w:settings>`,
 	})
 
 	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
@@ -352,10 +862,48 @@ func TestVerifierReportsImageFormulaAndReferenceProblems(t *testing.T) {
 	}
 }
 
+func TestVerifierSkipsContinuedTableCaptionAsManualCrossReference(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:t>1 ` + "\u7eea\u8bba" + `</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>` + "\u7eed\u88683-1 \u793e\u533a2\u578b\u7cd6\u5c3f\u75c5\u60a3\u8005\u57fa\u672c\u7279\u5f81\u5206\u5e03" + `</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.Warnings, "manual_cross_reference") {
+		t.Fatalf("Warnings = %#v, did not want manual_cross_reference", result.Warnings)
+	}
+}
+
+func TestVerifierSkipsTOCCacheAsManualCrossReference(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body>` +
+			`<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \o "1-3" \h \z \u </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r></w:p>` +
+			`<w:p><w:r><w:t>2.2.2 ` + "\u7cd6\u5c3f\u75c5\u77e5\u8bc6\u6d4b\u8bd5\u95ee\u5377\u91cf\u8868    4" + `</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>` +
+			`<w:p><w:r><w:t>1 ` + "\u7eea\u8bba" + `</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.Warnings, "manual_cross_reference") {
+		t.Fatalf("Warnings = %#v, did not want manual_cross_reference", result.Warnings)
+	}
+}
+
 func TestVerifierReportsFieldsNotMarkedForUpdate(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
-		"word/document.xml": `<w:document><w:body><w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> SEQ \u56fe \* ARABIC </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:body></w:document>`,
-		"word/settings.xml": `<w:settings></w:settings>`,
+		"[Content_Types].xml":          `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`,
+		"word/document.xml":            `<w:document><w:body><w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> SEQ \u56fe \* ARABIC </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:body></w:document>`,
+		"word/settings.xml":            `<w:settings></w:settings>`,
 	})
 
 	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)

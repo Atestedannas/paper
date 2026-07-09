@@ -48,6 +48,7 @@ var (
 	bodyChildPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
 	nodeTypePattern  = regexp.MustCompile(`^<w:(p|tbl)\b`)
 	textPattern      = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
+	deletedPattern   = regexp.MustCompile(`(?s)<w:(?:del|moveFrom)\b[^>]*>.*?</w:(?:del|moveFrom)>`)
 	stylePattern     = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
 	headingPattern   = regexp.MustCompile(`^(\d+(?:\.\d+){0,3})\s+\S+`)
 )
@@ -167,6 +168,7 @@ func detectNodeType(raw string) string {
 }
 
 func extractText(raw string) string {
+	raw = deletedPattern.ReplaceAllString(raw, "")
 	var builder strings.Builder
 	for _, match := range textPattern.FindAllStringSubmatch(raw, -1) {
 		if len(match) > 1 {

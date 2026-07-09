@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/paper-format-checker/backend/internal/core/blockmap"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
@@ -25,6 +27,7 @@ const contentTableMaxWidth = 8640
 var paragraphPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
 var finalSectPrPattern = regexp.MustCompile(`(?s)<w:sectPr(?:\s[^>]*)?>.*?</w:sectPr>`)
 var tablePattern = regexp.MustCompile(`(?s)<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
+var bracketCitationPattern = regexp.MustCompile(`\[\d+(?:-\d+)?\]`)
 var tableStartPattern = regexp.MustCompile(`<w:tbl(?:\s[^>]*)?>`)
 var tablePropertyStartPattern = regexp.MustCompile(`(?s)<w:tblPr(?:\s[^>]*)?>`)
 var tablePropertyPattern = regexp.MustCompile(`(?s)<w:tblPr(?:\s[^>]*)?>.*?</w:tblPr>`)
@@ -46,8 +49,11 @@ var tableRowCantSplitPattern = regexp.MustCompile(`<w:cantSplit\b[^>]*/>`)
 var tableRowStartPattern = regexp.MustCompile(`<w:tr(?:\s[^>]*)?>`)
 var tableRowPropertyStartPattern = regexp.MustCompile(`<w:trPr(?:\s[^>]*)?>`)
 var numberedHeadingPattern = regexp.MustCompile(`^\d+(?:\.\d+)*\s*\S+`)
+var numberedHeadingTextPattern = regexp.MustCompile(`^(\d+(?:\.\d+)*)(\s*)(\S.*)$`)
 var tocEntryPattern = regexp.MustCompile(`^.+\s+(\d+|[IVXLCDM]+)$`)
 var tableCaptionPattern = regexp.MustCompile(`^(?:\x{8868}|\x{7eed}\x{8868})\s*\S+`)
+var normalTableCaptionNumberPattern = regexp.MustCompile(`^\s*\x{8868}\s*(\d+)([-.\x{ff0e}])(\d+)\s+`)
+var continuedTableCaptionNumberPattern = regexp.MustCompile(`^(\s*\x{7eed}\x{8868}\s*)\d+([-\.\x{ff0e}])\d+(\s+.*)$`)
 var headerReferencePattern = regexp.MustCompile(`<w:headerReference\b[^>]*/>`)
 var headerReferenceIDPattern = regexp.MustCompile(`<w:headerReference\b[^>]*\br:id="([^"]+)"[^>]*/>`)
 var footerReferenceIDPattern = regexp.MustCompile(`<w:footerReference\b[^>]*\br:id="([^"]+)"[^>]*/>`)
@@ -137,9 +143,14 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 		pkg.Set(target, []byte(patched))
 	}
 	normalizePackageXML(pkg)
+	ooxmlpatch.FinalizeReviewMarkup(pkg)
 	ensureUpdateFieldsOnOpen(pkg)
+	if _, err := ooxmlpatch.ApplyHeadingNumberingDefinitions(pkg, []string{"1", "1.1", "1.1.1"}); err != nil {
+		return err
+	}
 	if usesCQRWSTNormalizers {
 		normalizeCQRWSTMainHeader(pkg, coverFields)
+		normalizeCQRWSTFrontFooter(pkg)
 		normalizeCQRWSTMainFooter(pkg)
 	}
 
@@ -199,6 +210,7 @@ func ensureUpdateFieldsOnOpen(pkg *ooxmlpkg.DocxPackage) {
 	if updated, ok := ooxmlpatch.ApplySettingsProperties(settingsXML, ooxmlpatch.SettingsPropertiesSpec{UpdateFieldsOnOpen: true}); ok {
 		pkg.Set("word/settings.xml", []byte(updated))
 	}
+	ooxmlpatch.EnsurePartRelationship(pkg, "word/settings.xml", ooxmlpatch.SettingsRelationshipType, ooxmlpatch.SettingsContentType)
 }
 
 func isCQRWSTDetectionPart(name string) bool {
@@ -291,6 +303,7 @@ func renderParagraphs(payloads []string) string {
 	payloads, hadSourceTOC := removeSourceTOCPayloads(payloads)
 	var builder strings.Builder
 	generatedTOCWritten := false
+	lastTableNumber := ""
 	for index, payload := range payloads {
 		payload = strings.TrimSpace(payload)
 		if payload == "" {
@@ -304,12 +317,30 @@ func renderParagraphs(payloads []string) string {
 			generatedTOCWritten = true
 		}
 		if isTableCaption(normalized) && nextNonEmptyPayloadIsTable(payloads, index+1) {
+			normalized = normalizeContinuedTableCaptionNumber(normalized, lastTableNumber)
+			if match := normalTableCaptionNumberPattern.FindStringSubmatch(normalized); len(match) == 4 {
+				lastTableNumber = match[1] + match[2] + match[3]
+			}
+			if shouldBreakBeforeLongTableCaption(normalized, payloads, index+1) {
+				builder.WriteString(pageBreakParagraph())
+			}
 			builder.WriteString(renderTableCaption(normalized, true))
 			continue
 		}
 		builder.WriteString(renderStyledPayload(payload))
 	}
 	return builder.String()
+}
+
+func normalizeContinuedTableCaptionNumber(caption string, lastTableNumber string) string {
+	if strings.TrimSpace(lastTableNumber) == "" {
+		return caption
+	}
+	match := continuedTableCaptionNumberPattern.FindStringSubmatch(caption)
+	if len(match) != 4 {
+		return caption
+	}
+	return match[1] + lastTableNumber + match[3]
 }
 
 func removeSourceTOCPayloads(payloads []string) ([]string, bool) {
@@ -351,10 +382,15 @@ func renderGeneratedTOC(payloads []string) string {
 	}, "Times New Roman", "黑体"))
 	builder.WriteString(tocFieldBeginParagraph())
 	for _, entry := range entries {
-		builder.WriteString(paragraphWithStyle(entry, paragraphStyle{Size: 20, FirstLine: 0, Line: 240}))
+		builder.WriteString(tocEntryParagraph(entry))
 	}
 	builder.WriteString(tocFieldEndParagraph())
 	return builder.String()
+}
+
+func tocEntryParagraph(entry string) string {
+	rPr := runPropertiesWithFonts(20, false, "宋体", "宋体")
+	return `<w:p><w:pPr><w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9000"/></w:tabs><w:spacing w:line="240" w:lineRule="auto"/>` + rPr + `</w:pPr><w:r>` + rPr + `<w:t>` + html.EscapeString(entry) + `</w:t></w:r><w:r>` + rPr + `<w:tab/></w:r><w:r>` + rPr + `<w:t>0</w:t></w:r></w:p>`
 }
 
 func tocFieldBeginParagraph() string {
@@ -410,9 +446,10 @@ func generatedTOCEntries(payloads []string) []string {
 	seen := make(map[string]bool)
 	for _, payload := range payloads {
 		normalized := strings.TrimSpace(payload)
-		if normalized == "" || !numberedHeadingPattern.MatchString(normalized) {
+		if normalized == "" || !isNumberedHeadingText(normalized) {
 			continue
 		}
+		normalized = normalizeNumberedHeadingText(normalized)
 		if seen[normalized] {
 			continue
 		}
@@ -578,7 +615,8 @@ func renderStyledPayload(text string) string {
 			return renderLeadLabelParagraph(normalized, leadLabel(normalized, "Keywords:", "Keywords"), "Times New Roman", "Times New Roman")
 		}
 		return renderLeadLabelParagraph(normalized, leadLabel(normalized, "Key words:", "Key words"), "Times New Roman", "Times New Roman")
-	case numberedHeadingPattern.MatchString(normalized):
+	case isNumberedHeadingText(normalized):
+		normalized = normalizeNumberedHeadingText(normalized)
 		level := headingLevel(normalized)
 		if level <= 1 {
 			return paragraphWithStyle(normalized, paragraphStyle{Size: 32, Bold: true, Line: 360, Before: 312, BeforeLines: 100, After: 312, AfterLines: 100, Alignment: "left", HeadingLevel: 1, SnapToGridOff: true, AdjustRightIndZero: true, AsciiFont: "宋体", EastAsiaFont: "宋体"})
@@ -606,6 +644,20 @@ func nextNonEmptyPayloadIsTable(payloads []string, start int) bool {
 			continue
 		}
 		return isTableXML(normalized)
+	}
+	return false
+}
+
+func shouldBreakBeforeLongTableCaption(caption string, payloads []string, start int) bool {
+	if strings.HasPrefix(strings.TrimSpace(caption), "\u7eed\u8868") {
+		return false
+	}
+	for _, payload := range payloads[start:] {
+		normalized := strings.TrimSpace(payload)
+		if normalized == "" {
+			continue
+		}
+		return isTableXML(normalized) && len(tableRowPattern.FindAllString(normalized, -1)) >= 8
 	}
 	return false
 }
@@ -1166,6 +1218,7 @@ type paragraphStyle struct {
 	KeepNext           bool
 	SnapToGridOff      bool
 	AdjustRightIndZero bool
+	SuperscriptCites   bool
 	AsciiFont          string
 	EastAsiaFont       string
 }
@@ -1256,7 +1309,32 @@ func runPropertiesForParagraphStyle(text string, style paragraphStyle) string {
 
 func runXMLForParagraphStyle(text string, style paragraphStyle, bold bool) string {
 	asciiFont, eastAsiaFont := fontsForParagraphText(text, style)
+	if (style.SuperscriptCites || (style.Size == 24 && style.FirstLineChars == 200)) && !bold && style.HeadingLevel == 0 && bracketCitationPattern.MatchString(text) {
+		return runXMLWithSuperscriptCitations(text, style.Size, asciiFont, eastAsiaFont)
+	}
 	return runXMLWithFonts(text, style.Size, bold, asciiFont, eastAsiaFont)
+}
+
+func runXMLWithSuperscriptCitations(text string, size int, asciiFont string, eastAsiaFont string) string {
+	var builder strings.Builder
+	last := 0
+	for _, match := range bracketCitationPattern.FindAllStringIndex(text, -1) {
+		if match[0] > last {
+			builder.WriteString(runXMLWithFonts(text[last:match[0]], size, false, asciiFont, eastAsiaFont))
+		}
+		builder.WriteString(runXMLWithFontsAndVertAlign(text[match[0]:match[1]], size, asciiFont, eastAsiaFont, "superscript"))
+		last = match[1]
+	}
+	if last < len(text) {
+		builder.WriteString(runXMLWithFonts(text[last:], size, false, asciiFont, eastAsiaFont))
+	}
+	return builder.String()
+}
+
+func runXMLWithFontsAndVertAlign(text string, size int, asciiFont string, eastAsiaFont string, vertAlign string) string {
+	run := runXMLWithFonts(text, size, false, asciiFont, eastAsiaFont)
+	updated, _ := ooxmlpatch.ApplyRunProperties(run, ooxmlpatch.RunPropertiesSpec{VerticalAlign: vertAlign})
+	return updated
 }
 
 func fontsForParagraphText(text string, style paragraphStyle) (string, string) {
@@ -1372,11 +1450,34 @@ func isMostlyASCII(text string) bool {
 }
 
 func headingLevel(text string) int {
-	prefix := strings.Fields(text)
-	if len(prefix) == 0 {
+	match := numberedHeadingTextPattern.FindStringSubmatch(strings.TrimSpace(text))
+	if len(match) != 4 {
 		return 0
 	}
-	return strings.Count(prefix[0], ".") + 1
+	return strings.Count(match[1], ".") + 1
+}
+
+func isNumberedHeadingText(text string) bool {
+	match := numberedHeadingTextPattern.FindStringSubmatch(strings.TrimSpace(text))
+	if len(match) != 4 {
+		return false
+	}
+	number := match[1]
+	title := match[3]
+	if !strings.Contains(number, ".") && len(number) > 1 {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(title)
+	return first != utf8.RuneError && !unicode.IsDigit(first)
+}
+
+func normalizeNumberedHeadingText(text string) string {
+	text = strings.TrimSpace(text)
+	match := numberedHeadingTextPattern.FindStringSubmatch(text)
+	if len(match) != 4 || match[2] != "" || !isNumberedHeadingText(text) {
+		return text
+	}
+	return match[1] + " " + match[3]
 }
 
 func applyReplacements(content string, replacements replacementSet) (string, bool) {
@@ -2267,6 +2368,28 @@ func normalizeCQRWSTMainFooter(pkg *ooxmlpkg.DocxPackage) {
 	pkg.Set(footerTarget, []byte(renderCQRWSTMainFooterXML()))
 }
 
+func normalizeCQRWSTFrontFooter(pkg *ooxmlpkg.DocxPackage) {
+	if pkg == nil {
+		return
+	}
+	document, ok := pkg.Get(defaultPatchTarget)
+	if !ok {
+		return
+	}
+	footerID := frontMatterFooterReferenceID(string(document))
+	if footerID == "" {
+		return
+	}
+	footerTarget := relationshipTarget(pkg, footerID)
+	if footerTarget == "" {
+		return
+	}
+	if content, ok := pkg.Get(footerTarget); ok && strings.Contains(string(content), " PAGE ") && !strings.Contains(string(content), "<w:pict") && !strings.Contains(string(content), "NUMPAGES") {
+		return
+	}
+	pkg.Set(footerTarget, []byte(renderCQRWSTFrontFooterXML()))
+}
+
 func footerHasPageAndNumPages(footerXML string) bool {
 	return strings.Contains(footerXML, " PAGE ") && strings.Contains(footerXML, " NUMPAGES ")
 }
@@ -2328,6 +2451,19 @@ func mainBodyFooterReferenceID(documentXML string) string {
 	}
 	for i := len(matches) - 1; i >= 0; i-- {
 		if match := footerReferenceIDPattern.FindStringSubmatch(matches[i]); len(match) == 2 {
+			return match[1]
+		}
+	}
+	return ""
+}
+
+func frontMatterFooterReferenceID(documentXML string) string {
+	matches := finalSectPrPattern.FindAllString(documentXML, -1)
+	for _, sectPr := range matches {
+		if !(strings.Contains(sectPr, `w:fmt="upperRoman"`) || strings.Contains(sectPr, `w:fmt="lowerRoman"`)) {
+			continue
+		}
+		if match := footerReferenceIDPattern.FindStringSubmatch(sectPr); len(match) == 2 {
 			return match[1]
 		}
 	}
@@ -2453,6 +2589,11 @@ func renderCQRWSTMainFooterXML() string {
 	return strings.Replace(ooxmlpatch.BuildPageFooterXML(ooxmlpatch.PageNumberingPolicySpec{
 		BodyWrapper: "chinese_total",
 	}), `<?xml version="1.0" encoding="UTF-8"?>`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`, 1)
+}
+
+func renderCQRWSTFrontFooterXML() string {
+	rPr := `<w:rPr><w:rFonts w:ascii="Times New Roman" w:eastAsia="宋体" w:hAnsi="Times New Roman"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr>`
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/>` + rPr + `</w:pPr><w:r>` + rPr + `<w:fldChar w:fldCharType="begin"/></w:r><w:r>` + rPr + `<w:instrText xml:space="preserve"> PAGE \* MERGEFORMAT </w:instrText></w:r><w:r>` + rPr + `<w:fldChar w:fldCharType="end"/></w:r></w:p></w:ftr>`
 }
 
 func validateXML(content string) error {

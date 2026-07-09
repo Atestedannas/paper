@@ -45,6 +45,10 @@ func (p *DocxPackage) Set(name string, content []byte) {
 	p.entries[name] = append([]byte(nil), content...)
 }
 
+func (p *DocxPackage) Delete(name string) {
+	delete(p.entries, name)
+}
+
 func (p *DocxPackage) Names() []string {
 	names := make([]string, 0, len(p.entries))
 	for name := range p.entries {

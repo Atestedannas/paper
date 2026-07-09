@@ -28,6 +28,22 @@ func TestCheckSamePageRulePasses(t *testing.T) {
 	}
 }
 
+func TestCheckSamePageRulePassesWhenEarlierPageHasDuplicateLeftText(t *testing.T) {
+	result, err := Check(context.Background(), "paper.docx", Options{
+		Enabled:       true,
+		Strict:        true,
+		Renderer:      fakeRenderer{},
+		TextExtractor: fakeExtractor{pages: []string{"论文题目 封面", "论文题目 摘要：正文"}},
+		SamePageRules: []SamePageRule{{Name: "title_abstract", LeftText: "论文题目", RightText: "摘要："}},
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if !result.Passed {
+		t.Fatalf("Passed = false, issues = %#v", result.Issues)
+	}
+}
+
 func TestCheckSamePageRuleFails(t *testing.T) {
 	result, err := Check(context.Background(), "paper.docx", Options{
 		Enabled:       true,
@@ -61,6 +77,26 @@ func TestCheckStrictRenderFailureIsFatal(t *testing.T) {
 	}
 	if len(result.Issues) != 1 || result.Issues[0].Severity != SeverityFatal {
 		t.Fatalf("Issues = %#v, want fatal render issue", result.Issues)
+	}
+}
+
+func TestCheckStoresRenderedPNGPaths(t *testing.T) {
+	result, err := Check(context.Background(), "paper.docx", Options{
+		Enabled:       true,
+		Strict:        true,
+		Renderer:      fakeRenderer{},
+		Rasterizer:    fakeRasterizer{paths: []string{"pages/page-1.png", "pages/page-2.png"}},
+		PNGOutputDir:  "pages",
+		TextExtractor: fakeExtractor{pages: []string{"page one", "page two"}},
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if !result.Passed {
+		t.Fatalf("Passed = false, issues = %#v", result.Issues)
+	}
+	if len(result.PNGPaths) != 2 || result.PNGPaths[0] != "pages/page-1.png" {
+		t.Fatalf("PNGPaths = %#v", result.PNGPaths)
 	}
 }
 
@@ -123,6 +159,18 @@ func (r fakeRenderer) RenderPDF(context.Context, string, string) (PDFArtifact, e
 		return PDFArtifact{}, r.err
 	}
 	return PDFArtifact{Path: filepath.Join("rendered", "paper.pdf")}, nil
+}
+
+type fakeRasterizer struct {
+	paths []string
+	err   error
+}
+
+func (r fakeRasterizer) RasterizePDF(context.Context, string, string) ([]string, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.paths, nil
 }
 
 type fakeExtractor struct {
