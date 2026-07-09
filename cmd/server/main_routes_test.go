@@ -51,6 +51,17 @@ func TestMainDoesNotKillExistingProcessOnPortConflict(t *testing.T) {
 	}
 }
 
+func TestMainUsesOneWildcardNameForAdminUserRoutes(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+
+	if strings.Contains(string(source), `"/users/:user_id/`) {
+		t.Fatal("admin user routes must use the existing :id wildcard name to avoid Gin route conflicts")
+	}
+}
+
 func TestMainRegistersFrontendRequiredRoutes(t *testing.T) {
 	source, err := os.ReadFile("main.go")
 	if err != nil {
@@ -65,9 +76,9 @@ func TestMainRegistersFrontendRequiredRoutes(t *testing.T) {
 		`"/config/public/billing"`,
 		`"/permission-packages"`,
 		`"/data-rules"`,
-		`"/users/:user_id/data-scope"`,
-		`"/users/:user_id/data-filter"`,
-		`"/users/:user_id/field-permissions"`,
+		`"/users/:id/data-scope"`,
+		`"/users/:id/data-filter"`,
+		`"/users/:id/field-permissions"`,
 	} {
 		if !strings.Contains(text, route) {
 			t.Fatalf("main.go does not register frontend route fragment %s", route)

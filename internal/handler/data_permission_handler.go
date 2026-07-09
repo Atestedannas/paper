@@ -19,8 +19,15 @@ func NewDataPermissionHandler() *DataPermissionHandler {
 	}
 }
 
+func userIDParam(c *gin.Context) string {
+	if id := c.Param("id"); id != "" {
+		return id
+	}
+	return c.Param("user_id")
+}
+
 func (h *DataPermissionHandler) GetUserDataScope(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("user_id"))
+	userID, err := uuid.Parse(userIDParam(c))
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusBadRequest, "无效的用户ID", err.Error())
 		return
@@ -39,7 +46,7 @@ func (h *DataPermissionHandler) GetUserDataScope(c *gin.Context) {
 }
 
 func (h *DataPermissionHandler) SetUserDataScope(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("user_id"))
+	userID, err := uuid.Parse(userIDParam(c))
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusBadRequest, "无效的用户ID", err.Error())
 		return
@@ -63,7 +70,7 @@ func (h *DataPermissionHandler) SetUserDataScope(c *gin.Context) {
 }
 
 func (h *DataPermissionHandler) GetUserDataFilter(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("user_id"))
+	userID, err := uuid.Parse(userIDParam(c))
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusBadRequest, "无效的用户ID", err.Error())
 		return
@@ -189,7 +196,7 @@ func (h *DataPermissionHandler) DeleteDataRule(c *gin.Context) {
 }
 
 func (h *DataPermissionHandler) GetUserFieldPermissions(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("user_id"))
+	userID, err := uuid.Parse(userIDParam(c))
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusBadRequest, "无效的用户ID", err.Error())
 		return

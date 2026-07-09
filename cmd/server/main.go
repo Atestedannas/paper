@@ -307,10 +307,10 @@ func main() {
 			admin.POST("/users/set-super-admin", adminHandler.SetUserAsSuperAdmin)           // Set user as super admin
 
 			// Paper management
-			admin.GET("/users/:user_id/data-scope", dataPermissionHandler.GetUserDataScope)
-			admin.PUT("/users/:user_id/data-scope", dataPermissionHandler.SetUserDataScope)
-			admin.GET("/users/:user_id/data-filter", dataPermissionHandler.GetUserDataFilter)
-			admin.GET("/users/:user_id/field-permissions", dataPermissionHandler.GetUserFieldPermissions)
+			admin.GET("/users/:id/data-scope", dataPermissionHandler.GetUserDataScope)
+			admin.PUT("/users/:id/data-scope", dataPermissionHandler.SetUserDataScope)
+			admin.GET("/users/:id/data-filter", dataPermissionHandler.GetUserDataFilter)
+			admin.GET("/users/:id/field-permissions", dataPermissionHandler.GetUserFieldPermissions)
 			admin.GET("/data-rules", dataPermissionHandler.GetDataRules)
 			admin.POST("/data-rules", dataPermissionHandler.CreateDataRule)
 			admin.GET("/data-rules/check-access", dataPermissionHandler.CheckDataAccess)
@@ -619,10 +619,10 @@ func main() {
 
 		adminCompat := apiV1.Group("/admin", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware(), middleware.AdminRBACMiddleware())
 		{
-			adminCompat.GET("/users/:user_id/data-scope", dataPermissionHandler.GetUserDataScope)
-			adminCompat.PUT("/users/:user_id/data-scope", dataPermissionHandler.SetUserDataScope)
-			adminCompat.GET("/users/:user_id/data-filter", dataPermissionHandler.GetUserDataFilter)
-			adminCompat.GET("/users/:user_id/field-permissions", dataPermissionHandler.GetUserFieldPermissions)
+			adminCompat.GET("/users/:id/data-scope", dataPermissionHandler.GetUserDataScope)
+			adminCompat.PUT("/users/:id/data-scope", dataPermissionHandler.SetUserDataScope)
+			adminCompat.GET("/users/:id/data-filter", dataPermissionHandler.GetUserDataFilter)
+			adminCompat.GET("/users/:id/field-permissions", dataPermissionHandler.GetUserFieldPermissions)
 			adminCompat.GET("/data-rules", dataPermissionHandler.GetDataRules)
 			adminCompat.POST("/data-rules", dataPermissionHandler.CreateDataRule)
 			adminCompat.GET("/data-rules/check-access", dataPermissionHandler.CheckDataAccess)
