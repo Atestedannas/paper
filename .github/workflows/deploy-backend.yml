@@ -23,7 +23,7 @@ jobs:
 
     env:
       PROD_HOST: ${{ secrets.PROD_HOST }}
-      PROD_PORT: ${{ secrets.PROD_PORT || '22' }}
+      PROD_PORT: ${{ secrets.PROD_PORT || '22222' }}
       PROD_USER: ${{ secrets.PROD_USER }}
       PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
       PROD_DEPLOY_DIR: ${{ vars.PROD_DEPLOY_DIR || '/opt/paper' }}
@@ -85,7 +85,18 @@ jobs:
 
       - name: Upload artifact
         run: |
-          timeout 180s scp -B -o BatchMode=yes -o ConnectTimeout=20 -o ConnectionAttempts=2 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PROD_PORT" -i ~/.ssh/deploy_key output/paper-backend-deploy.tar.gz "$PROD_USER@$PROD_HOST:/tmp/paper-backend-deploy.tar.gz"
+          timeout 600s ssh \
+            -o BatchMode=yes \
+            -o ConnectTimeout=20 \
+            -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=3 \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -p "$PROD_PORT" \
+            -i ~/.ssh/deploy_key \
+            "$PROD_USER@$PROD_HOST" \
+            "cat > /tmp/paper-backend-deploy.tar.gz" \
+            < output/paper-backend-deploy.tar.gz
 
       - name: Deploy with systemd rollback
         run: |

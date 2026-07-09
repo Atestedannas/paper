@@ -74,3 +74,24 @@ func TestMainRegistersFrontendRequiredRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestMainRegistersFrontendV2WorkflowRoutes(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	text := string(source)
+
+	for _, route := range []string{
+		`apiV2.POST("/templates/compile"`,
+		`apiV2.POST("/papers"`,
+		`apiV2.POST("/jobs/:job_id/run"`,
+		`apiV2.GET("/jobs/:job_id"`,
+		`apiV2.GET("/jobs/:job_id/download"`,
+		`papers.POST("/upload"`,
+	} {
+		if !strings.Contains(text, route) {
+			t.Fatalf("main.go does not register frontend v2 workflow route fragment %s", route)
+		}
+	}
+}
