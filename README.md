@@ -155,14 +155,76 @@ http://shenao.de/blog/
 
 
 
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+
+cat >> /root/.ssh/authorized_keys <<'EOF'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJVWrVRvx7NigowXSfSu2ghHSctEHbxbVp0MkCE+IB02 github-actions-paper-deploy
+EOF
+
+chmod 600 /root/.ssh/authorized_keys
 
 
 
+
+
+mysql_jZ3fDs
+
+
+
+
+user_ByjBnE
+password_rMCW3S
+redis_HY4HHH
+
+
+
+
+user_SjWY7y
+password_8TQE74
 
 
 
 peak@wqwq.eu.cc
 1234qwerQWER@
+
+
+
+
+
+
+
+DOMAIN=api.liyian.com
+
+sudo apt update
+sudo apt install -y caddy
+
+sudo tee /etc/caddy/Caddyfile >/dev/null <<EOF
+$DOMAIN {
+reverse_proxy 127.0.0.1:8002
+}
+EOF
+
+sudo systemctl enable --now caddy
+sudo systemctl restart caddy
+
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+
+sudo sed -i "s#^ALIPAY_REDIRECT_URL=.*#ALIPAY_REDIRECT_URL=https://$DOMAIN/api/v1/auth/alipay/callback#" /opt/paper/.env
+sudo sed -i "s#^WECHAT_REDIRECT_URL=.*#WECHAT_REDIRECT_URL=https://$DOMAIN/api/v1/auth/wechat/callback#" /opt/paper/.env
+sudo sed -i "s#^ALIPAY_NOTIFY_URL=.*#ALIPAY_NOTIFY_URL=https://$DOMAIN/api/v1/payment/alipay/callback#" /opt/paper/.env
+sudo sed -i "s#^WECHAT_NOTIFY_URL=.*#WECHAT_NOTIFY_URL=https://$DOMAIN/api/v1/payment/wechat/callback#" /opt/paper/.env
+
+sudo systemctl restart paper.service
+
+curl -i https://$DOMAIN/health
+curl -i https://$DOMAIN/api/v1/auth/alipay/qr-session
+curl -i https://$DOMAIN/api/v1/auth/wechat/login-url
+
+
+
+
 
 
 edigitalchoice.com
@@ -182,6 +244,8 @@ https://github.com/adminlove520/AI-Account-Toolkit
 路由vpn ：https://github.com/mowei-ie/router-vpn
 
 
+sk-lnzw0LuaZhk1iPNkEslKfpqQmGGPXeWnqipJC8YpXg95QqZD
+https://apihub.agnes-ai.com/v1
 
 sudo systemctl status paper.service --no-pager -l  查看服务运行状态的概况。
 sudo ss -lntp | grep 8002  查 8002 端口有没有在监听。

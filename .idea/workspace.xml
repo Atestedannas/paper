@@ -4,8 +4,11 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="人工修改思路">
+    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="action 修改">
       <change afterPath="D:/workpace/博客/front/admin/.gitignore" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/github-actions-cicd-systemd.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/github-actions-cicd-systemd.md" afterDir="false" />
       <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/layout/components/NavBar/components/NavbarRight.vue" beforeDir="false" />
       <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/views/dashboard/index.vue" beforeDir="false" />
       <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/views/profile/index.vue" beforeDir="false" />
@@ -34,7 +37,7 @@
         <entry key="$PROJECT_DIR$" value="master" />
       </map>
     </option>
-    <option name="RECENT_GIT_ROOT_PATH" value="D:/workpace/博客/front/admin" />
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
   <component name="HighlightingSettingsPerFile">
     <setting file="file://$PROJECT_DIR$/../../../../go workpace/pkg/mod/github.com/yanyiwu/gojieba@v1.4.6/jieba.go" root0="SKIP_INSPECTION" />
@@ -51,36 +54,36 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "DefaultGoTemplateProperty": "Go File",
-    "Go 构建.go build github.com/paper-format-checker/backend.executor": "Debug",
-    "Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestAuthHandler_Register.executor": "Run",
-    "Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestGetAlipayAuthURL_Real.executor": "Run",
-    "Go 测试.go test backend.executor": "Debug",
-    "Go 测试.go test server.executor": "Run",
-    "RunOnceActivity.OpenProjectViewOnStart": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.go.formatter.settings.were.checked": "true",
-    "RunOnceActivity.go.migrated.go.modules.settings": "true",
-    "RunOnceActivity.go.modules.automatic.dependencies.download": "true",
-    "RunOnceActivity.go.modules.go.list.on.any.changes.was.set": "true",
-    "WebServerToolWindowPanel.toolwindow.highlight.mappings": "true",
-    "WebServerToolWindowPanel.toolwindow.highlight.symlinks": "true",
-    "WebServerToolWindowPanel.toolwindow.show.date": "false",
-    "WebServerToolWindowPanel.toolwindow.show.permissions": "false",
-    "WebServerToolWindowPanel.toolwindow.show.size": "false",
-    "git-widget-placeholder": "master",
-    "go.import.settings.migrated": "true",
-    "go.sdk.automatically.set": "true",
-    "last_opened_file_path": "C:/Users/user/.config/superpowers/worktrees/paper/docx-closed-loop-task1",
-    "node.js.detected.package.eslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "preferences.general"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;DefaultGoTemplateProperty&quot;: &quot;Go File&quot;,
+    &quot;Go 构建.go build github.com/paper-format-checker/backend.executor&quot;: &quot;Debug&quot;,
+    &quot;Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestAuthHandler_Register.executor&quot;: &quot;Run&quot;,
+    &quot;Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestGetAlipayAuthURL_Real.executor&quot;: &quot;Run&quot;,
+    &quot;Go 测试.go test backend.executor&quot;: &quot;Debug&quot;,
+    &quot;Go 测试.go test server.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.formatter.settings.were.checked&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.migrated.go.modules.settings&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.modules.automatic.dependencies.download&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.modules.go.list.on.any.changes.was.set&quot;: &quot;true&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.highlight.mappings&quot;: &quot;true&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.highlight.symlinks&quot;: &quot;true&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.show.date&quot;: &quot;false&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.show.permissions&quot;: &quot;false&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.show.size&quot;: &quot;false&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;go.import.settings.migrated&quot;: &quot;true&quot;,
+    &quot;go.sdk.automatically.set&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;D:/workpace/商城/goshop&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.general&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="D:\workpace\博客\paper\backend" />
@@ -169,8 +172,6 @@
   <component name="VcsManagerConfiguration">
     <option name="CHECK_CODE_SMELLS_BEFORE_PROJECT_COMMIT" value="false" />
     <option name="CHECK_NEW_TODO" value="false" />
-    <MESSAGE value="NLP" />
-    <MESSAGE value="rbac  权限验证" />
     <MESSAGE value="douban修改&#10;微信支付" />
     <MESSAGE value="cursor 修复" />
     <MESSAGE value="rbac" />
@@ -194,7 +195,9 @@
     <MESSAGE value="页眉修改！" />
     <MESSAGE value="页眉修改！12" />
     <MESSAGE value="人工修改思路" />
-    <option name="LAST_COMMIT_MESSAGE" value="人工修改思路" />
+    <MESSAGE value="codex  修改" />
+    <MESSAGE value="action 修改" />
+    <option name="LAST_COMMIT_MESSAGE" value="action 修改" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>

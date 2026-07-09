@@ -39,7 +39,7 @@ git remote -v
 | 名称 | 值 |
 | --- | --- |
 | `PROD_HOST` | `119.91.157.252` |
-| `PROD_PORT` | `22` |
+| `PROD_PORT` | `22222` |
 | `PROD_USER` | `root` |
 | `PROD_SSH_KEY` | 能登录服务器的 SSH 私钥内容 |
 
