@@ -300,7 +300,7 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 			utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式模板失败", err.Error())
 			return
 		}
-		utils.Success(c, gin.H{"message": "格式模板已更新（格式范例模式）", "id": existingTemplate.ID, "parse_mode": "sample"})
+		utils.Success(c, templateUploadResponse("格式模板已更新（格式范例模式）", existingTemplate.ID, "sample", university, documentType, subject))
 		return
 	}
 
@@ -321,7 +321,7 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 		return
 	}
 
-	utils.Created(c, gin.H{"message": "格式模板已创建（格式范例模式）", "id": newTemplate.ID, "parse_mode": "sample"})
+	utils.Created(c, templateUploadResponse("格式模板已创建（格式范例模式）", newTemplate.ID, "sample", university, documentType, subject))
 }
 
 // trySofficeConvertToDocx converts a .doc file to .docx using soffice,
@@ -468,7 +468,7 @@ func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string) {
 			utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式模板失败", err.Error())
 			return
 		}
-		utils.Success(c, gin.H{"message": "格式模板已更新", "id": existingTemplate.ID})
+		utils.Success(c, templateUploadResponse("格式模板已更新", existingTemplate.ID, "", university, documentType, subject))
 		return
 	}
 
@@ -489,5 +489,21 @@ func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string) {
 		return
 	}
 
-	utils.Created(c, gin.H{"message": "格式模板已创建", "id": newTemplate.ID})
+	utils.Created(c, templateUploadResponse("格式模板已创建", newTemplate.ID, "", university, documentType, subject))
+}
+
+func templateUploadResponse(message string, templateID uuid.UUID, parseMode string, university model.University, documentType, subject string) gin.H {
+	resp := gin.H{
+		"message":         message,
+		"id":              templateID,
+		"university_id":   university.ID,
+		"university_name": university.Name,
+		"university":      university,
+		"document_type":   documentType,
+		"subject":         subject,
+	}
+	if parseMode != "" {
+		resp["parse_mode"] = parseMode
+	}
+	return resp
 }

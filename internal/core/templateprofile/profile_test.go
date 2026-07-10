@@ -60,6 +60,28 @@ func TestExtractDetectsTemplateSectionPageBreaksHeaderFooterAndStyles(t *testing
 	}
 }
 
+func TestExtractDetectsHighNumberedHeaderFooterParts(t *testing.T) {
+	templatePath := filepath.Join(t.TempDir(), "template.docx")
+	writeDocxEntries(t, templatePath, map[string]string{
+		"[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/header8.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/footer8.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/></Types>`,
+		"word/document.xml":   `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>body</w:t></w:r></w:p></w:body></w:document>`,
+		"word/header8.xml":    `<?xml version="1.0" encoding="UTF-8"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:pBdr><w:bottom w:val="double"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="SimSun"/><w:sz w:val="18"/></w:rPr><w:t>High Header</w:t></w:r></w:p></w:hdr>`,
+		"word/footer8.xml":    `<?xml version="1.0" encoding="UTF-8"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:instrText> NUMPAGES </w:instrText></w:r></w:p></w:ftr>`,
+	})
+
+	profile, err := Extract(templatePath)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+
+	if !profile.Header.Exists || profile.Header.Text != "High Header" || !profile.Header.HasDoubleLine {
+		t.Fatalf("high-numbered header not extracted correctly: %#v", profile.Header)
+	}
+	if !profile.Footer.Exists || !profile.Footer.HasPageField || !profile.Footer.HasNumPages {
+		t.Fatalf("high-numbered footer not extracted correctly: %#v", profile.Footer)
+	}
+}
+
 func TestBuildAttachesDeepSeekSummary(t *testing.T) {
 	templatePath := filepath.Join(t.TempDir(), "template.docx")
 	writeTemplateProfileDocx(t, templatePath)
@@ -199,6 +221,27 @@ func writeTemplateProfileDocx(t *testing.T, path string) {
 		"word/header1.xml": `<?xml version="1.0" encoding="UTF-8"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:pBdr><w:bottom w:val="double"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="宋体"/><w:sz w:val="18"/></w:rPr><w:t>重庆人文科技学院2026届护理学专业本科毕业论文</w:t></w:r></w:p></w:hdr>`,
 		"word/footer1.xml": `<?xml version="1.0" encoding="UTF-8"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>第</w:t></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:t>页 \u5171</w:t></w:r><w:r><w:instrText> NUMPAGES </w:instrText></w:r><w:r><w:t>页</w:t></w:r></w:p></w:ftr>`,
 	}
+	for name, content := range entries {
+		entry, err := writer.Create(name)
+		if err != nil {
+			t.Fatalf("create entry %s: %v", name, err)
+		}
+		if _, err := entry.Write([]byte(content)); err != nil {
+			t.Fatalf("write entry %s: %v", name, err)
+		}
+	}
+}
+
+func writeDocxEntries(t *testing.T, path string, entries map[string]string) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create docx: %v", err)
+	}
+	defer file.Close()
+
+	writer := zip.NewWriter(file)
+	defer writer.Close()
 	for name, content := range entries {
 		entry, err := writer.Create(name)
 		if err != nil {

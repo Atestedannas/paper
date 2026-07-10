@@ -732,8 +732,10 @@ func extractHeaderFooter(pkg *ooxmlpkg.DocxPackage, header bool) HeaderFooterRul
 	if header {
 		prefix = "word/header"
 	}
-	for index := 1; index <= 5; index++ {
-		name := fmt.Sprintf("%s%d.xml", prefix, index)
+	for _, name := range pkg.Names() {
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".xml") {
+			continue
+		}
 		content, ok := pkg.Get(name)
 		if !ok {
 			continue
