@@ -4,8 +4,9 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="check-paper 401 根因&#10;/api/v1/admin/papers 慢&#10;batch-force-delete：补齐真实硬删前的依赖清理，">
+    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="修复，">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/service/payment_service.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/payment_service.go" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -166,7 +167,6 @@
   <component name="VcsManagerConfiguration">
     <option name="CHECK_CODE_SMELLS_BEFORE_PROJECT_COMMIT" value="false" />
     <option name="CHECK_NEW_TODO" value="false" />
-    <MESSAGE value="论文核心修改" />
     <MESSAGE value="格式修正引擎配置（python-docx 样式引用引擎）" />
     <MESSAGE value="以学生稿为主文档 → 从模板「学」样式再改学生稿 → 容易在分类、样式映射、分节、域字段上出偏差。" />
     <MESSAGE value="readme" />
@@ -191,7 +191,8 @@
     <MESSAGE value="RBAC更改" />
     <MESSAGE value="权限包 500：补齐 permission_packages 迁移&#10;订单增加 ID、用户回退显示、全选本页、批量/单条永久删除，并事务清理支付关联数据。" />
     <MESSAGE value="check-paper 401 根因&#10;/api/v1/admin/papers 慢&#10;batch-force-delete：补齐真实硬删前的依赖清理，" />
-    <option name="LAST_COMMIT_MESSAGE" value="check-paper 401 根因&#10;/api/v1/admin/papers 慢&#10;batch-force-delete：补齐真实硬删前的依赖清理，" />
+    <MESSAGE value="修复，" />
+    <option name="LAST_COMMIT_MESSAGE" value="修复，" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>

@@ -247,9 +247,9 @@ func (s *paymentService) generateAlipayPaymentParams(payment *model.PaymentRecor
 			"total_amount": order.TotalAmount,
 		}, nil
 	case "auto":
-		result, err := s.generateAlipayPaymentParams(payment, order, "wap")
+		result, err := s.generateAlipayPaymentParams(payment, order, "precreate")
 		if err != nil {
-			log.Printf("[AlipayAuto] wap 失败: %v，降级到 page 模式", err)
+			log.Printf("[AlipayAuto] precreate 失败: %v，降级到 page 模式", err)
 			return s.generateAlipayPaymentParams(payment, order, "page")
 		}
 		return result, nil
