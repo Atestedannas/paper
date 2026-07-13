@@ -129,7 +129,7 @@ func main() {
 		api.POST("/payment/wechat/callback", paymentHandler.HandleWechatCallback)
 		api.POST("/payment/alipay/callback", paymentHandler.HandleAlipayCallback)
 
-		api.PUT("/order/:id/status", orderHandler.UpdateOrderStatus)
+		api.PUT("/order/:id/status", middleware.AuthMiddleware(cfg, database.DB), orderHandler.UpdateOrderStatus)
 		// Authentication routes
 		auth := api.Group("/auth")
 		{
@@ -797,7 +797,7 @@ func main() {
 		apiV1.GET("/universities", universityHandler.GetUniversities)
 		apiV1.GET("/universities/tags", universityHandler.GetTags)
 		apiV1.GET("/universities/:id", universityHandler.GetUniversityDetail)
-		apiV1.GET("/universities/:id/download-template", universityHandler.DownloadTemplate)
+		apiV1.GET("/universities/:id/download-template", middleware.AuthMiddleware(cfg, database.DB), universityHandler.DownloadTemplate)
 
 		// Admin university management routes
 		adminUniversities := apiV1.Group("/admin/universities", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware())

@@ -359,13 +359,20 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 	assertWorkflowParagraphHasStyle(t, enKeywords, workflowParagraphStyle{Font: "Times New Roman", Size: "24", Line: "360", FirstLineChars: "200", AfterLines: "200"})
 	enKeywordsText := workflowDocumentText(enKeywords)
 	enKeywordBody := strings.TrimSpace(strings.TrimPrefix(enKeywordsText, "Key words:"))
-	enKeywordParts := strings.Split(enKeywordBody, ";")
+	if strings.Contains(enKeywordBody, ";") || strings.Contains(enKeywordBody, ", ") && !strings.Contains(enKeywordBody, ",  ") {
+		t.Fatalf("English keywords should use an English comma followed by two spaces: %s", enKeywordsText)
+	}
+	enKeywordParts := strings.Split(enKeywordBody, ",  ")
 	if len(enKeywordParts) < 3 || len(enKeywordParts) > 5 {
 		t.Fatalf("English keywords should contain 3-5 entries, got %d: %s", len(enKeywordParts), enKeywordsText)
 	}
 	for _, keyword := range enKeywordParts {
-		if strings.TrimSpace(keyword) == "" {
+		keyword = strings.TrimSpace(keyword)
+		if keyword == "" {
 			t.Fatalf("English keywords should not contain empty entries: %s", enKeywordsText)
+		}
+		if keyword[:1] != strings.ToUpper(keyword[:1]) {
+			t.Fatalf("English keyword should start with a capital letter: %s", enKeywordsText)
 		}
 	}
 	tocTitle := paragraphContainingWorkflow(documentXML, "\u76ee      \u5f55")
@@ -380,6 +387,7 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 	if got := strings.Count(documentXML, `TOC \o "1-3" \h \z \u`); got != 1 {
 		t.Fatalf("generated output should contain exactly one dynamic TOC field, got %d: %s", got, documentXML)
 	}
+	assertWorkflowTOCCacheHasRealPageNumbers(t, documentXML)
 	settingsXML := readWorkflowDocxEntry(t, outputPath, "word/settings.xml")
 	if !strings.Contains(settingsXML, `<w:updateFields w:val="true"/>`) {
 		t.Fatalf("generated output should ask Word/LibreOffice to refresh fields on open: %s", settingsXML)
@@ -1668,6 +1676,22 @@ func assertWorkflowRenderedTOCHasPageNumbers(t *testing.T, pageTexts []string) {
 		return
 	}
 	t.Fatalf("rendered PDF missing TOC page: %#v", pageTexts)
+}
+
+func assertWorkflowTOCCacheHasRealPageNumbers(t *testing.T, documentXML string) {
+	start := strings.Index(documentXML, `TOC \o "1-3" \h \z \u`)
+	if start < 0 {
+		t.Fatal("document XML missing TOC field")
+	}
+	endOffset := strings.Index(documentXML[start:], `w:fldCharType="end"`)
+	if endOffset < 0 {
+		t.Fatal("document XML missing TOC field end")
+	}
+	cache := documentXML[start : start+endOffset]
+	pageRuns := regexp.MustCompile(`(?s)<w:tab/></w:r>\s*<w:r>.*?<w:t>([1-9]\d*)</w:t>`).FindAllStringSubmatch(cache, -1)
+	if len(pageRuns) == 0 || strings.Contains(cache, `<w:t>0</w:t>`) {
+		t.Fatalf("TOC cache should contain materialized non-zero page numbers: %s", cache)
+	}
 }
 
 func assertWorkflowRenderedHeadingsAreNotDoubleNumbered(t *testing.T, pageTexts []string) {

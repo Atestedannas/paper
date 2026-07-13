@@ -877,8 +877,8 @@ func TestGenerateTitleCasesEnglishAbstractBody(t *testing.T) {
 	if strings.Contains(document, "objective to explore") {
 		t.Fatalf("english abstract body still contains lowercase sentence: %s", document)
 	}
-	if !strings.Contains(document, "diabetes; AI model") || strings.Contains(document, "Diabetes; AI Model") {
-		t.Fatalf("keywords paragraph should not be title-cased: %s", document)
+	if !strings.Contains(document, "Diabetes,  AI model") || strings.Contains(document, "Diabetes; AI Model") {
+		t.Fatalf("keywords paragraph should use comma-two-space separators and capitalize each keyword group: %s", document)
 	}
 }
 
@@ -1069,6 +1069,38 @@ func TestGenerateStartsLongTablesOnFreshPage(t *testing.T) {
 	}
 }
 
+func TestGenerateSplitsVeryLongTableWithAutomaticContinuationCaption(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{Bindings: []blockmap.Binding{
+			{BlockID: "content_blocks", Payload: "表4-1 单因素分析"},
+			{BlockID: "content_blocks", Payload: testTableRows(25)},
+		}},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	if strings.Count(document, "<w:tbl>") != 2 {
+		t.Fatalf("very long table should be split into two tables: %s", document)
+	}
+	if !strings.Contains(document, "续表4-1 单因素分析") {
+		t.Fatalf("generated continuation caption missing: %s", document)
+	}
+	if strings.Count(document, "<w:tblHeader/>") != 2 {
+		t.Fatalf("every table chunk should repeat the header row: %s", document)
+	}
+}
+
 func TestGenerateNormalizesContinuedTableCaptionNumber(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
@@ -1221,6 +1253,23 @@ func TestGenerateMakesDenseTablesReadableWithinTextWidth(t *testing.T) {
 		if !strings.Contains(insertedTable, want) {
 			t.Fatalf("dense table missing readability normalization %q: %s", want, insertedTable)
 		}
+	}
+}
+
+func TestRenderFormulaTablePreservesOfficeMathAndAlignsNumber(t *testing.T) {
+	table := `<w:tbl><w:tblPr><w:tblBorders><w:top w:val="single"/></w:tblBorders></w:tblPr><w:tr>` +
+		`<w:tc><w:p><m:oMath><m:r><m:t>E=mc2</m:t></m:r></m:oMath></w:p></w:tc>` +
+		`<w:tc><w:p><w:r><w:t>(2-1)</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
+
+	rendered := renderCleanTableFromOOXML(table)
+	if !strings.Contains(rendered, "<m:oMath>") {
+		t.Fatalf("formula table lost Office Math object: %s", rendered)
+	}
+	if !strings.Contains(rendered, `<w:jc w:val="center"/>`) || !strings.Contains(rendered, `<w:jc w:val="right"/>`) {
+		t.Fatalf("formula and number cells should be centered/right-aligned: %s", rendered)
+	}
+	if strings.Contains(rendered, `w:val="single"`) {
+		t.Fatalf("formula layout table should be borderless: %s", rendered)
 	}
 }
 

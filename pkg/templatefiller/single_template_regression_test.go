@@ -61,7 +61,7 @@ func TestBuildKeywordRunsNormalizesEnglishKeywords(t *testing.T) {
 		t.Fatal("buildKeywordRuns() should recognize english keywords")
 	}
 
-	if plain != "Keywords: diabetes; self-management; quality of life" {
+	if plain != "Keywords: Diabetes,  Self-management,  Quality of life" {
 		t.Fatalf("plain = %q, want normalized english keywords", plain)
 	}
 	if len(runs) != 2 {
@@ -70,7 +70,7 @@ func TestBuildKeywordRunsNormalizesEnglishKeywords(t *testing.T) {
 	if runs[0].Text != "Keywords:" {
 		t.Fatalf("label = %q, want %q", runs[0].Text, "Keywords:")
 	}
-	if runs[1].Text != " diabetes; self-management; quality of life" {
+	if runs[1].Text != " Diabetes,  Self-management,  Quality of life" {
 		t.Fatalf("content = %q, want normalized keyword payload", runs[1].Text)
 	}
 }

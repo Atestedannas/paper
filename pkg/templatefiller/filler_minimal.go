@@ -362,13 +362,20 @@ func buildKeywordRuns(text string, chinese bool) ([]ContentRun, string, bool) {
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part != "" {
+			if !chinese {
+				part = strings.ToUpper(part[:1]) + part[1:]
+			}
 			cleaned = append(cleaned, part)
 		}
 	}
 	if len(cleaned) == 0 {
 		return nil, "", false
 	}
-	content = strings.Join(cleaned, "; ")
+	separator := "；"
+	if !chinese {
+		separator = ",  "
+	}
+	content = strings.Join(cleaned, separator)
 	bold := true
 	runs := []ContentRun{{Text: label, Bold: &bold}, {Text: " " + content}}
 	return runs, label + " " + content, true

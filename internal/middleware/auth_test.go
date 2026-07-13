@@ -7,7 +7,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/paper-format-checker/backend/internal/model"
 )
+
+func TestEffectiveUserRoleUsesAssignedSuperAdminRole(t *testing.T) {
+	user := &model.User{Role: "admin", Roles: []model.Role{{Code: "super_admin"}}}
+
+	if got := effectiveUserRole(user); got != "super_admin" {
+		t.Fatalf("effectiveUserRole() = %q, want super_admin", got)
+	}
+}
 
 func TestAdminRBACAllowsCurrentUserMenuTreeWithoutPermissionLookup(t *testing.T) {
 	allowed := []string{

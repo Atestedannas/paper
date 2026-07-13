@@ -106,3 +106,20 @@ func TestMainRegistersFrontendV2WorkflowRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestMainRequiresLoginForPreviouslyPublicServiceRoutes(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	text := string(source)
+
+	for _, route := range []string{
+		`api.PUT("/order/:id/status", middleware.AuthMiddleware(cfg, database.DB),`,
+		`apiV1.GET("/universities/:id/download-template", middleware.AuthMiddleware(cfg, database.DB),`,
+	} {
+		if !strings.Contains(text, route) {
+			t.Fatalf("service route is missing authentication: %s", route)
+		}
+	}
+}

@@ -23,6 +23,7 @@ import (
 
 const defaultPatchTarget = "word/document.xml"
 const contentTableMaxWidth = 8640
+const longTableRowsPerPage = 20
 
 var paragraphPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
 var finalSectPrPattern = regexp.MustCompile(`(?s)<w:sectPr(?:\s[^>]*)?>.*?</w:sectPr>`)
@@ -304,7 +305,8 @@ func renderParagraphs(payloads []string) string {
 	var builder strings.Builder
 	generatedTOCWritten := false
 	lastTableNumber := ""
-	for index, payload := range payloads {
+	for index := 0; index < len(payloads); index++ {
+		payload := payloads[index]
 		payload = strings.TrimSpace(payload)
 		if payload == "" {
 			continue
@@ -325,11 +327,61 @@ func renderParagraphs(payloads []string) string {
 				builder.WriteString(pageBreakParagraph())
 			}
 			builder.WriteString(renderTableCaption(normalized, true))
+			if tableIndex := nextNonEmptyPayloadIndex(payloads, index+1); tableIndex >= 0 {
+				if rendered, ok := renderLongTableChunks(strings.TrimSpace(payloads[tableIndex]), normalized); ok {
+					builder.WriteString(rendered)
+					index = tableIndex
+				}
+			}
 			continue
 		}
 		builder.WriteString(renderStyledPayload(payload))
 	}
 	return builder.String()
+}
+
+func nextNonEmptyPayloadIndex(payloads []string, start int) int {
+	for index := start; index < len(payloads); index++ {
+		if strings.TrimSpace(payloads[index]) != "" {
+			return index
+		}
+	}
+	return -1
+}
+
+func renderLongTableChunks(tableXML, caption string) (string, bool) {
+	if !isTableXML(tableXML) {
+		return "", false
+	}
+	rows := tableRowPattern.FindAllStringIndex(tableXML, -1)
+	if len(rows) <= longTableRowsPerPage {
+		return "", false
+	}
+	prefix := tableXML[:rows[0][0]]
+	suffix := tableXML[rows[len(rows)-1][1]:]
+	header := tableXML[rows[0][0]:rows[0][1]]
+	continuedCaption := "续" + strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(caption), "续"))
+
+	var builder strings.Builder
+	for start := 1; start < len(rows); start += longTableRowsPerPage - 1 {
+		end := start + longTableRowsPerPage - 1
+		if end > len(rows) {
+			end = len(rows)
+		}
+		if start > 1 {
+			builder.WriteString(pageBreakParagraph())
+			builder.WriteString(renderTableCaption(continuedCaption, true))
+		}
+		var chunk strings.Builder
+		chunk.WriteString(prefix)
+		chunk.WriteString(header)
+		for _, row := range rows[start:end] {
+			chunk.WriteString(tableXML[row[0]:row[1]])
+		}
+		chunk.WriteString(suffix)
+		builder.WriteString(renderCleanTableFromOOXML(chunk.String()))
+	}
+	return builder.String(), true
 }
 
 func normalizeContinuedTableCaptionNumber(caption string, lastTableNumber string) string {
@@ -611,6 +663,7 @@ func renderStyledPayload(text string) string {
 	case strings.HasPrefix(normalized, "Abstract"):
 		return renderLeadLabelParagraph(normalized, leadLabel(normalized, "Abstract:", "Abstract"), "Times New Roman", "Times New Roman")
 	case strings.HasPrefix(normalized, "Key words"), strings.HasPrefix(normalized, "Keywords"):
+		normalized = normalizeEnglishKeywords(normalized)
 		if strings.HasPrefix(normalized, "Keywords") {
 			return renderLeadLabelParagraph(normalized, leadLabel(normalized, "Keywords:", "Keywords"), "Times New Roman", "Times New Roman")
 		}
@@ -628,6 +681,27 @@ func renderStyledPayload(text string) string {
 	default:
 		return paragraphWithStyle(normalized, paragraphStyle{Size: 24, FirstLine: 480, FirstLineChars: 200, Line: 360, AsciiFont: "宋体", EastAsiaFont: "宋体"})
 	}
+}
+
+func normalizeEnglishKeywords(text string) string {
+	label := "Key words:"
+	if strings.HasPrefix(strings.TrimSpace(text), "Keywords") {
+		label = "Keywords:"
+	}
+	content := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), strings.TrimSuffix(label, ":")))
+	content = strings.TrimSpace(strings.TrimPrefix(content, ":"))
+	content = strings.NewReplacer("；", ";", "，", ";", "、", ";", ",", ";").Replace(content)
+	parts := strings.Split(content, ";")
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		part = strings.ToUpper(part[:1]) + part[1:]
+		cleaned = append(cleaned, part)
+	}
+	return label + " " + strings.Join(cleaned, ",  ")
 }
 
 func leadLabel(text string, preferred string, fallback string) string {
@@ -696,6 +770,9 @@ func isRawParagraphXML(text string) bool {
 }
 
 func renderCleanTableFromOOXML(tableXML string) string {
+	if strings.Contains(tableXML, "<m:oMath") || strings.Contains(tableXML, "<m:oMathPara") {
+		return renderFormulaTable(tableXML)
+	}
 	rows := structuredTableRowsFromOOXML(tableXML)
 	if len(rows) == 0 {
 		normalized := normalizeRendererIncompatibleXML(tableXML)
@@ -707,6 +784,35 @@ func renderCleanTableFromOOXML(tableXML string) string {
 		return normalized
 	}
 	return renderStructuredTable(rows, tableGridWidths(tableXML))
+}
+
+func renderFormulaTable(tableXML string) string {
+	tableXML = normalizeRendererIncompatibleXML(tableXML)
+	properties := ooxmlpatch.BuildTableProperties(ooxmlpatch.TablePropertiesSpec{
+		WidthTwips:  contentTableMaxWidth,
+		Alignment:   "center",
+		FixedLayout: true,
+	})
+	if tablePropertyPattern.MatchString(tableXML) {
+		tableXML = tablePropertyPattern.ReplaceAllString(tableXML, properties)
+	} else {
+		tableXML = tableStartPattern.ReplaceAllStringFunc(tableXML, func(start string) string { return start + properties })
+	}
+
+	cells := tableCellPattern.FindAllStringIndex(tableXML, -1)
+	for index := len(cells) - 1; index >= 0; index-- {
+		alignment := "center"
+		if index == len(cells)-1 {
+			alignment = "right"
+		}
+		start, end := cells[index][0], cells[index][1]
+		cell := paragraphPattern.ReplaceAllStringFunc(tableXML[start:end], func(paragraph string) string {
+			updated, _ := ooxmlpatch.ApplyParagraphProperties(paragraph, ooxmlpatch.ParagraphPropertiesSpec{Alignment: alignment})
+			return updated
+		})
+		tableXML = tableXML[:start] + cell + tableXML[end:]
+	}
+	return tableXML
 }
 
 type structuredTableCell struct {

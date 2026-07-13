@@ -10,6 +10,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/config"
+	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
 	"gorm.io/gorm"
 )
@@ -60,6 +61,15 @@ type JWTClaims struct {
 	UserID   uuid.UUID `json:"user_id"`
 	Username string    `json:"username"`
 	jwt.RegisteredClaims
+}
+
+func effectiveUserRole(user *model.User) string {
+	for _, role := range user.Roles {
+		if role.Code == "super_admin" {
+			return "super_admin"
+		}
+	}
+	return user.Role
 }
 
 // AuthMiddleware 认证中间件
@@ -135,7 +145,7 @@ func AuthMiddleware(config *config.Config, db *gorm.DB) gin.HandlerFunc {
 		c.Set("user_id", claims.UserID)
 		c.Set("username", claims.Username)
 		c.Set("user", user)
-		c.Set("role", user.Role)
+		c.Set("role", effectiveUserRole(user))
 
 		c.Next()
 	}

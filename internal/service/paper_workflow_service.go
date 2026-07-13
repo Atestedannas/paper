@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/paperast"
 	"github.com/paper-format-checker/backend/internal/core/paperparse"
+	"github.com/paper-format-checker/backend/internal/core/renderverify"
 	"github.com/paper-format-checker/backend/internal/core/repaircontract"
 	"github.com/paper-format-checker/backend/internal/core/templatecompile"
 	"github.com/paper-format-checker/backend/internal/core/templatecontract"
@@ -62,7 +64,7 @@ var workflowDrawingExtentPattern = regexp.MustCompile(`<(?:wp:extent|a:ext)\b[^>
 var renderedCurrentBodyPagePattern = regexp.MustCompile(`\x{7b2c}\s*(\d+)\s*\x{9875}\s*\x{5171}`)
 var renderedHeadingPattern = regexp.MustCompile(`^(\d+(?:\.\d+){0,2})\s*(\S.*)$`)
 var renderedHeadingNumberPattern = regexp.MustCompile(`^\d+(?:\.\d+){0,2}$`)
-var renderedTOCEntryWithPagePattern = regexp.MustCompile(`\s\d+$`)
+var renderedTOCEntryWithPagePattern = regexp.MustCompile(`\s[1-9]\d*$`)
 
 type WorkflowJobView struct {
 	ID                 uuid.UUID `json:"id"`
@@ -320,6 +322,9 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	}
 
 	verifier := verify.NewVerifierWithTemplateProfileAndClosure(profile, rules, ast, contract)
+	if workflowNeedsTOCMaterialization(outputPath) {
+		verifier.WithRenderGate(renderverify.Options{Enabled: true, Strict: false, CheckPageFooter: true, TextExtractor: workflowPDFTextExtractor()}, "")
+	}
 	if cqrwstTemplateTransplantEnabled() {
 		verifier.WithoutCQRWSTRules()
 	}
@@ -362,6 +367,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	if repaired, repairErr := repairRenderedTOCPageNumbers(outputPath, result.VerifyResult); repairErr != nil {
 		return nil, repairErr
 	} else if repaired {
+		verifier.WithoutRenderGate()
 		result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
 		if err != nil {
 			return nil, err
@@ -386,6 +392,36 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	}
 
 	return s.GetJobForUser(id, userID)
+}
+
+func workflowNeedsTOCMaterialization(outputPath string) bool {
+	pkg, err := ooxmlpkg.Open(outputPath)
+	if err != nil {
+		return false
+	}
+	document, ok := pkg.Get("word/document.xml")
+	return ok && strings.Contains(string(document), `TOC \o "1-3"`) && strings.Contains(string(document), `<w:t>0</w:t>`)
+}
+
+func workflowPDFTextExtractor() renderverify.TextExtractor {
+	candidates := []string{strings.TrimSpace(os.Getenv("PDF_TEXT_PYTHON"))}
+	for _, name := range []string{"python3", "python"} {
+		if binary, err := exec.LookPath(name); err == nil {
+			candidates = append(candidates, binary)
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "python", "python.exe"))
+	}
+	for _, binary := range candidates {
+		if binary == "" {
+			continue
+		}
+		if err := exec.Command(binary, "-c", "import pdfplumber").Run(); err == nil {
+			return renderverify.PythonPDFTextExtractor{Binary: binary}
+		}
+	}
+	return nil
 }
 
 func (s *paperWorkflowService) persistWorkflowContracts(ctx context.Context, job model.PaperWorkflowJob, profile *templateprofile.Profile, rules templatecontract.RuleSet, ast paperast.Snapshot, contract repaircontract.Contract) error {
@@ -450,16 +486,17 @@ func repairRenderedTOCPageNumbers(outputPath string, result verify.Result) (bool
 	if result.RenderResult == nil || len(result.RenderResult.PageTexts) == 0 {
 		return false, nil
 	}
-	pageByHeading := renderedHeadingPages(result.RenderResult.PageTexts)
-	if len(pageByHeading) == 0 {
-		return false, nil
-	}
 	pkg, err := ooxmlpkg.Open(outputPath)
 	if err != nil {
 		return false, err
 	}
 	content, ok := pkg.Get("word/document.xml")
 	if !ok {
+		return false, nil
+	}
+	headingKeys := tocCachedHeadingKeys(string(content))
+	pageByHeading := renderedHeadingPages(result.RenderResult.PageTexts, headingKeys)
+	if len(pageByHeading) == 0 {
 		return false, nil
 	}
 	updated, changed := replaceTOCCachedPageNumbers(string(content), pageByHeading)
@@ -509,16 +546,36 @@ func tocCacheHeadingText(paragraph string) string {
 	return strings.TrimSpace(html.UnescapeString(matches[0][1]))
 }
 
-func renderedHeadingPages(pageTexts []string) map[string]int {
+func tocCachedHeadingKeys(documentXML string) []string {
+	inTOC := false
+	keys := make([]string, 0)
+	for _, paragraph := range workflowParagraphPattern.FindAllString(documentXML, -1) {
+		if strings.Contains(paragraph, `TOC \o "1-3"`) || strings.Contains(paragraph, " TOC ") {
+			inTOC = true
+			continue
+		}
+		if inTOC && strings.Contains(paragraph, `w:fldCharType="end"`) {
+			break
+		}
+		if inTOC {
+			if key := canonicalRenderedHeadingKey(tocCacheHeadingText(paragraph)); key != "" {
+				keys = append(keys, key)
+			}
+		}
+	}
+	return keys
+}
+
+func renderedHeadingPages(pageTexts []string, headingKeys []string) map[string]int {
 	pages := map[string]int{}
 	for _, pageText := range pageTexts {
 		bodyPage := renderedCurrentBodyPage(pageText)
 		if bodyPage <= 0 {
 			continue
 		}
-		for _, line := range strings.Split(pageText, "\n") {
-			key := canonicalRenderedHeadingKey(line)
-			if key != "" && pages[key] == 0 {
+		compactPage := strings.ReplaceAll(strings.Join(strings.Fields(pageText), ""), " ", "")
+		for _, key := range headingKeys {
+			if key != "" && pages[key] == 0 && strings.Contains(compactPage, key) {
 				pages[key] = bodyPage
 			}
 		}
@@ -1207,7 +1264,11 @@ func missingGeneratedSourceContent(ctx context.Context, source *paperparse.Parse
 		if sourceText == "" {
 			continue
 		}
-		if !strings.Contains(generatedText, sourceText) {
+		preserved := strings.Contains(generatedText, sourceText)
+		if !preserved && isEnglishKeywordsText(sourceText) {
+			preserved = strings.Contains(canonicalEnglishKeywords(generatedText), canonicalEnglishKeywords(sourceText))
+		}
+		if !preserved {
 			missing = append(missing, sourceText)
 			if len(missing) >= 10 {
 				break
@@ -1215,6 +1276,21 @@ func missingGeneratedSourceContent(ctx context.Context, source *paperparse.Parse
 		}
 	}
 	return missing
+}
+
+func isEnglishKeywordsText(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	return strings.HasPrefix(lower, "key words") || strings.HasPrefix(lower, "keywords")
+}
+
+func canonicalEnglishKeywords(text string) string {
+	text = strings.ToLower(text)
+	return strings.Map(func(r rune) rune {
+		if r == ',' || r == ';' || r == '，' || r == '；' || r == '、' || r == ':' || r == '：' || r == ' ' || r == '\t' || r == '\r' || r == '\n' {
+			return -1
+		}
+		return r
+	}, text)
 }
 
 func shouldSkipContentPreservationBlock(block paperparse.ContentBlock) bool {

@@ -121,7 +121,7 @@ func (s *userService) Login(account, password string) (*model.User, error) {
 // GetUserByID 根据ID获取用户
 func (s *userService) GetUserByID(id uuid.UUID) (*model.User, error) {
 	var user model.User
-	if err := database.DB.First(&user, id).Error; err != nil {
+	if err := database.DB.Preload("Roles").First(&user, id).Error; err != nil {
 		return nil, err
 	}
 	return &user, nil

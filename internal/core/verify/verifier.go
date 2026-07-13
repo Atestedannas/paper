@@ -27,6 +27,7 @@ const wordprocessingMLNamespace = "http://schemas.openxmlformats.org/wordprocess
 
 var placeholderPattern = regexp.MustCompile(`\{\{[^{}]+\}\}`)
 var visibleReviewFieldPattern = regexp.MustCompile(`(?is)<w:instrText\b[^>]*>\s*(?:TOC|REF|PAGEREF|NOTEREF)\b`)
+var unmaterializedTOCPagePattern = regexp.MustCompile(`(?s)TOC \\o .*?<w:tab/>.*?<w:t>0</w:t>.*?w:fldCharType="end"`)
 var verifyParagraphPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
 var verifyTextPattern = regexp.MustCompile(`(?s)<w:t(?:\s[^>]*)?>(.*?)</w:t>`)
 var captionTextPattern = regexp.MustCompile(`^(图|表)\s*(\d+(?:[-.．]\d+)*)\s*\S+`)
@@ -104,6 +105,12 @@ func (v *Verifier) WithRenderGate(options renderverify.Options, goldenPath strin
 	}
 	v.renderOptions = &options
 	v.goldenPath = strings.TrimSpace(goldenPath)
+	return v
+}
+
+func (v *Verifier) WithoutRenderGate() *Verifier {
+	v.renderOptions = nil
+	v.goldenPath = ""
 	return v
 }
 
@@ -735,7 +742,11 @@ func addImageFormulaReferenceIssues(document string, result *Result) {
 	}
 
 	for _, table := range verifyTablePattern.FindAllString(document, -1) {
-		if !strings.Contains(table, "<m:oMath") && !strings.Contains(table, "<m:oMathPara") {
+		hasEquationObject := strings.Contains(table, "<m:oMath") || strings.Contains(table, "<m:oMathPara")
+		if !hasEquationObject && looksLikeNumberedFormulaTable(table) {
+			appendRepairableIssueOnce(result, "formula_not_equation_editor", "numbered formula is plain text rather than an Office Math equation object.", documentTarget)
+		}
+		if !hasEquationObject {
 			continue
 		}
 		if formulaNumberPattern.MatchString(verifyXMLText(table)) && !strings.Contains(table, "SEQ") {
@@ -745,6 +756,16 @@ func addImageFormulaReferenceIssues(document string, result *Result) {
 			appendRepairableIssueOnce(result, "formula_layout_mismatch", "formula layout should center the formula and right-align the formula number, usually with a borderless equation table.", documentTarget)
 		}
 	}
+}
+
+func looksLikeNumberedFormulaTable(table string) bool {
+	cells := verifyTableCellPattern.FindAllString(table, -1)
+	if len(cells) < 2 {
+		return false
+	}
+	formula := strings.TrimSpace(verifyXMLText(cells[0]))
+	number := strings.TrimSpace(verifyXMLText(cells[len(cells)-1]))
+	return formula != "" && strings.ContainsAny(formula, "=+-×÷∑√") && formulaNumberPattern.MatchString(number)
 }
 
 func appendWarningIssueOnce(result *Result, kind string, message string, target string) {
@@ -819,6 +840,10 @@ func addFieldUpdateIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
 	settings, _ := pkg.Get("word/settings.xml")
 	if !strings.Contains(string(settings), "<w:updateFields") {
 		appendRepairableIssueOnce(result, "fields_not_marked_for_update", "document contains refreshable fields such as TOC, SEQ, REF, or PAGEREF but settings.xml does not request field updates on open.", "word/settings.xml")
+	}
+	document, _ := pkg.Get(documentTarget)
+	if unmaterializedTOCPagePattern.Match(document) {
+		appendRepairableIssueOnce(result, "toc_page_numbers_not_materialized", "table of contents still contains placeholder page numbers; render and write the real page numbers into the TOC cache.", documentTarget)
 	}
 }
 
@@ -1227,13 +1252,15 @@ func addNotePackageIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
 	for _, note := range []struct {
 		part        string
 		kind        string
+		element     string
 		contentType string
 		relType     string
 	}{
-		{"word/footnotes.xml", "footnotes", "wordprocessingml.footnotes+xml", "/relationships/footnotes"},
-		{"word/endnotes.xml", "endnotes", "wordprocessingml.endnotes+xml", "/relationships/endnotes"},
+		{"word/footnotes.xml", "footnotes", "footnote", "wordprocessingml.footnotes+xml", "/relationships/footnotes"},
+		{"word/endnotes.xml", "endnotes", "endnote", "wordprocessingml.endnotes+xml", "/relationships/endnotes"},
 	} {
-		if _, ok := pkg.Get(note.part); !ok {
+		noteBytes, ok := pkg.Get(note.part)
+		if !ok {
 			continue
 		}
 		if !strings.Contains(contentTypes, `PartName="/`+note.part+`"`) || !strings.Contains(contentTypes, note.contentType) {
@@ -1242,7 +1269,39 @@ func addNotePackageIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
 		if !strings.Contains(rels, note.relType) || !strings.Contains(rels, strings.TrimPrefix(note.part, "word/")) {
 			appendRepairableIssueOnce(result, note.kind+"_relationship_missing", note.kind+" part exists but word/_rels/document.xml.rels does not link it from the main document.", "word/_rels/document.xml.rels")
 		}
+		addNoteReferenceConsistencyIssues(pkg, string(noteBytes), note.kind, note.element, result)
 	}
+}
+
+func addNoteReferenceConsistencyIssues(pkg *ooxmlpkg.DocxPackage, noteXML, kind, element string, result *Result) {
+	documentBytes, _ := pkg.Get(documentTarget)
+	references := noteIDs(string(documentBytes), element+`Reference`)
+	definitions := noteIDs(noteXML, element)
+	target := "word/" + kind + ".xml"
+	for id := range references {
+		if !definitions[id] {
+			appendRepairableIssueOnce(result, kind+"_reference_missing_definition", kind+" contains a body marker without a matching note definition.", target)
+			break
+		}
+	}
+	for id := range definitions {
+		if !references[id] {
+			appendRepairableIssueOnce(result, kind+"_definition_unreferenced", kind+" contains a note definition without a matching body marker.", target)
+			break
+		}
+	}
+}
+
+func noteIDs(content, element string) map[int]bool {
+	pattern := regexp.MustCompile(`<w:` + regexp.QuoteMeta(element) + `\b[^>]*\bw:id="(-?\d+)"`)
+	ids := map[int]bool{}
+	for _, match := range pattern.FindAllStringSubmatch(content, -1) {
+		id, err := strconv.Atoi(match[1])
+		if err == nil && id > 0 {
+			ids[id] = true
+		}
+	}
+	return ids
 }
 
 func addWordXMLStructureIssues(name string, content string, result *Result) {

@@ -203,6 +203,40 @@ func TestVerifierAcceptsLinkedFootnoteAndEndnoteParts(t *testing.T) {
 	}
 }
 
+func TestVerifierReportsMismatchedNoteMarkersAndDefinitions(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml":  `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:footnoteReference w:id="2"/></w:r></w:p></w:body></w:document>`,
+		"word/footnotes.xml": `<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:footnote w:id="1"><w:p><w:r><w:t>orphan</w:t></w:r></w:p></w:footnote></w:footnotes>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	for _, kind := range []string{"footnotes_reference_missing_definition", "footnotes_definition_unreferenced"} {
+		if !hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
+func TestVerifierAcceptsOneToOneFootnoteMarkersAndDefinitions(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml":  `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:footnoteReference w:id="1"/></w:r></w:p></w:body></w:document>`,
+		"word/footnotes.xml": `<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:footnote w:id="1"><w:p><w:r><w:t>matched</w:t></w:r></w:p></w:footnote></w:footnotes>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	for _, kind := range []string{"footnotes_reference_missing_definition", "footnotes_definition_unreferenced"} {
+		if hasVerifyIssueKind(result.RepairableIssues, kind) {
+			t.Fatalf("RepairableIssues = %#v, did not want %s", result.RepairableIssues, kind)
+		}
+	}
+}
+
 func TestVerifierReportsDanglingStylesAndNumberingPackageLinks(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
 		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>`,
@@ -822,6 +856,13 @@ func TestVerifierAllowsCompactTableCellSize(t *testing.T) {
 	table := `<w:tbl><w:tr><w:tc><w:tcPr><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:spacing w:line="240"/><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:eastAsia="SimSun"/><w:sz w:val="16"/></w:rPr><w:t>P</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
 	if !tableCellsFollowStyle(table) {
 		t.Fatalf("compact 8pt table text should be accepted")
+	}
+}
+
+func TestVerifierRecognizesPlainTextNumberedFormula(t *testing.T) {
+	table := `<w:tbl><w:tr><w:tc><w:p><w:r><w:t>E=mc2</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>(2-1)</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
+	if !looksLikeNumberedFormulaTable(table) {
+		t.Fatal("numbered plain-text formula should require an Office Math equation object")
 	}
 }
 
