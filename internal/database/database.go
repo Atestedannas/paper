@@ -165,6 +165,8 @@ func migrateDatabase() error {
 		&model.UserRole{},
 		&model.UserPermission{},
 		&model.RolePermission{},
+		&model.PermissionPackage{},
+		&model.PermissionPackagePermission{},
 
 		// 数据权限模型
 		&model.DataPermission{},

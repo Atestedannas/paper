@@ -203,7 +203,7 @@ func (s *orderService) GetAllOrders(page, pageSize int, statusFilter string) ([]
 	}
 
 	// 获取分页数据
-	if err := query.Order("created_at DESC").
+	if err := query.Order("created_at DESC, id DESC").
 		Offset(offset).Limit(pageSize).
 		Find(&orders).Error; err != nil {
 		return nil, 0, err
@@ -353,7 +353,21 @@ func (s *orderService) GetExpiredOrders() ([]model.Order, error) {
 
 // DeleteOrder 删除订单
 func (s *orderService) DeleteOrder(orderID uuid.UUID) error {
-	return database.DB.Delete(&model.Order{}, orderID).Error
+	return database.DB.Transaction(func(tx *gorm.DB) error {
+		var paymentIDs []uuid.UUID
+		if err := tx.Model(&model.PaymentRecord{}).Where("order_id = ?", orderID).Pluck("id", &paymentIDs).Error; err != nil {
+			return err
+		}
+		if len(paymentIDs) > 0 {
+			if err := tx.Where("payment_id IN ?", paymentIDs).Delete(&model.PaymentResourceLink{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("order_id = ?", orderID).Delete(&model.PaymentRecord{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id = ?", orderID).Delete(&model.Order{}).Error
+	})
 }
 
 // BatchUpdateOrderStatus 批量更新订单状态

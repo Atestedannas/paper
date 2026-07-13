@@ -80,14 +80,17 @@ func (h *AdminOrderHandler) GetOrders(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
 	statusFilter := c.Query("status")
+	if page < 1 {
+		page = 1
+	}
 
 	// 兼容limit参数名
 	if pageSize == 0 {
 		pageSize, _ = strconv.Atoi(c.DefaultQuery("limit", "10"))
 	}
 
-	if pageSize > 100 {
-		pageSize = 100
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
 	}
 
 	// 调用服务获取所有订单

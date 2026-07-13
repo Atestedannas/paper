@@ -204,6 +204,12 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 func (h *AdminHandler) GetPapers(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
 	q := strings.TrimSpace(c.Query("q"))
 	status := strings.TrimSpace(c.Query("status"))
 	deleted := strings.ToLower(strings.TrimSpace(c.Query("deleted")))
@@ -255,7 +261,7 @@ func (h *AdminHandler) GetPapers(c *gin.Context) {
 		Preload("CheckResults", func(db *gorm.DB) *gorm.DB {
 			return db.Order("created_at DESC")
 		}).
-		Offset(offset).Limit(pageSize).Order("papers.created_at DESC").Find(&papers).Error; err != nil {
+		Offset(offset).Limit(pageSize).Order("papers.created_at DESC, papers.id DESC").Find(&papers).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "获取论文列表失败", err.Error())
 		return
 	}
