@@ -164,7 +164,7 @@ func main() {
 			auth.GET("/papers/:id/corrected-file", middleware.AuthMiddleware(cfg, database.DB), middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetCorrectedPaperFile)
 
 			// Payment check APIs
-			auth.GET("/payment/check-paper", middleware.AuthMiddleware(cfg, database.DB), paymentCheckHandler.CheckPaperPaymentStatus)     // Check paper service payment status
+			auth.GET("/payment/check-paper", paymentCheckHandler.CheckPaperPaymentStatus)                                                  // Check paper service payment status
 			auth.GET("/payment/check-service", middleware.AuthMiddleware(cfg, database.DB), paymentCheckHandler.CheckServicePaymentStatus) // Check general service payment status
 			auth.GET("/payment/free-checks", middleware.AuthMiddleware(cfg, database.DB), paymentCheckHandler.GetUserFreeChecks)           // Get user remaining free check count
 
@@ -443,7 +443,7 @@ func main() {
 			auth.GET("/papers/:id/file", middleware.AuthMiddleware(cfg, database.DB), middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetPaperFile)
 			auth.GET("/papers/:id/corrected-file", middleware.AuthMiddleware(cfg, database.DB), middleware.PaymentMiddleware(cfg, middleware.ServicePaperDownload), paperHandler.GetCorrectedPaperFile)
 
-			auth.GET("/payment/check-paper", middleware.AuthMiddleware(cfg, database.DB), paymentCheckHandler.CheckPaperPaymentStatus)
+			auth.GET("/payment/check-paper", paymentCheckHandler.CheckPaperPaymentStatus)
 			auth.GET("/payment/check-service", middleware.AuthMiddleware(cfg, database.DB), paymentCheckHandler.CheckServicePaymentStatus)
 			auth.GET("/payment/free-checks", middleware.AuthMiddleware(cfg, database.DB), paymentCheckHandler.GetUserFreeChecks)
 

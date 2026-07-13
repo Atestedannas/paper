@@ -81,6 +81,7 @@ func RunMigrations() error {
 		// 为 check_results 表增加 diff_report jsonb 字段
 		&Migration20260327AddDiffReport{},
 		&Migration20260423CreateDocxClosedLoopV2Tables{},
+		&Migration20260713AdminPaperListIndexes{},
 	}
 
 	// 按顺序执行迁移（单个失败不阻止后续，仅记录 warning）

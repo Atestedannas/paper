@@ -258,15 +258,37 @@ func (h *AdminHandler) GetPapers(c *gin.Context) {
 	if err := query.
 		Preload("User").
 		Preload("SelectedTemplate").
-		Preload("CheckResults", func(db *gorm.DB) *gorm.DB {
-			return db.Order("created_at DESC")
-		}).
 		Offset(offset).Limit(pageSize).Order("papers.created_at DESC, papers.id DESC").Find(&papers).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "获取论文列表失败", err.Error())
 		return
 	}
 
 	// 构造前端友好的响应结构，补充检查时间和问题统计
+	latestResults := map[uuid.UUID]model.CheckResult{}
+	if len(papers) > 0 {
+		paperIDs := make([]uuid.UUID, 0, len(papers))
+		for _, p := range papers {
+			paperIDs = append(paperIDs, p.ID)
+		}
+		var results []model.CheckResult
+		if err := database.DB.Raw(`
+			SELECT id, paper_id, total_issues, created_at
+			FROM (
+				SELECT id, paper_id, total_issues, created_at,
+				       ROW_NUMBER() OVER (PARTITION BY paper_id ORDER BY created_at DESC, id DESC) AS rn
+				FROM check_results
+				WHERE paper_id IN ?
+			) latest
+			WHERE rn = 1
+		`, paperIDs).Scan(&results).Error; err != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "获取论文检查结果失败", err.Error())
+			return
+		}
+		for _, result := range results {
+			latestResults[result.PaperID] = result
+		}
+	}
+
 	type PaperRow struct {
 		model.Paper
 		DisplayTitle  string     `json:"display_title"`
@@ -291,8 +313,7 @@ func (h *AdminHandler) GetPapers(c *gin.Context) {
 		// submitter name
 		row.SubmitterName = p.User.Username
 		// check time and issues from latest check result
-		if len(p.CheckResults) > 0 {
-			latest := p.CheckResults[0]
+		if latest, ok := latestResults[p.ID]; ok {
 			row.CheckTime = &latest.CreatedAt
 			row.FormatIssues = latest.TotalIssues
 		}
@@ -678,6 +699,21 @@ func (h *AdminHandler) BatchForceDeletePapers(c *gin.Context) {
 	// 2. 在事务中按正确顺序硬删除（子表 -> 父表）
 	var deletedCount int
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().Where("resource_type = ? AND resource_id IN ?", "paper", validIDs).Delete(&model.PaymentResourceLink{}).Error; err != nil {
+			return fmt.Errorf("删除支付资源关联失败: %w", err)
+		}
+
+		if err := tx.Unscoped().Exec(
+			"DELETE FROM paper_workflow_issues WHERE job_id IN (SELECT id FROM paper_workflow_jobs WHERE paper_id IN ?)",
+			validIDs,
+		).Error; err != nil {
+			return fmt.Errorf("删除论文工作流问题失败: %w", err)
+		}
+
+		if err := tx.Unscoped().Where("paper_id IN ?", validIDs).Delete(&model.PaperWorkflowJob{}).Error; err != nil {
+			return fmt.Errorf("删除论文工作流任务失败: %w", err)
+		}
+
 		// 2a. 删除格式修正记录（子查询批量删除）
 		if err := tx.Unscoped().Exec(
 			"DELETE FROM format_corrections WHERE check_result_id IN (SELECT id FROM check_results WHERE paper_id IN ?)",

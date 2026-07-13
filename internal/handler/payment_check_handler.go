@@ -34,49 +34,40 @@ func (h *PaymentCheckHandler) CheckPaperPaymentStatus(c *gin.Context) {
 	// 获取查询参数
 	serviceType := c.Query("service_type")
 
-	// 根据服务类型计算价格
-	price := 0.0
-	isCheckFree := false
-	if isCheckFreeValue, ok := config["is_check_free"].(bool); ok {
-		isCheckFree = isCheckFreeValue
+	price := paperServicePrice(config, serviceType)
+	isCheckFree, _ := config["is_check_free"].(bool)
+
+	// 返回配置和计算后的价格
+	response := gin.H{
+		"format_check":     config["format_check"],
+		"format_fix":       config["format_fix"],
+		"is_check_free":    isCheckFree,
+		"service_type":     serviceType,
+		"price":            price,
+		"payment_required": price > 0,
+	}
+
+	utils.SuccessResponse(c, "获取成功", response)
+}
+
+func paperServicePrice(config map[string]interface{}, serviceType string) float64 {
+	formatCheck, _ := config["format_check"].(float64)
+	formatFix, _ := config["format_fix"].(float64)
+	isCheckFree, _ := config["is_check_free"].(bool)
+	if isCheckFree {
+		formatCheck = 0
 	}
 
 	switch serviceType {
 	case "format_check":
-		if isCheckFree {
-			// 检查免费，价格为0
-			price = 0
-		} else if formatCheckPrice, ok := config["format_check"].(float64); ok {
-			price = formatCheckPrice
-		}
+		return formatCheck
 	case "format_fix":
-		if formatFixPrice, ok := config["format_fix"].(float64); ok {
-			price = formatFixPrice
-		}
-	case "check_and_fix":
-		if isCheckFree {
-			// 检查免费，价格为0
-			price = 0
-		} else {
-			// 检查+修正都收费
-			if formatCheckPrice, ok := config["format_check"].(float64); ok {
-				price += formatCheckPrice
-			}
-			if formatFixPrice, ok := config["format_fix"].(float64); ok {
-				price += formatFixPrice
-			}
-		}
+		return formatFix
+	case "check_and_fix", "":
+		return formatCheck + formatFix
+	default:
+		return 0
 	}
-
-	// 返回配置和计算后的价格
-	response := gin.H{
-		"format_check":  config["format_check"],
-		"format_fix":    config["format_fix"],
-		"is_check_free": isCheckFree,
-		"price":         price,
-	}
-
-	utils.SuccessResponse(c, "获取成功", response)
 }
 
 // CheckServicePaymentStatus 检查通用服务的付费状态
