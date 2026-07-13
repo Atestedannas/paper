@@ -4,13 +4,8 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="RBAC">
+    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="check-paper 401 根因&#10;/api/v1/admin/papers 慢&#10;batch-force-delete：补齐真实硬删前的依赖清理，">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/database/rbac_init.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/database/rbac_init.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/middleware/auth.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/middleware/auth.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/middleware/auth_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/middleware/auth_test.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/service/menu_service.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/menu_service.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/service/user_service.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/user_service.go" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -171,9 +166,6 @@
   <component name="VcsManagerConfiguration">
     <option name="CHECK_CODE_SMELLS_BEFORE_PROJECT_COMMIT" value="false" />
     <option name="CHECK_NEW_TODO" value="false" />
-    <MESSAGE value="RBAC 权限管理模型&#10;获取角色的所有菜单（权限）" />
-    <MESSAGE value="新增 论文模板学科字段&#10;修改 同订单存在 pending 记录则复用&#10;修改 扫码支付：调用 alipay.trade.precreate，返回 qr.alipay.com 链接&#10;接入deepseek" />
-    <MESSAGE value="支付宝扫码实现&#10;.doc文件支持" />
     <MESSAGE value="论文核心修改" />
     <MESSAGE value="格式修正引擎配置（python-docx 样式引用引擎）" />
     <MESSAGE value="以学生稿为主文档 → 从模板「学」样式再改学生稿 → 容易在分类、样式映射、分节、域字段上出偏差。" />
@@ -196,7 +188,10 @@
     <MESSAGE value="支付宝登陆" />
     <MESSAGE value="修改模板识别 解析" />
     <MESSAGE value="RBAC" />
-    <option name="LAST_COMMIT_MESSAGE" value="RBAC" />
+    <MESSAGE value="RBAC更改" />
+    <MESSAGE value="权限包 500：补齐 permission_packages 迁移&#10;订单增加 ID、用户回退显示、全选本页、批量/单条永久删除，并事务清理支付关联数据。" />
+    <MESSAGE value="check-paper 401 根因&#10;/api/v1/admin/papers 慢&#10;batch-force-delete：补齐真实硬删前的依赖清理，" />
+    <option name="LAST_COMMIT_MESSAGE" value="check-paper 401 根因&#10;/api/v1/admin/papers 慢&#10;batch-force-delete：补齐真实硬删前的依赖清理，" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>
