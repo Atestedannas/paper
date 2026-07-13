@@ -338,34 +338,37 @@ func InitRBACData() {
 		}
 	}
 
-	// 如果还没有超级管理员用户，创建一个默认的
+	// 固定 admin 账号为超级管理员，并修复历史数据中的角色不同步。
 	var superAdminUser model.User
-	if err := DB.Where("role = ? AND username = ?", "admin", "admin").First(&superAdminUser).Error; err != nil {
+	if err := DB.Where("username = ?", "admin").First(&superAdminUser).Error; err != nil {
 		// 创建默认超级管理员用户
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte("admin123"), 12)
 		if err != nil {
 			return
 		}
 
-		newUser := &model.User{
+		superAdminUser = model.User{
 			Username:     "admin",
 			Email:        "admin@localhost.com",
 			FullName:     "超级管理员",
 			PasswordHash: string(hashedPassword),
 			Status:       "active",
-			Role:         "admin",
+			Role:         "super_admin",
 			FreeChecks:   9999,
 		}
 
-		if err := DB.Create(newUser).Error; err != nil {
-		} else {
-			// 为该用户分配超级管理员角色
-			superAdminRole := &model.Role{}
-			if err := DB.Where("code = ?", "super_admin").First(superAdminRole).Error; err == nil {
-				DB.Exec("INSERT INTO user_roles (user_id, role_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
-					newUser.ID, superAdminRole.ID)
-			}
+		if err := DB.Create(&superAdminUser).Error; err != nil {
+			log.Printf("创建默认超级管理员失败：%v", err)
+			return
 		}
+	}
+
+	if err := DB.Model(&superAdminUser).Update("role", "super_admin").Error; err != nil {
+		log.Printf("同步 admin 超级管理员标识失败：%v", err)
+	}
+	if err := DB.Where("code = ?", "super_admin").First(superAdminRole).Error; err == nil {
+		DB.Exec("INSERT INTO user_roles (user_id, role_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+			superAdminUser.ID, superAdminRole.ID)
 	}
 
 	log.Println("RBAC数据初始化完成")

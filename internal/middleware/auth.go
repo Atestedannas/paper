@@ -25,7 +25,16 @@ func resolveAdminResource(path string) string {
 		return "system"
 	}
 
-	segment := strings.Split(strings.Trim(p, "/"), "/")[0]
+	segments := strings.Split(strings.Trim(p, "/"), "/")
+	segment := segments[0]
+	if segment == "settings" && len(segments) > 1 {
+		if strings.HasPrefix(segments[1], "payment") {
+			return "payment"
+		}
+		if strings.HasPrefix(segments[1], "support") {
+			return "support"
+		}
+	}
 	switch segment {
 	case "users":
 		return "user"
@@ -33,7 +42,7 @@ func resolveAdminResource(path string) string {
 		return "paper"
 	case "orders", "order":
 		return "order"
-	case "roles", "permissions", "role-permission-assign", "user-role-assign", "user-permission-assign":
+	case "roles", "permissions", "permission-packages", "role-permission-assign", "user-role-assign", "user-permission-assign":
 		return "rbac"
 	case "menus", "settings", "stats", "dashboard":
 		return "system"

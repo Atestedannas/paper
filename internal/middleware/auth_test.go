@@ -18,6 +18,20 @@ func TestEffectiveUserRoleUsesAssignedSuperAdminRole(t *testing.T) {
 	}
 }
 
+func TestResolveAdminResourceMatchesPermissionPrefixes(t *testing.T) {
+	tests := map[string]string{
+		"/api/v1/admin/settings/payment/alipay":  "payment",
+		"/api/v1/admin/settings/support-contact": "support",
+		"/api/v1/admin/permission-packages":      "rbac",
+	}
+
+	for path, want := range tests {
+		if got := resolveAdminResource(path); got != want {
+			t.Fatalf("resolveAdminResource(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
 func TestAdminRBACAllowsCurrentUserMenuTreeWithoutPermissionLookup(t *testing.T) {
 	allowed := []string{
 		"/api/v1/admin/menus/user-tree",

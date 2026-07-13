@@ -4,27 +4,13 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="修改模板识别 解析">
-      <change afterPath="D:/workpace/博客/front/admin/.gitignore" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
+    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="RBAC">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/cmd/server/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/cmd/server/main.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/cmd/server/main_routes_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/cmd/server/main_routes_test.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/core/transplant/transplanter.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/transplant/transplanter.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/core/transplant/transplanter_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/transplant/transplanter_test.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/core/verify/verifier.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/verify/verifier.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/core/verify/verifier_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/verify/verifier_test.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/database/rbac_init.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/database/rbac_init.go" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/internal/middleware/auth.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/middleware/auth.go" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/internal/middleware/auth_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/middleware/auth_test.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/service/paper_workflow_service.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/paper_workflow_service.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/service/paper_workflow_service_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/paper_workflow_service_test.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/service/menu_service.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/menu_service.go" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/internal/service/user_service.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/user_service.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pkg/templatefiller/filler_minimal.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/templatefiller/filler_minimal.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pkg/templatefiller/single_template_regression_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/templatefiller/single_template_regression_test.go" afterDir="false" />
-      <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/layout/components/NavBar/components/NavbarRight.vue" beforeDir="false" />
-      <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/views/dashboard/index.vue" beforeDir="false" />
-      <change beforePath="D:/workpace/博客/front/vue3-element-admin/src/views/profile/index.vue" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -185,7 +171,6 @@
   <component name="VcsManagerConfiguration">
     <option name="CHECK_CODE_SMELLS_BEFORE_PROJECT_COMMIT" value="false" />
     <option name="CHECK_NEW_TODO" value="false" />
-    <MESSAGE value="rbac" />
     <MESSAGE value="RBAC 权限管理模型&#10;获取角色的所有菜单（权限）" />
     <MESSAGE value="新增 论文模板学科字段&#10;修改 同订单存在 pending 记录则复用&#10;修改 扫码支付：调用 alipay.trade.precreate，返回 qr.alipay.com 链接&#10;接入deepseek" />
     <MESSAGE value="支付宝扫码实现&#10;.doc文件支持" />
@@ -210,7 +195,8 @@
     <MESSAGE value="action 修改" />
     <MESSAGE value="支付宝登陆" />
     <MESSAGE value="修改模板识别 解析" />
-    <option name="LAST_COMMIT_MESSAGE" value="修改模板识别 解析" />
+    <MESSAGE value="RBAC" />
+    <option name="LAST_COMMIT_MESSAGE" value="RBAC" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>

@@ -94,10 +94,10 @@ func (s *userService) Login(account, password string) (*model.User, error) {
 	// 判断是邮箱还是用户名登录
 	if strings.Contains(account, "@") {
 		// 邮箱登录
-		err = database.DB.Where("email = ?", account).First(&user).Error
+		err = database.DB.Preload("Roles").Where("email = ?", account).First(&user).Error
 	} else {
 		// 用户名登录
-		err = database.DB.Where("username = ?", account).First(&user).Error
+		err = database.DB.Preload("Roles").Where("username = ?", account).First(&user).Error
 	}
 
 	if err != nil {

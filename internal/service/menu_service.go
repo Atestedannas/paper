@@ -214,11 +214,6 @@ func (s *menuService) GetUserMenuTree(userID uuid.UUID) ([]model.MenuTreeRespons
 		return nil, fmt.Errorf("获取用户角色失败：%w", err)
 	}
 
-	// 如果用户没有角色，返回空菜单树
-	if len(roles) == 0 {
-		return []model.MenuTreeResponse{}, nil
-	}
-
 	// super_admin（user_roles 中任一角色的 code 为 super_admin）：返回完整菜单树
 	for _, role := range roles {
 		if superAdminRoleCodes[role.Code] {
@@ -232,9 +227,19 @@ func (s *menuService) GetUserMenuTree(userID uuid.UUID) ([]model.MenuTreeRespons
 		return nil, fmt.Errorf("获取所有菜单失败：%w", err)
 	}
 
-	// 使用 Casbin 过滤用户有权限访问的菜单
-	casbinService := NewCasbinService()
-	userIDStr := userID.String()
+	// 普通管理员按数据库 RBAC 权限过滤菜单，和接口鉴权使用同一数据源。
+	rbacService, err := NewRBACService()
+	if err != nil {
+		return nil, fmt.Errorf("初始化 RBAC 服务失败：%w", err)
+	}
+	permissions, err := rbacService.GetUserPermissions(userID)
+	if err != nil {
+		return nil, fmt.Errorf("获取用户权限失败：%w", err)
+	}
+	permissionCodes := make(map[string]struct{}, len(permissions))
+	for _, permission := range permissions {
+		permissionCodes[permission.Code] = struct{}{}
+	}
 
 	var accessibleMenus []model.Menu
 	for _, menu := range allMenus {
@@ -243,47 +248,14 @@ func (s *menuService) GetUserMenuTree(userID uuid.UUID) ([]model.MenuTreeRespons
 			continue
 		}
 
-		// 对于菜单类型，使用权限标识检查
-		if menu.MenuType == "menu" || menu.MenuType == "catalog" {
-			// 如果没有设置权限标识，默认允许访问
-			if menu.Permission == "" {
-				accessibleMenus = append(accessibleMenus, menu)
-				continue
-			}
-
-			// 使用 Casbin 检查权限：sub=user_id, obj=permission, act=read
-			passed, err := casbinService.Enforce(userIDStr, menu.Permission, "read")
-			if err != nil {
-				fmt.Printf("Casbin 权限检查失败：%v\n", err)
-				continue
-			}
-			if passed {
+		if menu.Permission == "" {
+			if menu.MenuType != "api" {
 				accessibleMenus = append(accessibleMenus, menu)
 			}
-		} else if menu.MenuType == "api" {
-			// API 类型菜单，使用路径和方法检查
-			passed, err := casbinService.Enforce(userIDStr, menu.Path, "GET")
-			if err != nil {
-				fmt.Printf("Casbin API 权限检查失败：%v\n", err)
-				continue
-			}
-			if passed {
-				accessibleMenus = append(accessibleMenus, menu)
-			}
-		} else {
-			// 其他类型（如按钮）也使用权限标识检查
-			if menu.Permission == "" {
-				accessibleMenus = append(accessibleMenus, menu)
-				continue
-			}
-			passed, err := casbinService.Enforce(userIDStr, menu.Permission, "read")
-			if err != nil {
-				fmt.Printf("Casbin 权限检查失败：%v\n", err)
-				continue
-			}
-			if passed {
-				accessibleMenus = append(accessibleMenus, menu)
-			}
+			continue
+		}
+		if _, allowed := permissionCodes[menu.Permission]; allowed {
+			accessibleMenus = append(accessibleMenus, menu)
 		}
 	}
 
