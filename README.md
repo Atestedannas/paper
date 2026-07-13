@@ -250,3 +250,55 @@ https://apihub.agnes-ai.com/v1
 sudo systemctl status paper.service --no-pager -l  查看服务运行状态的概况。
 sudo ss -lntp | grep 8002  查 8002 端口有没有在监听。
 sudo journalctl -u paper.service -n 120 --no-pager -l  查看 paper 服务最近 120 行日志。
+
+
+
+680,277 views  Jan 3, 2026
+◉ RackNerd低价VPS：
+https://my.racknerd.com/aff.php?aff=1...
+◉ 搬瓦工高端美国VPS：
+https://bandwagonhost.com/aff.php?aff...
+◉ Cloudcone低价VPS：
+https://app.cloudcone.com/?ref=12184
+◉ FinalShell官网：
+https://www.hostbuf.com/
+◉ 无法登录VPS文档：
+https://wise-vegetarian-da6.notion.si...
+◉ 搭建节点代码文档：
+https://wise-vegetarian-da6.notion.si...
+◉ 免费/低价域名获取教程：
+• 为什么不推荐免费域名？免费付费域名有什么区别？如何获取低价域名？| 7元顶级域名 |...  
+◉ Cloudflare域名托管教程：
+• 如何把域名托管到Cloudflare | 享受大厂域名解析服务 | 获取Cloudf...  
+◉ IEPL 专线机场（长期9折优惠券：ESY）：
+
+—————————
+本频道所有「软件」和「外部链接」均会发布在频道简介里的「Telegram资源发布群」，该群为本频道官方群聊，无 任 何 三 方 广 告！
+Telegram资源发布群：https://t.me/inficheesy
+Telegram问题交流群：https://t.me/inficheesychat
+—————————
+InfiCheesy无限芝士「长期责任推广」：
+◉ 快猫IPLC专线机场：
+39元 | 600G/月 | 性价比大流量包 | 长期9折优惠券：ESY
+
+◉ 蓝通云机场：
+全球60+地区节点 | 8折优惠专属链接
+https://link.inficheesy.com/lty
+◉ Proxy Seller住宅代理：
+1.27U/周 | 2.55U/月 | 85折优惠码：InfiCheesy
+https://link.inficheesy.com/proxyseller
+—————————
+视频编号：76期
+0:00 开头
+0:20 总流程
+1:14 购买VPS
+4:18 登录VPS
+6:09 安装面板
+8:08 搭建节点
+11:57 搭建节点(带域名)
+15:48 使用节点
+16:21 节点被墙
+18:17 安全事项
+—————————
+福利资源、教程干货、科技咨询
+这里是无限芝士，一个致力于提升您上网体验的信息分享频道
