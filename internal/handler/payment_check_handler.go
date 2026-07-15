@@ -1,14 +1,13 @@
 package handler
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
 	"github.com/paper-format-checker/backend/internal/utils"
+	"net/http"
 )
 
 // PaymentCheckHandler 付费检查处理器
@@ -35,6 +34,7 @@ func (h *PaymentCheckHandler) CheckPaperPaymentStatus(c *gin.Context) {
 	serviceType := c.Query("service_type")
 
 	price := paperServicePrice(config, serviceType)
+
 	isCheckFree, _ := config["is_check_free"].(bool)
 
 	// 返回配置和计算后的价格
@@ -63,7 +63,7 @@ func paperServicePrice(config map[string]interface{}, serviceType string) float6
 		return formatCheck
 	case "format_fix":
 		return formatFix
-	case "check_and_fix", "":
+	case "check_and_fix":
 		return formatCheck + formatFix
 	default:
 		return 0
