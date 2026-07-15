@@ -37,7 +37,7 @@ func (h *PaymentCheckHandler) CheckPaperPaymentStatus(c *gin.Context) {
 
 	isCheckFree, _ := config["is_check_free"].(bool)
 
-	// 返回配置和计算后的价格
+	//  返回配置和计算后的价格
 	response := gin.H{
 		"format_check":     config["format_check"],
 		"format_fix":       config["format_fix"],
