@@ -260,12 +260,41 @@ func (h *AdminTemplateHandler) DeleteTemplate(c *gin.Context) {
 		return
 	}
 
-	// 软删除（设置为不活跃）
-	if err := database.DB.Model(&template).Update("is_active", false).Error; err != nil {
+	tx := database.DB.Begin()
+
+	// 1. 删除该模板关联的 format_corrections（叶子节点，最先删）
+	if err := tx.Where("check_result_id IN (SELECT id FROM check_results WHERE format_template_id = ?)", templateUUID).
+		Delete(&model.FormatCorrection{}).Error; err != nil {
+		tx.Rollback()
+		utils.ErrorResponse(c, http.StatusInternalServerError, "删除修正记录失败", err.Error())
+		return
+	}
+
+	// 2. 删除该模板关联的 check_results
+	if err := tx.Where("format_template_id = ?", templateUUID).
+		Delete(&model.CheckResult{}).Error; err != nil {
+		tx.Rollback()
+		utils.ErrorResponse(c, http.StatusInternalServerError, "删除检查结果失败", err.Error())
+		return
+	}
+
+	// 3. 解除 papers 表中对该模板的引用
+	if err := tx.Model(&model.Paper{}).
+		Where("selected_template_id = ?", templateUUID).
+		Update("selected_template_id", nil).Error; err != nil {
+		tx.Rollback()
+		utils.ErrorResponse(c, http.StatusInternalServerError, "解除论文关联失败", err.Error())
+		return
+	}
+
+	// 4. 物理删除模板
+	if err := tx.Delete(&template).Error; err != nil {
+		tx.Rollback()
 		utils.ErrorResponse(c, http.StatusInternalServerError, "删除模板失败", err.Error())
 		return
 	}
 
+	tx.Commit()
 	utils.SuccessResponse(c, "删除成功", nil)
 }
 
