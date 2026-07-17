@@ -2,6 +2,7 @@ package cqrwst
 
 import (
 	"context"
+	"fmt"
 	"html"
 	"regexp"
 	"strconv"
@@ -382,8 +383,24 @@ func (FigureTableCaptionProcessor) Check(_ context.Context, _ string, documentXM
 	return countAdvancedCaptionViolations(documentXML, paragraphs, profile.RulePack), nil
 }
 
-func (ReferenceStyleProcessor) Apply(_ context.Context, _ string, _ *templateprofile.Profile) (int, error) {
-	return 0, nil
+func (ReferenceStyleProcessor) Apply(_ context.Context, path string, profile *templateprofile.Profile) (int, error) {
+	if profile == nil || (profile.RulePack.ReferenceStyle != "gb_t_7714_sequence" && !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(profile.RulePack.ReferenceStandard)), "GB/T 7714")) {
+		return 0, nil
+	}
+	pkg, err := ooxmlpkg.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	content, ok := pkg.Get(documentTarget)
+	if !ok {
+		return 0, nil
+	}
+	updated, count := normalizeGBReferenceSequence(string(content))
+	if count == 0 {
+		return 0, nil
+	}
+	pkg.Set(documentTarget, []byte(updated))
+	return count, pkg.Write(path)
 }
 
 func (ReferenceStyleProcessor) Check(_ context.Context, _ string, documentXML string, profile *templateprofile.Profile) (int, error) {
@@ -849,6 +866,37 @@ func isBasicGBReferenceEntry(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	return regexp.MustCompile(`^\[\d+\]\s*.+\..+`).MatchString(trimmed) &&
 		templateProfileReferenceType.MatchString(trimmed)
+}
+
+func normalizeGBReferenceSequence(documentXML string) (string, int) {
+	inReferences := false
+	ordinal := 0
+	count := 0
+	updated := paragraphPattern.ReplaceAllStringFunc(documentXML, func(paragraph string) string {
+		text := strings.TrimSpace(extractParagraphText(paragraph))
+		if isReferenceTitleText(text) {
+			inReferences = true
+			return paragraph
+		}
+		if !inReferences {
+			return paragraph
+		}
+		if isAcknowledgementsTitle(text) || heading1Pattern.MatchString(text) {
+			inReferences = false
+			return paragraph
+		}
+		if !referenceEntryPattern.MatchString(text) {
+			return paragraph
+		}
+		ordinal++
+		normalized := fmt.Sprintf("[%d] %s", ordinal, strings.TrimSpace(referenceEntryPattern.ReplaceAllString(text, "")))
+		if normalized == text {
+			return paragraph
+		}
+		count++
+		return replaceParagraphVisibleText(paragraph, normalized)
+	})
+	return updated, count
 }
 
 func applyTableRulesToDocumentXML(documentXML string, profile *templateprofile.Profile) (string, int) {

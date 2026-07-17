@@ -5,18 +5,28 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-
-	"github.com/paper-format-checker/backend/pkg/aiclassifier"
 )
 
 // FormatParserService 格式解析服务
+type formatAIClient interface {
+	ChatCompletion(prompt string) (string, error)
+}
+
 type FormatParserService struct {
-	aiClient *aiclassifier.DeepSeekWebClient
+	aiClient   formatAIClient
+	maxAICalls int
 }
 
 // NewFormatParserService 创建格式解析服务
 func NewFormatParserService() *FormatParserService {
-	return &FormatParserService{}
+	return &FormatParserService{maxAICalls: 20}
+}
+
+// SetMaxAICalls limits DeepSeek calls made while parsing one document.
+func (s *FormatParserService) SetMaxAICalls(max int) {
+	if max > 0 {
+		s.maxAICalls = max
+	}
 }
 
 // ParseFormatFromText 从文本中解析格式规范

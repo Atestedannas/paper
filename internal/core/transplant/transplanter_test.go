@@ -52,6 +52,37 @@ func TestGenerateWritesDocxWithReplacedDocumentXML(t *testing.T) {
 	}
 }
 
+func TestNormalizeFinalDOCXRemovesWhiteShadingAndPaginationArtifacts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "final.docx")
+	writeTestDocx(t, path, map[string]string{
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:pPr><w:shd w:val="clear" w:fill="FFFFFF"/><w:pageBreakBefore/><w:keepLines/></w:pPr><w:r><w:t>正文</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:shd w:val="clear" w:fill="D9EAD3"/></w:pPr><w:r><w:t>保留底纹</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	changed, err := NormalizeFinalDOCX(path)
+	if err != nil {
+		t.Fatalf("NormalizeFinalDOCX() error = %v", err)
+	}
+	if changed == 0 {
+		t.Fatal("NormalizeFinalDOCX() changed = 0")
+	}
+	documentXML := readDocxEntry(t, path, "word/document.xml")
+	for _, forbidden := range []string{`w:fill="FFFFFF"`, "pageBreakBefore", "keepLines"} {
+		if strings.Contains(documentXML, forbidden) {
+			t.Fatalf("document.xml still contains %q: %s", forbidden, documentXML)
+		}
+	}
+	if !strings.Contains(documentXML, `w:fill="D9EAD3"`) {
+		t.Fatalf("non-white shading was removed: %s", documentXML)
+	}
+	settingsXML := readDocxEntry(t, path, "word/settings.xml")
+	if !strings.Contains(settingsXML, `<w:updateFields w:val="true"/>`) {
+		t.Fatalf("settings.xml does not update fields on open: %s", settingsXML)
+	}
+}
+
 func TestGenerateEscapesXMLPayload(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")

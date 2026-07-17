@@ -108,6 +108,40 @@ func TestParserPreservesOrderedContentBlocks(t *testing.T) {
 	}
 }
 
+func TestParserUsesWordHeadingStylesAndOutlineLevels(t *testing.T) {
+	docPath := filepath.Join(t.TempDir(), "styled-headings.docx")
+	documentXML := `<?xml version="1.0" encoding="UTF-8"?>` +
+		`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+		`<w:p><w:pPr><w:pStyle w:val="LocalHeading1"/></w:pPr><w:r><w:t>绪论</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>正文第一段</w:t></w:r></w:p>` +
+		`<w:p><w:pPr><w:pStyle w:val="CustomSecondLevel"/></w:pPr><w:r><w:t>研究背景</w:t></w:r></w:p>` +
+		`<w:p><w:pPr><w:outlineLvl w:val="2"/></w:pPr><w:r><w:t>研究方法</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	stylesXML := `<?xml version="1.0" encoding="UTF-8"?>` +
+		`<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+		`<w:style w:type="paragraph" w:styleId="LocalHeading1"><w:name w:val="标题一"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style>` +
+		`<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:pPr><w:outlineLvl w:val="1"/></w:pPr></w:style>` +
+		`<w:style w:type="paragraph" w:styleId="CustomSecondLevel"><w:name w:val="学校二级标题"/><w:basedOn w:val="Heading2"/></w:style>` +
+		`</w:styles>`
+	createTestDocxWithStyles(t, docPath, documentXML, stylesXML)
+
+	paper, err := NewParser().Parse(context.Background(), docPath)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	want := []Heading{
+		{Level: 1, Text: "绪论"},
+		{Level: 2, Text: "研究背景"},
+		{Level: 3, Text: "研究方法"},
+	}
+	if !reflect.DeepEqual(paper.Headings, want) {
+		t.Fatalf("Headings = %#v, want %#v", paper.Headings, want)
+	}
+	if wantBody := []string{"正文第一段"}; !reflect.DeepEqual(paper.Body, wantBody) {
+		t.Fatalf("Body = %#v, want %#v", paper.Body, wantBody)
+	}
+}
+
 func TestParserPreservesTablesInContentBlockOrder(t *testing.T) {
 	docPath := filepath.Join(t.TempDir(), "ordered-table.docx")
 	documentXML := `<?xml version="1.0" encoding="UTF-8"?>` +
@@ -354,6 +388,28 @@ func createTestDocxWithDocumentXML(t *testing.T, path string, documentXML string
 	defer zw.Close()
 
 	writeTestDocxEntries(t, zw, documentXML)
+}
+
+func createTestDocxWithStyles(t *testing.T, path, documentXML, stylesXML string) {
+	t.Helper()
+
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create test docx: %v", err)
+	}
+	defer file.Close()
+
+	zw := zip.NewWriter(file)
+	defer zw.Close()
+
+	writeTestDocxEntries(t, zw, documentXML)
+	writer, err := zw.Create("word/styles.xml")
+	if err != nil {
+		t.Fatalf("create styles.xml: %v", err)
+	}
+	if _, err := writer.Write([]byte(stylesXML)); err != nil {
+		t.Fatalf("write styles.xml: %v", err)
+	}
 }
 
 func writeTestDocxEntries(t *testing.T, zw *zip.Writer, documentXML string) {

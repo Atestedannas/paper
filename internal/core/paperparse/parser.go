@@ -9,6 +9,7 @@ import (
 	"html"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
@@ -43,7 +44,8 @@ func (p *Parser) Parse(ctx context.Context, docPath string) (*ParsedPaper, error
 		return nil, err
 	}
 
-	paper := parseElements(elements)
+	styleLevels := headingStyleLevels(pkg)
+	paper := parseElementsWithStyles(elements, styleLevels)
 	for key, value := range extractCoverFieldsFromTables(ctx, documentXML) {
 		if _, exists := paper.CoverFields[key]; !exists {
 			paper.CoverFields[key] = value
@@ -64,6 +66,8 @@ const (
 )
 
 var headingPattern = regexp.MustCompile(`^(\d+(?:\.\d+)*)(?:\.)?[\s　]+(.+)$`)
+var paragraphStylePattern = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
+var paragraphOutlinePattern = regexp.MustCompile(`<w:outlineLvl\b[^>]*\bw:val="(\d+)"`)
 var bodyElementPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
 var ooxmlTextElementPattern = regexp.MustCompile(`(?s)<w:t(?:\s[^>]*)?>(.*?)</w:t>`)
 var ooxmlTagPattern = regexp.MustCompile(`(?s)<[^>]+>`)
@@ -84,6 +88,10 @@ func parseParagraphs(paragraphs []string) *ParsedPaper {
 }
 
 func parseElements(elements []bodyElement) *ParsedPaper {
+	return parseElementsWithStyles(elements, nil)
+}
+
+func parseElementsWithStyles(elements []bodyElement, styleLevels map[string]int) *ParsedPaper {
 	paper := &ParsedPaper{
 		CoverFields: make(map[string]string),
 	}
@@ -138,6 +146,12 @@ func parseElements(elements []bodyElement) *ParsedPaper {
 
 		if current != sectionReferences && current != sectionAcknowledgements {
 			heading, ok := parseHeading(text)
+			if !ok {
+				if level := paragraphHeadingLevel(element.xml, styleLevels); level > 0 {
+					heading = Heading{Level: level, Text: text}
+					ok = true
+				}
+			}
 			if ok {
 				paper.Headings = append(paper.Headings, heading)
 				appendContentBlock(paper, "heading", heading.Level, text)
@@ -173,6 +187,147 @@ func parseElements(elements []bodyElement) *ParsedPaper {
 	}
 
 	return paper
+}
+
+type wordStyle struct {
+	name     string
+	basedOn  string
+	outline  int
+	hasLevel bool
+}
+
+func headingStyleLevels(pkg *ooxmlpkg.DocxPackage) map[string]int {
+	content, ok := pkg.Get("word/styles.xml")
+	if !ok {
+		return nil
+	}
+	styles := parseWordStyles(content)
+	levels := make(map[string]int, len(styles))
+	var resolve func(string, map[string]bool) int
+	resolve = func(id string, seen map[string]bool) int {
+		if level := levels[id]; level > 0 {
+			return level
+		}
+		if seen[id] {
+			return 0
+		}
+		seen[id] = true
+		style, ok := styles[id]
+		if !ok {
+			return headingLevelFromName(id)
+		}
+		level := 0
+		if style.hasLevel {
+			level = style.outline + 1
+		}
+		if level == 0 {
+			level = headingLevelFromName(style.name)
+		}
+		if level == 0 {
+			level = headingLevelFromName(id)
+		}
+		if level == 0 && style.basedOn != "" {
+			level = resolve(style.basedOn, seen)
+		}
+		if level >= 1 && level <= 9 {
+			levels[id] = level
+			return level
+		}
+		return 0
+	}
+	for id := range styles {
+		resolve(id, map[string]bool{})
+	}
+	return levels
+}
+
+func parseWordStyles(content []byte) map[string]wordStyle {
+	styles := make(map[string]wordStyle)
+	decoder := xml.NewDecoder(bytes.NewReader(content))
+	var current wordStyle
+	styleID := ""
+	insideStyle := false
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return styles
+		}
+		switch value := token.(type) {
+		case xml.StartElement:
+			switch value.Name.Local {
+			case "style":
+				insideStyle = true
+				current = wordStyle{}
+				styleID = xmlAttr(value.Attr, "styleId")
+			case "name":
+				if insideStyle {
+					current.name = xmlAttr(value.Attr, "val")
+				}
+			case "basedOn":
+				if insideStyle {
+					current.basedOn = xmlAttr(value.Attr, "val")
+				}
+			case "outlineLvl":
+				if insideStyle {
+					if outline, parseErr := strconv.Atoi(xmlAttr(value.Attr, "val")); parseErr == nil && outline >= 0 && outline <= 8 {
+						current.outline = outline
+						current.hasLevel = true
+					}
+				}
+			}
+		case xml.EndElement:
+			if value.Name.Local == "style" {
+				if styleID != "" {
+					styles[styleID] = current
+				}
+				insideStyle = false
+				styleID = ""
+			}
+		}
+	}
+	return styles
+}
+
+func xmlAttr(attrs []xml.Attr, name string) string {
+	for _, attr := range attrs {
+		if attr.Name.Local == name {
+			return strings.TrimSpace(attr.Value)
+		}
+	}
+	return ""
+}
+
+func paragraphHeadingLevel(paragraphXML string, styleLevels map[string]int) int {
+	if match := paragraphOutlinePattern.FindStringSubmatch(paragraphXML); len(match) == 2 {
+		if outline, err := strconv.Atoi(match[1]); err == nil && outline >= 0 && outline <= 8 {
+			return outline + 1
+		}
+	}
+	match := paragraphStylePattern.FindStringSubmatch(paragraphXML)
+	if len(match) != 2 {
+		return 0
+	}
+	if level := styleLevels[match[1]]; level > 0 {
+		return level
+	}
+	return headingLevelFromName(match[1])
+}
+
+func headingLevelFromName(name string) int {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.NewReplacer(" ", "", "_", "", "-", "").Replace(normalized)
+	chineseLevels := []string{"一", "二", "三", "四", "五", "六", "七", "八", "九"}
+	for level := 1; level <= 9; level++ {
+		if normalized == "heading"+strconv.Itoa(level) ||
+			normalized == "标题"+strconv.Itoa(level) ||
+			normalized == "标题"+chineseLevels[level-1] {
+			return level
+		}
+	}
+	return 0
 }
 
 func appendContentBlock(paper *ParsedPaper, kind string, level int, text string) {

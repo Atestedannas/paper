@@ -254,15 +254,10 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 	}
 
 	// 也尝试文本解析（正则+AI），将可测量属性用DOCX解析结果覆盖
-	textRulesJSON, textErr := h.formatParserService.ParseFormatFromTextSmart(extractedText)
-
-	if textErr == nil && strings.TrimSpace(textRulesJSON) != "" {
-		var textRules map[string]interface{}
-		if json.Unmarshal([]byte(textRulesJSON), &textRules) == nil {
-			merged := service.MergeFormatRules(docxRules, textRules)
-			docxRules = merged
-			log.Printf("[格式范例] DOCX规则与文本规则合并完成")
-		}
+	textResult, textErr := h.formatParserService.ParseFormatFromTextDetailed(extractedText)
+	if textErr == nil {
+		docxRules = service.MergeFormatRules(docxRules, textResult.Rules)
+		log.Printf("[格式范例] DOCX规则与文本规则合并完成")
 	}
 
 	formatRulesJSON, err := json.Marshal(docxRules)
@@ -427,13 +422,13 @@ func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string) {
 		subject = "综合"
 	}
 
-	formatRules, err := h.formatParserService.ParseFormatFromTextSmart(formatText)
+	parseResult, err := h.formatParserService.ParseFormatFromTextDetailed(formatText)
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "解析格式失败", err.Error())
 		return
 	}
 
-	formatRulesJSON, err := json.Marshal(formatRules)
+	formatRulesJSON, err := json.Marshal(parseResult.Rules)
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "序列化格式规则失败", err.Error())
 		return
@@ -460,6 +455,7 @@ func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string) {
 		university.ID, documentType, subject).First(&existingTemplate).Error
 	if err == nil {
 		existingTemplate.FormatRules = string(formatRulesJSON)
+		existingTemplate.ParseConfidence = parseResult.Quality.QualityScore
 		existingTemplate.UpdatedAt = time.Now()
 		if description != "" {
 			existingTemplate.Description = description
@@ -468,28 +464,33 @@ func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string) {
 			utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式模板失败", err.Error())
 			return
 		}
-		utils.Success(c, templateUploadResponse("格式模板已更新", existingTemplate.ID, "", university, documentType, subject))
+		response := templateUploadResponse("格式模板已更新", existingTemplate.ID, "", university, documentType, subject)
+		response["parse_quality"] = parseResult.Quality
+		utils.Success(c, response)
 		return
 	}
 
 	newTemplate := model.FormatTemplate{
-		TemplateID:   uuid.New().String(),
-		Name:         fmt.Sprintf("%s%s格式标准", universityName, documentType),
-		UniversityID: &university.ID,
-		DocumentType: documentType,
-		Subject:      subject,
-		Source:       "university_upload",
-		IsActive:     true,
-		IsPublic:     true,
-		FormatRules:  string(formatRulesJSON),
-		Description:  description,
+		TemplateID:      uuid.New().String(),
+		Name:            fmt.Sprintf("%s%s格式标准", universityName, documentType),
+		UniversityID:    &university.ID,
+		DocumentType:    documentType,
+		Subject:         subject,
+		Source:          "university_upload",
+		IsActive:        true,
+		IsPublic:        true,
+		FormatRules:     string(formatRulesJSON),
+		ParseConfidence: parseResult.Quality.QualityScore,
+		Description:     description,
 	}
 	if err := database.DB.Create(&newTemplate).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())
 		return
 	}
 
-	utils.Created(c, templateUploadResponse("格式模板已创建", newTemplate.ID, "", university, documentType, subject))
+	response := templateUploadResponse("格式模板已创建", newTemplate.ID, "", university, documentType, subject)
+	response["parse_quality"] = parseResult.Quality
+	utils.Created(c, response)
 }
 
 func templateUploadResponse(message string, templateID uuid.UUID, parseMode string, university model.University, documentType, subject string) gin.H {

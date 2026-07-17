@@ -362,6 +362,9 @@ func (p *EnhancedProcessor) ApplyCorrections(ctx context.Context, docPath string
 		log.Println("++++++++++++ 格式修正流程 结束（保存失败） ++++++++++++")
 		return "", fmt.Errorf("保存文档失败: %w", err)
 	}
+	if err := normalizeLegacyFormatterOutput(outputPath); err != nil {
+		return "", fmt.Errorf("清理最终文档失败: %w", err)
+	}
 
 	log.Printf("[保存] ✅ 文档保存成功: %s", outputPath)
 	log.Println("++++++++++++ 格式修正流程 结束（成功） ++++++++++++")

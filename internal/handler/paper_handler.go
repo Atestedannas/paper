@@ -48,6 +48,7 @@ var (
 func NewPaperHandler(config *config.Config) *PaperHandler {
 	fps := service.NewFormatParserService()
 	fps.InitAIClient(config.DeepSeek.Cookie, config.DeepSeek.Bearer, config.DeepSeek.Enabled)
+	fps.SetMaxAICalls(config.DeepSeek.MaxCallsPerDocument)
 
 	return &PaperHandler{
 		paperService:            service.NewPaperService(config),

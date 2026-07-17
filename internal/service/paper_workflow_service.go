@@ -54,6 +54,7 @@ var manualCaptionLinePattern = regexp.MustCompile(`^\s*([图表])\s*(\d+)(?:[-.�
 var captionReferencePattern = regexp.MustCompile(`([图表])\s*(\d+)(?:[-.．](\d+))?`)
 var continuedTableCaptionLinePattern = regexp.MustCompile(`^\s*\x{7eed}\x{8868}\s*(\d+)[-.\x{ff0e}](\d+)\s+(.+)$`)
 var workflowParagraphPattern = regexp.MustCompile(`(?s)<w:p\b[^>]*>.*?</w:p>`)
+var workflowTablePattern = regexp.MustCompile(`(?s)<w:tbl\b[^>]*>.*?</w:tbl>`)
 var workflowRunPattern = regexp.MustCompile(`(?s)<w:r\b[^>]*>.*?</w:r>`)
 var workflowTextRunPattern = regexp.MustCompile(`(?s)<w:t\b[^>]*>.*?</w:t>`)
 var workflowTextValuePattern = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
@@ -65,6 +66,7 @@ var renderedCurrentBodyPagePattern = regexp.MustCompile(`\x{7b2c}\s*(\d+)\s*\x{9
 var renderedHeadingPattern = regexp.MustCompile(`^(\d+(?:\.\d+){0,2})\s*(\S.*)$`)
 var renderedHeadingNumberPattern = regexp.MustCompile(`^\d+(?:\.\d+){0,2}$`)
 var renderedTOCEntryWithPagePattern = regexp.MustCompile(`\s[1-9]\d*$`)
+var formulaNumberLinePattern = regexp.MustCompile(`^\s*[\(（](\d+)[-.．](\d+)[\)）]\s*$`)
 
 type WorkflowJobView struct {
 	ID                 uuid.UUID `json:"id"`
@@ -341,6 +343,14 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		}
 	}
 	if repaired, repairErr := repairManualCaptionFields(outputPath, result.VerifyResult); repairErr != nil {
+		return nil, repairErr
+	} else if repaired {
+		result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if repaired, repairErr := repairManualFormulaNumberFields(outputPath, result.VerifyResult); repairErr != nil {
 		return nil, repairErr
 	} else if repaired {
 		result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
@@ -814,6 +824,72 @@ func repairManualCrossReferenceFields(outputPath string, result verify.Result) (
 	}
 	pkg.Set("word/document.xml", []byte(updated))
 	return true, pkg.Write(outputPath)
+}
+
+func repairManualFormulaNumberFields(outputPath string, result verify.Result) (bool, error) {
+	if !hasWorkflowIssue(result.RepairableIssues, "manual_formula_number_not_dynamic") {
+		return false, nil
+	}
+	pkg, err := ooxmlpkg.Open(outputPath)
+	if err != nil {
+		return false, err
+	}
+	content, ok := pkg.Get("word/document.xml")
+	if !ok {
+		return false, nil
+	}
+	updated, changed := replaceManualFormulaNumberFields(string(content))
+	if !changed {
+		return false, nil
+	}
+	pkg.Set("word/document.xml", []byte(updated))
+	return true, pkg.Write(outputPath)
+}
+
+func replaceManualFormulaNumberFields(documentXML string) (string, bool) {
+	changed := false
+	updated := workflowTablePattern.ReplaceAllStringFunc(documentXML, func(table string) string {
+		if (!strings.Contains(table, "<m:oMath") && !strings.Contains(table, "<m:oMathPara")) || strings.Contains(table, " SEQ 公式 ") {
+			return table
+		}
+		return workflowRunPattern.ReplaceAllStringFunc(table, func(run string) string {
+			match := formulaNumberLinePattern.FindStringSubmatch(workflowTextValue(run))
+			if len(match) != 3 {
+				return run
+			}
+			rPr := firstRunProperties(run)
+			changed = true
+			return workflowTextRun("("+match[1]+"-", rPr) +
+				workflowFieldCharRun("begin", rPr) +
+				workflowInstrRun(" SEQ 公式 \\* ARABIC \\s 1 ", rPr) +
+				workflowFieldCharRun("separate", rPr) +
+				workflowTextRun(match[2], rPr) +
+				workflowFieldCharRun("end", rPr) +
+				workflowTextRun(")", rPr)
+		})
+	})
+	return updated, changed
+}
+
+func finalizeGeneratedPaperDOCX(ctx context.Context, outputPath string) error {
+	if strings.TrimSpace(outputPath) == "" {
+		return nil
+	}
+	verifier := verify.NewVerifier().WithoutCQRWSTRules()
+	for _, repair := range []func(string, verify.Result) (bool, error){
+		repairManualCaptionFields,
+		repairManualFormulaNumberFields,
+		repairManualCrossReferenceFields,
+	} {
+		result, err := verifier.Verify(ctx, outputPath)
+		if err != nil {
+			return err
+		}
+		if _, err := repair(outputPath, result); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func replaceManualCrossReferenceFields(documentXML string) (string, bool) {

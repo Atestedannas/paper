@@ -3,8 +3,6 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,30 +17,6 @@ type ParseFormatRequirementsRequest struct {
 	FormatText string `json:"format_text" binding:"required"`
 }
 
-// DeepSeek客户端配置
-type DeepSeekClient struct {
-	baseURL    string
-	httpClient *http.Client
-	cookies    []*http.Cookie
-}
-
-// 创建新的DeepSeek客户端
-func NewDeepSeekClient() *DeepSeekClient {
-	return &DeepSeekClient{
-		baseURL: "https://chat.deepseek.com",
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-	}
-}
-
-// 调用DeepSeek API提取论文格式要求
-func (d *DeepSeekClient) ExtractFormatRequirements(text string) (string, error) {
-	// 构建请求体
-	//todo  ai
-	return "", nil
-}
-
 // ParseFormatRequirements 解析论文格式要求，集成DeepSeek API
 func (h *PaperHandler) ParseFormatRequirements(c *gin.Context) {
 	// 解析请求数据
@@ -52,17 +26,18 @@ func (h *PaperHandler) ParseFormatRequirements(c *gin.Context) {
 		return
 	}
 	// 初始化解析结果
-	var parsedFormat *ParsedFormatRequirements
-	var parseErr error
-	if parsedFormat == nil {
-		parsedFormat = h.parseDetailedFormatText(req.FormatText)
+	parsedFormat := h.parseDetailedFormatText(req.FormatText)
+	parseResult, err := h.formatParserService.ParseFormatFromTextDetailed(req.FormatText)
+	if err != nil {
+		utils.InternalServerError(c, fmt.Sprintf("failed to parse format requirements: %v", err))
+		return
 	}
 
 	// 将解析结果转换为汉字键值对结构
-	chineseFormat := friendlyParsedRequirementsToChineseMap(parsedFormat)
+	formatRules := parseResult.Rules
 
 	// 将汉字键值对结构转换为JSON字符串，以便保存到数据库
-	settingsJSON, err := json.Marshal(chineseFormat)
+	settingsJSON, err := json.Marshal(formatRules)
 	if err != nil {
 		utils.InternalServerError(c, fmt.Sprintf("failed to marshal format settings: %v", err))
 		return
@@ -78,15 +53,16 @@ func (h *PaperHandler) ParseFormatRequirements(c *gin.Context) {
 	newTemplateID := uuid.New().String()
 
 	formatTemplate := model.FormatTemplate{
-		TemplateID:   newTemplateID, // 使用标准UUID字符串，不带前缀
-		Name:         fmt.Sprintf("%s格式标准", parsedFormat.Institution),
-		DocumentType: "本科论文",
-		Source:       "auto_parsed",
-		Version:      "1.0",
-		IsPublic:     false,
-		IsActive:     true,
-		FormatRules:  string(settingsJSON),
-		Description:  fmt.Sprintf("从文本解析生成的格式标准: %s", parsedFormat.Institution),
+		TemplateID:      newTemplateID, // 使用标准UUID字符串，不带前缀
+		Name:            fmt.Sprintf("%s格式标准", parsedFormat.Institution),
+		DocumentType:    "本科论文",
+		Source:          "auto_parsed",
+		Version:         "1.0",
+		IsPublic:        false,
+		IsActive:        true,
+		FormatRules:     string(settingsJSON),
+		ParseConfidence: parseResult.Quality.QualityScore,
+		Description:     fmt.Sprintf("从文本解析生成的格式标准: %s", parsedFormat.Institution),
 	}
 
 	// 保存到数据库
@@ -101,8 +77,8 @@ func (h *PaperHandler) ParseFormatRequirements(c *gin.Context) {
 		"name":                formatTemplate.Name,
 		"description":         formatTemplate.Description,
 		"is_public":           formatTemplate.IsPublic,
-		"format_requirements": chineseFormat,
-		"parse_warning":       parseErr,
+		"format_requirements": formatRules,
+		"parse_quality":       parseResult.Quality,
 	}
 
 	utils.Created(c, response)

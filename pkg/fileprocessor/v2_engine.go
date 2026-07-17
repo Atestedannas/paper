@@ -15,12 +15,18 @@ import (
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/paper-format-checker/backend/internal/core/transplant"
 	"github.com/paper-format-checker/backend/pkg/docconvert"
 	"github.com/paper-format-checker/backend/pkg/formatengine"
 )
 
 // v2ApplyDedupe 合并对同一文档 + 相同 corrections 的并发 ApplyCorrectionsV2（避免双请求产生两套审计日志与重复 CPU）。
 var v2ApplyDedupe singleflight.Group
+
+func normalizeLegacyFormatterOutput(path string) error {
+	_, err := transplant.NormalizeFinalDOCX(path)
+	return err
+}
 
 func v2ApplyDedupeKey(docPath string, corrections []map[string]interface{}) string {
 	abs := docPath
@@ -465,6 +471,9 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 		finalPath, finalEngine, err := p.enforceStrongFormatConsistency(ctx, docPath, outPath, templatePath, corrections, primaryEngine)
 		if err != nil {
 			return "", err
+		}
+		if _, err := transplant.NormalizeFinalDOCX(finalPath); err != nil {
+			return "", fmt.Errorf("normalize final docx: %w", err)
 		}
 		logPaperFormatAudit("GoV2", "path_chosen", map[string]interface{}{
 			"engine":      finalEngine,

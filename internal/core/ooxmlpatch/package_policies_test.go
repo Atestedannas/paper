@@ -87,6 +87,16 @@ func TestBuildHeaderFooterXMLSupportsDoubleHeaderAndChineseTotalPages(t *testing
 		}
 	}
 
+	chapterHeader := BuildHeaderXML("chapter", HeaderFooterPolicySpec{FontEastAsia: "宋体", FontSizeHalf: 18})
+	for _, want := range []string{`w:fldCharType="begin"`, ` STYLEREF Heading1 \* MERGEFORMAT `, `w:fldCharType="end"`} {
+		if !strings.Contains(chapterHeader, want) {
+			t.Fatalf("chapter header missing dynamic field %s:\n%s", want, chapterHeader)
+		}
+	}
+	if strings.Contains(chapterHeader, `<w:t>chapter</w:t>`) {
+		t.Fatalf("chapter header contains literal placeholder:\n%s", chapterHeader)
+	}
+
 	footer := BuildPageFooterXML(PageNumberingPolicySpec{BodyWrapper: "chinese_total"})
 	for _, want := range []string{
 		`第 `,

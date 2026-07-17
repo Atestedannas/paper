@@ -51,7 +51,7 @@ func (a *AIArbitrator) ClassifyBatch(paragraphs []ParagraphFeature, ruleResults 
 			if len([]rune(snippet)) > 100 {
 				snippet = string([]rune(snippet)[:100]) + "..."
 			}
-			indexMap[len(items)] = i
+			indexMap[i] = i
 			items = append(items, paraItem{
 				Index:   i,
 				Text:    snippet,
@@ -115,22 +115,31 @@ func (a *AIArbitrator) ClassifyBatch(paragraphs []ParagraphFeature, ruleResults 
 	results := make([]ClassifyResult, len(ruleResults))
 	copy(results, ruleResults)
 
-	for promptIdx, aiRes := range aiResults {
-		if origIdx, ok := indexMap[promptIdx]; ok && origIdx < len(results) {
-			results[origIdx] = ClassifyResult{
-				Label:      aiRes.Label,
-				Confidence: aiRes.Confidence,
-				Source:     "ai",
-				Level:      detectLevelFromLabel(aiRes.Label),
-			}
-		}
-	}
+	updated := mergeAIResults(results, indexMap, aiResults)
 
 	log.Printf("[AI仲裁] 完成\n"+
 		"  AI返回结果数: %d\n"+
 		"  已更新分类数: %d",
-		len(aiResults), len(aiResults))
+		len(aiResults), updated)
 	return results, nil
+}
+
+func mergeAIResults(results []ClassifyResult, indexMap map[int]int, aiResults []aiResultItem) int {
+	updated := 0
+	for _, aiRes := range aiResults {
+		origIdx, ok := indexMap[aiRes.Index]
+		if !ok || origIdx < 0 || origIdx >= len(results) {
+			continue
+		}
+		results[origIdx] = ClassifyResult{
+			Label:      aiRes.Label,
+			Confidence: aiRes.Confidence,
+			Source:     "ai",
+			Level:      detectLevelFromLabel(aiRes.Label),
+		}
+		updated++
+	}
+	return updated
 }
 
 type aiResultItem struct {
@@ -160,7 +169,7 @@ func parseAIResponse(response string) []aiResultItem {
 		TypeEnAbstractTitle: true, TypeEnAbstract: true,
 		TypeKeywords: true, TypeEnKeywords: true,
 		TypeHeading1: true, TypeHeading2: true, TypeHeading3: true,
-		TypeBody: true,
+		TypeBody:            true,
 		TypeReferencesTitle: true, TypeReferences: true,
 		TypeTOCTitle: true, TypeTOC: true,
 	}

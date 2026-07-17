@@ -782,6 +782,23 @@ func TestRepairManualCrossReferenceFieldsConvertsTableReferenceToREF(t *testing.
 	}
 }
 
+func TestReplaceManualFormulaNumberFields(t *testing.T) {
+	documentXML := `<w:document><w:body><w:tbl><w:tr>` +
+		`<w:tc><w:p><m:oMath><m:r><m:t>E=mc2</m:t></m:r></m:oMath></w:p></w:tc>` +
+		`<w:tc><w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>(2-1)</w:t></w:r></w:p></w:tc>` +
+		`</w:tr></w:tbl></w:body></w:document>`
+
+	updated, changed := replaceManualFormulaNumberFields(documentXML)
+	if !changed {
+		t.Fatal("replaceManualFormulaNumberFields() changed = false")
+	}
+	for _, want := range []string{" SEQ 公式 ", `\s 1`, `w:fldCharType="begin"`, "(2-"} {
+		if !strings.Contains(updated, want) {
+			t.Fatalf("updated formula missing %q: %s", want, updated)
+		}
+	}
+}
+
 func TestPaperWorkflowServiceRunJobUsesConfiguredTemplateSkeleton(t *testing.T) {
 	db := openPaperWorkflowServiceTestDB(t)
 	outputRoot := t.TempDir()

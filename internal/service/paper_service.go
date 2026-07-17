@@ -245,6 +245,9 @@ func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (stri
 
 	ctx := context.Background()
 	result, err := processor.ApplyCorrectionsV2(ctx, paperFilePath, corrections)
+	if err == nil {
+		err = finalizeGeneratedPaperDOCX(ctx, result)
+	}
 	log.Printf("[QuickV2Fix] 完成: result=%q, err=%v, 耗时=%v", result, err, time.Since(start))
 	return result, err
 }
@@ -413,6 +416,9 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 	}
 	if fixedPath == "" {
 		return nil, fmt.Errorf("failed to fix document: empty corrected file path")
+	}
+	if err := finalizeGeneratedPaperDOCX(ctx, fixedPath); err != nil {
+		return nil, fmt.Errorf("failed to finalize document fields: %v", err)
 	}
 	paper.CorrectedFilePath = fixedPath // 回写论文表：修正稿路径
 	paper.Status = "corrected"          // 状态标记为已修正
@@ -1070,6 +1076,9 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 					retryCorrMap,
 				})
 				if err == nil && newFilePath != "" {
+					if err := finalizeGeneratedPaperDOCX(context.Background(), newFilePath); err != nil {
+						return "", fmt.Errorf("finalize corrected document: %w", err)
+					}
 					paper.CorrectedFilePath = newFilePath
 					paper.Status = "corrected"
 					_ = database.DB.Save(paper).Error

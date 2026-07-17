@@ -756,3 +756,22 @@ func TestFixDOCXWithTemplateProfileAppliesReferenceParagraphStyle(t *testing.T) 
 		t.Fatalf("reference paragraph style was not applied:\n%s", documentXML)
 	}
 }
+
+func TestNormalizeGBReferenceSequenceRenumbersExistingEntries(t *testing.T) {
+	documentXML := `<w:document><w:body>` +
+		`<w:p><w:r><w:t>参考文献</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>[8] Zhang San. Book[M]. Beijing: Press, 2020.</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>[3] Li Si. Article[J]. Journal, 2021, 1(2): 3-4.</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>致谢</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+
+	updated, count := normalizeGBReferenceSequence(documentXML)
+	if count != 2 {
+		t.Fatalf("normalizeGBReferenceSequence() count = %d, want 2", count)
+	}
+	for _, want := range []string{"[1] Zhang San", "[2] Li Si", "致谢"} {
+		if !strings.Contains(updated, want) {
+			t.Fatalf("updated references missing %q: %s", want, updated)
+		}
+	}
+}

@@ -385,7 +385,16 @@ func headerXML(text string, spec HeaderFooterPolicySpec) string {
 	default:
 		border = `<w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="auto"/></w:pBdr>`
 	}
-	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr>%s<w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="%s" w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:sz w:val="%d"/><w:szCs w:val="%d"/></w:rPr><w:t>%s</w:t></w:r></w:p></w:hdr>`, border, spec.FontEastAsia, spec.FontSizeHalf, spec.FontSizeHalf, escapeText(text))
+	runProperties := fmt.Sprintf(`<w:rPr><w:rFonts w:eastAsia="%s" w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:sz w:val="%d"/><w:szCs w:val="%d"/></w:rPr>`, spec.FontEastAsia, spec.FontSizeHalf, spec.FontSizeHalf)
+	body := `<w:r>` + runProperties + `<w:t>` + escapeText(text) + `</w:t></w:r>`
+	if strings.EqualFold(strings.TrimSpace(text), "chapter") {
+		body = `<w:r>` + runProperties + `<w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r>` +
+			`<w:r>` + runProperties + `<w:instrText xml:space="preserve"> STYLEREF Heading1 \* MERGEFORMAT </w:instrText></w:r>` +
+			`<w:r>` + runProperties + `<w:fldChar w:fldCharType="separate"/></w:r>` +
+			`<w:r>` + runProperties + `<w:t></w:t></w:r>` +
+			`<w:r>` + runProperties + `<w:fldChar w:fldCharType="end"/></w:r>`
+	}
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr>%s<w:jc w:val="center"/></w:pPr>%s</w:p></w:hdr>`, border, body)
 }
 
 func footerXML(page PageNumberingPolicySpec) string {

@@ -214,6 +214,44 @@ func ensureUpdateFieldsOnOpen(pkg *ooxmlpkg.DocxPackage) {
 	ooxmlpatch.EnsurePartRelationship(pkg, "word/settings.xml", ooxmlpatch.SettingsRelationshipType, ooxmlpatch.SettingsContentType)
 }
 
+// NormalizeFinalDOCX applies the safe package cleanup used by the template
+// transplant path to formatter outputs produced by the other engines.
+func NormalizeFinalDOCX(path string) (int, error) {
+	pkg, err := ooxmlpkg.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	changed := 0
+	for _, name := range pkg.Names() {
+		if !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") {
+			continue
+		}
+		content, ok := pkg.Get(name)
+		if !ok {
+			continue
+		}
+		updated := removeWhiteDocumentBackground(string(content))
+		updated = removeWhiteShading(updated)
+		if name == defaultPatchTarget {
+			updated = normalizeParagraphPaginationControls(updated)
+		}
+		if updated != string(content) {
+			pkg.Set(name, []byte(updated))
+			changed++
+		}
+	}
+	settingsBefore, _ := pkg.Get("word/settings.xml")
+	ensureUpdateFieldsOnOpen(pkg)
+	settingsAfter, _ := pkg.Get("word/settings.xml")
+	if !bytes.Equal(settingsBefore, settingsAfter) {
+		changed++
+	}
+	if changed == 0 {
+		return 0, nil
+	}
+	return changed, pkg.Write(path)
+}
+
 func isCQRWSTDetectionPart(name string) bool {
 	return name == defaultPatchTarget ||
 		strings.HasPrefix(name, "word/header") ||
