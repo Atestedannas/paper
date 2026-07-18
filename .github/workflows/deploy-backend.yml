@@ -37,6 +37,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: Atestedannas/paper-front
+          ref: main
+          path: frontend
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+          grep -R -q '永久删除所选' dist/assets
+          mkdir -p ../output
+          tar -czf ../output/paper-frontend-deploy.tar.gz -C dist .
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -85,6 +113,16 @@ jobs:
         run: |
           ssh -v -o BatchMode=yes -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o ConnectTimeout=20 -o ConnectionAttempts=2 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
             "set -e; echo '[deploy] ssh connected'; mkdir -p /tmp; test -w /tmp"
+
+      - name: Deploy frontend with verified SSH
+        run: |
+          scp -P "$PROD_PORT" -i ~/.ssh/deploy_key \
+            -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            output/paper-frontend-deploy.tar.gz \
+            "$PROD_USER@$PROD_HOST:/tmp/paper-frontend-deploy.tar.gz"
+          ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -p "$PROD_PORT" -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" \
+            "set -e; rm -rf /tmp/paper-frontend-deploy; mkdir -p /tmp/paper-frontend-deploy; tar -xzf /tmp/paper-frontend-deploy.tar.gz -C /tmp/paper-frontend-deploy; if [ \"\$(id -u)\" -eq 0 ]; then rm -rf '$PROD_DEPLOY_DIR/assets'; cp -a /tmp/paper-frontend-deploy/. '$PROD_DEPLOY_DIR/'; grep -R -q '永久删除所选' '$PROD_DEPLOY_DIR/assets'; elif command -v sudo >/dev/null 2>&1 && sudo -n true; then sudo -n rm -rf '$PROD_DEPLOY_DIR/assets'; sudo -n cp -a /tmp/paper-frontend-deploy/. '$PROD_DEPLOY_DIR/'; sudo -n grep -R -q '永久删除所选' '$PROD_DEPLOY_DIR/assets'; else echo '[deploy][ERROR] remote user cannot update frontend files' >&2; exit 1; fi"
 
       - name: Store deploy artifact
         uses: actions/upload-artifact@v4
