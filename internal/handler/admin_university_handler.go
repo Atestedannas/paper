@@ -17,6 +17,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/service"
 	"github.com/paper-format-checker/backend/internal/utils"
 	"github.com/paper-format-checker/backend/pkg/formatchecker"
+	"gorm.io/gorm"
 )
 
 // AdminUniversityHandler 高校管理处理器
@@ -62,6 +63,21 @@ func populateUniversityTemplate(university *model.University, template *model.Fo
 	}
 }
 
+func populateUniversityTemplateURLs(university *model.University) {
+	for i := range university.Templates {
+		if university.DocxTemplateURL == "" {
+			if _, ok := universityTemplateFilePath(&university.Templates[i], "docx"); ok {
+				university.DocxTemplateURL = fmt.Sprintf("/api/v1/admin/universities/%d/template-file?type=docx", university.ID)
+			}
+		}
+		if university.PdfTemplateURL == "" {
+			if _, ok := universityTemplateFilePath(&university.Templates[i], "pdf"); ok {
+				university.PdfTemplateURL = fmt.Sprintf("/api/v1/admin/universities/%d/template-file?type=pdf", university.ID)
+			}
+		}
+	}
+}
+
 // convertToFriendlyFormat 将格式规则转换为友好展示格式（与 adminConvertFormatRulesToChineseFriendly 一致）
 func (h *AdminUniversityHandler) convertToFriendlyFormat(formatRules map[string]interface{}) map[string]interface{} {
 	return adminConvertFormatRulesToChineseFriendly(formatRules)
@@ -91,7 +107,9 @@ func (h *AdminUniversityHandler) GetUniversities(c *gin.Context) {
 	db.Count(&total)
 
 	offset := (page - 1) * pageSize
-	result := db.Preload("Templates").Offset(offset).Limit(pageSize).Order("created_at DESC").Find(&universities)
+	result := db.Preload("Templates", func(tx *gorm.DB) *gorm.DB {
+		return tx.Order("is_active DESC, created_at DESC")
+	}).Offset(offset).Limit(pageSize).Order("created_at DESC").Find(&universities)
 	if result.Error != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "获取高校列表失败", result.Error.Error())
 		return
@@ -114,6 +132,7 @@ func (h *AdminUniversityHandler) GetUniversities(c *gin.Context) {
 			}
 
 			populateUniversityTemplate(&universities[i], activeTemplate)
+			populateUniversityTemplateURLs(&universities[i])
 		}
 	}
 
@@ -470,13 +489,19 @@ func (h *AdminUniversityHandler) DownloadTemplateFile(c *gin.Context) {
 		return
 	}
 
-	var template model.FormatTemplate
-	if err := database.DB.Where("university_id = ? AND is_active = ?", id, true).Order("created_at DESC").First(&template).Error; err != nil {
+	var templates []model.FormatTemplate
+	if err := database.DB.Where("university_id = ?", id).Order("is_active DESC, created_at DESC").Find(&templates).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusNotFound, "该高校暂无可用模板", err.Error())
 		return
 	}
-	path, ok := universityTemplateFilePath(&template, fileType)
-	if !ok {
+	var path string
+	for i := range templates {
+		if candidate, ok := universityTemplateFilePath(&templates[i], fileType); ok {
+			path = candidate
+			break
+		}
+	}
+	if path == "" {
 		utils.ErrorResponse(c, http.StatusNotFound, "模板预览文件不存在", fileType)
 		return
 	}
