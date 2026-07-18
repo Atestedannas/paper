@@ -809,6 +809,7 @@ func main() {
 		adminUniversities := apiV1.Group("/admin/universities", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware())
 		{
 			adminUniversities.GET("", adminUniversityHandler.GetUniversities)
+			adminUniversities.GET("/:id/template-file", adminUniversityHandler.DownloadTemplateFile)
 			adminUniversities.GET("/:id", adminUniversityHandler.GetUniversity)
 			adminUniversities.POST("", adminUniversityHandler.CreateUniversity)
 			adminUniversities.POST("/parse-template", adminUniversityHandler.ParseTemplate) // Parse template

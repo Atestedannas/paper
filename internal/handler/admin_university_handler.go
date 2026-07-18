@@ -16,6 +16,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
 	"github.com/paper-format-checker/backend/internal/utils"
+	"github.com/paper-format-checker/backend/pkg/formatchecker"
 )
 
 // AdminUniversityHandler 高校管理处理器
@@ -24,6 +25,41 @@ type AdminUniversityHandler struct{}
 // NewAdminUniversityHandler 创建高校管理处理器实例
 func NewAdminUniversityHandler() *AdminUniversityHandler {
 	return &AdminUniversityHandler{}
+}
+
+func universityTemplateFilePath(template *model.FormatTemplate, fileType string) (string, bool) {
+	var candidates []string
+	for _, path := range []string{template.GoldenTemplatePath, template.FilePath} {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext == "."+fileType {
+			candidates = append(candidates, path)
+		} else if fileType == "pdf" && ext == ".docx" {
+			candidates = append(candidates, strings.TrimSuffix(path, filepath.Ext(path))+".pdf")
+		}
+	}
+	for _, path := range candidates {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+func populateUniversityTemplate(university *model.University, template *model.FormatTemplate) {
+	university.FormatRequirements = json.RawMessage(template.FormatRules)
+	university.FilePath = template.FilePath
+	university.Subject = template.Subject
+	university.DocumentType = template.DocumentType
+	if _, ok := universityTemplateFilePath(template, "docx"); ok {
+		university.DocxTemplateURL = fmt.Sprintf("/api/v1/admin/universities/%d/template-file?type=docx", university.ID)
+	}
+	if _, ok := universityTemplateFilePath(template, "pdf"); ok {
+		university.PdfTemplateURL = fmt.Sprintf("/api/v1/admin/universities/%d/template-file?type=pdf", university.ID)
+	}
 }
 
 // convertToFriendlyFormat 将格式规则转换为友好展示格式（与 adminConvertFormatRulesToChineseFriendly 一致）
@@ -77,21 +113,7 @@ func (h *AdminUniversityHandler) GetUniversities(c *gin.Context) {
 				activeTemplate = &universities[i].Templates[0]
 			}
 
-			universities[i].FormatRequirements = json.RawMessage(activeTemplate.FormatRules)
-			universities[i].FilePath = activeTemplate.FilePath
-			universities[i].Subject = activeTemplate.Subject
-			universities[i].DocumentType = activeTemplate.DocumentType
-
-			// 简单的URL构造，实际可能需要更复杂的逻辑
-			if strings.HasSuffix(strings.ToLower(activeTemplate.FilePath), ".docx") {
-				universities[i].DocxTemplateURL = "/" + activeTemplate.FilePath // 假设FilePath是相对uploads的路径，或者已经是完整路径
-				// 如果FilePath是绝对路径或不带/uploads前缀，需调整
-				if !strings.HasPrefix(activeTemplate.FilePath, "/") && !strings.HasPrefix(activeTemplate.FilePath, "http") {
-					universities[i].DocxTemplateURL = "/" + strings.ReplaceAll(activeTemplate.FilePath, "\\", "/")
-				}
-			} else if strings.HasSuffix(strings.ToLower(activeTemplate.FilePath), ".pdf") {
-				universities[i].PdfTemplateURL = "/" + strings.ReplaceAll(activeTemplate.FilePath, "\\", "/")
-			}
+			populateUniversityTemplate(&universities[i], activeTemplate)
 		}
 	}
 
@@ -131,17 +153,7 @@ func (h *AdminUniversityHandler) GetUniversity(c *gin.Context) {
 			activeTemplate = &university.Templates[0]
 		}
 
-		university.FormatRequirements = json.RawMessage(activeTemplate.FormatRules)
-		university.FilePath = activeTemplate.FilePath
-		university.Subject = activeTemplate.Subject
-		university.DocumentType = activeTemplate.DocumentType
-
-		path := "/" + strings.ReplaceAll(activeTemplate.FilePath, "\\", "/")
-		if strings.HasSuffix(strings.ToLower(activeTemplate.FilePath), ".docx") {
-			university.DocxTemplateURL = path
-		} else if strings.HasSuffix(strings.ToLower(activeTemplate.FilePath), ".pdf") {
-			university.PdfTemplateURL = path
-		}
+		populateUniversityTemplate(&university, activeTemplate)
 	}
 
 	utils.SuccessResponse(c, "获取成功", university)
@@ -384,27 +396,98 @@ func (h *AdminUniversityHandler) DeleteUniversity(c *gin.Context) {
 		return
 	}
 
-	// 开启事务
 	tx := database.DB.Begin()
+	if tx.Error != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "创建删除事务失败", tx.Error.Error())
+		return
+	}
 
-	// 1. 删除关联的模板 (软删除或硬删除，这里假设硬删除或由GORM处理)
-	// 如果FormatTemplate有DeletedAt，GORM会软删除。这里手动处理一下关联。
-	if err := tx.Where("university_id = ?", id).Delete(&model.FormatTemplate{}).Error; err != nil {
+	var templates []model.FormatTemplate
+	if err := tx.Unscoped().Where("university_id = ?", id).Find(&templates).Error; err != nil {
+		tx.Rollback()
+		utils.ErrorResponse(c, http.StatusInternalServerError, "获取关联模板失败", err.Error())
+		return
+	}
+
+	if len(templates) > 0 {
+		templateIDs := make([]uuid.UUID, 0, len(templates))
+		for i := range templates {
+			templateIDs = append(templateIDs, templates[i].ID)
+		}
+		if err := tx.Unscoped().Where("check_result_id IN (SELECT id FROM check_results WHERE format_template_id IN ?)", templateIDs).Delete(&model.FormatCorrection{}).Error; err != nil {
+			tx.Rollback()
+			utils.ErrorResponse(c, http.StatusInternalServerError, "删除修正记录失败", err.Error())
+			return
+		}
+		if err := tx.Unscoped().Where("format_template_id IN ?", templateIDs).Delete(&model.CheckResult{}).Error; err != nil {
+			tx.Rollback()
+			utils.ErrorResponse(c, http.StatusInternalServerError, "删除检查结果失败", err.Error())
+			return
+		}
+		if err := tx.Model(&model.Paper{}).Where("selected_template_id IN ?", templateIDs).Update("selected_template_id", nil).Error; err != nil {
+			tx.Rollback()
+			utils.ErrorResponse(c, http.StatusInternalServerError, "解除论文模板关联失败", err.Error())
+			return
+		}
+	}
+
+	if err := tx.Unscoped().Where("university_id = ?", id).Delete(&model.FormatTemplate{}).Error; err != nil {
 		tx.Rollback()
 		utils.ErrorResponse(c, http.StatusInternalServerError, "删除关联模板失败", err.Error())
 		return
 	}
-
-	// 2. 删除高校
-	if err := tx.Delete(&model.University{}, id).Error; err != nil {
+	if err := tx.Unscoped().Delete(&model.University{}, id).Error; err != nil {
 		tx.Rollback()
 		utils.ErrorResponse(c, http.StatusInternalServerError, "删除高校失败", err.Error())
 		return
 	}
+	if err := tx.Commit().Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "提交删除事务失败", err.Error())
+		return
+	}
 
-	tx.Commit()
+	for i := range templates {
+		for _, path := range []string{templates[i].FilePath, templates[i].GoldenTemplatePath} {
+			if path != "" {
+				_ = os.Remove(path)
+			}
+		}
+	}
 
 	utils.SuccessResponse(c, "删除成功", nil)
+}
+
+// DownloadTemplateFile 通过管理员鉴权接口返回模板文件。
+func (h *AdminUniversityHandler) DownloadTemplateFile(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的高校ID", err.Error())
+		return
+	}
+	fileType := strings.ToLower(c.DefaultQuery("type", "docx"))
+	if fileType != "docx" && fileType != "pdf" {
+		utils.ErrorResponse(c, http.StatusBadRequest, "无效的文件类型", fileType)
+		return
+	}
+
+	var template model.FormatTemplate
+	if err := database.DB.Where("university_id = ? AND is_active = ?", id, true).Order("created_at DESC").First(&template).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusNotFound, "该高校暂无可用模板", err.Error())
+		return
+	}
+	path, ok := universityTemplateFilePath(&template, fileType)
+	if !ok {
+		utils.ErrorResponse(c, http.StatusNotFound, "模板预览文件不存在", fileType)
+		return
+	}
+
+	contentType := "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	if fileType == "pdf" {
+		contentType = "application/pdf"
+	}
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=%q", filepath.Base(path)))
+	c.File(path)
 }
 
 // BatchUpdateUniversities 批量更新高校
@@ -452,11 +535,16 @@ func (h *AdminUniversityHandler) ParseTemplate(c *gin.Context) {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "解析模板失败", err.Error())
 		return
 	}
+	formatRules, err := formatchecker.NewTemplateParser().ParseTemplateToFormatRules(filePath)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "转换格式配置失败", err.Error())
+		return
+	}
 
 	// 5. 返回解析结果
 	// 返回 university_info (如果有) 和 format_rules
 	utils.SuccessResponse(c, "解析成功", gin.H{
 		"university_name": standard.Name, // TemplateParser 可能会从页眉提取学校名称
-		"format_rules":    standard,
+		"format_rules":    formatRules,
 	})
 }

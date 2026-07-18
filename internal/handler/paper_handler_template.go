@@ -287,6 +287,7 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 		university.ID, documentType, subject).First(&existingTemplate).Error
 	if err == nil {
 		existingTemplate.FormatRules = string(formatRulesJSON)
+		existingTemplate.FilePath = docxPath
 		existingTemplate.UpdatedAt = time.Now()
 		if description != "" {
 			existingTemplate.Description = description
@@ -308,6 +309,7 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 		Source:       "sample_upload",
 		IsActive:     true,
 		IsPublic:     true,
+		FilePath:     docxPath,
 		FormatRules:  string(formatRulesJSON),
 		Description:  description,
 	}
