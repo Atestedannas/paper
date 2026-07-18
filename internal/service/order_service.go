@@ -104,6 +104,7 @@ func (s *orderService) CreatePaperCheckOrder(userID uuid.UUID, serviceType strin
 		PaymentMethod: paymentMethod,
 		PaymentStatus: "pending",
 		OrderStatus:   "created",
+		ServiceType:   serviceType,
 		ExpiredAt:     startDate.Add(30 * time.Minute), // 订单30分钟后过期
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
@@ -231,6 +232,10 @@ func (s *orderService) UpdateOrderStatus(orderID uuid.UUID, orderStatus, payment
 		order, err := s.GetOrderByID(orderID)
 		if err != nil {
 			return fmt.Errorf("获取订单信息失败: %w", err)
+		}
+		// Paper service orders are one-time entitlements, not membership purchases.
+		if order.MemberLevelID == uuid.Nil {
+			return nil
 		}
 
 		// 创建或更新会员信息

@@ -6,10 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/core/workflow"
+	"github.com/paper-format-checker/backend/internal/database"
+	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
 	"github.com/paper-format-checker/backend/internal/utils"
 	"gorm.io/gorm"
@@ -21,6 +24,7 @@ const defaultPaperWorkflowDownloadRoot = "uploads/workflow_outputs"
 type PaperWorkflowHandler struct {
 	svc          service.PaperWorkflowService
 	downloadRoot string
+	promoCodes   *service.PromoCodeService
 }
 
 func NewPaperWorkflowHandler(svc service.PaperWorkflowService) *PaperWorkflowHandler {
@@ -28,7 +32,7 @@ func NewPaperWorkflowHandler(svc service.PaperWorkflowService) *PaperWorkflowHan
 }
 
 func NewPaperWorkflowHandlerWithDownloadRoot(svc service.PaperWorkflowService, root string) *PaperWorkflowHandler {
-	return &PaperWorkflowHandler{svc: svc, downloadRoot: root}
+	return &PaperWorkflowHandler{svc: svc, downloadRoot: root, promoCodes: service.NewPromoCodeService(database.DB)}
 }
 
 func (h *PaperWorkflowHandler) CompileTemplate(c *gin.Context) {
@@ -97,6 +101,12 @@ func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
 		return
 	}
 
+	grantID, orderID, err := h.authorizePaperJob(c, userID)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusPaymentRequired, err.Error(), "")
+		return
+	}
+
 	file, err := c.FormFile("paper")
 	if err != nil {
 		file, err = c.FormFile("file")
@@ -136,8 +146,68 @@ func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
 		h.respondWorkflowError(c, err)
 		return
 	}
+	if err := h.consumePaperJobAccess(c, userID, job.PaperID, grantID, orderID); err != nil {
+		utils.ErrorResponse(c, http.StatusConflict, "服务授权绑定失败", err.Error())
+		return
+	}
 
 	utils.CreatedResponse(c, "paper job created", h.jobResponse(job))
+}
+
+func (h *PaperWorkflowHandler) authorizePaperJob(c *gin.Context, userID uuid.UUID) (uuid.UUID, uuid.UUID, error) {
+	if config, err := service.GetSystemSettingService().GetPaymentConfig(); err == nil {
+		if free, _ := config["is_check_free"].(bool); free {
+			return uuid.Nil, uuid.Nil, nil
+		}
+	}
+	var user model.User
+	if err := database.DB.Select("role", "is_free_user").First(&user, "id = ?", userID).Error; err == nil && (user.Role == "admin" || user.Role == "super_admin" || user.IsFreeUser) {
+		return uuid.Nil, uuid.Nil, nil
+	}
+
+	if value := strings.TrimSpace(c.PostForm("promo_grant_id")); value != "" {
+		grantID, err := uuid.Parse(value)
+		if err != nil {
+			return uuid.Nil, uuid.Nil, service.ErrPromoGrantInvalid
+		}
+		if _, err := h.promoCodes.ValidateGrant(c.Request.Context(), grantID, userID, "check_and_fix"); err != nil {
+			return uuid.Nil, uuid.Nil, err
+		}
+		return grantID, uuid.Nil, nil
+	}
+
+	if value := strings.TrimSpace(c.PostForm("order_id")); value != "" {
+		orderID, err := uuid.Parse(value)
+		if err != nil {
+			return uuid.Nil, uuid.Nil, errors.New("支付订单无效")
+		}
+		var order model.Order
+		if err := database.DB.Where("id = ? AND user_id = ? AND payment_status = ? AND used_at IS NULL", orderID, userID, "paid").First(&order).Error; err == nil {
+			if order.ServiceType == "" || order.ServiceType == "check_and_fix" {
+				return uuid.Nil, orderID, nil
+			}
+		}
+	}
+	return uuid.Nil, uuid.Nil, errors.New("请先完成支付或使用体验卡密")
+}
+
+func (h *PaperWorkflowHandler) consumePaperJobAccess(c *gin.Context, userID, paperID, grantID, orderID uuid.UUID) error {
+	if grantID != uuid.Nil {
+		return h.promoCodes.BindGrant(c.Request.Context(), grantID, userID, paperID)
+	}
+	if orderID != uuid.Nil {
+		now := time.Now()
+		result := database.DB.Model(&model.Order{}).
+			Where("id = ? AND user_id = ? AND payment_status = ? AND used_at IS NULL", orderID, userID, "paid").
+			Updates(map[string]interface{}{"paper_id": paperID, "used_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errors.New("支付订单已使用")
+		}
+	}
+	return nil
 }
 
 func (h *PaperWorkflowHandler) RunJob(c *gin.Context) {

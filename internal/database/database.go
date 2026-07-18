@@ -155,6 +155,8 @@ func migrateDatabase() error {
 		&model.Member{},
 		&model.Order{},
 		&model.PaymentRecord{},
+		&model.PromoCode{},
+		&model.PromoCodeGrant{},
 
 		// 系统设置
 		&model.SystemSetting{},

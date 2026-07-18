@@ -29,6 +29,8 @@ func AutoMigrate() {
 		&model.FormatCorrection{},
 		&model.Order{},
 		&model.PaymentRecord{},
+		&model.PromoCode{},
+		&model.PromoCodeGrant{},
 
 		// 澶氬澶氬叧鑱旇〃
 		&model.UserRole{},

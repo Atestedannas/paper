@@ -3,8 +3,10 @@ package database
 import (
 	"log"
 
+	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/model"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/datatypes"
 )
 
 // InitRBACData 初始化RBAC相关基础数据
@@ -231,6 +233,14 @@ func InitRBACData() {
 			path:         "/api/v1/admin/settings/payment/*",
 			description:  "允许管理支付配置",
 		},
+		{
+			name:         "推广卡密管理",
+			code:         "promo-code:manage",
+			resourceType: "api",
+			method:       "*",
+			path:         "/api/v1/admin/promo-codes/*",
+			description:  "允许生成、停用和查看推广卡密",
+		},
 
 		// 客服支持权限
 		{
@@ -268,6 +278,29 @@ func InitRBACData() {
 			}
 			DB.Create(newPermission)
 		}
+	}
+
+	// Keep the database-driven admin menu in sync for non-super administrators.
+	promoMenu := model.Menu{}
+	menuValues := map[string]interface{}{
+		"title": "推广卡密", "icon": "Ticket", "path": "/admin/promo-codes",
+		"component": "admin/PromoCodeManagementView.vue", "sort_order": 65,
+		"menu_type": "menu", "permission": "promo-code:manage", "visible": true,
+		"meta": datatypes.JSON([]byte(`{"title":"推广卡密","icon":"Ticket"}`)),
+	}
+	if err := DB.Where("name = ?", "promo-codes").First(&promoMenu).Error; err != nil {
+		promoMenu = model.Menu{
+			ID: uuid.New(), Name: "promo-codes", Title: "推广卡密", Icon: "Ticket",
+			Path: "/admin/promo-codes", Component: "admin/PromoCodeManagementView.vue",
+			SortOrder: 65, MenuType: "menu", Permission: "promo-code:manage", Visible: true,
+			Meta: datatypes.JSON([]byte(`{"title":"推广卡密","icon":"Ticket"}`)),
+		}
+		if err := DB.Create(&promoMenu).Error; err != nil {
+			log.Printf("创建推广卡密菜单失败：%v", err)
+		}
+	}
+	if promoMenu.ID != uuid.Nil {
+		DB.Model(&promoMenu).Updates(menuValues)
 	}
 
 	// 为超级管理员分配所有权限

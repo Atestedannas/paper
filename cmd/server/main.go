@@ -107,6 +107,7 @@ func main() {
 	paperHistoryHandler := handler.NewPaperHistoryHandler()
 	batchHandler := handler.NewBatchHandler()
 	paymentCheckHandler := handler.NewPaymentCheckHandler()
+	promoCodeHandler := handler.NewPromoCodeHandler()
 	sandboxHandler := handler.NewSandboxHandler(cfg)
 
 	// RBAC enhanced handlers
@@ -409,6 +410,7 @@ func main() {
 
 		apiV1.POST("/payment/wechat/callback", paymentHandler.HandleWechatCallback)
 		apiV1.POST("/payment/alipay/callback", paymentHandler.HandleAlipayCallback)
+		apiV1.POST("/promo-codes/redeem", middleware.AuthMiddleware(cfg, database.DB), promoCodeHandler.Redeem)
 
 		// Authentication routes
 		auth := apiV1.Group("/auth")
@@ -646,6 +648,10 @@ func main() {
 		admin := apiV1.Group("/admin", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware(), middleware.AdminRBACMiddleware())
 		{
 			admin.GET("/dashboard", adminHandler.GetDashboard)
+			admin.POST("/promo-codes", promoCodeHandler.Generate)
+			admin.GET("/promo-codes", promoCodeHandler.List)
+			admin.PATCH("/promo-codes/:id/status", promoCodeHandler.SetActive)
+			admin.GET("/promo-codes/:id/grants", promoCodeHandler.ListGrants)
 			admin.GET("/stats", adminHandler.GetSystemStats)
 			admin.GET("/users", adminHandler.GetUsers)
 			admin.POST("/users", adminHandler.CreateUser)                                    // Create user

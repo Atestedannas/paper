@@ -45,17 +45,20 @@ type Member struct {
 
 // Order 订单模型
 type Order struct {
-	ID            uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	UserID        uuid.UUID `gorm:"type:uuid;index;not null" json:"user_id"`
-	MemberLevelID uuid.UUID `gorm:"type:uuid;index" json:"member_level_id"`          // 可以为空，用于论文检查订单
-	OrderNo       string    `gorm:"size:50;uniqueIndex;not null" json:"order_no"`    // 订单号
-	TotalAmount   float64   `gorm:"type:decimal(10,2);not null" json:"total_amount"` // 订单金额
-	PaymentMethod string    `gorm:"size:20;not null" json:"payment_method"`          // wechat, alipay
-	PaymentStatus string    `gorm:"size:20;default:pending" json:"payment_status"`   // pending, paid, cancelled, refunded
-	OrderStatus   string    `gorm:"size:20;default:created" json:"order_status"`     // created, completed, cancelled
-	ExpiredAt     time.Time `json:"expired_at"`                                      // 订单过期时间
-	CreatedAt     time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
-	UpdatedAt     time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
+	ID            uuid.UUID  `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	UserID        uuid.UUID  `gorm:"type:uuid;index;not null" json:"user_id"`
+	MemberLevelID uuid.UUID  `gorm:"type:uuid;index" json:"member_level_id"`          // 可以为空，用于论文检查订单
+	OrderNo       string     `gorm:"size:50;uniqueIndex;not null" json:"order_no"`    // 订单号
+	TotalAmount   float64    `gorm:"type:decimal(10,2);not null" json:"total_amount"` // 订单金额
+	PaymentMethod string     `gorm:"size:20;not null" json:"payment_method"`          // wechat, alipay
+	PaymentStatus string     `gorm:"size:20;default:pending" json:"payment_status"`   // pending, paid, cancelled, refunded
+	OrderStatus   string     `gorm:"size:20;default:created" json:"order_status"`     // created, completed, cancelled
+	ServiceType   string     `gorm:"size:32;index" json:"service_type,omitempty"`
+	PaperID       *uuid.UUID `gorm:"type:uuid;index" json:"paper_id,omitempty"`
+	UsedAt        *time.Time `json:"used_at,omitempty"`
+	ExpiredAt     time.Time  `json:"expired_at"` // 订单过期时间
+	CreatedAt     time.Time  `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
+	UpdatedAt     time.Time  `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
 
 	// 关联
 	User          User           `gorm:"foreignKey:UserID" json:"user,omitempty"`
