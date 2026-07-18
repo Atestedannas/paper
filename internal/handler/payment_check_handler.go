@@ -55,7 +55,7 @@ func paperServicePrice(config map[string]interface{}, serviceType string) float6
 	formatFix, _ := config["format_fix"].(float64)
 	isCheckFree, _ := config["is_check_free"].(bool)
 	if isCheckFree {
-		formatCheck = 0
+		return 0
 	}
 
 	switch serviceType {

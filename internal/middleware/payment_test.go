@@ -29,6 +29,19 @@ func TestPaymentMiddlewareRequiresLoginEvenWhenServiceIsFree(t *testing.T) {
 	}
 }
 
+func TestGlobalFreeSwitchCoversPaperServices(t *testing.T) {
+	config := map[string]interface{}{
+		"is_check_free":  true,
+		"format_fix":     15.0,
+		"paper_download": 15.0,
+	}
+	for _, serviceType := range []ServiceType{ServiceFormatCheck, ServiceFormatFix, ServicePaperDownload} {
+		if !serviceIsFreeBySetting(config, serviceType) {
+			t.Fatalf("expected %s to be free", serviceType)
+		}
+	}
+}
+
 func TestPaymentMiddlewareRejectsAnonymousNilUser(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{}

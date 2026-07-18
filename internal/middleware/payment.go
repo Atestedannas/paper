@@ -159,9 +159,8 @@ func CheckUserPaymentStatus(userID uuid.UUID, serviceType ServiceType, price flo
 }
 
 func serviceIsFreeBySetting(config map[string]interface{}, serviceType ServiceType) bool {
-	if serviceType == ServiceFormatCheck {
-		isCheckFree, ok := config["is_check_free"].(bool)
-		return ok && isCheckFree
+	if isCheckFree, ok := config["is_check_free"].(bool); ok && isCheckFree {
+		return true
 	}
 
 	keyMap := map[ServiceType]string{
