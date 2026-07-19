@@ -220,6 +220,9 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 			return nil, err
 		}
 		templatePath = firstWorkflowTemplatePath(formatTemplate)
+		if templatePath == "" && formatTemplate.University != nil && strings.Contains(formatTemplate.University.Name, "重庆人文科技学院") {
+			templatePath = resolveCQRWSTTemplatePath()
+		}
 		if templatePath == "" {
 			return nil, fmt.Errorf("selected template has no DOCX file")
 		}

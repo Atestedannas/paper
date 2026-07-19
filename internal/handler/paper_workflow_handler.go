@@ -2,9 +2,11 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,7 +136,7 @@ func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
 	}
 	var templateID uuid.UUID
 	if raw := strings.TrimSpace(c.PostForm("template_id")); raw != "" {
-		templateID, err = uuid.Parse(raw)
+		templateID, err = resolveWorkflowFormatTemplateID(raw, c.PostForm("document_type"))
 		if err != nil {
 			_ = os.Remove(inputPath)
 			utils.ErrorResponse(c, http.StatusBadRequest, "invalid template_id", err.Error())
@@ -162,6 +164,32 @@ func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
 	}
 
 	utils.CreatedResponse(c, "paper job created", h.jobResponse(job))
+}
+
+func resolveWorkflowFormatTemplateID(raw string, documentType string) (uuid.UUID, error) {
+	if id, err := uuid.Parse(strings.TrimSpace(raw)); err == nil {
+		return id, nil
+	}
+	universityID, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || universityID <= 0 {
+		return uuid.Nil, fmt.Errorf("template_id must be a template UUID or university ID")
+	}
+
+	query := database.DB.Where("university_id = ? AND is_active = ?", universityID, true)
+	if documentType = strings.TrimSpace(documentType); documentType != "" {
+		query = query.Where("document_type = ?", documentType)
+	} else {
+		query = query.Where("document_type = ?", "本科论文")
+	}
+	var template model.FormatTemplate
+	if err := query.Order("updated_at DESC").First(&template).Error; err == nil {
+		return template.ID, nil
+	}
+	if err := database.DB.Where("university_id = ? AND is_active = ?", universityID, true).
+		Order("updated_at DESC").First(&template).Error; err != nil {
+		return uuid.Nil, fmt.Errorf("no active template for university %d: %w", universityID, err)
+	}
+	return template.ID, nil
 }
 
 func (h *PaperWorkflowHandler) authorizePaperJob(c *gin.Context, userID uuid.UUID) (uuid.UUID, uuid.UUID, error) {
