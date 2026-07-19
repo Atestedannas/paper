@@ -677,10 +677,13 @@ func TestFixDOCXWithTemplateProfilePrefersTemplateChineseTotalFooterOverDashRule
 		t.Fatalf("FixDOCXWithTemplateProfile() fix count = 0, want page footer fix")
 	}
 	footerXML := readCQRWSTEntry(t, docxPath, "word/footer1.xml")
-	for _, want := range []string{"第 ", "PAGE", " 页 共 ", "NUMPAGES"} {
+	for _, want := range []string{"第 ", "PAGE", " 页 共 ", "SECTIONPAGES"} {
 		if !strings.Contains(footerXML, want) {
 			t.Fatalf("footer should follow template chinese total page style %q:\n%s", want, footerXML)
 		}
+	}
+	if strings.Contains(footerXML, "NUMPAGES") {
+		t.Fatalf("footer should count the numbered section, not the whole document:\n%s", footerXML)
 	}
 	if strings.Contains(footerXML, ">-<") {
 		t.Fatalf("footer should not use dash page wrapper when template footer has total pages:\n%s", footerXML)

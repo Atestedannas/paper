@@ -102,12 +102,15 @@ func TestBuildHeaderFooterXMLSupportsDoubleHeaderAndChineseTotalPages(t *testing
 		`第 `,
 		` PAGE \* MERGEFORMAT `,
 		` 页 共 `,
-		` NUMPAGES \* MERGEFORMAT `,
+		` SECTIONPAGES \* MERGEFORMAT `,
 		` 页`,
 	} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("footer xml missing %s:\n%s", want, footer)
 		}
+	}
+	if strings.Contains(footer, ` NUMPAGES `) {
+		t.Fatalf("section-scoped footer must not count front matter:\n%s", footer)
 	}
 }
 

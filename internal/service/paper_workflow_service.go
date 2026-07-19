@@ -48,7 +48,7 @@ const cqrwstTemplatePathEnv = "CQRWST_TEMPLATE_PATH"
 const cqrwstTemplateTransplantEnabledEnv = "CQRWST_TEMPLATE_TRANSPLANT_ENABLED"
 
 var renderedChineseTotalFooterPattern = regexp.MustCompile(`第(\d+)页共(\d+)页`)
-var numPagesFieldBlockPattern = regexp.MustCompile(`(?s)<w:r><w:fldChar\b[^>]*w:fldCharType="begin"[^>]*/></w:r>\s*<w:r><w:instrText\b[^>]*>\s*NUMPAGES\b.*?</w:instrText></w:r>\s*<w:r><w:fldChar\b[^>]*w:fldCharType="separate"[^>]*/></w:r>\s*<w:r><w:t\b[^>]*>.*?</w:t></w:r>\s*<w:r><w:fldChar\b[^>]*w:fldCharType="end"[^>]*/></w:r>`)
+var totalPagesFieldBlockPattern = regexp.MustCompile(`(?s)<w:r><w:fldChar\b[^>]*w:fldCharType="begin"[^>]*/></w:r>\s*<w:r><w:instrText\b[^>]*>\s*(?:NUMPAGES|SECTIONPAGES)\b.*?</w:instrText></w:r>\s*<w:r><w:fldChar\b[^>]*w:fldCharType="separate"[^>]*/></w:r>\s*<w:r><w:t\b[^>]*>.*?</w:t></w:r>\s*<w:r><w:fldChar\b[^>]*w:fldCharType="end"[^>]*/></w:r>`)
 var materializedTotalPagePattern = regexp.MustCompile(`(?s)(共\s*</w:t></w:r>\s*<w:r><w:t\b[^>]*>)\d+(</w:t>)`)
 var manualCaptionLinePattern = regexp.MustCompile(`^\s*([图表])\s*(\d+)(?:[-.．](\d+))?\s+(.+)$`)
 var captionReferencePattern = regexp.MustCompile(`([图表])\s*(\d+)(?:[-.．](\d+))?`)
@@ -520,8 +520,8 @@ func repairRenderedPageFooterTotal(outputPath string, result verify.Result) (boo
 			continue
 		}
 		updated := string(content)
-		if strings.Contains(updated, "NUMPAGES") {
-			updated = numPagesFieldBlockPattern.ReplaceAllString(updated, `<w:r><w:t>`+strconv.Itoa(total)+`</w:t></w:r>`)
+		if strings.Contains(updated, "NUMPAGES") || strings.Contains(updated, "SECTIONPAGES") {
+			updated = totalPagesFieldBlockPattern.ReplaceAllString(updated, `<w:r><w:t>`+strconv.Itoa(total)+`</w:t></w:r>`)
 		} else {
 			updated = materializedTotalPagePattern.ReplaceAllString(updated, `${1}`+strconv.Itoa(total)+`${2}`)
 		}

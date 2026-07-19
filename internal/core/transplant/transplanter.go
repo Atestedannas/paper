@@ -2506,7 +2506,7 @@ func normalizeCQRWSTMainFooter(pkg *ooxmlpkg.DocxPackage) {
 	if footerTarget == "" {
 		return
 	}
-	if content, ok := pkg.Get(footerTarget); ok && footerHasPageAndNumPages(string(content)) {
+	if content, ok := pkg.Get(footerTarget); ok && footerHasPageAndSectionPages(string(content)) {
 		return
 	}
 	pkg.Set(footerTarget, []byte(renderCQRWSTMainFooterXML()))
@@ -2534,8 +2534,8 @@ func normalizeCQRWSTFrontFooter(pkg *ooxmlpkg.DocxPackage) {
 	pkg.Set(footerTarget, []byte(renderCQRWSTFrontFooterXML()))
 }
 
-func footerHasPageAndNumPages(footerXML string) bool {
-	return strings.Contains(footerXML, " PAGE ") && strings.Contains(footerXML, " NUMPAGES ")
+func footerHasPageAndSectionPages(footerXML string) bool {
+	return strings.Contains(footerXML, " PAGE ") && strings.Contains(footerXML, " SECTIONPAGES ")
 }
 
 func normalizeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]string) {

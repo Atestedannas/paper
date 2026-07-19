@@ -638,7 +638,7 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 			t.Fatalf("generated output front-matter footer missing %s: %s", want, frontFooterXML)
 		}
 	}
-	for _, forbidden := range []string{"NUMPAGES", "第", "共"} {
+	for _, forbidden := range []string{"NUMPAGES", "SECTIONPAGES", "第", "共"} {
 		if strings.Contains(frontFooterXML, forbidden) {
 			t.Fatalf("front-matter footer should be a standalone Roman PAGE footer, found %q: %s", forbidden, frontFooterXML)
 		}
@@ -647,8 +647,8 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 		t.Fatalf("front-matter footer should not use VML text boxes because they drift in LibreOffice rendering: %s", frontFooterXML)
 	}
 	footerXML := readWorkflowDocxEntry(t, outputPath, "word/footer3.xml")
-	hasDynamicTotal := strings.Contains(footerXML, "NUMPAGES") && !strings.Contains(footerXML, "12页")
-	hasMaterializedTotal := !strings.Contains(footerXML, "NUMPAGES") && regexp.MustCompile(`>\d+<`).MatchString(footerXML) && !strings.Contains(footerXML, ">12<")
+	hasDynamicTotal := strings.Contains(footerXML, "SECTIONPAGES") && !strings.Contains(footerXML, "NUMPAGES") && !strings.Contains(footerXML, "12页")
+	hasMaterializedTotal := !strings.Contains(footerXML, "SECTIONPAGES") && !strings.Contains(footerXML, "NUMPAGES") && regexp.MustCompile(`>\d+<`).MatchString(footerXML) && !strings.Contains(footerXML, ">12<")
 	if !hasDynamicTotal && !hasMaterializedTotal {
 		t.Fatalf("generated output should use a dynamic or render-corrected total page count in the main footer: %s", footerXML)
 	}

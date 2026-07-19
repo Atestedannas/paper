@@ -1458,7 +1458,7 @@ func TestGenerateRebuildsCQRWSTBodyWithMainFooterSection(t *testing.T) {
 		t.Fatalf("rebuilt body should not use the final non-footer section as the body section: %s", documentXML)
 	}
 	footerXML := readDocxEntry(t, outputPath, "word/footer3.xml")
-	if !strings.Contains(footerXML, "NUMPAGES") || strings.Contains(footerXML, ">12<") {
+	if !strings.Contains(footerXML, "SECTIONPAGES") || strings.Contains(footerXML, "NUMPAGES") || strings.Contains(footerXML, ">12<") {
 		t.Fatalf("main footer should use dynamic page fields instead of stale template text: %s", footerXML)
 	}
 	frontFooterXML := readDocxEntry(t, outputPath, "word/footer1.xml")
@@ -1466,7 +1466,7 @@ func TestGenerateRebuildsCQRWSTBodyWithMainFooterSection(t *testing.T) {
 		t.Fatalf("front-matter footer should use one plain Roman PAGE field without VML text boxes: %s", frontFooterXML)
 	}
 }
-func TestGeneratePreservesTemplateChineseTotalFooterFields(t *testing.T) {
+func TestGenerateReplacesDocumentTotalWithBodySectionTotal(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
 	templateFooter := `<w:ftr><w:p><w:r><w:t>Page </w:t></w:r>` +
@@ -1498,10 +1498,13 @@ func TestGeneratePreservesTemplateChineseTotalFooterFields(t *testing.T) {
 	}
 
 	footerXML := readDocxEntry(t, outputPath, "word/footer3.xml")
-	for _, want := range []string{"PAGE", "0", "NUMPAGES", "12"} {
+	for _, want := range []string{"PAGE", "SECTIONPAGES"} {
 		if !strings.Contains(footerXML, want) {
-			t.Fatalf("footer should preserve template fragment %q: %s", want, footerXML)
+			t.Fatalf("footer should contain dynamic field %q: %s", want, footerXML)
 		}
+	}
+	if strings.Contains(footerXML, "NUMPAGES") || strings.Contains(footerXML, ">12<") {
+		t.Fatalf("footer should not count front matter or preserve stale results: %s", footerXML)
 	}
 	if strings.Contains(footerXML, ">-<") {
 		t.Fatalf("footer should not be rewritten to dash page style: %s", footerXML)
