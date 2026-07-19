@@ -656,6 +656,7 @@ func (p *TemplateParser) paraInfoToRuleMap(info paraInfo) map[string]interface{}
 	}
 	if info.FontSize > 0 {
 		m["font_size"] = fontPointsToChineseName(info.FontSize)
+		m["font_size_pt"] = info.FontSize
 	}
 	if info.Bold {
 		m["bold"] = true

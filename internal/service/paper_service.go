@@ -33,6 +33,13 @@ type PaperService struct {
 
 const maxFormatRulesDebugBytes = 16384
 
+func formatTemplateDocumentPath(template model.FormatTemplate) string {
+	if path := strings.TrimSpace(template.GoldenTemplatePath); path != "" {
+		return path
+	}
+	return strings.TrimSpace(template.FilePath)
+}
+
 var ErrLegacyWritePathDisabled = fmt.Errorf("legacy paper write path disabled")
 
 func legacyWritePathDisabled() bool {
@@ -231,8 +238,8 @@ func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (stri
 	logFormatRulesDebug("QuickV2Fix_upload_async", uuid.Nil, template.ID, quickV2DbgRules)
 
 	processor := s.createSmartProcessor()
-	if template.GoldenTemplatePath != "" {
-		processor.SetTemplatePath(template.GoldenTemplatePath)
+	if templatePath := formatTemplateDocumentPath(template); templatePath != "" {
+		processor.SetTemplatePath(templatePath)
 	}
 
 	var corrections []map[string]interface{}
@@ -387,8 +394,8 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 	log.Printf("[FixFormat] templateID=%s GoldenTemplatePath=%q", template.ID, template.GoldenTemplatePath)
 	// 创建带 V2/分类器等能力的处理器实例
 	processor := s.createSmartProcessor()
-	if template.GoldenTemplatePath != "" {
-		processor.SetTemplatePath(template.GoldenTemplatePath) // 设置金模板磁盘路径
+	if templatePath := formatTemplateDocumentPath(template); templatePath != "" {
+		processor.SetTemplatePath(templatePath) // 设置金模板磁盘路径
 	} else {
 		log.Printf("[FixFormat] ⚠️  GoldenTemplatePath为空，将使用JSON规则方案")
 	}
@@ -1061,8 +1068,8 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 				log.Println("========================================")
 
 				fp := s.createSmartProcessor()
-				if template.GoldenTemplatePath != "" {
-					fp.SetTemplatePath(template.GoldenTemplatePath)
+				if templatePath := formatTemplateDocumentPath(template); templatePath != "" {
+					fp.SetTemplatePath(templatePath)
 				}
 				retryCorrMap := map[string]interface{}{"format_rules": rulesMap}
 				if template.ID != uuid.Nil {

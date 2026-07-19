@@ -96,12 +96,13 @@ type CompileTemplateInput struct {
 }
 
 type CreatePaperJobInput struct {
-	UserID   uuid.UUID
-	Title    string
-	FilePath string
-	FileName string
-	FileSize int64
-	FileType string
+	UserID           uuid.UUID
+	FormatTemplateID uuid.UUID
+	Title            string
+	FilePath         string
+	FileName         string
+	FileSize         int64
+	FileType         string
 }
 
 type PaperWorkflowService interface {
@@ -207,6 +208,41 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 	paperID := uuid.New()
 	templateID := uuid.New()
 	jobID := uuid.New()
+	var selectedTemplateID *uuid.UUID
+	templatePath := ""
+	templateName := "single-template-runtime"
+	templateVersion := "runtime"
+	schoolID := "single-template"
+	formatRules := ""
+	if input.FormatTemplateID != uuid.Nil {
+		var formatTemplate model.FormatTemplate
+		if err := s.db.WithContext(ctx).Preload("University").First(&formatTemplate, "id = ? AND is_active = ?", input.FormatTemplateID, true).Error; err != nil {
+			return nil, err
+		}
+		templatePath = firstWorkflowTemplatePath(formatTemplate)
+		if templatePath == "" {
+			return nil, fmt.Errorf("selected template has no DOCX file")
+		}
+		selectedTemplateID = &formatTemplate.ID
+		templateName = formatTemplate.Name
+		templateVersion = formatTemplate.Version
+		schoolID = formatTemplate.TemplateID
+		formatRules = formatTemplate.FormatRules
+	} else if configured := resolveCQRWSTTemplatePath(); configured != "" {
+		// Compatibility for older clients; new clients must submit template_id.
+		templatePath = configured
+	}
+
+	var profile *templateprofile.Profile
+	if templatePath != "" {
+		profile = buildWorkflowTemplateProfile(ctx, templatePath)
+		if profile == nil {
+			return nil, fmt.Errorf("build selected template profile failed")
+		}
+		if err := templateprofile.ApplyFormatRules(profile, formatRules); err != nil {
+			return nil, err
+		}
+	}
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		paper := model.Paper{
@@ -220,21 +256,26 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 			ParsedInfo:            "{}",
 			AutoDetectedTemplates: "[]",
 			Status:                string(workflow.StatusUploaded),
+			SelectedTemplateID:    selectedTemplateID,
 		}
 		if err := tx.Create(&paper).Error; err != nil {
 			return err
 		}
 
+		compiledSource := input.FilePath
+		if templatePath != "" {
+			compiledSource = templatePath
+		}
 		compiled := model.CompiledTemplate{
 			ID:                    templateID,
-			SchoolID:              "single-template",
-			TemplateName:          "single-template-runtime",
-			TemplateVersion:       "runtime",
-			SourceFilePath:        input.FilePath,
-			SkeletonPath:          input.FilePath,
+			SchoolID:              schoolID,
+			TemplateName:          templateName,
+			TemplateVersion:       templateVersion,
+			SourceFilePath:        compiledSource,
+			SkeletonPath:          compiledSource,
 			ManifestJSON:          "{}",
 			BlockCatalogJSON:      "[]",
-			StyleProfilesJSON:     "{}",
+			StyleProfilesJSON:     templateprofile.Marshal(profile),
 			MappingContractJSON:   "{}",
 			VerificationRulesJSON: "{}",
 			PatchTargetsJSON:      "[]",
@@ -275,7 +316,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	}
 
 	var job model.PaperWorkflowJob
-	if err := s.db.WithContext(ctx).Preload("Paper").First(&job, "id = ? AND user_id = ?", jobID, userID).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("Paper").Preload("CompiledTemplate").First(&job, "id = ? AND user_id = ?", jobID, userID).Error; err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(job.Paper.FilePath) == "" {
@@ -286,7 +327,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	if err != nil {
 		return nil, err
 	}
-	profile, err := s.buildWorkflowOutput(ctx, job.Paper.FilePath, outputPath)
+	profile, err := s.buildWorkflowOutput(ctx, job.Paper.FilePath, outputPath, job.CompiledTemplate)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +358,8 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		return s.GetJobForUser(id, userID)
 	}
 
-	if shouldRunCQRWSTPostFix() {
+	transplantEnabled := templateTransplantEnabled(job.CompiledTemplate.SourceFilePath, profile)
+	if !transplantEnabled {
 		if _, err := cqrwst.FixDOCXWithTemplateProfileAndSemanticAI(ctx, outputPath, profile, newDeepSeekSemanticBlockClient()); err != nil {
 			return nil, err
 		}
@@ -327,7 +369,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	if workflowNeedsTOCMaterialization(outputPath) {
 		verifier.WithRenderGate(renderverify.Options{Enabled: true, Strict: false, CheckPageFooter: true, TextExtractor: workflowPDFTextExtractor()}, "")
 	}
-	if cqrwstTemplateTransplantEnabled() {
+	if transplantEnabled {
 		verifier.WithoutCQRWSTRules()
 	}
 	result, err := workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
@@ -383,7 +425,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			return nil, err
 		}
 	}
-	if result.Status != workflow.StatusVerifiedPass && shouldRunCQRWSTPostFix() {
+	if result.Status != workflow.StatusVerifiedPass && !transplantEnabled {
 		if _, fixErr := cqrwst.FixDOCXWithTemplateProfileAndSemanticAI(ctx, outputPath, profile, newDeepSeekSemanticBlockClient()); fixErr == nil {
 			result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
 			if err != nil {
@@ -1105,13 +1147,16 @@ func (s *paperWorkflowService) workflowOutputPath(jobID uuid.UUID) (string, erro
 	return filepath.Join(root, jobID.String(), "final.docx"), nil
 }
 
-func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePath string, outputPath string) (*templateprofile.Profile, error) {
-	templatePath := resolveCQRWSTTemplatePath()
-	if templatePath == "" {
+func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePath string, outputPath string, record model.CompiledTemplate) (*templateprofile.Profile, error) {
+	templatePath := strings.TrimSpace(record.SourceFilePath)
+	profile, err := templateprofile.Parse(record.StyleProfilesJSON)
+	if err != nil {
+		return nil, err
+	}
+	if templatePath == "" || templatePath == sourcePath || profile == nil {
 		return nil, copyFile(sourcePath, outputPath)
 	}
-	profile := buildCQRWSTTemplateProfile(ctx, templatePath)
-	if !cqrwstTemplateTransplantEnabled() {
+	if !templateTransplantEnabled(templatePath, profile) {
 		if err := copyFile(sourcePath, outputPath); err != nil {
 			return profile, err
 		}
@@ -1119,13 +1164,13 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 	}
 
 	compiled, err := templatecompile.NewCompiler().Compile(ctx, templatePath, templatecompile.CompileOptions{
-		SchoolID:     "cqrwst",
-		TemplateName: "cqrwst-single-template",
-		Version:      "runtime",
+		SchoolID:     record.SchoolID,
+		TemplateName: record.TemplateName,
+		Version:      record.TemplateVersion,
 		OutputDir:    filepath.Join(s.outputRoot, "_compiled_templates"),
 	})
 	if err != nil {
-		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("compile CQRWST template skeleton: %w", err))
+		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("compile selected template skeleton: %w", err))
 	}
 
 	parsed, err := paperparse.NewParser().Parse(ctx, sourcePath)
@@ -1153,6 +1198,31 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 	}
 
 	return profile, nil
+}
+
+func firstWorkflowTemplatePath(template model.FormatTemplate) string {
+	for _, candidate := range []string{template.GoldenTemplatePath, template.FilePath} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func templateTransplantEnabled(templatePath string, profile *templateprofile.Profile) bool {
+	if strings.TrimSpace(templatePath) == "" || profile == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(cqrwstTemplateTransplantEnabledEnv))) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 func preserveSourceDrawingGroups(sourcePath string, outputPath string) error {
@@ -1273,16 +1343,16 @@ func shouldRunCQRWSTPostFix() bool {
 	return !cqrwstTemplateTransplantEnabled()
 }
 
-func buildCQRWSTTemplateProfile(ctx context.Context, templatePath string) *templateprofile.Profile {
+func buildWorkflowTemplateProfile(ctx context.Context, templatePath string) *templateprofile.Profile {
 	profile, err := templateprofile.Build(ctx, templatePath, templateprofile.Options{
 		AIEnabled: deepSeekTemplateProfileEnabled(),
 		AIClient:  newDeepSeekTemplateProfileClient(),
 	})
 	if err != nil {
-		log.Printf("[CQRWST_TEMPLATE_PROFILE] build failed: %v", err)
+		log.Printf("[WORKFLOW_TEMPLATE_PROFILE] build failed: %v", err)
 		return nil
 	}
-	log.Printf("[CQRWST_TEMPLATE_PROFILE] built source=%s confidence=%.2f sections=%d styles=%d",
+	log.Printf("[WORKFLOW_TEMPLATE_PROFILE] built source=%s confidence=%.2f sections=%d styles=%d",
 		profile.Source, profile.Confidence, len(profile.Sections), len(profile.Styles))
 	return profile
 }
@@ -1309,7 +1379,7 @@ func newDeepSeekSemanticBlockClient() cqrwst.SemanticAIClient {
 }
 
 func copyFileWithTemplateFallbackNotice(sourcePath string, outputPath string, cause error) error {
-	fmt.Printf("[CQRWST_TEMPLATE] fallback to copy-and-fix route: %v\n", cause)
+	fmt.Printf("[WORKFLOW_TEMPLATE] fallback to copy-and-fix route: %v\n", cause)
 	return copyFile(sourcePath, outputPath)
 }
 

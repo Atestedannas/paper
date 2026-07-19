@@ -9,6 +9,7 @@ import (
 	"html"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
@@ -361,31 +362,38 @@ func mergeAISummary(profile *Profile, raw map[string]interface{}) {
 		profile.Sections = map[string]SectionRule{}
 	}
 	for key, section := range summary.Sections {
-		existing := profile.Sections[key]
-		existing.Label = key
-		existing.PageBreakBefore = section.PageBreakBefore
-		if section.Evidence != "" {
-			existing.DetectedFrom = section.Evidence
+		if _, exists := profile.Sections[key]; exists {
+			continue
 		}
-		if section.DetectedFrom != "" {
-			existing.DetectedFrom = section.DetectedFrom
-		}
-		profile.Sections[key] = existing
+		profile.Sections[key] = SectionRule{Label: key, PageBreakBefore: section.PageBreakBefore, DetectedFrom: firstNonEmpty(section.Evidence, section.DetectedFrom)}
 	}
 	if profile.Styles == nil {
 		profile.Styles = map[string]StyleRule{}
 	}
 	for key, style := range summary.Styles {
 		style.Label = key
-		profile.Styles[key] = mergeStyleRule(profile.Styles[key], style)
+		local, exists := profile.Styles[key]
+		profile.Styles[key] = mergeStyleRule(style, local)
+		if exists {
+			merged := profile.Styles[key]
+			merged.Bold = local.Bold
+			profile.Styles[key] = merged
+		}
 	}
-	profile.PageSetup = mergePageSetupRule(profile.PageSetup, summary.PageSetup)
-	profile.RulePack = mergeRulePack(profile.RulePack, summary.RulePack)
-	profile.Header = mergeHeaderFooterRule(profile.Header, summary.Header)
-	profile.Footer = mergeHeaderFooterRule(profile.Footer, summary.Footer)
-	if summary.Confidence > 0 {
+	profile.PageSetup = mergePageSetupRule(summary.PageSetup, profile.PageSetup)
+	profile.RulePack = mergeRulePack(summary.RulePack, profile.RulePack)
+	if profile.Confidence == 0 && summary.Confidence > 0 {
 		profile.Confidence = summary.Confidence
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func mergeStyleRule(base StyleRule, override StyleRule) StyleRule {
@@ -576,6 +584,194 @@ func mergeHeaderFooterRule(base HeaderFooterRule, override HeaderFooterRule) Hea
 		base.FontSizeHalfPt = override.FontSizeHalfPt
 	}
 	return base
+}
+
+// ApplyFormatRules applies the administrator-edited database JSON as the final
+// override on top of values measured from the DOCX template.
+func ApplyFormatRules(profile *Profile, data string) error {
+	if profile == nil || strings.TrimSpace(data) == "" {
+		return nil
+	}
+	var rules map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &rules); err != nil {
+		return fmt.Errorf("parse format rules: %w", err)
+	}
+	if profile.Styles == nil {
+		profile.Styles = map[string]StyleRule{}
+	}
+	applyPageSetupOverrides(&profile.PageSetup, mapRule(rules["page_setup"]))
+	applyStyleOverride(profile, "body_start", mapRule(rules["body"]))
+	if headings := mapRule(rules["headings"]); headings != nil {
+		for level := 1; level <= 4; level++ {
+			applyStyleOverride(profile, fmt.Sprintf("heading_%d", level), mapRule(headings[fmt.Sprintf("level%d", level)]))
+		}
+	}
+	for _, item := range []struct{ source, part, target string }{
+		{"abstract", "content", "abstract_cn"},
+		{"english_abstract", "content", "abstract_en"},
+		{"references", "content", "references"},
+		{"references", "label", "references_title"},
+		{"acknowledgements", "label", "acknowledgements_title"},
+		{"table_of_contents", "title", "toc_title"},
+	} {
+		applyStyleOverride(profile, item.target, mapRule(mapRule(rules[item.source])[item.part]))
+	}
+	applyHeaderFooterOverrides(profile, rules)
+	if raw := mapRule(rules["rule_pack"]); raw != nil {
+		encoded, _ := json.Marshal(raw)
+		var override RulePack
+		if json.Unmarshal(encoded, &override) == nil {
+			profile.RulePack = mergeRulePack(profile.RulePack, override)
+		}
+	}
+	return nil
+}
+
+func applyPageSetupOverrides(target *PageSetupRule, setup map[string]interface{}) {
+	if target == nil || setup == nil {
+		return
+	}
+	margins := mapRule(setup["margins"])
+	for _, item := range []struct {
+		values []interface{}
+		target *string
+	}{
+		{[]interface{}{margins["top"], setup["margin_top"]}, &target.MarginTopTwips},
+		{[]interface{}{margins["right"], setup["margin_right"]}, &target.MarginRightTwips},
+		{[]interface{}{margins["bottom"], setup["margin_bottom"]}, &target.MarginBottomTwips},
+		{[]interface{}{margins["left"], setup["margin_left"]}, &target.MarginLeftTwips},
+		{[]interface{}{nestedRuleValue(setup["header"], "distance"), setup["header"]}, &target.HeaderMarginTwips},
+		{[]interface{}{nestedRuleValue(setup["footer"], "distance"), setup["footer"]}, &target.FooterMarginTwips},
+	} {
+		for _, value := range item.values {
+			if twips, ok := centimetersToTwips(value); ok {
+				*item.target = twips
+				break
+			}
+		}
+	}
+	if value, ok := setup["orientation"].(string); ok && value != "" {
+		target.Orientation = value
+	}
+}
+
+func applyStyleOverride(profile *Profile, key string, raw map[string]interface{}) {
+	if raw == nil {
+		return
+	}
+	style := profile.Styles[key]
+	style.Label = key
+	if value := stringRule(raw["font_name"]); value != "" {
+		style.FontEastAsia = value
+	}
+	if value := stringRule(raw["font_name_latin"]); value != "" {
+		style.FontASCII = value
+	}
+	if points, ok := fontPoints(raw); ok {
+		style.FontSizeHalfPt = strconv.Itoa(int(points * 2))
+	}
+	if value, exists := raw["bold"].(bool); exists {
+		style.Bold = value
+	}
+	if value := stringRule(raw["alignment"]); value != "" {
+		if value == "justify" {
+			value = "both"
+		}
+		style.Alignment = value
+	}
+	if multiple, ok := numberRule(raw["line_space"]); ok {
+		style.Line = strconv.Itoa(int(multiple * 240))
+	}
+	if chars, ok := numberRule(raw["first_line_indent"]); ok {
+		style.FirstLineChars = strconv.Itoa(int(chars * 100))
+	}
+	if lines, ok := numberRule(raw["paragraph_before"]); ok {
+		style.BeforeLines = strconv.Itoa(int(lines * 100))
+	}
+	if lines, ok := numberRule(raw["paragraph_after"]); ok {
+		style.AfterLines = strconv.Itoa(int(lines * 100))
+	}
+	profile.Styles[key] = style
+}
+
+func applyHeaderFooterOverrides(profile *Profile, rules map[string]interface{}) {
+	if header := mapRule(rules["header"]); header != nil {
+		profile.Header.Exists = true
+		if value := stringRule(header["content"]); value != "" {
+			profile.Header.Text = value
+		}
+		if value := stringRule(header["font_name"]); value != "" {
+			profile.Header.FontEastAsia = value
+		}
+		if points, ok := fontPoints(header); ok {
+			profile.Header.FontSizeHalfPt = strconv.Itoa(int(points * 2))
+		}
+	}
+	if footer := mapRule(rules["page_number"]); footer != nil {
+		profile.Footer.Exists = true
+		profile.Footer.HasPageField = boolRule(footer["has_page_field"], profile.Footer.HasPageField)
+		profile.Footer.HasNumPages = boolRule(footer["has_total_pages"], profile.Footer.HasNumPages)
+		if value := firstNonEmpty(stringRule(footer["format"]), stringRule(footer["content"])); value != "" {
+			profile.Footer.Text = value
+		}
+		if points, ok := fontPoints(footer); ok {
+			profile.Footer.FontSizeHalfPt = strconv.Itoa(int(points * 2))
+		}
+	}
+}
+
+func mapRule(value interface{}) map[string]interface{} {
+	result, _ := value.(map[string]interface{})
+	return result
+}
+
+func nestedRuleValue(value interface{}, key string) interface{} {
+	return mapRule(value)[key]
+}
+
+func stringRule(value interface{}) string {
+	text, _ := value.(string)
+	return strings.TrimSpace(text)
+}
+
+func numberRule(value interface{}) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case string:
+		match := regexp.MustCompile(`[-+]?\d*\.?\d+`).FindString(typed)
+		if match == "" {
+			return 0, false
+		}
+		number, err := strconv.ParseFloat(match, 64)
+		return number, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func centimetersToTwips(value interface{}) (string, bool) {
+	centimeters, ok := numberRule(value)
+	if !ok {
+		return "", false
+	}
+	return strconv.Itoa(int(centimeters*567 + 0.5)), true
+}
+
+func fontPoints(rule map[string]interface{}) (float64, bool) {
+	if points, ok := numberRule(rule["font_size_pt"]); ok {
+		return points, true
+	}
+	pointsByName := map[string]float64{"初号": 42, "小初": 36, "一号": 26, "小一": 24, "二号": 22, "小二": 18, "三号": 16, "小三": 15, "四号": 14, "小四": 12, "五号": 10.5, "小五": 9, "六号": 7.5}
+	points, ok := pointsByName[stringRule(rule["font_size"])]
+	return points, ok
+}
+
+func boolRule(value interface{}, fallback bool) bool {
+	if result, ok := value.(bool); ok {
+		return result
+	}
+	return fallback
 }
 
 func Marshal(profile *Profile) string {

@@ -116,6 +116,7 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "保存文件失败", err.Error())
 		return
 	}
+	defer os.Remove(tempFilePath)
 
 	// 通过文件魔数检测真实格式，不只依赖扩展名
 	realType, detectErr := h.detectFileType(tempFilePath)
@@ -286,8 +287,14 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 	err = database.DB.Where("university_id = ? AND document_type = ? AND subject = ?",
 		university.ID, documentType, subject).First(&existingTemplate).Error
 	if err == nil {
+		stablePath, persistErr := persistTemplateDOCX(existingTemplate.ID, docxPath)
+		if persistErr != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "保存模板文件失败", persistErr.Error())
+			return
+		}
 		existingTemplate.FormatRules = string(formatRulesJSON)
-		existingTemplate.FilePath = docxPath
+		existingTemplate.FilePath = stablePath
+		existingTemplate.GoldenTemplatePath = stablePath
 		existingTemplate.UpdatedAt = time.Now()
 		if description != "" {
 			existingTemplate.Description = description
@@ -300,18 +307,26 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 		return
 	}
 
+	newTemplateID := uuid.New()
+	stablePath, err := persistTemplateDOCX(newTemplateID, docxPath)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "保存模板文件失败", err.Error())
+		return
+	}
 	newTemplate := model.FormatTemplate{
-		TemplateID:   uuid.New().String(),
-		Name:         fmt.Sprintf("%s%s格式标准", universityName, documentType),
-		UniversityID: &university.ID,
-		DocumentType: documentType,
-		Subject:      subject,
-		Source:       "sample_upload",
-		IsActive:     true,
-		IsPublic:     true,
-		FilePath:     docxPath,
-		FormatRules:  string(formatRulesJSON),
-		Description:  description,
+		ID:                 newTemplateID,
+		TemplateID:         uuid.New().String(),
+		Name:               fmt.Sprintf("%s%s格式标准", universityName, documentType),
+		UniversityID:       &university.ID,
+		DocumentType:       documentType,
+		Subject:            subject,
+		Source:             "sample_upload",
+		IsActive:           true,
+		IsPublic:           true,
+		FilePath:           stablePath,
+		GoldenTemplatePath: stablePath,
+		FormatRules:        string(formatRulesJSON),
+		Description:        description,
 	}
 	if err := database.DB.Create(&newTemplate).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())
@@ -319,6 +334,22 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 	}
 
 	utils.Created(c, templateUploadResponse("格式模板已创建（格式范例模式）", newTemplate.ID, "sample", university, documentType, subject))
+}
+
+func persistTemplateDOCX(templateID uuid.UUID, sourcePath string) (string, error) {
+	targetDir := filepath.Join("uploads", "templates", templateID.String())
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return "", err
+	}
+	targetPath := filepath.Join(targetDir, "template.docx")
+	content, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(targetPath, content, 0644); err != nil {
+		return "", err
+	}
+	return targetPath, nil
 }
 
 // trySofficeConvertToDocx converts a .doc file to .docx using soffice,

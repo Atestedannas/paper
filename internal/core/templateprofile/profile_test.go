@@ -119,14 +119,14 @@ func TestBuildAttachesDeepSeekSummary(t *testing.T) {
 	if profile.Styles["body"].FontEastAsia != "\u6977\u4f53" || profile.Styles["body"].Line != "420" {
 		t.Fatalf("AI styles should merge into profile styles: %#v", profile.Styles["body"])
 	}
-	if !profile.Sections["references_title"].PageBreakBefore || profile.Sections["references_title"].DetectedFrom != "ai_confirmed" {
-		t.Fatalf("AI sections should merge into profile sections: %#v", profile.Sections["references_title"])
+	if !profile.Sections["references_title"].PageBreakBefore || profile.Sections["references_title"].DetectedFrom == "ai_confirmed" {
+		t.Fatalf("local section evidence must win over AI: %#v", profile.Sections["references_title"])
 	}
-	if profile.Confidence != 0.91 {
-		t.Fatalf("Confidence = %v, want 0.91", profile.Confidence)
+	if profile.Confidence != 0.76 {
+		t.Fatalf("Confidence = %v, want local confidence 0.76", profile.Confidence)
 	}
 	if profile.RulePack.CitationStyle != "superscript_bracket" ||
-		profile.RulePack.ReferenceStandard != "GB/T 7714-2005" ||
+		profile.RulePack.ReferenceStandard != "GB/T 7714" ||
 		profile.RulePack.TableStyle != "three-line" {
 		t.Fatalf("AI rule pack should merge into profile: %#v", profile.RulePack)
 	}

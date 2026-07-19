@@ -132,14 +132,24 @@ func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "failed to save paper file", err.Error())
 		return
 	}
+	var templateID uuid.UUID
+	if raw := strings.TrimSpace(c.PostForm("template_id")); raw != "" {
+		templateID, err = uuid.Parse(raw)
+		if err != nil {
+			_ = os.Remove(inputPath)
+			utils.ErrorResponse(c, http.StatusBadRequest, "invalid template_id", err.Error())
+			return
+		}
+	}
 
 	job, err := h.svc.CreatePaperJob(c.Request.Context(), service.CreatePaperJobInput{
-		UserID:   userID,
-		Title:    strings.TrimSpace(c.PostForm("title")),
-		FilePath: inputPath,
-		FileName: safeName,
-		FileSize: file.Size,
-		FileType: "docx",
+		UserID:           userID,
+		FormatTemplateID: templateID,
+		Title:            strings.TrimSpace(c.PostForm("title")),
+		FilePath:         inputPath,
+		FileName:         safeName,
+		FileSize:         file.Size,
+		FileType:         "docx",
 	})
 	if err != nil {
 		_ = os.Remove(inputPath)

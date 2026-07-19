@@ -70,6 +70,84 @@ func TestPaperWorkflowServiceCreatePaperJobPersistsPaperAndJob(t *testing.T) {
 	}
 }
 
+func TestPaperWorkflowServiceUsesSelectedFormatTemplateFromCreationThroughOutput(t *testing.T) {
+	db := openPaperWorkflowServiceTestDB(t)
+	if err := db.Exec(`CREATE TABLE format_templates (
+		id text PRIMARY KEY, template_id text, name text, university_id integer,
+		document_type text, subject text, file_path text, source text, version text,
+		is_public integer, is_active integer, format_rules text,
+		parsed_from_paper_id text, parse_confidence real, usage_count integer,
+		success_rate real, golden_template_path text, description text,
+		created_at datetime, updated_at datetime
+	)`).Error; err != nil {
+		t.Fatalf("create format_templates table: %v", err)
+	}
+
+	templatePath := filepath.Join(t.TempDir(), "template.docx")
+	writeWorkflowTemplateDocxWithReferenceBreak(t, templatePath)
+	templateID := uuid.New()
+	formatRules := `{"headings":{"level1":{"font_name":"AdminFont","font_size_pt":18}}}`
+	if err := db.Exec(`INSERT INTO format_templates
+		(id, template_id, name, file_path, golden_template_path, version, is_active, is_public, format_rules)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, templateID, "school-template", "Admin template", templatePath, templatePath, "1.0", true, true, formatRules).Error; err != nil {
+		t.Fatalf("insert format template: %v", err)
+	}
+
+	inputPath := filepath.Join(t.TempDir(), "paper.docx")
+	writeMinimalWorkflowDocx(t, inputPath, "1 Introduction")
+	t.Setenv("CQRWST_TEMPLATE_TRANSPLANT_ENABLED", "false")
+	t.Setenv("DEEPSEEK_ENABLED", "false")
+	userID := uuid.New()
+	outputRoot := t.TempDir()
+	svc := NewPaperWorkflowServiceWithOutputRoot(db, outputRoot)
+	created, err := svc.CreatePaperJob(context.Background(), CreatePaperJobInput{
+		UserID:           userID,
+		FormatTemplateID: templateID,
+		Title:            "paper.docx",
+		FilePath:         inputPath,
+		FileName:         "paper.docx",
+		FileSize:         123,
+		FileType:         "docx",
+	})
+	if err != nil {
+		t.Fatalf("CreatePaperJob() error = %v", err)
+	}
+
+	var paper model.Paper
+	if err := db.First(&paper, "id = ?", created.PaperID).Error; err != nil {
+		t.Fatalf("load paper: %v", err)
+	}
+	if paper.SelectedTemplateID == nil || *paper.SelectedTemplateID != templateID {
+		t.Fatalf("SelectedTemplateID = %v, want %s", paper.SelectedTemplateID, templateID)
+	}
+	var compiled model.CompiledTemplate
+	if err := db.First(&compiled, "id = ?", created.CompiledTemplateID).Error; err != nil {
+		t.Fatalf("load compiled template: %v", err)
+	}
+	if compiled.SourceFilePath != templatePath {
+		t.Fatalf("SourceFilePath = %q, want %q", compiled.SourceFilePath, templatePath)
+	}
+	var profile templateprofile.Profile
+	if err := json.Unmarshal([]byte(compiled.StyleProfilesJSON), &profile); err != nil {
+		t.Fatalf("decode profile snapshot: %v", err)
+	}
+	if profile.Styles["heading_1"].FontEastAsia != "AdminFont" || profile.Styles["heading_1"].FontSizeHalfPt != "36" {
+		t.Fatalf("administrator override missing from profile: %#v", profile.Styles["heading_1"])
+	}
+
+	view, err := svc.RunJob(context.Background(), created.ID.String(), userID)
+	if err != nil {
+		t.Fatalf("RunJob() error = %v", err)
+	}
+	outputPath := view.DownloadPath
+	if outputPath == "" {
+		outputPath = filepath.Join(outputRoot, created.ID.String(), "final.docx")
+	}
+	if documentXML := readWorkflowDocumentXML(t, outputPath); !strings.Contains(documentXML, `w:eastAsia="AdminFont"`) || !strings.Contains(documentXML, `w:sz w:val="36"`) {
+		t.Fatalf("output did not use the persisted profile: %s", documentXML)
+	}
+}
+
 func TestPaperWorkflowServiceRunJobWithoutTemplateRequiresManualReview(t *testing.T) {
 	db := openPaperWorkflowServiceTestDB(t)
 	outputRoot := t.TempDir()
