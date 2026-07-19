@@ -100,6 +100,10 @@ install -m 0755 -o root -g root "$ARTIFACT_PATH" "$APP_PATH"
 if [ -f "${ARTIFACT_DIR}/config/casbin_model.conf" ]; then
   install -D -m 0644 -o root -g root "${ARTIFACT_DIR}/config/casbin_model.conf" "${DEPLOY_DIR}/config/casbin_model.conf"
 fi
+if [ -f "${ARTIFACT_DIR}/uploads/template.docx" ] && [ ! -f "${DEPLOY_DIR}/uploads/template.docx" ]; then
+  log "install default DOCX template -> ${DEPLOY_DIR}/uploads/template.docx"
+  install -D -m 0644 -o root -g root "${ARTIFACT_DIR}/uploads/template.docx" "${DEPLOY_DIR}/uploads/template.docx"
+fi
 
 log "start ${SERVICE_NAME}"
 if ! systemctl start "$SERVICE_NAME"; then

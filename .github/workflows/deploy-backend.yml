@@ -82,7 +82,9 @@ jobs:
           cp scripts/deploy_backend_systemd.sh output/deploy_backend_systemd.sh
           mkdir -p output/config
           cp config/casbin_model.conf output/config/casbin_model.conf
-          tar -cf - -C output paper-server deploy_backend_systemd.sh config/casbin_model.conf | gzip -9 > output/paper-backend-deploy.tar.gz
+          mkdir -p output/uploads
+          cp uploads/template.docx output/uploads/template.docx
+          tar -cf - -C output paper-server deploy_backend_systemd.sh config/casbin_model.conf uploads/template.docx | gzip -9 > output/paper-backend-deploy.tar.gz
           ls -lh output/paper-server
           ls -lh output/paper-backend-deploy.tar.gz
 
