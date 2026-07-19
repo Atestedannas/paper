@@ -687,6 +687,34 @@ func TestFixDOCXWithTemplateProfilePrefersTemplateChineseTotalFooterOverDashRule
 	}
 }
 
+func TestFixDOCXWithTemplateProfileUsesTemplateHeaderByDefaultAndFillsPlaceholders(t *testing.T) {
+	docxPath := writeCQRWSTDocxWithEntries(t,
+		`<w:p><w:r><w:t>本科毕业论文/设计</w:t></w:r></w:p>`+
+			`<w:p><w:r><w:t>专业</w:t></w:r></w:p><w:p><w:r><w:t>护理学</w:t></w:r></w:p>`+
+			`<w:p><w:r><w:t>班级</w:t></w:r></w:p><w:p><w:r><w:t>2022级护理学5班</w:t></w:r></w:p>`+
+			`<w:sectPr/>`,
+		map[string]string{
+			"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`,
+		},
+	)
+	profile := &templateprofile.Profile{
+		Version: templateprofile.Version,
+		Header: templateprofile.HeaderFooterRule{
+			Exists: true,
+			Text:   "重庆人文科技学院2026届XXX专业本科毕业论文/设计",
+		},
+	}
+
+	if _, err := FixDOCXWithTemplateProfile(context.Background(), docxPath, profile); err != nil {
+		t.Fatalf("FixDOCXWithTemplateProfile() error = %v", err)
+	}
+	headerXML := readCQRWSTEntry(t, docxPath, "word/header1.xml")
+	want := "重庆人文科技学院2026届护理学专业本科毕业论文"
+	if !strings.Contains(headerXML, want) || strings.Contains(headerXML, "XXX") || strings.Contains(headerXML, " 或 ") {
+		t.Fatalf("header should contain one materialized title %q:\n%s", want, headerXML)
+	}
+}
+
 func TestFixDOCXWithTemplateProfileAppliesHeadingNumberingDefinitionsAndCaptionPositions(t *testing.T) {
 	docxPath := writeCQRWSTDocxWithEntries(t,
 		`<w:p><w:r><w:t>1 Introduction</w:t></w:r></w:p>`+

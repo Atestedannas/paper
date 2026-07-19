@@ -74,6 +74,7 @@ func RunMigrations() error {
 		&Migration20260327FixCQRWSTFormatV4{},
 		// V5: 修复段落分类准确率（(n)长文本→body）+ 所有内容区域显式 bold:false
 		&Migration20260327FixCQRWSTFormatV5{},
+		&Migration20260719FixCQRWSTHeaderFooter{},
 		// 添加 golden_template_path 字段 + 为重庆人文科技学院设置黄金模板路径
 		&Migration20260327AddGoldenTemplatePath{},
 		// 将 golden_template_path 更新为真实模板文件（cqrwst_real.docx，414KB，格式学习效果最佳）

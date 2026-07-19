@@ -82,6 +82,25 @@ func TestExtractDetectsHighNumberedHeaderFooterParts(t *testing.T) {
 	}
 }
 
+func TestExtractChoosesFooterWithTotalPagesAcrossMultipleParts(t *testing.T) {
+	templatePath := filepath.Join(t.TempDir(), "template.docx")
+	writeDocxEntries(t, templatePath, map[string]string{
+		"[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+		"word/document.xml":   `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>body</w:t></w:r></w:p></w:body></w:document>`,
+		"word/footer1.xml":    `<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:t>2</w:t></w:r></w:p></w:ftr>`,
+		"word/footer2.xml":    `<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p/></w:ftr>`,
+		"word/footer3.xml":    `<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>第</w:t></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:t>0页 共12页</w:t></w:r></w:p></w:ftr>`,
+	})
+
+	profile, err := Extract(templatePath)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if profile.Footer.Text != "第0页 共12页" || !profile.Footer.HasPageField || !profile.Footer.HasNumPages {
+		t.Fatalf("footer = %#v, want the total-page footer", profile.Footer)
+	}
+}
+
 func TestBuildAttachesDeepSeekSummary(t *testing.T) {
 	templatePath := filepath.Join(t.TempDir(), "template.docx")
 	writeTemplateProfileDocx(t, templatePath)

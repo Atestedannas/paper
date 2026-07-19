@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
+
 	"gitee.com/greatmusicians/unioffice/document"
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
 )
@@ -604,6 +606,30 @@ func (p *TemplateParser) ParseTemplateToFormatRules(templatePath string) (map[st
 
 	// 页眉页脚内容提取
 	p.extractHeaderFooterRules(doc, sc, rules)
+	if profile, profileErr := templateprofile.Extract(templatePath); profileErr == nil {
+		if profile.Header.Exists && profile.Header.Text != "" {
+			headerRules, _ := rules["header"].(map[string]interface{})
+			if headerRules == nil {
+				headerRules = map[string]interface{}{}
+			}
+			headerRules["content"] = profile.Header.Text
+			rules["header"] = headerRules
+		}
+		if profile.Footer.Exists {
+			pageRules, _ := rules["page_number"].(map[string]interface{})
+			if pageRules == nil {
+				pageRules = map[string]interface{}{}
+			}
+			pageRules["content"] = profile.Footer.Text
+			pageRules["has_page_field"] = profile.Footer.HasPageField
+			pageRules["has_total_pages"] = profile.Footer.HasNumPages
+			if profile.Footer.HasPageField && profile.Footer.HasNumPages && hasTemplateTotalPageText(profile.Footer.Text) {
+				pageRules["content"] = "第×页 共×页"
+				pageRules["format"] = "第×页 共×页"
+			}
+			rules["page_number"] = pageRules
+		}
+	}
 
 	uniName := p.extractUniversityNameFromDoc(doc)
 	if uniName != "" {
@@ -903,6 +929,7 @@ func (p *TemplateParser) extractPageSetupRules(doc *document.Document) map[strin
 
 // extractHeaderFooterRules extracts header/footer text and formatting from the document.
 func (p *TemplateParser) extractHeaderFooterRules(doc *document.Document, sc *docxStyleCache, rules map[string]interface{}) {
+	bestHeaderScore := -1
 	for _, header := range doc.Headers() {
 		for _, hp := range header.Paragraphs() {
 			text := ""
@@ -926,12 +953,18 @@ func (p *TemplateParser) extractHeaderFooterRules(doc *document.Document, sc *do
 			if info.Alignment != "" {
 				headerRules["alignment"] = info.Alignment
 			}
-			rules["header"] = headerRules
-			break
+			score := len([]rune(text))
+			if strings.Contains(text, "大学") || strings.Contains(text, "学院") {
+				score += 100
+			}
+			if score > bestHeaderScore {
+				rules["header"] = headerRules
+				bestHeaderScore = score
+			}
 		}
-		break
 	}
 
+	bestFooterScore := -1
 	for _, footer := range doc.Footers() {
 		for _, fp := range footer.Paragraphs() {
 			text := ""
@@ -955,11 +988,25 @@ func (p *TemplateParser) extractHeaderFooterRules(doc *document.Document, sc *do
 			if info.Alignment != "" {
 				footerRules["alignment"] = info.Alignment
 			}
-			rules["page_number"] = footerRules
-			break
+			score := len([]rune(text))
+			if hasTemplateTotalPageText(text) {
+				footerRules["content"] = "第×页 共×页"
+				footerRules["format"] = "第×页 共×页"
+				footerRules["has_page_field"] = true
+				footerRules["has_total_pages"] = true
+				score += 200
+			}
+			if score > bestFooterScore {
+				rules["page_number"] = footerRules
+				bestFooterScore = score
+			}
 		}
-		break
 	}
+}
+
+func hasTemplateTotalPageText(text string) bool {
+	compact := strings.NewReplacer(" ", "", "\t", "", "\u00a0", "").Replace(text)
+	return strings.Contains(compact, "第") && strings.Contains(compact, "共") && strings.Count(compact, "页") >= 2
 }
 
 // extractUniversityNameFromDoc tries to find a university name from headers and first-page text.

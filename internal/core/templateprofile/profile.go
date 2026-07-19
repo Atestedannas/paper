@@ -732,6 +732,8 @@ func extractHeaderFooter(pkg *ooxmlpkg.DocxPackage, header bool) HeaderFooterRul
 	if header {
 		prefix = "word/header"
 	}
+	best := HeaderFooterRule{}
+	bestScore := -1
 	for _, name := range pkg.Names() {
 		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".xml") {
 			continue
@@ -741,11 +743,12 @@ func extractHeaderFooter(pkg *ooxmlpkg.DocxPackage, header bool) HeaderFooterRul
 			continue
 		}
 		raw := string(content)
+		text := extractText(raw)
 		rule := HeaderFooterRule{
 			Exists:        true,
-			Text:          extractText(raw),
+			Text:          text,
 			HasPageField:  strings.Contains(raw, " PAGE "),
-			HasNumPages:   strings.Contains(raw, " NUMPAGES "),
+			HasNumPages:   strings.Contains(raw, " NUMPAGES ") || hasChineseTotalPageText(text),
 			HasDoubleLine: strings.Contains(raw, `w:val="double"`),
 		}
 		if font := fontPattern.FindString(raw); font != "" {
@@ -754,9 +757,26 @@ func extractHeaderFooter(pkg *ooxmlpkg.DocxPackage, header bool) HeaderFooterRul
 		if size := sizePattern.FindString(raw); size != "" {
 			rule.FontSizeHalfPt = attrs(size)["w:val"]
 		}
-		return rule
+		score := len([]rune(rule.Text))
+		if rule.HasPageField {
+			score += 100
+		}
+		if rule.HasNumPages {
+			score += 200
+		}
+		if rule.HasDoubleLine {
+			score += 100
+		}
+		if score > bestScore {
+			best, bestScore = rule, score
+		}
 	}
-	return HeaderFooterRule{}
+	return best
+}
+
+func hasChineseTotalPageText(text string) bool {
+	compact := strings.NewReplacer(" ", "", "\t", "", "\u00a0", "").Replace(text)
+	return strings.Contains(compact, "第") && strings.Contains(compact, "共") && strings.Count(compact, "页") >= 2
 }
 
 func attrs(tag string) map[string]string {

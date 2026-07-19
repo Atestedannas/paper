@@ -180,6 +180,11 @@ func applyTemplateProfileHeaderFooterAndPageNumbering(path string, profile *temp
 	if profile == nil {
 		return 0, nil
 	}
+	pkg, err := ooxmlpkg.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	documentContent, _ := pkg.Get(documentTarget)
 	headerSpec := ooxmlpatch.HeaderFooterPolicySpec{}
 	if includeHeaderFooter {
 		headerSpec = ooxmlpatch.HeaderFooterPolicySpec{
@@ -190,10 +195,19 @@ func applyTemplateProfileHeaderFooterAndPageNumbering(path string, profile *temp
 			FontEastAsia: profile.Header.FontEastAsia,
 			FontSizeHalf: parseTemplateProfileTwips(profile.Header.FontSizeHalfPt),
 		}
+		if headerSpec.Policy == "" && profile.Header.Exists {
+			headerSpec.Policy = "template"
+		}
 		if headerSpec.Policy == "template" && profile.Header.Exists {
+			headerText := profile.Header.Text
+			if strings.Contains(headerText, "XXX") {
+				if paperHeader := extractHeaderTextFromDocumentXML(string(documentContent)); !strings.Contains(paperHeader, "XXX") {
+					headerText = paperHeader
+				}
+			}
 			headerSpec.Policy = "odd_even"
-			headerSpec.OddText = profile.Header.Text
-			headerSpec.EvenText = profile.Header.Text
+			headerSpec.OddText = headerText
+			headerSpec.EvenText = headerText
 		}
 	}
 	pageSpec := ooxmlpatch.PageNumberingPolicySpec{}
@@ -211,10 +225,6 @@ func applyTemplateProfileHeaderFooterAndPageNumbering(path string, profile *temp
 	}
 	if headerSpec.Policy == "" && pageSpec.Policy == "" && pageSpec.FrontFormat == "" && pageSpec.BodyFormat == "" && pageSpec.BodyWrapper == "" && pageSpec.BodyStart == 0 {
 		return 0, nil
-	}
-	pkg, err := ooxmlpkg.Open(path)
-	if err != nil {
-		return 0, err
 	}
 	count, err := ooxmlpatch.ApplyHeaderFooterAndPageNumbering(pkg, documentTarget, headerSpec, pageSpec)
 	if err != nil || count == 0 {

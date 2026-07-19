@@ -141,3 +141,25 @@ func (m *Migration20260327FixCQRWSTFormatV5) Up(tx *gorm.DB) error {
 func (m *Migration20260327FixCQRWSTFormatV5) Down(tx *gorm.DB) error {
 	return nil
 }
+
+// Migration20260719FixCQRWSTHeaderFooter refreshes existing rows with the
+// header and dynamic total-page format extracted from the 2026 school template.
+type Migration20260719FixCQRWSTHeaderFooter struct{}
+
+func (m *Migration20260719FixCQRWSTHeaderFooter) Name() string {
+	return "20260719_fix_cqrwst_header_footer"
+}
+
+func (m *Migration20260719FixCQRWSTHeaderFooter) Up(tx *gorm.DB) error {
+	return tx.Exec(`
+		UPDATE format_templates
+		SET format_rules = ?, version = '6.0'
+		WHERE university_id IN (
+			SELECT id FROM universities WHERE name = ?
+		)
+	`, buildCQRWSTFormatRulesJSON(), "重庆人文科技学院").Error
+}
+
+func (m *Migration20260719FixCQRWSTHeaderFooter) Down(tx *gorm.DB) error {
+	return nil
+}

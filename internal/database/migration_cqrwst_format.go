@@ -108,7 +108,7 @@ func buildCQRWSTFormatRulesJSON() string {
 		},
 
 		"header": map[string]interface{}{
-			"content":      "重庆人文科技学院本科毕业论文（设计）",
+			"content":      "重庆人文科技学院2026届XXX专业本科毕业论文/设计",
 			"font_name":    "宋体",
 			"font_size":    "小五",
 			"font_size_pt": float64(9),
@@ -500,9 +500,9 @@ func buildCQRWSTFormatRulesJSON() string {
 
 		// 打印规范
 		"printing": map[string]interface{}{
-			"cover":   "单独一页打印",
-			"duplex":  "摘要、目录、正文、注释、参考文献、致谢、附录页均分开双面打印",
-			"color":   "封面及彩色图片页需要彩打",
+			"cover":  "单独一页打印",
+			"duplex": "摘要、目录、正文、注释、参考文献、致谢、附录页均分开双面打印",
+			"color":  "封面及彩色图片页需要彩打",
 		},
 	}
 
