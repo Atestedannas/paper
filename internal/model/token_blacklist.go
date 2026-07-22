@@ -10,13 +10,14 @@ import (
 type TokenType string
 
 const (
-	TokenTypeAccess  TokenType = "access"
-	TokenTypeRefresh TokenType = "refresh"
+	TokenTypeAccess    TokenType = "access"
+	TokenTypeRefresh   TokenType = "refresh"
+	TokenTypeAccessAll TokenType = "access_all"
 )
 
 type TokenBlacklist struct {
 	ID        uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
-	Token     string    `gorm:"type:varchar(1000);uniqueIndex;not null" json:"token"`
+	Token     string    `gorm:"type:varchar(64);uniqueIndex;not null" json:"-"`
 	TokenType TokenType `gorm:"type:varchar(20);not null;index" json:"token_type"`
 	UserID    uuid.UUID `gorm:"type:uuid;not null;index" json:"user_id"`
 	ExpiresAt time.Time `gorm:"not null;index" json:"expires_at"`

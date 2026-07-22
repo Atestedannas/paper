@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"errors"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -156,11 +158,22 @@ func (s *RefreshTokenService) GetActiveRefreshTokens(userID uuid.UUID) ([]model.
 	return tokens, err
 }
 
-func (s *RefreshTokenService) StartCleanupTask(interval time.Duration) {
+func (s *RefreshTokenService) StartCleanupTask(ctx context.Context, interval time.Duration) {
+	if ctx == nil || interval <= 0 {
+		return
+	}
 	ticker := time.NewTicker(interval)
 	go func() {
-		for range ticker.C {
-			s.CleanupExpiredTokens()
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := s.CleanupExpiredTokens(); err != nil {
+					log.Printf("component=refresh_token_cleanup error=%q", err)
+				}
+			}
 		}
 	}()
 }

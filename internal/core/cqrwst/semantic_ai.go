@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 
@@ -52,7 +53,11 @@ func FixDOCXWithTemplateProfileAndSemanticAI(ctx context.Context, path string, p
 		return result, nil
 	}
 	count, err := applySemanticAIRepairs(path, client)
-	if err != nil || count == 0 {
+	if err != nil {
+		log.Printf("[semantic-ai] repair skipped: %v", err)
+		return result, nil
+	}
+	if count == 0 {
 		return result, nil
 	}
 	result.FixCount += count

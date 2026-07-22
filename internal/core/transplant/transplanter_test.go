@@ -774,6 +774,13 @@ func TestGenerateFillsCoverFieldsInsideDrawingTextBox(t *testing.T) {
 	}
 }
 
+func TestRenderPolicyDoesNotRewriteEnglishKeywords(t *testing.T) {
+	rendered := renderStyledPayloadWithPolicy("Keywords: pH; RNA-seq", false)
+	if !strings.Contains(rendered, "Keywords:") || !strings.Contains(rendered, " pH; RNA-seq") || strings.Contains(rendered, "pH,  RNA-seq") {
+		t.Fatalf("rendered content was rewritten: %s", rendered)
+	}
+}
+
 func TestGeneratePreservesComplexCrossReferenceFieldsAndUpdatesOnOpen(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
@@ -880,7 +887,7 @@ func TestGenerateRemovesWhiteShadingWithoutDroppingTemplateShading(t *testing.T)
 	}
 }
 
-func TestGenerateTitleCasesEnglishAbstractBody(t *testing.T) {
+func TestGeneratePreservesEnglishAbstractBodyCase(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
 	writeTestDocx(t, skeletonPath, map[string]string{
@@ -902,14 +909,32 @@ func TestGenerateTitleCasesEnglishAbstractBody(t *testing.T) {
 	}
 
 	document := readDocxEntry(t, outputPath, "word/document.xml")
-	if !strings.Contains(document, "Objective To Explore DNA And pH Effects In COVID-19 Patients.") {
-		t.Fatalf("english abstract body was not title-cased: %s", document)
+	if !strings.Contains(document, "objective to explore DNA and pH effects in COVID-19 patients.") {
+		t.Fatalf("english abstract body content was modified: %s", document)
 	}
-	if strings.Contains(document, "objective to explore") {
-		t.Fatalf("english abstract body still contains lowercase sentence: %s", document)
+	if !strings.Contains(document, "diabetes,  AI model") || strings.Contains(document, "Diabetes; AI Model") {
+		t.Fatalf("keywords paragraph should normalize separators without changing identifier case: %s", document)
 	}
-	if !strings.Contains(document, "Diabetes,  AI model") || strings.Contains(document, "Diabetes; AI Model") {
-		t.Fatalf("keywords paragraph should use comma-two-space separators and capitalize each keyword group: %s", document)
+}
+
+func TestRenderParagraphsUsesCompiledTemplateStyle(t *testing.T) {
+	profile := templatecompile.StyleProfile{
+		Name: "body",
+		Properties: templatecompile.StyleProperties{
+			EastAsiaFont:       "仿宋",
+			ASCIIFont:          "Arial",
+			FontSizeHalfPoints: 22,
+			Alignment:          "both",
+			LineTwips:          400,
+			LineRule:           "exact",
+			FirstLineChars:     200,
+		},
+	}
+	xml := renderParagraphs([]string{"Template-defined body."}, profile)
+	for _, want := range []string{`w:eastAsia="仿宋"`, `w:ascii="Arial"`, `w:sz w:val="22"`, `w:line="400"`, `w:lineRule="exact"`, `w:jc w:val="both"`} {
+		if !strings.Contains(xml, want) {
+			t.Fatalf("rendered body missing %s: %s", want, xml)
+		}
 	}
 }
 

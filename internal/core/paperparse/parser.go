@@ -66,6 +66,8 @@ const (
 )
 
 var headingPattern = regexp.MustCompile(`^(\d+(?:\.\d+)*)(?:\.)?[\s　]+(.+)$`)
+var chineseChapterHeadingPattern = regexp.MustCompile(`^第[一二三四五六七八九十百千万\d]+章\s*(.*)$`)
+var chineseListHeadingPattern = regexp.MustCompile(`^[一二三四五六七八九十百]+[、．.]\s*(.+)$`)
 var paragraphStylePattern = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
 var paragraphOutlinePattern = regexp.MustCompile(`<w:outlineLvl\b[^>]*\bw:val="(\d+)"`)
 var bodyElementPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
@@ -203,8 +205,11 @@ func headingStyleLevels(pkg *ooxmlpkg.DocxPackage) map[string]int {
 	}
 	styles := parseWordStyles(content)
 	levels := make(map[string]int, len(styles))
-	var resolve func(string, map[string]bool) int
-	resolve = func(id string, seen map[string]bool) int {
+	var resolve func(string, map[string]bool, int) int
+	resolve = func(id string, seen map[string]bool, depth int) int {
+		if depth > 64 {
+			return 0
+		}
 		if level := levels[id]; level > 0 {
 			return level
 		}
@@ -227,7 +232,7 @@ func headingStyleLevels(pkg *ooxmlpkg.DocxPackage) map[string]int {
 			level = headingLevelFromName(id)
 		}
 		if level == 0 && style.basedOn != "" {
-			level = resolve(style.basedOn, seen)
+			level = resolve(style.basedOn, seen, depth+1)
 		}
 		if level >= 1 && level <= 9 {
 			levels[id] = level
@@ -236,7 +241,7 @@ func headingStyleLevels(pkg *ooxmlpkg.DocxPackage) map[string]int {
 		return 0
 	}
 	for id := range styles {
-		resolve(id, map[string]bool{})
+		resolve(id, map[string]bool{}, 0)
 	}
 	return levels
 }
@@ -560,15 +565,12 @@ func extractCoverFieldsFromTables(ctx context.Context, content []byte) map[strin
 				inCell = false
 				inText = false
 			case "tr":
-				if len(row) >= 2 {
-					key := strings.TrimSpace(row[0])
-					value := strings.TrimSpace(row[1])
-					if key != "" && value != "" {
-						fields[key] = value
-						lastKey = key
-					} else if key == "" && value != "" && lastKey == "题目" {
-						fields["题目续行"] = value
-					}
+				values := nonEmptyCells(row)
+				if len(values) >= 2 {
+					fields[values[0]] = strings.Join(values[1:], " ")
+					lastKey = values[0]
+				} else if len(values) == 1 && lastKey == "题目" {
+					fields["题目续行"] = values[0]
 				}
 				inRow = false
 			}
@@ -579,6 +581,16 @@ func extractCoverFieldsFromTables(ctx context.Context, content []byte) map[strin
 		}
 	}
 	return fields
+}
+
+func nonEmptyCells(row []string) []string {
+	values := make([]string, 0, len(row))
+	for _, cell := range row {
+		if value := strings.TrimSpace(cell); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func parseKeywords(text string) []string {
@@ -618,21 +630,29 @@ func splitSectionMarker(text string, marker string) (string, bool) {
 	if strings.HasPrefix(remainder, ":") {
 		return strings.TrimSpace(strings.TrimPrefix(remainder, ":")), true
 	}
+	if strings.HasPrefix(remainder, "；") || strings.HasPrefix(remainder, ";") {
+		return strings.TrimSpace(strings.TrimLeft(remainder, "；;")), true
+	}
 
 	return "", false
 }
 
 func parseHeading(text string) (Heading, bool) {
 	matches := headingPattern.FindStringSubmatch(text)
-	if matches == nil {
-		return Heading{}, false
+	if matches != nil {
+		level := strings.Count(matches[1], ".") + 1
+		return Heading{Level: level, Text: strings.TrimSpace(matches[2])}, true
 	}
-
-	level := strings.Count(matches[1], ".") + 1
-	return Heading{
-		Level: level,
-		Text:  strings.TrimSpace(matches[2]),
-	}, true
+	for _, pattern := range []*regexp.Regexp{chineseChapterHeadingPattern, chineseListHeadingPattern} {
+		if matches := pattern.FindStringSubmatch(strings.TrimSpace(text)); len(matches) == 2 {
+			label := strings.TrimSpace(matches[1])
+			if label == "" {
+				label = strings.TrimSpace(text)
+			}
+			return Heading{Level: 1, Text: label}, true
+		}
+	}
+	return Heading{}, false
 }
 
 func parseCoverField(text string) (string, string, bool) {

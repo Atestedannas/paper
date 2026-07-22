@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -35,6 +37,9 @@ var (
 	templateProfileContinuousFigure  = regexp.MustCompile(`^\x{56fe}\d+(?:\s|\x{3000}|$)`)
 	templateProfileContinuousTable   = regexp.MustCompile(`^\x{8868}\d+(?:\s|\x{3000}|$)`)
 	templateProfileContinuousFormula = regexp.MustCompile(`^\x{5f0f}[\x{ff08}(]\d+[\x{ff09})]`)
+	templateProfileSubsectionFigure  = regexp.MustCompile(`^\x{56fe}\d+\.\d+\.\d+`)
+	templateProfileSubsectionTable   = regexp.MustCompile(`^\x{8868}\d+\.\d+\.\d+`)
+	templateProfileSubsectionFormula = regexp.MustCompile(`^\x{5f0f}[\x{ff08}(]\d+\.\d+\.\d+[\x{ff09})]`)
 	templateProfileDocElementPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
 	templateProfileAuthorYearRef     = regexp.MustCompile(`^[A-Z][A-Za-z-]+(?:\s+et\s+al\.)?\s*\(\d{4}[a-z]?\)`)
 )
@@ -82,17 +87,50 @@ func FixDOCXWithTemplateProfile(ctx context.Context, path string, profile *templ
 	if profile == nil {
 		return FixDOCX(ctx, path)
 	}
+	return fixDOCXWithTemplateProfileProcessors(ctx, path, profile, templateProfileProcessors())
+}
+
+func fixDOCXWithTemplateProfileProcessors(ctx context.Context, path string, profile *templateprofile.Profile, processors []TemplateProfileProcessor) (Result, error) {
 	result := Result{}
+	original, err := os.ReadFile(path)
+	if err != nil {
+		return result, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return result, err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".cqrwst-*.docx")
+	if err != nil {
+		return result, err
+	}
+	workPath := temp.Name()
+	defer os.Remove(workPath)
+	if _, err := temp.Write(original); err != nil {
+		temp.Close()
+		return result, err
+	}
+	if err := temp.Close(); err != nil {
+		return result, err
+	}
 	applied := 0
-	for _, processor := range templateProfileProcessors() {
+	for _, processor := range processors {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		count, err := processor.Apply(ctx, path, profile)
+		count, err := processor.Apply(ctx, workPath, profile)
 		if err != nil {
 			return result, err
 		}
 		applied += count
+	}
+	updated, err := os.ReadFile(workPath)
+	if err != nil {
+		return result, err
+	}
+	if err := os.WriteFile(path, updated, info.Mode()); err != nil {
+		_ = os.WriteFile(path, original, info.Mode())
+		return result, err
 	}
 	if applied > 0 {
 		result.FixCount += applied
@@ -599,6 +637,15 @@ func countContinuousOrChapterNumberingViolations(paragraphs []string, rules temp
 			violations++
 		}
 		if rules.FormulaNumbering == "continuous" && templateProfileAnyFormula.MatchString(trimmed) && !templateProfileContinuousFormula.MatchString(trimmed) {
+			violations++
+		}
+		if rules.FigureNumbering == "subsection" && templateProfileAnyFigure.MatchString(trimmed) && !templateProfileSubsectionFigure.MatchString(trimmed) {
+			violations++
+		}
+		if rules.TableNumbering == "subsection" && templateProfileAnyTable.MatchString(trimmed) && !templateProfileSubsectionTable.MatchString(trimmed) {
+			violations++
+		}
+		if rules.FormulaNumbering == "subsection" && templateProfileAnyFormula.MatchString(trimmed) && !templateProfileSubsectionFormula.MatchString(trimmed) {
 			violations++
 		}
 	}
@@ -1303,8 +1350,20 @@ func applyTemplateProfileStylesToDocumentXML(documentXML string, profile *templa
 	}
 	count := 0
 	currentSection := ""
+	referenceMisses := 0
 	updated := paragraphPattern.ReplaceAllStringFunc(documentXML, func(paragraph string) string {
 		text := strings.TrimSpace(extractParagraphText(paragraph))
+		if text == "" {
+			return paragraph
+		}
+		if currentSection == "references" && !referenceEntryPattern.MatchString(text) && !isReferenceTitleText(text) {
+			referenceMisses++
+			if referenceMisses > 2 {
+				currentSection = ""
+			}
+		} else {
+			referenceMisses = 0
+		}
 		key := templateProfileStyleKey(text, &currentSection)
 		if key == "" {
 			return paragraph
@@ -1649,6 +1708,12 @@ func templateProfileStyleKey(text string, section *string) string {
 			return preferStyleKey("body_start", "heading_1")
 		}
 		return "heading_1"
+	case templateProfileChineseHeading.MatchString(trimmed):
+		*section = "body"
+		if isChineseBodyStartParagraph(trimmed) {
+			return preferStyleKey("body_start", "heading_1")
+		}
+		return "heading_1"
 	case referenceEntryPattern.MatchString(trimmed):
 		return "references"
 	case *section == "references":
@@ -1664,6 +1729,11 @@ func templateProfileStyleKey(text string, section *string) string {
 	default:
 		return ""
 	}
+}
+
+func isChineseBodyStartParagraph(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "\u7b2c\u4e00\u7ae0") || strings.HasPrefix(trimmed, "\u7b2c1\u7ae0")
 }
 
 func preferStyleKey(primary string, fallback string) string {
@@ -1689,6 +1759,7 @@ func paragraphStyleFromTemplateProfile(rule templateprofile.StyleRule) (paragrap
 		bold:         rule.Bold,
 		alignment:    strings.TrimSpace(rule.Alignment),
 		line:         strings.TrimSpace(rule.Line),
+		lineRule:     strings.TrimSpace(rule.LineRule),
 	}
 	if style.asciiFont == "" && style.eastAsiaFont != "" {
 		style.asciiFont = style.eastAsiaFont
@@ -1699,12 +1770,18 @@ func paragraphStyleFromTemplateProfile(rule templateprofile.StyleRule) (paragrap
 	if value, ok := parseTemplateProfileInt(rule.AfterLines); ok {
 		style.afterLines = intPtr(value)
 	}
+	if value, ok := parseTemplateProfileInt(rule.BeforeTwips); ok {
+		style.beforeTwips = intPtr(value)
+	}
+	if value, ok := parseTemplateProfileInt(rule.AfterTwips); ok {
+		style.afterTwips = intPtr(value)
+	}
 	if value, ok := parseTemplateProfileInt(rule.FirstLineChars); ok {
 		style.firstLineChars = intPtr(value)
 	}
 	ok := style.eastAsiaFont != "" || style.asciiFont != "" || style.fontSize != "" ||
-		style.alignment != "" || style.line != "" || style.beforeLines != nil ||
-		style.afterLines != nil || style.firstLineChars != nil || style.bold
+		style.alignment != "" || style.line != "" || style.beforeTwips != nil || style.afterTwips != nil ||
+		style.beforeLines != nil || style.afterLines != nil || style.firstLineChars != nil || style.bold
 	return style, ok
 }
 

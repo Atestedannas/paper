@@ -2,11 +2,68 @@ package cqrwst
 
 import (
 	"context"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
+
+type testTemplateProfileProcessor struct {
+	apply func(string) error
+}
+
+func (processor testTemplateProfileProcessor) Apply(_ context.Context, path string, _ *templateprofile.Profile) (int, error) {
+	if processor.apply == nil {
+		return 0, nil
+	}
+	return 1, processor.apply(path)
+}
+
+func (testTemplateProfileProcessor) Check(context.Context, string, string, *templateprofile.Profile) (int, error) {
+	return 0, nil
+}
+
+func TestFixDOCXWithTemplateProfileRollsBackProcessorFailure(t *testing.T) {
+	docxPath := writeCQRWSTDocx(t, `<w:p><w:r><w:t>original</w:t></w:r></w:p>`)
+	original, err := os.ReadFile(docxPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processors := []TemplateProfileProcessor{
+		testTemplateProfileProcessor{apply: func(path string) error { return os.WriteFile(path, []byte("partial"), 0o600) }},
+		testTemplateProfileProcessor{apply: func(string) error { return errors.New("processor failed") }},
+	}
+
+	if _, err := fixDOCXWithTemplateProfileProcessors(context.Background(), docxPath, &templateprofile.Profile{}, processors); err == nil {
+		t.Fatal("expected processor failure")
+	}
+	got, err := os.ReadFile(docxPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatal("processor failure changed original document")
+	}
+}
+
+func TestTemplateProfileReferenceStateExpires(t *testing.T) {
+	documentXML := `<w:document><w:body>` +
+		`<w:p><w:r><w:t>参考文献</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>continuation one</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>continuation two</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>ordinary paragraph</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+		"references": {FontEastAsia: "SimSun", FontSizeHalfPt: "21"},
+	}}
+
+	updated, _ := applyTemplateProfileStylesToDocumentXML(documentXML, profile)
+	if strings.Contains(paragraphContaining(updated, "ordinary paragraph"), "SimSun") {
+		t.Fatal("references state leaked beyond continuation limit")
+	}
+}
 
 func TestFixDOCXWithTemplateProfileAppliesProfilePageBreaks(t *testing.T) {
 	docxPath := writeCQRWSTDocx(t,
@@ -66,6 +123,9 @@ func TestFixDOCXWithTemplateProfileAppliesProfileStyles(t *testing.T) {
 				FontSizeHalfPt: "26",
 				Alignment:      "both",
 				Line:           "420",
+				LineRule:       "exact",
+				BeforeTwips:    "240",
+				AfterTwips:     "120",
 				FirstLineChars: "200",
 			},
 			"references": {
@@ -104,6 +164,9 @@ func TestFixDOCXWithTemplateProfileAppliesProfileStyles(t *testing.T) {
 		`w:sz w:val="26"`,
 		`w:firstLineChars="200"`,
 		`w:line="420"`,
+		`w:lineRule="exact"`,
+		`w:before="240"`,
+		`w:after="120"`,
 	})
 	assertParagraphHas(t, documentXML, "[1] Zhang San", []string{
 		`w:sz w:val="21"`,
@@ -551,6 +614,25 @@ func TestCheckDOCXWithTemplateProfileValidatesCaptionNumberingAndPosition(t *tes
 	}
 	if result.Passed {
 		t.Fatalf("caption numbering and position violations should fail: %#v", result)
+	}
+}
+
+func TestCheckDOCXWithTemplateProfileValidatesSubsectionCaptionNumbering(t *testing.T) {
+	docxPath := writeCQRWSTDocx(t,
+		`<w:p><w:r><w:t>图1.1 错误图题</w:t></w:r></w:p>`+
+			`<w:p><w:r><w:t>表1.1.1 正确表题</w:t></w:r></w:p>`,
+	)
+	profile := &templateprofile.Profile{
+		Version:  templateprofile.Version,
+		RulePack: templateprofile.RulePack{FigureNumbering: "subsection", TableNumbering: "subsection"},
+	}
+
+	result, err := CheckDOCXWithTemplateProfile(context.Background(), docxPath, profile)
+	if err != nil {
+		t.Fatalf("CheckDOCXWithTemplateProfile() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatal("subsection figure numbering violation should fail")
 	}
 }
 

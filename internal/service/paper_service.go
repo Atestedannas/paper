@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -16,10 +17,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/config"
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/pkg/aiclassifier"
-	"github.com/paper-format-checker/backend/pkg/docconvert"
 	"github.com/paper-format-checker/backend/pkg/fileprocessor"
 	"github.com/paper-format-checker/backend/pkg/formatchecker"
 	"github.com/paper-format-checker/backend/pkg/templatefiller"
@@ -190,20 +191,19 @@ func (s PaperService) CheckPaperFormat(userID, paperID, templateID uuid.UUID) (*
 	}
 
 	result := &model.CheckResult{
-		ID:               uuid.New(),
-		PaperID:          paperID,
-		UserID:           resultUserID,
-		TemplateID:       templateID,
-		FormatTemplateID: templateID, // 鍚屾椂璧嬪€间互婊¤冻鏁版嵁搴撶害鏉?
-		Status:           "completed",
-		TotalIssues:      checkResult.TotalIssues,
-		ErrorCount:       checkResult.ErrorCount,
-		WarningCount:     checkResult.WarningCount,
-		InfoCount:        checkResult.InfoCount,
-		Issues:           string(issuesJSON),
-		Differences:      "[]", // 鍒濆鍖栦负绌?JSON 鏁扮粍锛岄伩鍏?PostgreSQL 鎶ラ敊
-		CreatedAt:        time.Now(),
-		UpdatedAt:        time.Now(),
+		ID:           uuid.New(),
+		PaperID:      paperID,
+		UserID:       resultUserID,
+		TemplateID:   templateID,
+		Status:       "completed",
+		TotalIssues:  checkResult.TotalIssues,
+		ErrorCount:   checkResult.ErrorCount,
+		WarningCount: checkResult.WarningCount,
+		InfoCount:    checkResult.InfoCount,
+		Issues:       string(issuesJSON),
+		Differences:  "[]", // 鍒濆鍖栦负绌?JSON 鏁扮粍锛岄伩鍏?PostgreSQL 鎶ラ敊
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 
 	if err := database.DB.Create(result).Error; err != nil {
@@ -839,16 +839,11 @@ func (s PaperService) UploadPaper(userID uuid.UUID, title, description string, f
 		return nil, fmt.Errorf("failed to save file: %w", err)
 	}
 
-	// .doc → .docx (LibreOffice soffice, or Microsoft Word COM on Windows)
-	if fileType == "doc" {
-		docxPath, err := docconvert.ConvertDocToDocx(filePath, true)
-		if err != nil {
-			os.Remove(filePath)
-			return nil, fmt.Errorf("failed to convert .doc to .docx: %w", err)
+	if fileType == "docx" {
+		if err := ooxmlpkg.Validate(filePath); err != nil {
+			_ = os.Remove(filePath)
+			return nil, fmt.Errorf("unsafe or invalid DOCX: %w", err)
 		}
-		filePath = docxPath
-		fileType = "docx"
-		log.Printf("[UploadPaper] Converted .doc to .docx: %s", docxPath)
 	}
 
 	var selectedTemplateID *uuid.UUID
@@ -874,6 +869,7 @@ func (s PaperService) UploadPaper(userID uuid.UUID, title, description string, f
 
 	// 淇濆瓨鍒版暟鎹簱
 	if err := database.DB.Create(paper).Error; err != nil {
+		_ = os.Remove(filePath)
 		return nil, fmt.Errorf("failed to save paper to database: %w", err)
 	}
 
@@ -912,14 +908,30 @@ func (s PaperService) DeletePaper(userID, paperID uuid.UUID) error {
 		query = query.Where("user_id = ?", userID)
 	}
 
-	result := query.Delete(&model.Paper{})
+	var paper model.Paper
+	if err := query.First(&paper).Error; err != nil {
+		return err
+	}
+	result := database.DB.Delete(&paper)
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
 		return gorm.ErrRecordNotFound
 	}
-	return nil
+	var cleanupErrors []error
+	seen := make(map[string]bool)
+	for _, path := range []string{paper.FilePath, paper.CorrectedFilePath} {
+		path = filepath.Clean(strings.TrimSpace(path))
+		if path == "." || seen[path] {
+			continue
+		}
+		seen[path] = true
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove paper file %s: %w", path, err))
+		}
+	}
+	return errors.Join(cleanupErrors...)
 }
 
 // GetPaperCheckResults 鑾峰彇璁烘枃鐨勬鏌ョ粨鏋滃垪琛?
@@ -965,7 +977,9 @@ func (s PaperService) ResolveCorrectedPaperFile(userID, paperID uuid.UUID) (stri
 	for _, candidate := range candidates {
 		if _, err := os.Stat(filepath.Clean(candidate)); err == nil {
 			paper.CorrectedFilePath = candidate
-			_ = database.DB.Save(paper).Error
+			if err := database.DB.Save(paper).Error; err != nil {
+				return "", fmt.Errorf("save corrected paper path: %w", err)
+			}
 			return candidate, nil
 		}
 	}
@@ -986,7 +1000,9 @@ func (s PaperService) ResolveCorrectedPaperFile(userID, paperID uuid.UUID) (stri
 	}
 	if latestPath != "" {
 		paper.CorrectedFilePath = latestPath
-		_ = database.DB.Save(paper).Error
+		if err := database.DB.Save(paper).Error; err != nil {
+			return "", fmt.Errorf("save corrected paper path: %w", err)
+		}
 		return latestPath, nil
 	}
 
@@ -1017,7 +1033,9 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 	standardPath := filepath.Join(dir, baseNoExt+"_corrected"+ext)
 	if _, err := os.Stat(filepath.Clean(standardPath)); err == nil {
 		paper.CorrectedFilePath = standardPath
-		_ = database.DB.Save(paper).Error
+		if err := database.DB.Save(paper).Error; err != nil {
+			return "", fmt.Errorf("save corrected paper path: %w", err)
+		}
 		return standardPath, nil
 	}
 
@@ -1025,7 +1043,9 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 	v2Path := filepath.Join(dir, "corrected", baseNoExt+"_v2_corrected"+ext)
 	if _, err := os.Stat(filepath.Clean(v2Path)); err == nil {
 		paper.CorrectedFilePath = v2Path
-		_ = database.DB.Save(paper).Error
+		if err := database.DB.Save(paper).Error; err != nil {
+			return "", fmt.Errorf("save corrected paper path: %w", err)
+		}
 		return v2Path, nil
 	}
 
@@ -1046,7 +1066,9 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 		}
 		if latestPath != "" {
 			paper.CorrectedFilePath = latestPath
-			_ = database.DB.Save(paper).Error
+			if err := database.DB.Save(paper).Error; err != nil {
+				return "", fmt.Errorf("save corrected paper path: %w", err)
+			}
 			return latestPath, nil
 		}
 	}
@@ -1088,7 +1110,9 @@ func (s PaperService) ExportCorrectedPaper(userID, paperID uuid.UUID) (string, e
 					}
 					paper.CorrectedFilePath = newFilePath
 					paper.Status = "corrected"
-					_ = database.DB.Save(paper).Error
+					if err := database.DB.Save(paper).Error; err != nil {
+						return "", fmt.Errorf("save corrected paper status: %w", err)
+					}
 					log.Printf("鉁?Python鏈嶅姟鏍煎紡淇鎴愬姛: %s", newFilePath)
 					return newFilePath, nil
 				} else {

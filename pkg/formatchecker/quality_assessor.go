@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"regexp"
 	"strconv"
@@ -262,7 +263,7 @@ func (qa *QualityAssessor) SetDebug(debug bool) {
 // AssessDocument 评估文档质量
 func (qa *QualityAssessor) AssessDocument(ctx context.Context, docPath string) (*QualityReport, error) {
 	if qa.debug {
-		fmt.Printf("开始评估文档质量: %s\n", docPath)
+		log.Printf("component=quality_assessor stage=start")
 	}
 
 	// 打开文档
@@ -339,7 +340,7 @@ func (qa *QualityAssessor) AssessDocument(ctx context.Context, docPath string) (
 	}
 
 	if qa.debug {
-		fmt.Printf("质量评估完成，总体分数: %.2f (%s)\n", overallScore, level)
+		log.Printf("component=quality_assessor stage=complete score=%.2f level=%q", overallScore, level)
 	}
 
 	return report, nil

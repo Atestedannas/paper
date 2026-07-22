@@ -37,8 +37,20 @@ func TestBuildCreatesDeterministicRepairContract(t *testing.T) {
 	if contract.Stats["ast_nodes"] != 2 || contract.Stats["template_sections"] != 1 {
 		t.Fatalf("stats not populated: %#v", contract.Stats)
 	}
+	if len(contract.Targets) != 2 || contract.Targets[0].NodeID != "n_000001" {
+		t.Fatalf("paragraph targets not populated: %#v", contract.Targets)
+	}
 	if issues := Validate(contract); len(issues) != 0 {
 		t.Fatalf("Validate() issues = %#v, want none", issues)
+	}
+}
+
+func TestValidateVisibleContentPreservedRejectsRewriteButIgnoresTOCFields(t *testing.T) {
+	before := paperast.Snapshot{Nodes: []paperast.Node{{Text: "目录条目0", SectionID: "toc"}, {Text: "正文原文", SectionID: "body"}}}
+	after := paperast.Snapshot{Nodes: []paperast.Node{{Text: "目录条目12", SectionID: "toc"}, {Text: "正文被改", SectionID: "body"}}}
+	issues := ValidateVisibleContentPreserved(before, after)
+	if len(issues) != 1 || issues[0].Kind != "visible_content_rewrite" {
+		t.Fatalf("issues = %#v", issues)
 	}
 }
 

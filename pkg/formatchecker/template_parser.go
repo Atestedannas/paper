@@ -1,9 +1,11 @@
 package formatchecker
 
 import (
+	"archive/zip"
 	"fmt"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
@@ -130,34 +132,46 @@ func uint64TwipsToCm(twips uint64) float64 {
 // resolveRunFontForTemplate extracts font name from a run, falling back to
 // style cache. Checks EastAsia → HAnsi → Ascii.
 func resolveRunFontForTemplate(run document.Run, para document.Paragraph, sc *docxStyleCache) string {
+	eastAsia, latin := resolveRunFontsForTemplate(run, para, sc)
+	if eastAsia != "" {
+		return eastAsia
+	}
+	return latin
+}
+
+func resolveRunFontsForTemplate(run document.Run, para document.Paragraph, sc *docxStyleCache) (string, string) {
+	var eastAsia, latin string
 	rPr := run.Properties().X()
 	if rPr != nil && rPr.RFonts != nil {
 		if rPr.RFonts.EastAsiaAttr != nil && *rPr.RFonts.EastAsiaAttr != "" {
-			return *rPr.RFonts.EastAsiaAttr
+			eastAsia = *rPr.RFonts.EastAsiaAttr
 		}
 		if rPr.RFonts.HAnsiAttr != nil && *rPr.RFonts.HAnsiAttr != "" {
-			return *rPr.RFonts.HAnsiAttr
+			latin = *rPr.RFonts.HAnsiAttr
 		}
-		if rPr.RFonts.AsciiAttr != nil && *rPr.RFonts.AsciiAttr != "" {
-			return *rPr.RFonts.AsciiAttr
+		if latin == "" && rPr.RFonts.AsciiAttr != nil && *rPr.RFonts.AsciiAttr != "" {
+			latin = *rPr.RFonts.AsciiAttr
 		}
 	}
 	if sc != nil {
 		styleID := getParagraphStyleID(para)
 		if styleID != "" {
 			props := sc.resolve(styleID)
-			if props.EastAsiaFont != "" {
-				return props.EastAsiaFont
+			if eastAsia == "" {
+				eastAsia = props.EastAsiaFont
 			}
-			if props.AsciiFont != "" {
-				return props.AsciiFont
+			if latin == "" {
+				latin = props.AsciiFont
 			}
 		}
-		if sc.defaults.EastAsiaFont != "" {
-			return sc.defaults.EastAsiaFont
+		if eastAsia == "" {
+			eastAsia = sc.defaults.EastAsiaFont
+		}
+		if latin == "" {
+			latin = sc.defaults.AsciiFont
 		}
 	}
-	return ""
+	return eastAsia, latin
 }
 
 // resolveRunSizeForTemplate extracts font size in points from a run,
@@ -272,6 +286,21 @@ func extractLineSpacingDisplay(para document.Paragraph) string {
 	return fmt.Sprintf("固定值%.1f磅", val)
 }
 
+func extractLineRule(para document.Paragraph) string {
+	pPr := para.X().PPr
+	if pPr == nil || pPr.Spacing == nil || pPr.Spacing.LineAttr == nil {
+		return ""
+	}
+	switch pPr.Spacing.LineRuleAttr {
+	case wml.ST_LineSpacingRuleExact:
+		return "exact"
+	case wml.ST_LineSpacingRuleAtLeast:
+		return "atLeast"
+	default:
+		return "auto"
+	}
+}
+
 // ── 改进的标题样式提取 ──────────────────────────────────────────────────
 
 func (p *TemplateParser) parseHeadingStylesImproved(doc *document.Document, standard *FormatStandard, sc *docxStyleCache) {
@@ -330,6 +359,22 @@ func (p *TemplateParser) parseHeadingStylesImproved(doc *document.Document, stan
 // classifyHeadingLevel returns 1/2/3 for heading paragraphs, 0 otherwise.
 func classifyHeadingLevel(styleName, text string) int {
 	sn := strings.ToLower(strings.TrimSpace(styleName))
+	for level := 1; level <= 5; level++ {
+		if sn == fmt.Sprintf("heading%d", level) || sn == fmt.Sprintf("heading %d", level) ||
+			sn == fmt.Sprintf("\u6807\u9898 %d", level) || sn == strconv.Itoa(level) {
+			return level
+		}
+	}
+	trimmed := strings.TrimSpace(text)
+	if matched, _ := regexp.MatchString("^\u7b2c[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\u96f6\u3007\\d]+\u7ae0(?:\\s|$)", trimmed); matched {
+		return 1
+	}
+	for level := 5; level >= 2; level-- {
+		pattern := fmt.Sprintf(`^\d+(?:[.\uff0e]\d+){%d}\s+`, level-1)
+		if matched, _ := regexp.MatchString(pattern, trimmed); matched {
+			return level
+		}
+	}
 
 	if sn == "heading1" || sn == "heading 1" || sn == "标题 1" || sn == "1" {
 		return 1
@@ -494,7 +539,7 @@ func (p *TemplateParser) ParseTemplateToFormatRules(templatePath string) (map[st
 
 	// 各级标题
 	headingsMap := make(map[string]interface{})
-	for level := 1; level <= 4; level++ {
+	for level := 1; level <= 5; level++ {
 		key := fmt.Sprintf("heading%d", level)
 		if h := classified[key]; len(h) > 0 {
 			headingsMap[fmt.Sprintf("level%d", level)] = p.paraInfoToRuleMap(h[0])
@@ -532,14 +577,18 @@ func (p *TemplateParser) ParseTemplateToFormatRules(templatePath string) (map[st
 
 	// 关键词
 	if info := classified["keywords"]; len(info) > 0 {
-		rules["keywords"] = map[string]interface{}{
-			"label": p.paraInfoToRuleMap(info[0]),
+		keywordRules := map[string]interface{}{"label": p.paraInfoToRuleMap(info[0])}
+		if content := classified["keywords_content"]; len(content) > 0 {
+			keywordRules["content"] = p.paraInfoToRuleMap(content[0])
 		}
+		rules["keywords"] = keywordRules
 	}
 	if info := classified["en_keywords"]; len(info) > 0 {
-		rules["english_keywords"] = map[string]interface{}{
-			"label": p.paraInfoToRuleMap(info[0]),
+		keywordRules := map[string]interface{}{"label": p.paraInfoToRuleMap(info[0])}
+		if content := classified["en_keywords_content"]; len(content) > 0 {
+			keywordRules["content"] = p.paraInfoToRuleMap(content[0])
 		}
+		rules["english_keywords"] = keywordRules
 	}
 
 	// 正文
@@ -550,7 +599,7 @@ func (p *TemplateParser) ParseTemplateToFormatRules(templatePath string) (map[st
 	// 参考文献
 	refRules := map[string]interface{}{}
 	if info := classified["reference_title"]; len(info) > 0 {
-		refRules["label"] = p.paraInfoToRuleMap(info[0])
+		refRules["title"] = p.paraInfoToRuleMap(info[0])
 	}
 	if info := classified["references"]; len(info) > 0 {
 		refRules["content"] = p.paraInfoToRuleMap(info[0])
@@ -561,16 +610,20 @@ func (p *TemplateParser) ParseTemplateToFormatRules(templatePath string) (map[st
 
 	// 致谢
 	if info := classified["acknowledgements_title"]; len(info) > 0 {
-		rules["acknowledgements"] = map[string]interface{}{
-			"label": p.paraInfoToRuleMap(info[0]),
+		ackRules := map[string]interface{}{"title": p.paraInfoToRuleMap(info[0])}
+		if content := classified["acknowledgements"]; len(content) > 0 {
+			ackRules["content"] = p.paraInfoToRuleMap(content[0])
 		}
+		rules["acknowledgements"] = ackRules
 	}
 
 	// 附录
 	if info := classified["appendix_title"]; len(info) > 0 {
-		rules["appendix"] = map[string]interface{}{
-			"label": p.paraInfoToRuleMap(info[0]),
+		appendixRules := map[string]interface{}{"title": p.paraInfoToRuleMap(info[0])}
+		if content := classified["appendix"]; len(content) > 0 {
+			appendixRules["content"] = p.paraInfoToRuleMap(content[0])
 		}
+		rules["appendix"] = appendixRules
 	}
 
 	// 注释
@@ -585,8 +638,15 @@ func (p *TemplateParser) ParseTemplateToFormatRules(templatePath string) (map[st
 	if info := classified["toc_title"]; len(info) > 0 {
 		tocRules["title"] = p.paraInfoToRuleMap(info[0])
 	}
+	for level := 1; level <= 4; level++ {
+		if info := classified[fmt.Sprintf("toc%d", level)]; len(info) > 0 {
+			tocRules[fmt.Sprintf("level%d", level)] = p.paraInfoToRuleMap(info[0])
+		}
+	}
 	if info := classified["table_of_contents"]; len(info) > 0 {
 		tocRules["content"] = p.paraInfoToRuleMap(info[0])
+	} else if level1, ok := tocRules["level1"]; ok {
+		tocRules["content"] = level1
 	}
 	if len(tocRules) > 0 {
 		rules["table_of_contents"] = tocRules
@@ -594,14 +654,30 @@ func (p *TemplateParser) ParseTemplateToFormatRules(templatePath string) (map[st
 
 	// 图表标题
 	if info := classified["figure_caption"]; len(info) > 0 {
-		rules["figure"] = map[string]interface{}{
+		figureRules := map[string]interface{}{
 			"caption": p.paraInfoToRuleMap(info[0]),
 		}
+		rules["figure"] = figureRules
+		rules["figures"] = figureRules
 	}
 	if info := classified["table_caption"]; len(info) > 0 {
-		rules["table"] = map[string]interface{}{
+		tableRules := map[string]interface{}{
 			"caption": p.paraInfoToRuleMap(info[0]),
 		}
+		if note := classified["table_note"]; len(note) > 0 {
+			tableRules["note"] = p.paraInfoToRuleMap(note[0])
+		}
+		rules["table"] = tableRules
+		rules["tables"] = tableRules
+	}
+	if note := classified["table_note"]; len(note) > 0 {
+		tableRules, _ := rules["table"].(map[string]interface{})
+		if tableRules == nil {
+			tableRules = map[string]interface{}{}
+		}
+		tableRules["note"] = p.paraInfoToRuleMap(note[0])
+		rules["table"] = tableRules
+		rules["tables"] = tableRules
 	}
 
 	// 页眉页脚内容提取
@@ -631,6 +707,8 @@ func (p *TemplateParser) ParseTemplateToFormatRules(templatePath string) (map[st
 		}
 	}
 
+	p.extractPackageStructuralRules(templatePath, sc, rules)
+
 	uniName := p.extractUniversityNameFromDoc(doc)
 	if uniName != "" {
 		rules["_university_name"] = uniName
@@ -641,12 +719,19 @@ func (p *TemplateParser) ParseTemplateToFormatRules(templatePath string) (map[st
 
 // paraInfo holds extracted formatting for a classified paragraph.
 type paraInfo struct {
-	FontName  string
-	FontSize  float64
-	Bold      bool
-	Alignment string
-	LineSpace string
-	Indent    float64
+	FontName      string
+	LatinFont     string
+	FontSize      float64
+	Bold          bool
+	HasTextStyle  bool
+	Alignment     string
+	LineSpace     string
+	LineRule      string
+	Indent        float64
+	HangingIndent string
+	SpaceBeforePt float64
+	SpaceAfterPt  float64
+	Color         string
 }
 
 func (p *TemplateParser) paraInfoToRuleMap(info paraInfo) map[string]interface{} {
@@ -654,12 +739,15 @@ func (p *TemplateParser) paraInfoToRuleMap(info paraInfo) map[string]interface{}
 	if info.FontName != "" {
 		m["font_name"] = info.FontName
 	}
+	if info.LatinFont != "" {
+		m["font_name_latin"] = info.LatinFont
+	}
 	if info.FontSize > 0 {
 		m["font_size"] = fontPointsToChineseName(info.FontSize)
 		m["font_size_pt"] = info.FontSize
 	}
-	if info.Bold {
-		m["bold"] = true
+	if info.HasTextStyle {
+		m["bold"] = info.Bold
 	}
 	if info.Alignment != "" {
 		m["alignment"] = info.Alignment
@@ -667,8 +755,23 @@ func (p *TemplateParser) paraInfoToRuleMap(info paraInfo) map[string]interface{}
 	if info.LineSpace != "" {
 		m["line_space"] = info.LineSpace
 	}
+	if info.LineRule != "" {
+		m["line_rule"] = info.LineRule
+	}
 	if info.Indent > 0 {
 		m["first_line_indent"] = fmt.Sprintf("%.0f字符", info.Indent)
+	}
+	if info.HangingIndent != "" {
+		m["hanging_indent"] = info.HangingIndent
+	}
+	if info.SpaceBeforePt > 0 || info.SpaceAfterPt > 0 {
+		m["paragraph_space"] = map[string]interface{}{
+			"before": fmt.Sprintf("%.1fpt", info.SpaceBeforePt),
+			"after":  fmt.Sprintf("%.1fpt", info.SpaceAfterPt),
+		}
+	}
+	if info.Color != "" {
+		m["color"] = "#" + strings.TrimPrefix(info.Color, "#")
 	}
 	return m
 }
@@ -680,12 +783,17 @@ func (p *TemplateParser) extractParaInfo(para document.Paragraph, sc *docxStyleC
 
 	runs := para.Runs()
 	if len(runs) > 0 {
-		info.FontName = resolveRunFontForTemplate(runs[0], para, sc)
+		info.FontName, info.LatinFont = resolveRunFontsForTemplate(runs[0], para, sc)
 		info.FontSize = resolveRunSizeForTemplate(runs[0], para, sc)
 		info.Bold = resolveRunBold(runs[0], para, sc)
+		info.HasTextStyle = true
+		if rPr := runs[0].X().RPr; rPr != nil && rPr.Color != nil && rPr.Color.ValAttr.ST_HexColorRGB != nil {
+			info.Color = *rPr.Color.ValAttr.ST_HexColorRGB
+		}
 	}
 
 	info.LineSpace = extractLineSpacingDisplay(para)
+	info.LineRule = extractLineRule(para)
 
 	pPr := para.X().PPr
 	if pPr != nil && pPr.Ind != nil {
@@ -694,8 +802,34 @@ func (p *TemplateParser) extractParaInfo(para document.Paragraph, sc *docxStyleC
 		} else if pPr.Ind.FirstLineAttr != nil && pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber != nil {
 			info.Indent = float64(*pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber) / 240.0
 		}
+		if pPr.Ind.HangingCharsAttr != nil {
+			info.HangingIndent = fmt.Sprintf("%.0f\u5b57\u7b26", float64(*pPr.Ind.HangingCharsAttr)/100.0)
+		} else if pPr.Ind.HangingAttr != nil && pPr.Ind.HangingAttr.ST_UnsignedDecimalNumber != nil {
+			info.HangingIndent = fmt.Sprintf("%.1fpt", float64(*pPr.Ind.HangingAttr.ST_UnsignedDecimalNumber)/20.0)
+		}
+	}
+	if pPr != nil && pPr.Spacing != nil {
+		if pPr.Spacing.BeforeAttr != nil && pPr.Spacing.BeforeAttr.ST_UnsignedDecimalNumber != nil {
+			info.SpaceBeforePt = float64(*pPr.Spacing.BeforeAttr.ST_UnsignedDecimalNumber) / 20.0
+		}
+		if pPr.Spacing.AfterAttr != nil && pPr.Spacing.AfterAttr.ST_UnsignedDecimalNumber != nil {
+			info.SpaceAfterPt = float64(*pPr.Spacing.AfterAttr.ST_UnsignedDecimalNumber) / 20.0
+		}
 	}
 
+	return info
+}
+
+func (p *TemplateParser) extractParaInfoFromRun(para document.Paragraph, run document.Run, sc *docxStyleCache) paraInfo {
+	info := p.extractParaInfo(para, sc)
+	info.FontName, info.LatinFont = resolveRunFontsForTemplate(run, para, sc)
+	info.FontSize = resolveRunSizeForTemplate(run, para, sc)
+	info.Bold = resolveRunBold(run, para, sc)
+	info.HasTextStyle = true
+	info.Color = ""
+	if rPr := run.X().RPr; rPr != nil && rPr.Color != nil && rPr.Color.ValAttr.ST_HexColorRGB != nil {
+		info.Color = *rPr.Color.ValAttr.ST_HexColorRGB
+	}
 	return info
 }
 
@@ -706,8 +840,11 @@ func (p *TemplateParser) classifyParagraphs(paras []document.Paragraph, sc *docx
 
 	repeatableCategories := map[string]bool{
 		"body": true, "references": true, "table_of_contents": true,
-		"en_abstract": true, "abstract": true,
+		"en_abstract": true, "abstract": true, "acknowledgements": true,
+		"appendix": true, "toc1": true, "toc2": true, "toc3": true,
+		"toc4": true, "table_note": true,
 	}
+	activeSection := ""
 
 	for i, para := range paras {
 		styleName := strings.TrimSpace(para.Style())
@@ -721,6 +858,28 @@ func (p *TemplateParser) classifyParagraphs(paras []document.Paragraph, sc *docx
 		}
 
 		category := p.classifyParagraphCategory(styleName, text, i, len(paras))
+		switch category {
+		case "abstract_title":
+			activeSection = "abstract"
+		case "en_abstract_title":
+			activeSection = "en_abstract"
+		case "reference_title":
+			activeSection = "references"
+		case "acknowledgements_title":
+			activeSection = "acknowledgements"
+		case "appendix_title":
+			activeSection = "appendix"
+		case "toc_title":
+			activeSection = "table_of_contents"
+		case "keywords", "en_keywords":
+			activeSection = ""
+		case "heading1", "heading2", "heading3", "heading4", "heading5":
+			activeSection = ""
+		case "body", "unknown", "":
+			if activeSection != "" {
+				category = activeSection
+			}
+		}
 		if category == "" || category == "unknown" {
 			continue
 		}
@@ -732,6 +891,15 @@ func (p *TemplateParser) classifyParagraphs(paras []document.Paragraph, sc *docx
 
 		info := p.extractParaInfo(para, sc)
 		result[category] = append(result[category], info)
+		if category == "keywords" || category == "en_keywords" {
+			contentCategory := category + "_content"
+			runs := para.Runs()
+			if len(runs) > 1 {
+				result[contentCategory] = append(result[contentCategory], p.extractParaInfoFromRun(para, runs[len(runs)-1], sc))
+			} else {
+				result[contentCategory] = append(result[contentCategory], info)
+			}
+		}
 	}
 
 	return result
@@ -741,6 +909,46 @@ func (p *TemplateParser) classifyParagraphCategory(styleName, text string, index
 	sn := strings.ToLower(styleName)
 	textLower := strings.ToLower(text)
 	normalized := normalizeChineseTextForParser(text)
+	for level := 1; level <= 5; level++ {
+		if sn == fmt.Sprintf("heading %d", level) || sn == fmt.Sprintf("heading%d", level) ||
+			sn == fmt.Sprintf("\u6807\u9898 %d", level) {
+			return fmt.Sprintf("heading%d", level)
+		}
+	}
+	for level := 1; level <= 4; level++ {
+		if sn == fmt.Sprintf("toc %d", level) || sn == fmt.Sprintf("toc%d", level) ||
+			sn == fmt.Sprintf("\u76ee\u5f55 %d", level) {
+			return fmt.Sprintf("toc%d", level)
+		}
+	}
+	compact := strings.NewReplacer(" ", "", "\t", "", "\u3000", "").Replace(strings.TrimSpace(text))
+	if compact == "\u6458\u8981" || compact == "\u6458\u8981\uff1a" || compact == "\u6458\u8981:" {
+		return "abstract_title"
+	}
+	if strings.HasPrefix(compact, "\u5173\u952e\u8bcd") || strings.HasPrefix(compact, "\u5173\u952e\u5b57") {
+		return "keywords"
+	}
+	if compact == "\u76ee\u5f55" {
+		return "toc_title"
+	}
+	if compact == "\u53c2\u8003\u6587\u732e" {
+		return "reference_title"
+	}
+	if compact == "\u81f4\u8c22" {
+		return "acknowledgements_title"
+	}
+	if strings.HasPrefix(compact, "\u9644\u5f55") && len([]rune(compact)) < 20 {
+		return "appendix_title"
+	}
+	if matched, _ := regexp.MatchString("^(?:\u56fe|Figure)\\s*\\d+(?:[.\\-\uff0d]\\d+)+", strings.TrimSpace(text)); matched {
+		return "figure_caption"
+	}
+	if matched, _ := regexp.MatchString("^(?:\u8868|Table)\\s*\\d+(?:[.\\-\uff0d]\\d+)+", strings.TrimSpace(text)); matched {
+		return "table_caption"
+	}
+	if matched, _ := regexp.MatchString("^(?:\u6ce8|Note)\\s*[:\uff1a]", strings.TrimSpace(text)); matched {
+		return "table_note"
+	}
 
 	// Word 样式名称优先（100% 可靠信号）
 	if sn == "title" || sn == "论文标题" {
@@ -846,8 +1054,18 @@ func (p *TemplateParser) classifyParagraphCategory(styleName, text string, index
 	}
 
 	// 标题级别
+	if matched, _ := regexp.MatchString("^(?:\u56fe|Figure)\\s*\\d+(?:[.\\-\uff0d]\\d+)+", strings.TrimSpace(text)); matched {
+		return "figure_caption"
+	}
+	if matched, _ := regexp.MatchString("^(?:\u8868|Table)\\s*\\d+(?:[.\\-\uff0d]\\d+)+", strings.TrimSpace(text)); matched {
+		return "table_caption"
+	}
+	if matched, _ := regexp.MatchString("^(?:\u6ce8|Note)\\s*[:\uff1a]", strings.TrimSpace(text)); matched {
+		return "table_note"
+	}
+
 	level := classifyHeadingLevel(styleName, text)
-	if level >= 1 && level <= 4 {
+	if level >= 1 && level <= 5 {
 		return fmt.Sprintf("heading%d", level)
 	}
 
@@ -928,6 +1146,145 @@ func (p *TemplateParser) extractPageSetupRules(doc *document.Document) map[strin
 	return setup
 }
 
+func (p *TemplateParser) extractPackageStructuralRules(templatePath string, sc *docxStyleCache, rules map[string]interface{}) {
+	zr, err := zip.OpenReader(templatePath)
+	if err != nil {
+		return
+	}
+	defer zr.Close()
+
+	documentXML := ""
+	for _, file := range zr.File {
+		if strings.EqualFold(file.Name, "word/document.xml") {
+			documentXML, _ = readZipFileAsString(file)
+			break
+		}
+	}
+	if documentXML == "" {
+		return
+	}
+
+	pageRules, _ := rules["page_number"].(map[string]interface{})
+	if pageRules == nil {
+		pageRules = map[string]interface{}{}
+	}
+	for _, format := range parsePageNumFormats(documentXML) {
+		switch strings.ToLower(format) {
+		case "lowerroman", "upperroman":
+			pageRules["front_format"] = format
+		case "decimal":
+			pageRules["body_format"] = format
+		}
+	}
+	if len(pageRules) > 0 {
+		rules["page_number"] = pageRules
+	}
+
+	paragraphPattern := regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
+	for _, paragraphXML := range paragraphPattern.FindAllString(documentXML, -1) {
+		if _, exists := rules["formula"]; !exists && (strings.Contains(paragraphXML, "<m:oMath") || strings.Contains(paragraphXML, "<m:oMathPara")) {
+			rules["formula"] = paragraphXMLToRuleMap(paragraphXML, sc)
+		}
+		if strings.Contains(paragraphXML, "<w:drawing") {
+			figureRules, _ := rules["figure"].(map[string]interface{})
+			if figureRules == nil {
+				figureRules = map[string]interface{}{}
+			}
+			if _, exists := figureRules["image"]; !exists {
+				imageRule := map[string]interface{}{}
+				if alignment := xmlAttributeValue(paragraphXML, "w:jc", "w:val"); alignment != "" {
+					imageRule["alignment"] = alignment
+				}
+				figureRules["image"] = imageRule
+				rules["figure"] = figureRules
+				rules["figures"] = figureRules
+			}
+		}
+	}
+}
+
+func paragraphXMLToRuleMap(paragraphXML string, sc *docxStyleCache) map[string]interface{} {
+	rule := map[string]interface{}{}
+	if font := xmlAttributeValue(paragraphXML, "w:rFonts", "w:eastAsia"); font != "" {
+		rule["font_name"] = font
+	}
+	latin := xmlAttributeValue(paragraphXML, "w:rFonts", "w:ascii")
+	if latin == "" {
+		latin = xmlAttributeValue(paragraphXML, "w:rFonts", "w:hAnsi")
+	}
+	if latin != "" {
+		rule["font_name_latin"] = latin
+	}
+	if sc != nil {
+		if styleID := xmlAttributeValue(paragraphXML, "w:pStyle", "w:val"); styleID != "" {
+			style := sc.resolve(styleID)
+			if _, ok := rule["font_name"]; !ok && style.EastAsiaFont != "" {
+				rule["font_name"] = style.EastAsiaFont
+			}
+			if _, ok := rule["font_name_latin"]; !ok && style.AsciiFont != "" {
+				rule["font_name_latin"] = style.AsciiFont
+			}
+			if _, ok := rule["font_size_pt"]; !ok && style.FontSizePt > 0 {
+				rule["font_size"] = fontPointsToChineseName(style.FontSizePt)
+				rule["font_size_pt"] = style.FontSizePt
+			}
+		}
+	}
+	if sizeText := xmlAttributeValue(paragraphXML, "w:sz", "w:val"); sizeText != "" {
+		if halfPoints, err := strconv.ParseFloat(sizeText, 64); err == nil {
+			points := halfPoints / 2
+			rule["font_size"] = fontPointsToChineseName(points)
+			rule["font_size_pt"] = points
+		}
+	}
+	if alignment := xmlAttributeValue(paragraphXML, "w:jc", "w:val"); alignment != "" {
+		rule["alignment"] = alignment
+	}
+	if color := xmlAttributeValue(paragraphXML, "w:color", "w:val"); color != "" && !strings.EqualFold(color, "auto") {
+		rule["color"] = "#" + strings.TrimPrefix(color, "#")
+	}
+	if regexp.MustCompile(`<w:b(?:\s|/|>)`).MatchString(paragraphXML) {
+		rule["bold"] = true
+	}
+	spacing := map[string]interface{}{}
+	if before := xmlAttributeValue(paragraphXML, "w:spacing", "w:before"); before != "" {
+		if twips, err := strconv.ParseFloat(before, 64); err == nil {
+			spacing["before"] = fmt.Sprintf("%.1fpt", twips/20)
+		}
+	}
+	if after := xmlAttributeValue(paragraphXML, "w:spacing", "w:after"); after != "" {
+		if twips, err := strconv.ParseFloat(after, 64); err == nil {
+			spacing["after"] = fmt.Sprintf("%.1fpt", twips/20)
+		}
+	}
+	if len(spacing) > 0 {
+		rule["paragraph_space"] = spacing
+	}
+	if line := xmlAttributeValue(paragraphXML, "w:spacing", "w:line"); line != "" {
+		if value, err := strconv.ParseFloat(line, 64); err == nil {
+			lineRule := strings.ToLower(xmlAttributeValue(paragraphXML, "w:spacing", "w:lineRule"))
+			if lineRule == "exact" || lineRule == "atleast" {
+				rule["line_space"] = fmt.Sprintf("fixed_%.1f_pt", value/20)
+				rule["line_rule"] = lineRule
+			} else {
+				rule["line_space"] = fmt.Sprintf("%.1f", value/240)
+				rule["line_rule"] = "auto"
+			}
+		}
+	}
+	return rule
+}
+
+func xmlAttributeValue(xmlText, element, attribute string) string {
+	elementPattern := regexp.QuoteMeta(element)
+	attributePattern := regexp.QuoteMeta(attribute)
+	match := regexp.MustCompile(`<` + elementPattern + `\b[^>]*\b` + attributePattern + `="([^"]+)"`).FindStringSubmatch(xmlText)
+	if len(match) > 1 {
+		return match[1]
+	}
+	return ""
+}
+
 // extractHeaderFooterRules extracts header/footer text and formatting from the document.
 func (p *TemplateParser) extractHeaderFooterRules(doc *document.Document, sc *docxStyleCache, rules map[string]interface{}) {
 	bestHeaderScore := -1
@@ -953,6 +1310,14 @@ func (p *TemplateParser) extractHeaderFooterRules(doc *document.Document, sc *do
 			}
 			if info.Alignment != "" {
 				headerRules["alignment"] = info.Alignment
+			}
+			if pPr := hp.X().PPr; pPr != nil && pPr.PBdr != nil && pPr.PBdr.Bottom != nil {
+				border := pPr.PBdr.Bottom
+				if border.SzAttr != nil {
+					headerRules["border_bottom"] = fmt.Sprintf("%.2fpt", float64(*border.SzAttr)/8.0)
+				} else {
+					headerRules["border_bottom"] = true
+				}
 			}
 			score := len([]rune(text))
 			if strings.Contains(text, "大学") || strings.Contains(text, "学院") {
@@ -988,6 +1353,7 @@ func (p *TemplateParser) extractHeaderFooterRules(doc *document.Document, sc *do
 			}
 			if info.Alignment != "" {
 				footerRules["alignment"] = info.Alignment
+				footerRules["position"] = "bottom_" + info.Alignment
 			}
 			score := len([]rune(text))
 			if hasTemplateTotalPageText(text) {

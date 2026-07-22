@@ -84,13 +84,13 @@ func (s *casbinService) GetEnforcer() *casbin.Enforcer {
 
 // Init 初始化 Casbin 引擎
 func (s *casbinService) Init() error {
-	var err error
+	var initErr error
 	s.once.Do(func() {
 		// 创建 GORM 适配器
 		adapter, err := gormadapter.NewAdapterByDB(database.DB)
 		if err != nil {
 			fmt.Printf("创建 Casbin 适配器失败：%v\n", err)
-			err = fmt.Errorf("创建 Casbin 适配器失败：%w", err)
+			initErr = fmt.Errorf("创建 Casbin 适配器失败：%w", err)
 			return
 		}
 
@@ -101,7 +101,7 @@ func (s *casbinService) Init() error {
 		enforcer, err := casbin.NewEnforcer(configPath)
 		if err != nil {
 			fmt.Printf("创建 Casbin Enforcer 失败：%v\n", err)
-			err = fmt.Errorf("创建 Casbin Enforcer 失败：%w", err)
+			initErr = fmt.Errorf("创建 Casbin Enforcer 失败：%w", err)
 			return
 		}
 
@@ -111,7 +111,7 @@ func (s *casbinService) Init() error {
 		// 加载策略
 		if err := enforcer.LoadPolicy(); err != nil {
 			fmt.Printf("加载 Casbin 策略失败：%v\n", err)
-			err = fmt.Errorf("加载 Casbin 策略失败：%w", err)
+			initErr = fmt.Errorf("加载 Casbin 策略失败：%w", err)
 			return
 		}
 
@@ -119,7 +119,7 @@ func (s *casbinService) Init() error {
 		fmt.Println("Casbin 初始化成功")
 	})
 
-	return err
+	return initErr
 }
 
 // LoadPolicy 加载策略

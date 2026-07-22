@@ -229,7 +229,7 @@ func (h *AdminTemplateHandler) UpdateTemplate(c *gin.Context) {
 	}
 
 	// 执行更新
-	if err := database.DB.Model(&template).Updates(updateData).Error; err != nil {
+	if err := database.UpdateFormatTemplateWithAudit(&template, updateData, auditActorID(c)); err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "更新模板失败", err.Error())
 		return
 	}
@@ -238,6 +238,18 @@ func (h *AdminTemplateHandler) UpdateTemplate(c *gin.Context) {
 	database.DB.Preload("University").First(&template, "id = ?", template.ID)
 
 	utils.SuccessResponse(c, "更新成功", template)
+}
+
+func auditActorID(c *gin.Context) *uuid.UUID {
+	value, exists := c.Get("user_id")
+	if !exists {
+		return nil
+	}
+	id, ok := value.(uuid.UUID)
+	if !ok || id == uuid.Nil {
+		return nil
+	}
+	return &id
 }
 
 // DeleteTemplate 删除模板
@@ -263,7 +275,7 @@ func (h *AdminTemplateHandler) DeleteTemplate(c *gin.Context) {
 	tx := database.DB.Begin()
 
 	// 1. 删除该模板关联的 format_corrections（叶子节点，最先删）
-	if err := tx.Where("check_result_id IN (SELECT id FROM check_results WHERE format_template_id = ?)", templateUUID).
+	if err := tx.Where("check_result_id IN (SELECT id FROM check_results WHERE template_id = ?)", templateUUID).
 		Delete(&model.FormatCorrection{}).Error; err != nil {
 		tx.Rollback()
 		utils.ErrorResponse(c, http.StatusInternalServerError, "删除修正记录失败", err.Error())
@@ -271,7 +283,7 @@ func (h *AdminTemplateHandler) DeleteTemplate(c *gin.Context) {
 	}
 
 	// 2. 删除该模板关联的 check_results
-	if err := tx.Where("format_template_id = ?", templateUUID).
+	if err := tx.Where("template_id = ?", templateUUID).
 		Delete(&model.CheckResult{}).Error; err != nil {
 		tx.Rollback()
 		utils.ErrorResponse(c, http.StatusInternalServerError, "删除检查结果失败", err.Error())

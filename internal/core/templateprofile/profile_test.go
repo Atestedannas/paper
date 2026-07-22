@@ -60,6 +60,13 @@ func TestExtractDetectsTemplateSectionPageBreaksHeaderFooterAndStyles(t *testing
 	}
 }
 
+func TestExtractStylePreservesAdvancedOOXMLProperties(t *testing.T) {
+	style := extractStyle("body", `<w:p><w:pPr><w:outlineLvl w:val="2"/><w:ind w:firstLine="480"/><w:rPr><w:rFonts w:ascii="Times New Roman" w:eastAsia="宋体" w:hint="eastAsia"/><w:sz w:val="24"/><w:szCs w:val="22"/><w:i/></w:rPr></w:pPr><w:r><w:t>Text</w:t></w:r></w:p>`)
+	if style.ComplexSizeHalfPt != "22" || style.FontHint != "eastAsia" || style.FirstLineTwips != "480" || style.OutlineLevel != "2" || !style.ItalicSet || !style.Italic {
+		t.Fatalf("style = %#v", style)
+	}
+}
+
 func TestExtractDetectsHighNumberedHeaderFooterParts(t *testing.T) {
 	templatePath := filepath.Join(t.TempDir(), "template.docx")
 	writeDocxEntries(t, templatePath, map[string]string{
@@ -82,6 +89,117 @@ func TestExtractDetectsHighNumberedHeaderFooterParts(t *testing.T) {
 	}
 }
 
+func TestExtractDetectsChineseChapterAndPageBreakAcrossBlankParagraphs(t *testing.T) {
+	templatePath := filepath.Join(t.TempDir(), "template.docx")
+	writeDocxEntries(t, templatePath, map[string]string{
+		"[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+		"word/document.xml": `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:r><w:br w:type="page"/></w:r></w:p>` +
+			`<w:p><w:r><w:t></w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:spacing w:before="240" w:after="120" w:line="400" w:lineRule="exact"/><w:rPr><w:rFonts w:eastAsia="SimSun"/><w:sz w:val="32"/><w:b/></w:rPr></w:pPr><w:r><w:t>第一章 绪论</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	profile, err := Extract(templatePath)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+
+	rule := profile.Sections["body_start"]
+	if !rule.PageBreakBefore || rule.DetectedFrom != "previous_paragraph" {
+		t.Fatalf("body_start page break not detected across blank paragraphs: %#v", rule)
+	}
+	if style := profile.Styles["body_start"]; style.FontEastAsia != "SimSun" || style.FontSizeHalfPt != "32" || !style.Bold || style.LineRule != "exact" || style.BeforeTwips != "240" || style.AfterTwips != "120" {
+		t.Fatalf("Chinese chapter style not extracted: %#v", style)
+	}
+	if style := profile.Styles["heading_1"]; style.FontEastAsia != "SimSun" || style.FontSizeHalfPt != "32" {
+		t.Fatalf("first chapter style should contribute to heading_1: %#v", style)
+	}
+}
+
+func TestAggregateStyleRulesRequiresBoldSupermajority(t *testing.T) {
+	style := aggregateStyleRules("heading_1", []StyleRule{{Bold: true, BoldSet: true}, {Bold: false, BoldSet: true}})
+	if style.Bold {
+		t.Fatal("50 percent bold samples should not produce a bold aggregate")
+	}
+}
+
+func TestExtractStyleLimitsBoldToRepresentativeRunProperties(t *testing.T) {
+	raw := `<w:p><w:pPr><w:rPr><w:b w:val="0"/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>mixed</w:t></w:r></w:p>`
+	if style := extractStyle("body", raw); style.Bold {
+		t.Fatalf("later bold run should not override paragraph style: %#v", style)
+	}
+}
+
+func TestApplyFormatRulesSupportsExplicitIndentAndSpacingUnits(t *testing.T) {
+	profile := &Profile{Styles: map[string]StyleRule{}}
+	err := ApplyFormatRules(profile, `{"body":{"first_line_indent":0.74,"first_line_indent_unit":"cm","paragraph_before_twips":240,"paragraph_after_twips":120}}`)
+	if err != nil {
+		t.Fatalf("ApplyFormatRules() error = %v", err)
+	}
+	style := profile.Styles["body_start"]
+	if style.FirstLineChars != "200" || style.BeforeTwips != "240" || style.AfterTwips != "120" {
+		t.Fatalf("explicit units not converted correctly: %#v", style)
+	}
+}
+
+func TestClassifyParagraphDoesNotTreatSubheadingAsBodyStart(t *testing.T) {
+	if got := classifyParagraph("1.1 研究背景"); got != "heading_2" {
+		t.Fatalf("classifyParagraph() = %q, want heading_2", got)
+	}
+}
+
+func TestExtractAggregatesRepeatedStylesByMode(t *testing.T) {
+	templatePath := filepath.Join(t.TempDir(), "template.docx")
+	paragraph := func(font, size string) string {
+		return `<w:p><w:pPr><w:rPr><w:rFonts w:eastAsia="` + font + `"/><w:sz w:val="` + size + `"/></w:rPr></w:pPr><w:r><w:t>参考文献</w:t></w:r></w:p>`
+	}
+	writeDocxEntries(t, templatePath, map[string]string{
+		"[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+		"word/document.xml":   `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` + paragraph("SimSun", "24") + paragraph("KaiTi", "22") + paragraph("SimSun", "24") + `</w:body></w:document>`,
+	})
+
+	profile, err := Extract(templatePath)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if style := profile.Styles["references_title"]; style.FontEastAsia != "SimSun" || style.FontSizeHalfPt != "24" {
+		t.Fatalf("aggregated style = %#v, want modal font and size", style)
+	}
+}
+
+func TestBuildAllowsAIToCorrectLocalSectionAndBold(t *testing.T) {
+	templatePath := filepath.Join(t.TempDir(), "template.docx")
+	writeTemplateProfileDocx(t, templatePath)
+	client := &fakeChatClient{response: `{"sections":{"references_title":{"page_break_before":false,"evidence":"ai_corrected"}},"styles":{"references_title":{"bold":false,"font_size_half_pt":"30"}},"confidence":0.91}`}
+
+	profile, err := Build(context.Background(), templatePath, Options{AIEnabled: true, AIClient: client})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	if profile.Sections["references_title"].PageBreakBefore || profile.Sections["references_title"].DetectedFrom != "ai_corrected" {
+		t.Fatalf("AI section correction not applied: %#v", profile.Sections["references_title"])
+	}
+	if style := profile.Styles["references_title"]; style.Bold || style.FontSizeHalfPt != "30" {
+		t.Fatalf("AI style correction not applied: %#v", style)
+	}
+}
+
+func TestBuildKeepsLocalStyleWhenAIConfidenceIsLower(t *testing.T) {
+	templatePath := filepath.Join(t.TempDir(), "template.docx")
+	writeTemplateProfileDocx(t, templatePath)
+	client := &fakeChatClient{response: `{"styles":{"references_title":{"bold":false,"font_size_half_pt":"30"}},"confidence":0.5}`}
+
+	profile, err := Build(context.Background(), templatePath, Options{AIEnabled: true, AIClient: client})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if style := profile.Styles["references_title"]; !style.Bold || style.FontSizeHalfPt == "30" {
+		t.Fatalf("low-confidence AI overrode local style: %#v", style)
+	}
+}
+
 func TestExtractChoosesFooterWithTotalPagesAcrossMultipleParts(t *testing.T) {
 	templatePath := filepath.Join(t.TempDir(), "template.docx")
 	writeDocxEntries(t, templatePath, map[string]string{
@@ -98,6 +216,37 @@ func TestExtractChoosesFooterWithTotalPagesAcrossMultipleParts(t *testing.T) {
 	}
 	if profile.Footer.Text != "第0页 共12页" || !profile.Footer.HasPageField || !profile.Footer.HasNumPages {
 		t.Fatalf("footer = %#v, want the total-page footer", profile.Footer)
+	}
+}
+
+func TestExtractKeepsFirstAndEvenHeaderFooterVariants(t *testing.T) {
+	templatePath := filepath.Join(t.TempDir(), "template.docx")
+	writeDocxEntries(t, templatePath, map[string]string{
+		"[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:sectPr>` +
+			`<w:headerReference w:type="default" r:id="rId1"/><w:headerReference w:type="first" r:id="rId2"/><w:headerReference w:type="even" r:id="rId3"/>` +
+			`<w:footerReference w:type="first" r:id="rId4"/><w:footerReference w:type="even" r:id="rId5"/>` +
+			`</w:sectPr></w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships><Relationship Id="rId1" Target="header1.xml"/><Relationship Id="rId2" Target="header2.xml"/><Relationship Id="rId3" Target="header3.xml"/><Relationship Id="rId4" Target="footer1.xml"/><Relationship Id="rId5" Target="footer2.xml"/></Relationships>`,
+		"word/header1.xml":             `<w:hdr><w:p><w:r><w:t>odd header</w:t></w:r></w:p></w:hdr>`,
+		"word/header2.xml":             `<w:hdr><w:p><w:r><w:t>first header</w:t></w:r></w:p></w:hdr>`,
+		"word/header3.xml":             `<w:hdr><w:p><w:r><w:t>even header</w:t></w:r></w:p></w:hdr>`,
+		"word/footer1.xml":             `<w:ftr><w:p><w:r><w:t>first footer</w:t></w:r></w:p></w:ftr>`,
+		"word/footer2.xml":             `<w:ftr><w:p><w:r><w:t>even footer</w:t></w:r></w:p></w:ftr>`,
+	})
+
+	profile, err := Extract(templatePath)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if profile.Header.Text != "odd header" || profile.HeaderFirst.Text != "first header" || profile.HeaderEven.Text != "even header" {
+		t.Fatalf("header variants collapsed: %#v %#v %#v", profile.Header, profile.HeaderFirst, profile.HeaderEven)
+	}
+	if profile.FooterFirst.Text != "first footer" || profile.FooterEven.Text != "even footer" {
+		t.Fatalf("footer variants collapsed: %#v %#v", profile.FooterFirst, profile.FooterEven)
+	}
+	if profile.RulePack.HeaderPolicy != "odd_even" || profile.RulePack.EvenHeaderText != "even header" {
+		t.Fatalf("odd/even header policy not inferred: %#v", profile.RulePack)
 	}
 }
 
@@ -119,8 +268,8 @@ func TestBuildAttachesDeepSeekSummary(t *testing.T) {
 	if profile.Styles["body"].FontEastAsia != "\u6977\u4f53" || profile.Styles["body"].Line != "420" {
 		t.Fatalf("AI styles should merge into profile styles: %#v", profile.Styles["body"])
 	}
-	if !profile.Sections["references_title"].PageBreakBefore || profile.Sections["references_title"].DetectedFrom == "ai_confirmed" {
-		t.Fatalf("local section evidence must win over AI: %#v", profile.Sections["references_title"])
+	if !profile.Sections["references_title"].PageBreakBefore || profile.Sections["references_title"].DetectedFrom != "ai_confirmed" {
+		t.Fatalf("AI section evidence should merge into local profile: %#v", profile.Sections["references_title"])
 	}
 	if profile.Confidence != 0.76 {
 		t.Fatalf("Confidence = %v, want local confidence 0.76", profile.Confidence)

@@ -256,6 +256,9 @@ func TestMapContentBlocksUsesTableXMLPayload(t *testing.T) {
 	if result.Bindings[1].Payload != tableXML {
 		t.Fatalf("table payload = %q, want raw table XML", result.Bindings[1].Payload)
 	}
+	if result.Bindings[1].PayloadKind != "table" || result.Bindings[1].PayloadXML != tableXML || result.Bindings[1].SourceIndex != 1 {
+		t.Fatalf("table metadata = %#v", result.Bindings[1])
+	}
 }
 
 func TestMapContentBlocksExcludesBackMatter(t *testing.T) {

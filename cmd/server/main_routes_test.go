@@ -46,8 +46,11 @@ func TestMainDoesNotKillExistingProcessOnPortConflict(t *testing.T) {
 	if strings.Contains(text, "killProcessUsingPort(cfg.Server.Port)") {
 		t.Fatal("server startup must not kill the process already listening on the configured port")
 	}
-	if !strings.Contains(text, "log.Fatalf(\"Port %d is already in use\"") {
-		t.Fatal("server startup should fail fast when the configured port is already in use")
+	if strings.Contains(text, "isPortInUse(cfg.Server.Port)") {
+		t.Fatal("server startup must not release a probe listener before binding the real server")
+	}
+	if !strings.Contains(text, "server.ListenAndServe()") {
+		t.Fatal("server startup must bind the configured port through ListenAndServe")
 	}
 }
 

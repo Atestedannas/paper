@@ -4,26 +4,28 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
+	"math"
 	"os"
 )
 
 // ImageQuality 图片质量配置
 type ImageQuality struct {
-	MaxWidth   int   // 最大宽度
-	MaxHeight  int   // 最大高度
-	Quality    int   // 质量 (1-100)
-	MaxSizeKB  int   // 最大文件大小 (KB)
-	ConvertWebP bool  // 是否转换为 WebP 格式
+	MaxWidth    int  // 最大宽度
+	MaxHeight   int  // 最大高度
+	Quality     int  // 质量 (1-100)
+	MaxSizeKB   int  // 最大文件大小 (KB)
+	ConvertWebP bool // 是否转换为 WebP 格式
 }
 
 // DefaultImageQuality 默认图片质量配置
 var DefaultImageQuality = ImageQuality{
-	MaxWidth:   1920,
-	MaxHeight:  1920,
-	Quality:    85,
-	MaxSizeKB:  500,
+	MaxWidth:    1920,
+	MaxHeight:   1920,
+	Quality:     85,
+	MaxSizeKB:   500,
 	ConvertWebP: false, // 暂时禁用 WebP，使用 JPEG 压缩
 }
 
@@ -51,12 +53,12 @@ func CompressImage(filePath string, quality ImageQuality) ([]byte, string, error
 
 	// 计算缩放后的尺寸
 	newWidth, newHeight := origWidth, origHeight
-	
+
 	if quality.MaxWidth > 0 && origWidth > quality.MaxWidth {
 		newWidth = quality.MaxWidth
 		newHeight = origHeight * quality.MaxWidth / origWidth
 	}
-	
+
 	if quality.MaxHeight > 0 && newHeight > quality.MaxHeight {
 		newHeight = quality.MaxHeight
 		newWidth = newWidth * quality.MaxHeight / newHeight
@@ -76,7 +78,7 @@ func CompressImage(filePath string, quality ImageQuality) ([]byte, string, error
 		// 转换为 WebP 格式（暂不支持）
 		outputFormat = ".jpg"
 	}
-	
+
 	// 保持原始格式或转换为 JPEG
 	switch format {
 	case "png":
@@ -124,13 +126,43 @@ func resizeImage(img image.Image, newWidth, newHeight int) image.Image {
 	// 逐像素缩放
 	for y := 0; y < newHeight; y++ {
 		for x := 0; x < newWidth; x++ {
-			srcX := int(float64(x) * xScale)
-			srcY := int(float64(y) * yScale)
-			dst.Set(x, y, img.At(srcX, srcY))
+			srcX := (float64(x)+0.5)*xScale - 0.5
+			srcY := (float64(y)+0.5)*yScale - 0.5
+			x0 := clamp(int(math.Floor(srcX)), 0, srcWidth-1)
+			y0 := clamp(int(math.Floor(srcY)), 0, srcHeight-1)
+			x1 := clamp(x0+1, 0, srcWidth-1)
+			y1 := clamp(y0+1, 0, srcHeight-1)
+			dx := math.Max(0, math.Min(1, srcX-float64(x0)))
+			dy := math.Max(0, math.Min(1, srcY-float64(y0)))
+			dst.SetRGBA64(x, y, bilinearColor(img, bounds.Min.X+x0, bounds.Min.Y+y0, bounds.Min.X+x1, bounds.Min.Y+y1, dx, dy))
 		}
 	}
 
 	return dst
+}
+
+func clamp(value, minValue, maxValue int) int {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func bilinearColor(img image.Image, x0, y0, x1, y1 int, dx, dy float64) color.RGBA64 {
+	weights := [4]float64{(1 - dx) * (1 - dy), dx * (1 - dy), (1 - dx) * dy, dx * dy}
+	points := [4]color.Color{img.At(x0, y0), img.At(x1, y0), img.At(x0, y1), img.At(x1, y1)}
+	var red, green, blue, alpha float64
+	for index, point := range points {
+		r, g, b, a := point.RGBA()
+		red += float64(r) * weights[index]
+		green += float64(g) * weights[index]
+		blue += float64(b) * weights[index]
+		alpha += float64(a) * weights[index]
+	}
+	return color.RGBA64{R: uint16(red + 0.5), G: uint16(green + 0.5), B: uint16(blue + 0.5), A: uint16(alpha + 0.5)}
 }
 
 // reduceQuality 降低图片质量直到文件大小符合要求

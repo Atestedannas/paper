@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"mime/multipart"
@@ -340,7 +341,24 @@ func performPaperWorkflowCompileAsUser(t *testing.T, handler *PaperWorkflowHandl
 	if err != nil {
 		t.Fatalf("create form file: %v", err)
 	}
-	if _, err := part.Write([]byte("docx")); err != nil {
+	var docx bytes.Buffer
+	zipWriter := zip.NewWriter(&docx)
+	for name, content := range map[string]string{
+		"[Content_Types].xml": `<?xml version="1.0"?><Types/>`,
+		"word/document.xml":   `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>`,
+	} {
+		entry, createErr := zipWriter.Create(name)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, writeErr := entry.Write([]byte(content)); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if err := zipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(docx.Bytes()); err != nil {
 		t.Fatalf("write form file: %v", err)
 	}
 	if err := writer.Close(); err != nil {

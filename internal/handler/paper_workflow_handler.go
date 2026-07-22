@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/workflow"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
@@ -70,6 +71,11 @@ func (h *PaperWorkflowHandler) CompileTemplate(c *gin.Context) {
 	inputPath := filepath.Join(inputDir, uuid.New().String()+"_"+safeName)
 	if err := c.SaveUploadedFile(file, inputPath); err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "failed to save template file", err.Error())
+		return
+	}
+	if err := ooxmlpkg.Validate(inputPath); err != nil {
+		_ = os.Remove(inputPath)
+		utils.ErrorResponse(c, http.StatusBadRequest, "unsafe or invalid DOCX", err.Error())
 		return
 	}
 
@@ -132,6 +138,11 @@ func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
 	inputPath := filepath.Join(inputDir, storedName)
 	if err := c.SaveUploadedFile(file, inputPath); err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "failed to save paper file", err.Error())
+		return
+	}
+	if err := ooxmlpkg.Validate(inputPath); err != nil {
+		_ = os.Remove(inputPath)
+		utils.ErrorResponse(c, http.StatusBadRequest, "unsafe or invalid DOCX", err.Error())
 		return
 	}
 	var templateID uuid.UUID

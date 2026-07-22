@@ -4,15 +4,18 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
 const documentTarget = "word/document.xml"
@@ -111,9 +114,12 @@ type paragraphStyle struct {
 	fontSize       string
 	bold           bool
 	firstLineChars *int
+	beforeTwips    *int
+	afterTwips     *int
 	beforeLines    *int
 	afterLines     *int
 	line           string
+	lineRule       string
 	alignment      string
 }
 
@@ -305,14 +311,31 @@ func newDebugTrace(operation string, docxPath string) debugTrace {
 	if root == "" {
 		root = filepath.Join(os.TempDir(), "cqrwst-debug")
 	}
+	cleanupOldDebugTraces(root, time.Now().Add(-7*24*time.Hour))
 	dir := filepath.Join(root, debugTraceName(docxPath))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		fmt.Printf("[CQRWST_DEBUG] create trace dir failed: operation=%s dir=%s error=%v\n", operation, dir, err)
+		log.Printf("component=cqrwst_debug operation=%q stage=create error=%q", operation, err)
 		return debugTrace{}
 	}
 
-	fmt.Printf("[CQRWST_DEBUG] %s trace dir: %s\n", operation, dir)
+	log.Printf("component=cqrwst_debug operation=%q stage=ready", operation)
 	return debugTrace{enabled: true, dir: dir}
+}
+
+func cleanupOldDebugTraces(root string, cutoff time.Time) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil && info.ModTime().Before(cutoff) {
+			_ = os.RemoveAll(filepath.Join(root, entry.Name()))
+		}
+	}
 }
 
 func isDebugEnabled() bool {
@@ -365,7 +388,7 @@ func (trace debugTrace) writeFile(name string, content string) {
 
 	path := filepath.Join(trace.dir, name)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		fmt.Printf("[CQRWST_DEBUG] write trace file failed: path=%s error=%v\n", path, err)
+		log.Printf("component=cqrwst_debug stage=write error=%q", err)
 	}
 }
 
@@ -373,13 +396,12 @@ func (trace debugTrace) printSummary(operation string, result Result) {
 	if !trace.enabled {
 		return
 	}
-	fmt.Printf(
-		"[CQRWST_DEBUG] %s result: passed=%t fix_count=%d issues=%d dir=%s\n",
+	log.Printf(
+		"component=cqrwst_debug operation=%q passed=%t fix_count=%d issues=%d",
 		operation,
 		result.Passed,
 		result.FixCount,
 		len(result.Issues),
-		trace.dir,
 	)
 }
 
@@ -872,6 +894,9 @@ func containsFigureShape(paragraph string) bool {
 
 func chapterNumberFromHeading(text string) (string, bool) {
 	trimmed := strings.TrimSpace(text)
+	if templateprofile.IsBodyStartParagraph(trimmed) {
+		return "1", true
+	}
 	if !heading1Pattern.MatchString(trimmed) || heading2Pattern.MatchString(trimmed) {
 		return "", false
 	}
@@ -1407,7 +1432,8 @@ func isChineseAbstractParagraph(text string) bool {
 }
 
 func isBodyStartParagraph(text string) bool {
-	return strings.HasPrefix(text, "1 ") && heading1Pattern.MatchString(text) && !isLikelyTOCHeadingEntry(text)
+	trimmed := strings.TrimSpace(text)
+	return templateprofile.IsBodyStartParagraph(trimmed) && !isLikelyTOCHeadingEntry(trimmed)
 }
 
 func cqrwstSectionProperties() string {
@@ -1863,19 +1889,19 @@ func abstractENBodyStyle() paragraphStyle {
 }
 
 func heading1Style() paragraphStyle {
-	return paragraphStyle{ruleID: "cqrwst-heading1-style", message: "Heading 1 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "32", bold: true, beforeLines: intPtr(100), afterLines: intPtr(100), line: "360"}
+	return paragraphStyle{ruleID: "cqrwst-heading1-style", message: "Heading 1 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "32", bold: true, beforeTwips: intPtr(240), afterTwips: intPtr(240), line: "360", alignment: "center"}
 }
 
 func heading2Style() paragraphStyle {
-	return paragraphStyle{ruleID: "cqrwst-heading2-style", message: "Heading 2 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "30", bold: true, beforeLines: intPtr(0), afterLines: intPtr(0), line: "360"}
+	return paragraphStyle{ruleID: "cqrwst-heading2-style", message: "Heading 2 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "30", bold: true, line: "360", alignment: "left"}
 }
 
 func heading3Style() paragraphStyle {
-	return paragraphStyle{ruleID: "cqrwst-heading3-style", message: "Heading 3 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "28", bold: true, beforeLines: intPtr(0), afterLines: intPtr(0), line: "360"}
+	return paragraphStyle{ruleID: "cqrwst-heading3-style", message: "Heading 3 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "28", bold: true, line: "360", alignment: "left"}
 }
 
 func heading4Style() paragraphStyle {
-	return paragraphStyle{ruleID: "cqrwst-heading4-style", message: "Heading 4 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "28", beforeLines: intPtr(0), afterLines: intPtr(0), line: "360"}
+	return paragraphStyle{ruleID: "cqrwst-heading4-style", message: "Heading 4 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "28", line: "360", alignment: "left"}
 }
 
 func bodyStyle() paragraphStyle {
@@ -1963,8 +1989,14 @@ func applyParagraphProperties(paragraph string, style paragraphStyle) string {
 func buildParagraphProperties(style paragraphStyle) string {
 	var builder strings.Builder
 
-	if style.line != "" || style.beforeLines != nil || style.afterLines != nil {
+	if style.line != "" || style.beforeTwips != nil || style.afterTwips != nil || style.beforeLines != nil || style.afterLines != nil {
 		builder.WriteString(`<w:spacing`)
+		if style.beforeTwips != nil {
+			builder.WriteString(fmt.Sprintf(` w:before="%d"`, *style.beforeTwips))
+		}
+		if style.afterTwips != nil {
+			builder.WriteString(fmt.Sprintf(` w:after="%d"`, *style.afterTwips))
+		}
 		if style.beforeLines != nil {
 			builder.WriteString(fmt.Sprintf(` w:beforeLines="%d"`, *style.beforeLines))
 		}
@@ -1972,7 +2004,11 @@ func buildParagraphProperties(style paragraphStyle) string {
 			builder.WriteString(fmt.Sprintf(` w:afterLines="%d"`, *style.afterLines))
 		}
 		if style.line != "" {
-			builder.WriteString(fmt.Sprintf(` w:line="%s" w:lineRule="auto"`, style.line))
+			lineRule := style.lineRule
+			if lineRule == "" {
+				lineRule = "auto"
+			}
+			builder.WriteString(fmt.Sprintf(` w:line="%s" w:lineRule="%s"`, style.line, lineRule))
 		}
 		builder.WriteString(`/>`)
 	}
@@ -1994,7 +2030,9 @@ func applyRunProperties(run string, style paragraphStyle) string {
 func paragraphStyleToPatchSpec(style paragraphStyle) ooxmlpatch.ParagraphPropertiesSpec {
 	spec := ooxmlpatch.ParagraphPropertiesSpec{
 		Alignment:         style.alignment,
-		LineRule:          "auto",
+		LineRule:          style.lineRule,
+		BeforeTwips:       intPointerValue(style.beforeTwips),
+		AfterTwips:        intPointerValue(style.afterTwips),
 		FirstLineChars:    intPointerValue(style.firstLineChars),
 		BeforeLines:       intPointerValue(style.beforeLines),
 		AfterLines:        intPointerValue(style.afterLines),
@@ -2004,6 +2042,9 @@ func paragraphStyleToPatchSpec(style paragraphStyle) ooxmlpatch.ParagraphPropert
 	}
 	if line, err := strconv.Atoi(strings.TrimSpace(style.line)); err == nil {
 		spec.LineTwips = line
+	}
+	if spec.LineTwips > 0 && spec.LineRule == "" {
+		spec.LineRule = "auto"
 	}
 	if spec.LineTwips == 0 && spec.BeforeLines == 0 && spec.AfterLines == 0 {
 		spec.LineRule = ""

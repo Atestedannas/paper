@@ -20,9 +20,10 @@ type Snapshot struct {
 }
 
 type Stats struct {
-	Paragraphs int `json:"paragraphs"`
-	Tables     int `json:"tables"`
-	Headings   int `json:"headings"`
+	Paragraphs      int `json:"paragraphs"`
+	BlankParagraphs int `json:"blank_paragraphs"`
+	Tables          int `json:"tables"`
+	Headings        int `json:"headings"`
 }
 
 type Node struct {
@@ -37,6 +38,9 @@ type Node struct {
 	SectionID    string   `json:"section_id"`
 	Confidence   float64  `json:"confidence"`
 	Evidence     []string `json:"evidence,omitempty"`
+	BeforeTwips  int      `json:"before_twips,omitempty"`
+	AfterTwips   int      `json:"after_twips,omitempty"`
+	LineTwips    int      `json:"line_twips,omitempty"`
 }
 
 type ValidationIssue struct {
@@ -45,12 +49,16 @@ type ValidationIssue struct {
 }
 
 var (
-	bodyChildPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
-	nodeTypePattern  = regexp.MustCompile(`^<w:(p|tbl)\b`)
-	textPattern      = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
-	deletedPattern   = regexp.MustCompile(`(?s)<w:(?:del|moveFrom)\b[^>]*>.*?</w:(?:del|moveFrom)>`)
-	stylePattern     = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
-	headingPattern   = regexp.MustCompile(`^(\d+(?:\.\d+){0,3})\s+\S+`)
+	bodyChildPattern   = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
+	nodeTypePattern    = regexp.MustCompile(`^<w:(p|tbl)\b`)
+	textPattern        = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
+	deletedPattern     = regexp.MustCompile(`(?s)<w:(?:del|moveFrom)\b[^>]*>.*?</w:(?:del|moveFrom)>`)
+	stylePattern       = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
+	headingPattern     = regexp.MustCompile(`^(\d+(?:\.\d+){0,3})\s+\S+`)
+	chapterPattern     = regexp.MustCompile(`^第[一二三四五六七八九十百千万\d]+章(?:\s*\S+)?$`)
+	chineseListPattern = regexp.MustCompile(`^[一二三四五六七八九十百]+[、．.]\s*\S+`)
+	spacingPattern     = regexp.MustCompile(`<w:spacing\b[^>]*/>`)
+	attributePattern   = regexp.MustCompile(`\b([A-Za-z0-9_:.]+)="([^"]*)"`)
 )
 
 func Extract(docxPath string) (Snapshot, error) {
@@ -76,7 +84,14 @@ func ExtractDocumentXML(documentXML string) Snapshot {
 	for index, raw := range matches {
 		nodeType := detectNodeType(raw)
 		text := extractText(raw)
-		role, level, confidence, evidence := classify(nodeType, text)
+		styleID := extractStyleID(raw)
+		role, level, _, evidence := classify(nodeType, text)
+		if nodeType == "paragraph" && chapterPattern.MatchString(strings.TrimSpace(text)) {
+			role, level, evidence = "heading", 1, []string{"regex:chinese_chapter_heading"}
+		} else if nodeType == "paragraph" && chineseListPattern.MatchString(strings.TrimSpace(text)) {
+			role, level, evidence = "heading", 1, []string{"regex:chinese_list_heading"}
+		}
+		confidence := confidenceFor(role, nodeType, text, styleID, evidence)
 		if role == "abstract_cn" || role == "abstract_en" {
 			sectionID = "abstract"
 		} else if role == "toc_title" {
@@ -96,15 +111,21 @@ func ExtractDocumentXML(documentXML string) Snapshot {
 			Text:         text,
 			SemanticRole: role,
 			LogicalLevel: level,
-			CurrentStyle: extractStyleID(raw),
+			CurrentStyle: styleID,
 			SectionID:    sectionID,
 			Confidence:   confidence,
 			Evidence:     evidence,
+			BeforeTwips:  spacingValue(raw, "w:before"),
+			AfterTwips:   spacingValue(raw, "w:after"),
+			LineTwips:    spacingValue(raw, "w:line"),
 		}
 		snapshot.Nodes = append(snapshot.Nodes, node)
 		switch nodeType {
 		case "paragraph":
 			snapshot.Stats.Paragraphs++
+			if role == "blank" {
+				snapshot.Stats.BlankParagraphs++
+			}
 		case "table":
 			snapshot.Stats.Tables++
 		}
@@ -221,4 +242,38 @@ func classify(nodeType string, text string) (string, int, float64, []string) {
 		return "heading", level, 0.95, []string{"regex:decimal_heading"}
 	}
 	return "body_paragraph", 0, 0.75, []string{"fallback:non_empty_paragraph"}
+}
+
+func confidenceFor(role, nodeType, text, styleID string, evidence []string) float64 {
+	if nodeType == "table" || role == "blank" {
+		return 0.99
+	}
+	score := 0.55
+	if len(evidence) > 0 && strings.HasPrefix(evidence[0], "keyword:") {
+		score = 0.88
+		if !strings.ContainsAny(strings.TrimSpace(text), ":：;；") {
+			score += 0.07
+		}
+	} else if len(evidence) > 0 && strings.HasPrefix(evidence[0], "regex:") {
+		score = 0.82
+	}
+	if styleID != "" && (strings.Contains(strings.ToLower(styleID), "heading") || strings.Contains(styleID, "标题")) {
+		score += 0.12
+	}
+	if score > 0.99 {
+		return 0.99
+	}
+	return score
+}
+
+func spacingValue(raw, name string) int {
+	spacing := spacingPattern.FindString(raw)
+	for _, match := range attributePattern.FindAllStringSubmatch(spacing, -1) {
+		if len(match) == 3 && match[1] == name {
+			value := 0
+			_, _ = fmt.Sscanf(match[2], "%d", &value)
+			return value
+		}
+	}
+	return 0
 }

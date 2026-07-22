@@ -661,16 +661,8 @@ func (h *PaperHandler) parseAndValidateUploadFile(c *gin.Context) (*multipart.Fi
 	}
 	// 统一小写扩展名便于分支判断
 	fileExt := strings.ToLower(filepath.Ext(file.Filename))
-	var fileType string
-	switch fileExt {
-	case ".pdf":
-		fileType = "pdf" // PDF 仅检查/预览类流程
-	case ".docx":
-		fileType = "docx" // 优先支持的 Word 格式
-	case ".doc":
-		fileType = "doc" // 旧版 Word
-	default:
-		utils.BadRequest(c, "invalid file type, only pdf, doc and docx are allowed")
+	if fileExt != ".docx" {
+		utils.BadRequest(c, "invalid file type, only docx is allowed")
 		return nil, "", fmt.Errorf("invalid file type")
 	}
 	// 与配置中的 MaxSize 比较，超限则拒绝
@@ -678,7 +670,7 @@ func (h *PaperHandler) parseAndValidateUploadFile(c *gin.Context) (*multipart.Fi
 		utils.BadRequest(c, "file size exceeds limit")
 		return nil, "", fmt.Errorf("file size exceeds limit")
 	}
-	return file, fileType, nil
+	return file, "docx", nil
 }
 
 func (h *PaperHandler) uploadRequestFromForm(c *gin.Context) UploadPaperRequest {
@@ -941,7 +933,7 @@ func (h *PaperHandler) DeletePaper(c *gin.Context) {
 	}
 
 	// 删除论文
-	if err := h.paperService.DeletePaper(paperID, userID.(uuid.UUID)); err != nil {
+	if err := h.paperService.DeletePaper(userID.(uuid.UUID), paperID); err != nil {
 		utils.InternalServerError(c, err.Error())
 		return
 	}
@@ -1237,13 +1229,12 @@ func (h *PaperHandler) GetPaperCheckResults(c *gin.Context) {
 }
 
 func logPaperFileDownload(label string, paperID uuid.UUID, cleanPath string) {
-	absPath, _ := filepath.Abs(cleanPath)
-	fmt.Printf("%s: ID=%s, Path=%s, AbsPath=%s\n", label, paperID, cleanPath, absPath)
+	log.Printf("component=paper_download operation=%q paper_id=%s", label, paperID)
 }
 
 func ensurePaperFileExistsForDownload(c *gin.Context, cleanPath string, notFoundMsg string) bool {
 	if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
-		utils.ErrorResponse(c, http.StatusNotFound, notFoundMsg, fmt.Sprintf("Path: %s, Error: %v", cleanPath, err))
+		utils.ErrorResponse(c, http.StatusNotFound, notFoundMsg, err.Error())
 		return false
 	}
 	return true
@@ -1812,7 +1803,12 @@ func (h *PaperHandler) UpdateFormatStandard(c *gin.Context) {
 		updateData["is_active"] = *req.IsActive
 	}
 
-	if err := database.DB.Model(&model.FormatTemplate{}).Where("id = ?", templateUUID).Updates(updateData).Error; err != nil {
+	var template model.FormatTemplate
+	if err := database.DB.First(&template, "id = ?", templateUUID).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusNotFound, "格式标准不存在", err.Error())
+		return
+	}
+	if err := database.UpdateFormatTemplateWithAudit(&template, updateData, auditActorID(c)); err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式标准失败", err.Error())
 		return
 	}

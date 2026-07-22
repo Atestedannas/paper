@@ -1,9 +1,13 @@
 package blockmap
 
 type Binding struct {
-	BlockID   string `json:"block_id"`
-	BlockKind string `json:"block_kind"`
-	Payload   string `json:"payload"`
+	BlockID     string `json:"block_id"`
+	BlockKind   string `json:"block_kind"`
+	Payload     string `json:"payload"`
+	PayloadKind string `json:"payload_kind,omitempty"`
+	PayloadXML  string `json:"payload_xml,omitempty"`
+	Level       int    `json:"level,omitempty"`
+	SourceIndex int    `json:"source_index,omitempty"`
 }
 
 type MappingResult struct {

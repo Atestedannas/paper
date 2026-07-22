@@ -47,8 +47,44 @@ func TestAuthHandler_Register(t *testing.T) {
 	handler.Register(c)
 
 	// 5. 断言结果
-	if w.Code != http.StatusCreated {
-		t.Errorf("期望状态码 201，实际 %d", w.Code)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("期望数据库不可用时返回 500，实际 %d", w.Code)
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte("access_token")) {
+		t.Fatal("数据库不可用时不得签发 JWT")
+	}
+}
+
+func TestOAuthStateValidationFailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for name, matches := range map[string]func(*gin.Context, string) bool{
+		"alipay": alipayLoginStateMatches,
+		"wechat": wechatLoginStateMatches,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/callback?state=attacker", nil)
+			if matches(c, "attacker") {
+				t.Fatal("missing state cookie must not be accepted")
+			}
+		})
+	}
+}
+
+func TestSendResetCodeDoesNotExposeCode(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/reset-code", bytes.NewBufferString(`{"email":"user@example.com"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	(&AuthHandler{}).SendResetCode(c)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", w.Code)
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte("reset_code")) {
+		t.Fatal("password reset code leaked in response")
 	}
 }
 

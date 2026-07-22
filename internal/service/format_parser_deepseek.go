@@ -33,7 +33,7 @@ var allowedFormatRuleKeys = map[string]struct{}{
 	"keywords": {}, "english_title": {}, "english_abstract": {},
 	"english_keywords": {}, "body": {}, "headings": {}, "references": {},
 	"table_of_contents": {}, "figures": {}, "tables": {}, "footnotes": {},
-	"cover": {}, "acknowledgements": {}, "appendix": {},
+	"formula": {}, "cover": {}, "acknowledgements": {}, "appendix": {},
 }
 
 func splitFormatText(text string, maxRunes, maxChunks int) ([]string, int, bool) {

@@ -277,6 +277,12 @@ func TestTemplateTransplantCanBeExplicitlyDisabledWithDefaultTemplate(t *testing
 	}
 }
 
+func TestWorkflowJSONReturnsMarshalError(t *testing.T) {
+	if _, err := workflowJSON(make(chan int)); err == nil {
+		t.Fatal("workflowJSON() error = nil, want unsupported type error")
+	}
+}
+
 func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.T) {
 	repoRoot := workflowServiceRepoRoot(t)
 	sourcePath := filepath.Join(repoRoot, "uploads", "user.docx")
@@ -293,6 +299,7 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 	t.Chdir(repoRoot)
 	t.Setenv("CQRWST_TEMPLATE_PATH", "")
 	t.Setenv("CQRWST_TEMPLATE_TRANSPLANT_ENABLED", "")
+	t.Setenv("CQRWST_ALLOW_CONTENT_NORMALIZATION", "true")
 	t.Setenv("DEEPSEEK_ENABLED", "false")
 	userID := uuid.New()
 
@@ -525,7 +532,7 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 	if chapterHeading == "" {
 		t.Fatalf("generated output missing first-level numbered body heading: %s", documentXML)
 	}
-	for _, want := range []string{`<w:pStyle w:val="Heading1"/>`, `<w:outlineLvl w:val="0"/>`, `<w:sz w:val="32"/>`, `<w:b/><w:bCs/>`, `<w:jc w:val="left"/>`, `w:beforeLines="100"`, `w:afterLines="100"`} {
+	for _, want := range []string{`<w:pStyle w:val="Heading1"/>`, `<w:outlineLvl w:val="0"/>`, `<w:sz w:val="32"/>`, `<w:b/><w:bCs/>`, `<w:jc w:val="left"/>`, `w:after="312"`} {
 		if !strings.Contains(chapterHeading, want) {
 			t.Fatalf("first-level numbered body heading missing %q: %s", want, chapterHeading)
 		}
@@ -678,7 +685,7 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 			t.Fatalf("reference entries should be continuously numbered, want %s at index %d: %s", want, index, paragraph)
 		}
 	}
-	for _, want := range []string{`w:eastAsia="宋体"`, `w:ascii="Times New Roman"`, `<w:sz w:val="21"/>`, `w:line="288"`} {
+	for _, want := range []string{`w:eastAsia="宋体"`, `w:ascii="宋体"`, `<w:sz w:val="21"/>`, `w:line="360"`} {
 		if !strings.Contains(firstReference, want) {
 			t.Fatalf("first reference entry missing %s: %s", want, firstReference)
 		}

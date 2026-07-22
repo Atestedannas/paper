@@ -16,6 +16,8 @@ func AutoMigrate() {
 	err := DB.AutoMigrate(
 		// 鍩虹琛?
 		&model.University{},
+		&model.FormatTemplate{},
+		&model.FormatTemplateRuleRevision{},
 		&model.SystemSetting{},
 		&model.User{},
 		&model.MemberLevel{},
@@ -62,9 +64,7 @@ func insertInitialData() {
 	insertDefaultSystemSettings()
 
 	// 鎻掑叆瓒呯骇绠＄悊鍛?
-	insertSuperAdmin()
 	// 閲嶇疆鎸囧畾绠＄悊鍛樺瘑鐮?
-	resetSpecificAdminPassword()
 
 	log.Println("鍒濆鏁版嵁鎻掑叆瀹屾垚")
 
@@ -74,8 +74,8 @@ func insertInitialData() {
 
 // resetSpecificAdminPassword 閲嶇疆鎸囧畾绠＄悊鍛樿处鍙峰瘑鐮?
 func resetSpecificAdminPassword() {
-	targetEmail := "2673078804@qq.com"
-	newPassword := "123456"
+	targetEmail := ""
+	newPassword := ""
 
 	var user model.User
 	if err := DB.Where("email = ?", targetEmail).First(&user).Error; err == nil {
@@ -99,9 +99,9 @@ func resetSpecificAdminPassword() {
 
 // insertSuperAdmin 鎻掑叆瓒呯骇绠＄悊鍛?
 func insertSuperAdmin() {
-	username := "admin"
-	email := "admin@example.com"
-	password := "Admin@123456" // 榛樿寮哄瘑鐮?
+	username := ""
+	email := ""
+	password := ""
 
 	var count int64
 	DB.Model(&model.User{}).Where("username = ? OR email = ?", username, email).Count(&count)

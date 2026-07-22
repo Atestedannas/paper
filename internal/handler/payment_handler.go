@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"encoding/xml"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"strings"
@@ -110,11 +112,20 @@ func (h *PaymentHandler) HandleWechatCallback(c *gin.Context) {
 	// 处理微信支付回调
 	result, err := h.paymentService.HandleWeChatCallback(data)
 	if err != nil {
-		utils.BadRequest(c, err.Error())
+		writeWechatCallbackResponse(c, "FAIL", err.Error())
 		return
 	}
+	writeWechatCallbackResponse(c, fmt.Sprint(result["return_code"]), fmt.Sprint(result["return_msg"]))
+}
 
-	utils.Success(c, result)
+func writeWechatCallbackResponse(c *gin.Context, code, message string) {
+	type response struct {
+		XMLName    xml.Name `xml:"xml"`
+		ReturnCode string   `xml:"return_code"`
+		ReturnMsg  string   `xml:"return_msg"`
+	}
+	body, _ := xml.Marshal(response{ReturnCode: code, ReturnMsg: message})
+	c.Data(200, "application/xml; charset=utf-8", body)
 }
 
 // HandleAlipayCallback 处理支付宝异步通知（须公网 HTTPS，且路由不能要求登录）

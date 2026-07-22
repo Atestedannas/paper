@@ -433,12 +433,12 @@ func (h *AdminUniversityHandler) DeleteUniversity(c *gin.Context) {
 		for i := range templates {
 			templateIDs = append(templateIDs, templates[i].ID)
 		}
-		if err := tx.Unscoped().Where("check_result_id IN (SELECT id FROM check_results WHERE format_template_id IN ?)", templateIDs).Delete(&model.FormatCorrection{}).Error; err != nil {
+		if err := tx.Unscoped().Where("check_result_id IN (SELECT id FROM check_results WHERE template_id IN ?)", templateIDs).Delete(&model.FormatCorrection{}).Error; err != nil {
 			tx.Rollback()
 			utils.ErrorResponse(c, http.StatusInternalServerError, "删除修正记录失败", err.Error())
 			return
 		}
-		if err := tx.Unscoped().Where("format_template_id IN ?", templateIDs).Delete(&model.CheckResult{}).Error; err != nil {
+		if err := tx.Unscoped().Where("template_id IN ?", templateIDs).Delete(&model.CheckResult{}).Error; err != nil {
 			tx.Rollback()
 			utils.ErrorResponse(c, http.StatusInternalServerError, "删除检查结果失败", err.Error())
 			return

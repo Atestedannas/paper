@@ -52,11 +52,10 @@ func (p *Paper) BeforeCreate(tx *gorm.DB) (err error) {
 
 // CheckResult 格式检查结果模型（支持差异对比）
 type CheckResult struct {
-	ID               uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	PaperID          uuid.UUID `gorm:"type:uuid;index;not null" json:"paper_id"`
-	UserID           uuid.UUID `gorm:"type:uuid;index;not null" json:"user_id"`
-	TemplateID       uuid.UUID `gorm:"type:uuid;index;not null;column:template_id" json:"template_id"`               // 使用的模板ID
-	FormatTemplateID uuid.UUID `gorm:"type:uuid;index;not null;column:format_template_id" json:"format_template_id"` // 冗余字段，解决数据库双重列约束问题
+	ID         uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	PaperID    uuid.UUID `gorm:"type:uuid;index;not null" json:"paper_id"`
+	UserID     uuid.UUID `gorm:"type:uuid;index;not null" json:"user_id"`
+	TemplateID uuid.UUID `gorm:"type:uuid;index;not null;column:template_id" json:"template_id"`
 
 	// 检查结果统计
 	TotalIssues  int `gorm:"not null;default:0" json:"total_issues"`

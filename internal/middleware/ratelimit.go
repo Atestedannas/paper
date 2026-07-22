@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -8,79 +9,73 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// RateLimiter 令牌桶限流器
-
 type RateLimiter struct {
-	mu            sync.Mutex
-	tokens        map[string]int
-	replenishTime map[string]time.Time
-	rate          int // 每秒生成的令牌数
-	capacity      int // 令牌桶容量
+	mu       sync.Mutex
+	buckets  map[string]*rateBucket
+	rate     float64
+	capacity float64
 }
 
-// NewRateLimiter 创建限流器实例
+type rateBucket struct {
+	tokens float64
+	last   time.Time
+}
+
 func NewRateLimiter(rate, capacity int) *RateLimiter {
 	return &RateLimiter{
-		tokens:        make(map[string]int),
-		replenishTime: make(map[string]time.Time),
-		rate:          rate,
-		capacity:      capacity,
+		buckets:  make(map[string]*rateBucket),
+		rate:     float64(rate),
+		capacity: float64(capacity),
 	}
 }
 
-// Limit 限流中间件
 func (rl *RateLimiter) Limit() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 获取客户端IP
-		clientIP := c.ClientIP()
-
-		rl.mu.Lock()
-		defer rl.mu.Unlock()
-
+		clientIP := remoteIP(c.Request.RemoteAddr)
 		now := time.Now()
 
-		// 初始化客户端令牌桶
-		if _, exists := rl.tokens[clientIP]; !exists {
-			rl.tokens[clientIP] = rl.capacity
-			rl.replenishTime[clientIP] = now
-			// 允许请求
-			rl.tokens[clientIP]--
-			c.Next()
+		rl.mu.Lock()
+		bucket, exists := rl.buckets[clientIP]
+		if !exists {
+			bucket = &rateBucket{tokens: minFloat(rl.rate, rl.capacity), last: now}
+			rl.buckets[clientIP] = bucket
+		}
+		bucket.tokens = minFloat(rl.capacity, bucket.tokens+now.Sub(bucket.last).Seconds()*rl.rate)
+		bucket.last = now
+		if bucket.tokens < 1 {
+			rl.mu.Unlock()
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
 			return
 		}
-
-		// 计算需要补充的令牌数
-		replenishTokens := int(now.Sub(rl.replenishTime[clientIP]).Seconds() * float64(rl.rate))
-		if replenishTokens > 0 {
-			// 更新令牌数，不超过容量
-			if rl.tokens[clientIP]+replenishTokens > rl.capacity {
-				rl.tokens[clientIP] = rl.capacity
-			} else {
-				rl.tokens[clientIP] += replenishTokens
-			}
-			rl.replenishTime[clientIP] = now
-		}
-
-		// 检查令牌是否足够
-		if rl.tokens[clientIP] <= 0 {
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error": "rate limit exceeded",
-			})
-			c.Abort()
-			return
-		}
-
-		// 消耗一个令牌
-		rl.tokens[clientIP]--
+		bucket.tokens--
+		rl.mu.Unlock()
 
 		c.Next()
 	}
 }
 
-// GlobalRateLimiter 全局限流器实例
-var GlobalRateLimiter = NewRateLimiter(100, 200) // 每秒100个请求，桶容量200
+func remoteIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return host
+	}
+	return remoteAddr
+}
 
-// RateLimitMiddleware 默认限流中间件
+func minFloat(left, right float64) float64 {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+var GlobalRateLimiter = NewRateLimiter(100, 200)
+var LoginRateLimiter = NewRateLimiter(1, 5)
+
 func RateLimitMiddleware() gin.HandlerFunc {
 	return GlobalRateLimiter.Limit()
+}
+
+func LoginRateLimitMiddleware() gin.HandlerFunc {
+	return LoginRateLimiter.Limit()
 }

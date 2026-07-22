@@ -46,11 +46,13 @@ func (m *Mapper) Map(template *templatecompile.CompiledTemplatePackage, paper *p
 
 		if block.SlotType == "repeatable" {
 			for i, payload := range payloads {
-				result.Bindings = append(result.Bindings, Binding{
+				binding := Binding{
 					BlockID:   block.BlockID,
 					BlockKind: block.Kind,
 					Payload:   payload,
-				})
+				}
+				populatePayloadMetadata(&binding, paper)
+				result.Bindings = append(result.Bindings, binding)
 				if i > 0 {
 					result.GeneratedBlocks = append(result.GeneratedBlocks, block.BlockID)
 				}
@@ -63,15 +65,33 @@ func (m *Mapper) Map(template *templatecompile.CompiledTemplatePackage, paper *p
 			continue
 		}
 
-		result.Bindings = append(result.Bindings, Binding{
+		binding := Binding{
 			BlockID:   block.BlockID,
 			BlockKind: block.Kind,
 			Payload:   payloads[0],
-		})
+		}
+		populatePayloadMetadata(&binding, paper)
+		result.Bindings = append(result.Bindings, binding)
 	}
 	appendBackMatterFallbackBindings(result, paper)
 
 	return result, nil
+}
+
+func populatePayloadMetadata(binding *Binding, paper *paperparse.ParsedPaper) {
+	if binding == nil || paper == nil || binding.BlockKind != "content_blocks" {
+		return
+	}
+	for index, block := range paper.ContentBlocks {
+		if (block.XML != "" && strings.TrimSpace(block.XML) == strings.TrimSpace(binding.Payload)) ||
+			(block.XML == "" && strings.TrimSpace(block.Text) == strings.TrimSpace(binding.Payload)) {
+			binding.PayloadKind = block.Kind
+			binding.PayloadXML = strings.TrimSpace(block.XML)
+			binding.Level = block.Level
+			binding.SourceIndex = index
+			return
+		}
+	}
 }
 
 func appendBackMatterFallbackBindings(result *MappingResult, paper *paperparse.ParsedPaper) {

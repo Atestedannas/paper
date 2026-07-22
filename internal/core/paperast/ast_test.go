@@ -83,3 +83,14 @@ func assertRole(t *testing.T, snapshot Snapshot, text string, role string, secti
 	}
 	t.Fatalf("node %q not found in %#v", text, snapshot.Nodes)
 }
+
+func TestExtractDocumentXMLRecognizesChineseHeadingsAndSpacing(t *testing.T) {
+	xml := `<w:document><w:body><w:p><w:pPr><w:spacing w:before="240" w:after="120" w:line="360"/></w:pPr><w:r><w:t>第一章 绪论</w:t></w:r></w:p><w:p><w:r/></w:p><w:p><w:r><w:t>一、研究背景</w:t></w:r></w:p></w:body></w:document>`
+	snapshot := ExtractDocumentXML(xml)
+	if snapshot.Stats.Headings != 2 || snapshot.Stats.BlankParagraphs != 1 {
+		t.Fatalf("unexpected stats: %#v", snapshot.Stats)
+	}
+	if snapshot.Nodes[0].LogicalLevel != 1 || snapshot.Nodes[0].BeforeTwips != 240 || snapshot.Nodes[0].AfterTwips != 120 || snapshot.Nodes[0].LineTwips != 360 {
+		t.Fatalf("chapter metadata not extracted: %#v", snapshot.Nodes[0])
+	}
+}

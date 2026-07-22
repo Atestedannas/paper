@@ -87,6 +87,7 @@ type ParagraphPropertiesSpec struct {
 	EastAsiaFont       string
 	AsciiFont          string
 	HAnsiFont          string
+	FontHint           string
 	FontSizeHalfPoints int
 	ComplexSizeHalfPts int
 	Bold               bool
@@ -98,6 +99,7 @@ type RunPropertiesSpec struct {
 	EastAsiaFont       string
 	AsciiFont          string
 	HAnsiFont          string
+	FontHint           string
 	FontSizeHalfPoints int
 	ComplexSizeHalfPts int
 	Bold               bool
@@ -114,6 +116,10 @@ type TableBordersSpec struct {
 }
 
 func ApplySectionProperties(documentXML string, spec SectionPropertiesSpec) (string, bool) {
+	indexes := sectionPropertiesElement.FindAllStringIndex(documentXML, -1)
+	if len(indexes) > 0 {
+		return ApplySectionPropertiesAt(documentXML, len(indexes)-1, spec)
+	}
 	sectPr := lastElement(documentXML, sectionPropertiesElement)
 	if sectPr == "" {
 		sectPr = `<w:sectPr/>`
@@ -131,6 +137,20 @@ func ApplySectionProperties(documentXML string, spec SectionPropertiesSpec) (str
 		return documentXML[:idx] + updatedSectPr + documentXML[idx:], true
 	}
 	return documentXML + updatedSectPr, true
+}
+
+func ApplySectionPropertiesAt(documentXML string, sectionIndex int, spec SectionPropertiesSpec) (string, bool) {
+	indexes := sectionPropertiesElement.FindAllStringIndex(documentXML, -1)
+	if sectionIndex < 0 || sectionIndex >= len(indexes) {
+		return documentXML, false
+	}
+	index := indexes[sectionIndex]
+	sectPr := documentXML[index[0]:index[1]]
+	updated := replaceElementBody(sectPr, updateSectionPropertiesBody(elementBody(sectPr), spec), "w:sectPr")
+	if updated == sectPr {
+		return documentXML, false
+	}
+	return documentXML[:index[0]] + updated + documentXML[index[1]:], true
 }
 
 func ApplySettingsProperties(settingsXML string, spec SettingsPropertiesSpec) (string, bool) {
@@ -292,6 +312,7 @@ func updateParagraphPropertiesBody(body string, spec ParagraphPropertiesSpec) st
 			EastAsiaFont:       spec.EastAsiaFont,
 			AsciiFont:          spec.AsciiFont,
 			HAnsiFont:          spec.HAnsiFont,
+			FontHint:           spec.FontHint,
 			FontSizeHalfPoints: spec.FontSizeHalfPoints,
 			ComplexSizeHalfPts: spec.ComplexSizeHalfPts,
 			Bold:               spec.Bold,
@@ -321,7 +342,7 @@ func buildRunProperties(spec RunPropertiesSpec) string {
 
 func buildRunPropertiesBody(spec RunPropertiesSpec) string {
 	var builder strings.Builder
-	if spec.EastAsiaFont != "" || spec.AsciiFont != "" || spec.HAnsiFont != "" {
+	if spec.EastAsiaFont != "" || spec.AsciiFont != "" || spec.HAnsiFont != "" || spec.FontHint != "" {
 		builder.WriteString(`<w:rFonts`)
 		if spec.EastAsiaFont != "" {
 			builder.WriteString(fmt.Sprintf(` w:eastAsia="%s"`, spec.EastAsiaFont))
@@ -331,6 +352,9 @@ func buildRunPropertiesBody(spec RunPropertiesSpec) string {
 		}
 		if spec.HAnsiFont != "" {
 			builder.WriteString(fmt.Sprintf(` w:hAnsi="%s"`, spec.HAnsiFont))
+		}
+		if spec.FontHint != "" {
+			builder.WriteString(fmt.Sprintf(` w:hint="%s"`, spec.FontHint))
 		}
 		builder.WriteString(`/>`)
 	}
@@ -446,7 +470,7 @@ func elementBody(element string) string {
 	if strings.HasSuffix(element, "/>") {
 		return ""
 	}
-	start := strings.Index(element, ">")
+	start := tagEndIndex(element)
 	end := strings.LastIndex(element, "</")
 	if start < 0 || end < 0 || end <= start {
 		return ""
@@ -455,12 +479,31 @@ func elementBody(element string) string {
 }
 
 func replaceElementBody(element, body, name string) string {
-	start := strings.Index(element, ">")
+	start := tagEndIndex(element)
 	if start < 0 || strings.HasSuffix(element, "/>") {
 		return "<" + name + ">" + body + "</" + name + ">"
 	}
 	opening := element[:start+1]
 	return opening + body + "</" + name + ">"
+}
+
+func tagEndIndex(element string) int {
+	quote := byte(0)
+	for index := 0; index < len(element); index++ {
+		switch element[index] {
+		case '\'', '"':
+			if quote == 0 {
+				quote = element[index]
+			} else if quote == element[index] {
+				quote = 0
+			}
+		case '>':
+			if quote == 0 {
+				return index
+			}
+		}
+	}
+	return -1
 }
 
 func insertBeforeClosingTag(xmlText, tag, insertion string) string {

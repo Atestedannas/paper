@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html"
 	"os"
+	pathpkg "path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -90,6 +91,10 @@ type Profile struct {
 	RulePack    RulePack               `json:"rule_pack,omitempty"`
 	Header      HeaderFooterRule       `json:"header"`
 	Footer      HeaderFooterRule       `json:"footer"`
+	HeaderFirst HeaderFooterRule       `json:"header_first,omitempty"`
+	HeaderEven  HeaderFooterRule       `json:"header_even,omitempty"`
+	FooterFirst HeaderFooterRule       `json:"footer_first,omitempty"`
+	FooterEven  HeaderFooterRule       `json:"footer_even,omitempty"`
 	AI          *AIProfile             `json:"ai,omitempty"`
 	Confidence  float64                `json:"confidence"`
 }
@@ -102,16 +107,26 @@ type SectionRule struct {
 }
 
 type StyleRule struct {
-	Label          string `json:"label"`
-	FontEastAsia   string `json:"font_east_asia,omitempty"`
-	FontASCII      string `json:"font_ascii,omitempty"`
-	FontSizeHalfPt string `json:"font_size_half_pt,omitempty"`
-	Bold           bool   `json:"bold,omitempty"`
-	Alignment      string `json:"alignment,omitempty"`
-	Line           string `json:"line,omitempty"`
-	BeforeLines    string `json:"before_lines,omitempty"`
-	AfterLines     string `json:"after_lines,omitempty"`
-	FirstLineChars string `json:"first_line_chars,omitempty"`
+	Label             string `json:"label"`
+	FontEastAsia      string `json:"font_east_asia,omitempty"`
+	FontASCII         string `json:"font_ascii,omitempty"`
+	FontHint          string `json:"font_hint,omitempty"`
+	FontSizeHalfPt    string `json:"font_size_half_pt,omitempty"`
+	ComplexSizeHalfPt string `json:"complex_size_half_pt,omitempty"`
+	Bold              bool   `json:"bold,omitempty"`
+	BoldSet           bool   `json:"-"`
+	Italic            bool   `json:"italic,omitempty"`
+	ItalicSet         bool   `json:"-"`
+	Alignment         string `json:"alignment,omitempty"`
+	Line              string `json:"line,omitempty"`
+	LineRule          string `json:"line_rule,omitempty"`
+	BeforeTwips       string `json:"before_twips,omitempty"`
+	AfterTwips        string `json:"after_twips,omitempty"`
+	BeforeLines       string `json:"before_lines,omitempty"`
+	AfterLines        string `json:"after_lines,omitempty"`
+	FirstLineChars    string `json:"first_line_chars,omitempty"`
+	FirstLineTwips    string `json:"first_line_twips,omitempty"`
+	OutlineLevel      string `json:"outline_level,omitempty"`
 }
 
 type PageSetupRule struct {
@@ -189,17 +204,36 @@ type paragraph struct {
 }
 
 var (
-	paragraphPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
-	textPattern      = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
-	fontPattern      = regexp.MustCompile(`<w:rFonts\b[^>]*/>`)
-	sizePattern      = regexp.MustCompile(`<w:sz\b[^>]*/>`)
-	spacingPattern   = regexp.MustCompile(`<w:spacing\b[^>]*/>`)
-	indentPattern    = regexp.MustCompile(`<w:ind\b[^>]*/>`)
-	jcPattern        = regexp.MustCompile(`<w:jc\b[^>]*/>`)
-	sectPrPattern    = regexp.MustCompile(`(?s)<w:sectPr\b[^>]*>.*?</w:sectPr>|<w:sectPr\b[^>]*/>`)
-	pgSzPattern      = regexp.MustCompile(`<w:pgSz\b[^>]*/>`)
-	pgMarPattern     = regexp.MustCompile(`<w:pgMar\b[^>]*/>`)
-	attrPattern      = regexp.MustCompile(`\s([A-Za-z0-9_:]+)="([^"]*)"`)
+	paragraphPattern             = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
+	textPattern                  = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
+	fontPattern                  = regexp.MustCompile(`<w:rFonts\b[^>]*/>`)
+	sizePattern                  = regexp.MustCompile(`<w:sz\b[^>]*/>`)
+	sizeCsPattern                = regexp.MustCompile(`<w:szCs\b[^>]*/>`)
+	spacingPattern               = regexp.MustCompile(`<w:spacing\b[^>]*/>`)
+	runPropertiesPattern         = regexp.MustCompile(`(?s)<w:rPr\b[^>]*>.*?</w:rPr>|<w:rPr\b[^>]*/>`)
+	runElementPattern            = regexp.MustCompile(`(?s)<w:r(?:\s[^>]*)?>.*?</w:r>`)
+	paragraphRunPropsPattern     = regexp.MustCompile(`(?s)<w:pPr\b[^>]*>.*?<w:rPr\b[^>]*>.*?</w:rPr>.*?</w:pPr>`)
+	indentPattern                = regexp.MustCompile(`<w:ind\b[^>]*/>`)
+	outlinePattern               = regexp.MustCompile(`<w:outlineLvl\b[^>]*/>`)
+	styleElementPattern          = regexp.MustCompile(`(?s)<w:style\b[^>]*>.*?</w:style>`)
+	styleIDPattern               = regexp.MustCompile(`<w:style\b[^>]*\bw:styleId="([^"]+)"`)
+	basedOnPattern               = regexp.MustCompile(`<w:basedOn\b[^>]*\bw:val="([^"]+)"`)
+	paragraphStyleIDPattern      = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
+	jcPattern                    = regexp.MustCompile(`<w:jc\b[^>]*/>`)
+	sectPrPattern                = regexp.MustCompile(`(?s)<w:sectPr\b[^>]*>.*?</w:sectPr>|<w:sectPr\b[^>]*/>`)
+	pgSzPattern                  = regexp.MustCompile(`<w:pgSz\b[^>]*/>`)
+	pgMarPattern                 = regexp.MustCompile(`<w:pgMar\b[^>]*/>`)
+	attrPattern                  = regexp.MustCompile(`\s([A-Za-z0-9_:]+)="([^"]*)"`)
+	headerFooterReferencePattern = regexp.MustCompile(`<w:(?:header|footer)Reference\b[^>]*/>`)
+	relationshipPattern          = regexp.MustCompile(`<Relationship\b[^>]*/>`)
+	bodyStartArabicPattern       = regexp.MustCompile(`^1\s+[^\d.]\S*`)
+	heading1ArabicPattern        = regexp.MustCompile(`^\d+\s+\S+`)
+	heading2ArabicPattern        = regexp.MustCompile(`^\d+\.\d+\s+\S+`)
+	heading3ArabicPattern        = regexp.MustCompile(`^\d+\.\d+\.\d+\s+\S+`)
+	heading1ChinesePattern       = regexp.MustCompile(`^第[一二三四五六七八九十百零〇两0-9]+章\s*\S*`)
+	bodyStartChinesePattern      = regexp.MustCompile(`^第[一1]章\s*\S*`)
+	heading1ChineseListPattern   = regexp.MustCompile(`^[一二三四五六七八九十]+[、．.]\s*\S+`)
+	bodyStartChineseListPattern  = regexp.MustCompile(`^一[、．.]\s*\S+`)
 )
 
 func Build(ctx context.Context, templatePath string, opts Options) (*Profile, error) {
@@ -244,13 +278,43 @@ func Extract(templatePath string) (*Profile, error) {
 		Confidence:  0.76,
 	}
 	paras := collectParagraphs(string(documentXML))
+	styleDefinitions := map[string]StyleRule{}
+	if stylesXML, ok := pkg.Get("word/styles.xml"); ok {
+		styleDefinitions = extractStyleDefinitions(string(stylesXML))
+	}
 	profile.RulePack = extractLocalRulePack(paras)
+	extractHeaderFooterVariants(profile, pkg, string(documentXML))
+	styleSamples := map[string][]StyleRule{}
+	bodyStarted := false
+	inTOC := false
 	for index, para := range paras {
 		key := classifyParagraph(para.Text)
+		if key == "toc_title" {
+			inTOC = true
+		} else if inTOC && (key == "body_start" || strings.HasPrefix(key, "heading_")) {
+			pageBreak, _ := detectPageBreakBefore(paras, index)
+			if !pageBreak {
+				continue
+			}
+			inTOC = false
+		}
+		if key == "body_start" {
+			bodyStarted = true
+		} else if key == "references_title" || key == "acknowledgements_title" {
+			bodyStarted = false
+		} else if key == "" && bodyStarted && isBodyStyleCandidate(para) {
+			key = "body"
+		}
+		if strings.HasPrefix(key, "heading_") && hasTOCLeader(para.Text) {
+			continue
+		}
 		if key == "" {
 			continue
 		}
-		profile.Styles[key] = extractStyle(key, para.XML)
+		styleSamples[key] = append(styleSamples[key], extractStyleWithDefinitions(key, para.XML, styleDefinitions))
+		if key == "body_start" {
+			styleSamples["heading_1"] = append(styleSamples["heading_1"], extractStyleWithDefinitions("heading_1", para.XML, styleDefinitions))
+		}
 		if isSectionKey(key) {
 			breakBefore, detectedFrom := detectPageBreakBefore(paras, index)
 			profile.Sections[key] = SectionRule{
@@ -260,6 +324,9 @@ func Extract(templatePath string) (*Profile, error) {
 				DetectedFrom:    detectedFrom,
 			}
 		}
+	}
+	for key, samples := range styleSamples {
+		profile.Styles[key] = aggregateStyleRules(key, samples)
 	}
 	return profile, nil
 }
@@ -361,11 +428,19 @@ func mergeAISummary(profile *Profile, raw map[string]interface{}) {
 	if profile.Sections == nil {
 		profile.Sections = map[string]SectionRule{}
 	}
+	aiWins := summary.Confidence > 0 && (profile.Confidence == 0 || summary.Confidence >= profile.Confidence)
 	for key, section := range summary.Sections {
-		if _, exists := profile.Sections[key]; exists {
-			continue
+		merged, exists := profile.Sections[key]
+		if merged.Label == "" {
+			merged.Label = key
 		}
-		profile.Sections[key] = SectionRule{Label: key, PageBreakBefore: section.PageBreakBefore, DetectedFrom: firstNonEmpty(section.Evidence, section.DetectedFrom)}
+		if !exists || aiWins {
+			merged.PageBreakBefore = section.PageBreakBefore
+			if detectedFrom := firstNonEmpty(section.Evidence, section.DetectedFrom); detectedFrom != "" {
+				merged.DetectedFrom = detectedFrom
+			}
+		}
+		profile.Sections[key] = merged
 	}
 	if profile.Styles == nil {
 		profile.Styles = map[string]StyleRule{}
@@ -373,12 +448,16 @@ func mergeAISummary(profile *Profile, raw map[string]interface{}) {
 	for key, style := range summary.Styles {
 		style.Label = key
 		local, exists := profile.Styles[key]
-		profile.Styles[key] = mergeStyleRule(style, local)
-		if exists {
-			merged := profile.Styles[key]
-			merged.Bold = local.Bold
-			profile.Styles[key] = merged
+		merged := mergeStyleRule(style, local)
+		if aiWins {
+			merged = mergeStyleRule(local, style)
 		}
+		if aiWins && jsonStyleFieldPresent(data, key, "bold") {
+			merged.Bold = style.Bold
+		} else if exists {
+			merged.Bold = local.Bold
+		}
+		profile.Styles[key] = merged
 	}
 	profile.PageSetup = mergePageSetupRule(summary.PageSetup, profile.PageSetup)
 	profile.RulePack = mergeRulePack(summary.RulePack, profile.RulePack)
@@ -418,6 +497,15 @@ func mergeStyleRule(base StyleRule, override StyleRule) StyleRule {
 	if override.Line != "" {
 		base.Line = override.Line
 	}
+	if override.LineRule != "" {
+		base.LineRule = override.LineRule
+	}
+	if override.BeforeTwips != "" {
+		base.BeforeTwips = override.BeforeTwips
+	}
+	if override.AfterTwips != "" {
+		base.AfterTwips = override.AfterTwips
+	}
 	if override.BeforeLines != "" {
 		base.BeforeLines = override.BeforeLines
 	}
@@ -428,6 +516,91 @@ func mergeStyleRule(base StyleRule, override StyleRule) StyleRule {
 		base.FirstLineChars = override.FirstLineChars
 	}
 	return base
+}
+
+func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
+	if strings.HasPrefix(label, "heading_") {
+		withSize := make([]StyleRule, 0, len(samples))
+		for _, sample := range samples {
+			if sample.FontSizeHalfPt != "" {
+				withSize = append(withSize, sample)
+			}
+		}
+		if len(withSize) > 0 {
+			samples = withSize
+		}
+	}
+	style := StyleRule{Label: label}
+	style.FontEastAsia = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontEastAsia })
+	style.FontASCII = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontASCII })
+	style.FontHint = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontHint })
+	style.FontSizeHalfPt = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontSizeHalfPt })
+	style.ComplexSizeHalfPt = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.ComplexSizeHalfPt })
+	style.Alignment = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.Alignment })
+	style.Line = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.Line })
+	style.LineRule = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.LineRule })
+	style.BeforeTwips = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.BeforeTwips })
+	style.AfterTwips = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.AfterTwips })
+	style.BeforeLines = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.BeforeLines })
+	style.AfterLines = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.AfterLines })
+	style.FirstLineChars = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FirstLineChars })
+	style.FirstLineTwips = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FirstLineTwips })
+	style.OutlineLevel = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.OutlineLevel })
+	boldCount := 0
+	boldSamples := 0
+	for _, sample := range samples {
+		if style.FontSizeHalfPt != "" && sample.FontSizeHalfPt != style.FontSizeHalfPt {
+			continue
+		}
+		if !sample.BoldSet {
+			continue
+		}
+		boldSamples++
+		if sample.Bold {
+			boldCount++
+		}
+	}
+	style.BoldSet = boldSamples > 0
+	style.Bold = boldSamples > 0 && boldCount*5 > boldSamples*3
+	italicCount, italicSamples := 0, 0
+	for _, sample := range samples {
+		if sample.ItalicSet {
+			italicSamples++
+			if sample.Italic {
+				italicCount++
+			}
+		}
+	}
+	style.ItalicSet = italicSamples > 0
+	style.Italic = italicSamples > 0 && italicCount*5 > italicSamples*3
+	return style
+}
+
+func mostCommonStyleValue(samples []StyleRule, value func(StyleRule) string) string {
+	counts := map[string]int{}
+	best := ""
+	for _, sample := range samples {
+		current := value(sample)
+		counts[current]++
+		if counts[current] > counts[best] {
+			best = current
+		}
+	}
+	return best
+}
+
+func jsonStyleFieldPresent(data []byte, styleKey string, field string) bool {
+	var raw struct {
+		Styles map[string]map[string]json.RawMessage `json:"styles"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	if raw.Styles == nil || raw.Styles[styleKey] == nil {
+		return false
+	}
+	_, ok := raw.Styles[styleKey][field]
+	return ok
 }
 
 func mergePageSetupRule(base PageSetupRule, override PageSetupRule) PageSetupRule {
@@ -683,7 +856,18 @@ func applyStyleOverride(profile *Profile, key string, raw map[string]interface{}
 		style.Line = strconv.Itoa(int(multiple * 240))
 	}
 	if chars, ok := numberRule(raw["first_line_indent"]); ok {
-		style.FirstLineChars = strconv.Itoa(int(chars * 100))
+		if strings.EqualFold(stringRule(raw["first_line_indent_unit"]), "cm") {
+			chars /= 0.37
+		}
+		if chars >= 0 && chars <= 10 {
+			style.FirstLineChars = strconv.Itoa(int(chars * 100))
+		}
+	}
+	if twips, ok := numberRule(raw["paragraph_before_twips"]); ok && twips >= 0 {
+		style.BeforeTwips = strconv.Itoa(int(twips))
+	}
+	if twips, ok := numberRule(raw["paragraph_after_twips"]); ok && twips >= 0 {
+		style.AfterTwips = strconv.Itoa(int(twips))
 	}
 	if lines, ok := numberRule(raw["paragraph_before"]); ok {
 		style.BeforeLines = strconv.Itoa(int(lines * 100))
@@ -863,17 +1047,23 @@ func classifyParagraph(text string) string {
 		return "references"
 	case normalized == "致谢":
 		return "acknowledgements_title"
-	case regexp.MustCompile(`^1\s+\S+`).MatchString(strings.TrimSpace(text)):
+	case IsBodyStartParagraph(text):
 		return "body_start"
-	case regexp.MustCompile(`^\d+\.\d+\.\d+\s+\S+`).MatchString(strings.TrimSpace(text)):
+	case heading3ArabicPattern.MatchString(strings.TrimSpace(text)):
 		return "heading_3"
-	case regexp.MustCompile(`^\d+\.\d+\s+\S+`).MatchString(strings.TrimSpace(text)):
+	case heading2ArabicPattern.MatchString(strings.TrimSpace(text)):
 		return "heading_2"
-	case regexp.MustCompile(`^\d+\s+\S+`).MatchString(strings.TrimSpace(text)):
+	case heading1ArabicPattern.MatchString(strings.TrimSpace(text)) || heading1ChinesePattern.MatchString(normalized) || heading1ChineseListPattern.MatchString(normalized):
 		return "heading_1"
 	default:
 		return ""
 	}
+}
+
+func IsBodyStartParagraph(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	normalized := normalizeLabel(text)
+	return bodyStartArabicPattern.MatchString(trimmed) || bodyStartChinesePattern.MatchString(normalized) || bodyStartChineseListPattern.MatchString(normalized)
 }
 
 func isSectionKey(key string) bool {
@@ -888,10 +1078,14 @@ func detectPageBreakBefore(paras []paragraph, index int) (bool, string) {
 	if strings.Contains(current, "<w:pageBreakBefore") || strings.Contains(current, `<w:br w:type="page"`) {
 		return true, "current_paragraph"
 	}
-	if index > 0 {
-		previous := paras[index-1].XML
-		if strings.Contains(previous, `<w:br w:type="page"`) || strings.Contains(previous, `<w:type w:val="nextPage"`) {
+	for previousIndex, checked := index-1, 0; previousIndex >= 0 && checked < 5; previousIndex, checked = previousIndex-1, checked+1 {
+		previousPara := paras[previousIndex]
+		previous := previousPara.XML
+		if strings.Contains(previous, `<w:br w:type="page"`) || strings.Contains(previous, `<w:type w:val="nextPage"`) || strings.Contains(previous, `<w:sectPr`) {
 			return true, "previous_paragraph"
+		}
+		if strings.TrimSpace(previousPara.Text) != "" {
+			break
 		}
 	}
 	return false, "not_found"
@@ -903,24 +1097,215 @@ func extractStyle(label string, raw string) StyleRule {
 		attrs := attrs(font)
 		style.FontEastAsia = attrs["w:eastAsia"]
 		style.FontASCII = attrs["w:ascii"]
+		style.FontHint = attrs["w:hint"]
 	}
 	if size := sizePattern.FindString(raw); size != "" {
 		style.FontSizeHalfPt = attrs(size)["w:val"]
+	} else if size := sizeCsPattern.FindString(raw); size != "" {
+		style.FontSizeHalfPt = attrs(size)["w:val"]
 	}
-	style.Bold = strings.Contains(raw, "<w:b") || strings.Contains(raw, "<w:bCs")
+	if size := sizeCsPattern.FindString(raw); size != "" {
+		style.ComplexSizeHalfPt = attrs(size)["w:val"]
+	}
+	boldScope := paragraphRunPropsPattern.FindString(raw)
+	if hasBoldDeclaration(boldScope) {
+		style.BoldSet = true
+		style.Bold = enabledBold(boldScope)
+	} else {
+		totalRuns, declaredRuns, enabled := 0, 0, 0
+		for _, run := range runElementPattern.FindAllString(raw, -1) {
+			if strings.TrimSpace(extractText(run)) == "" {
+				continue
+			}
+			totalRuns++
+			runProperties := runPropertiesPattern.FindString(run)
+			if hasBoldDeclaration(runProperties) {
+				declaredRuns++
+			}
+			if enabledBold(runProperties) {
+				enabled++
+			}
+		}
+		style.BoldSet = totalRuns > 0
+		style.Bold = declaredRuns > 0 && enabled*5 > totalRuns*3
+	}
+	italicScope := paragraphRunPropsPattern.FindString(raw)
+	if hasItalicDeclaration(italicScope) {
+		style.ItalicSet = true
+		style.Italic = enabledProperty(italicScope, "i")
+	}
 	if jc := jcPattern.FindString(raw); jc != "" {
 		style.Alignment = attrs(jc)["w:val"]
 	}
 	if spacing := spacingPattern.FindString(raw); spacing != "" {
 		attrs := attrs(spacing)
 		style.Line = attrs["w:line"]
+		style.LineRule = attrs["w:lineRule"]
+		style.BeforeTwips = attrs["w:before"]
+		style.AfterTwips = attrs["w:after"]
 		style.BeforeLines = attrs["w:beforeLines"]
 		style.AfterLines = attrs["w:afterLines"]
 	}
 	if ind := indentPattern.FindString(raw); ind != "" {
-		style.FirstLineChars = attrs(ind)["w:firstLineChars"]
+		attributes := attrs(ind)
+		style.FirstLineChars = attributes["w:firstLineChars"]
+		style.FirstLineTwips = attributes["w:firstLine"]
+	}
+	if outline := outlinePattern.FindString(raw); outline != "" {
+		style.OutlineLevel = attrs(outline)["w:val"]
 	}
 	return style
+}
+
+func extractStyleWithDefinitions(label, paragraphXML string, definitions map[string]StyleRule) StyleRule {
+	direct := extractStyle(label, paragraphXML)
+	match := paragraphStyleIDPattern.FindStringSubmatch(paragraphXML)
+	if len(match) != 2 {
+		return direct
+	}
+	base, ok := definitions[match[1]]
+	if !ok {
+		return direct
+	}
+	base.Label = label
+	return mergeExtractedStyle(base, direct, paragraphXML)
+}
+
+func extractStyleDefinitions(stylesXML string) map[string]StyleRule {
+	rawByID := map[string]string{}
+	for _, element := range styleElementPattern.FindAllString(stylesXML, -1) {
+		if match := styleIDPattern.FindStringSubmatch(element); len(match) == 2 {
+			rawByID[match[1]] = element
+		}
+	}
+	resolved := map[string]StyleRule{}
+	var resolve func(string, map[string]bool, int) StyleRule
+	resolve = func(id string, seen map[string]bool, depth int) StyleRule {
+		if style, ok := resolved[id]; ok {
+			return style
+		}
+		if depth > 64 || seen[id] {
+			return StyleRule{}
+		}
+		seen[id] = true
+		raw := rawByID[id]
+		style := StyleRule{}
+		if match := basedOnPattern.FindStringSubmatch(raw); len(match) == 2 {
+			style = resolve(match[1], seen, depth+1)
+		}
+		style = mergeExtractedStyle(style, extractStyle(id, raw), raw)
+		resolved[id] = style
+		return style
+	}
+	for id := range rawByID {
+		resolve(id, map[string]bool{}, 0)
+	}
+	return resolved
+}
+
+func mergeExtractedStyle(base, override StyleRule, _ string) StyleRule {
+	base.Label = override.Label
+	if override.FontEastAsia != "" {
+		base.FontEastAsia = override.FontEastAsia
+	}
+	if override.FontASCII != "" {
+		base.FontASCII = override.FontASCII
+	}
+	if override.FontHint != "" {
+		base.FontHint = override.FontHint
+	}
+	if override.FontSizeHalfPt != "" {
+		base.FontSizeHalfPt = override.FontSizeHalfPt
+	}
+	if override.ComplexSizeHalfPt != "" {
+		base.ComplexSizeHalfPt = override.ComplexSizeHalfPt
+	}
+	if override.BoldSet {
+		base.Bold = override.Bold
+		base.BoldSet = true
+	}
+	if override.ItalicSet {
+		base.Italic = override.Italic
+		base.ItalicSet = true
+	}
+	if override.Alignment != "" {
+		base.Alignment = override.Alignment
+	}
+	if override.Line != "" {
+		base.Line = override.Line
+	}
+	if override.LineRule != "" {
+		base.LineRule = override.LineRule
+	}
+	if override.BeforeTwips != "" {
+		base.BeforeTwips = override.BeforeTwips
+	}
+	if override.AfterTwips != "" {
+		base.AfterTwips = override.AfterTwips
+	}
+	if override.BeforeLines != "" {
+		base.BeforeLines = override.BeforeLines
+	}
+	if override.AfterLines != "" {
+		base.AfterLines = override.AfterLines
+	}
+	if override.FirstLineChars != "" {
+		base.FirstLineChars = override.FirstLineChars
+	}
+	if override.FirstLineTwips != "" {
+		base.FirstLineTwips = override.FirstLineTwips
+	}
+	if override.OutlineLevel != "" {
+		base.OutlineLevel = override.OutlineLevel
+	}
+	return base
+}
+
+func enabledBold(raw string) bool {
+	for _, tag := range []string{"<w:b", "<w:bCs"} {
+		if index := strings.Index(raw, tag); index >= 0 {
+			end := strings.Index(raw[index:], ">")
+			if end < 0 {
+				continue
+			}
+			value := raw[index : index+end+1]
+			return !strings.Contains(value, `w:val="0"`) && !strings.Contains(value, `w:val="false"`)
+		}
+	}
+	return false
+}
+
+func hasBoldDeclaration(raw string) bool {
+	return strings.Contains(raw, "<w:b") || strings.Contains(raw, "<w:bCs")
+}
+
+func hasItalicDeclaration(raw string) bool {
+	return strings.Contains(raw, "<w:i")
+}
+
+func enabledProperty(raw string, property string) bool {
+	index := strings.Index(raw, "<w:"+property)
+	if index < 0 {
+		return false
+	}
+	end := strings.Index(raw[index:], ">")
+	if end < 0 {
+		return false
+	}
+	value := raw[index : index+end+1]
+	return !strings.Contains(value, `w:val="0"`) && !strings.Contains(value, `w:val="false"`)
+}
+
+func isBodyStyleCandidate(para paragraph) bool {
+	text := strings.TrimSpace(para.Text)
+	if len([]rune(text)) < 40 || strings.Contains(para.XML, "<w:pict") || strings.Contains(para.XML, "<w:drawing") {
+		return false
+	}
+	return strings.ContainsAny(text, "。！？.!?；;")
+}
+
+func hasTOCLeader(text string) bool {
+	return strings.Count(text, "．")+strings.Count(text, "…") >= 3
 }
 
 func extractHeaderFooter(pkg *ooxmlpkg.DocxPackage, header bool) HeaderFooterRule {
@@ -938,21 +1323,7 @@ func extractHeaderFooter(pkg *ooxmlpkg.DocxPackage, header bool) HeaderFooterRul
 		if !ok {
 			continue
 		}
-		raw := string(content)
-		text := extractText(raw)
-		rule := HeaderFooterRule{
-			Exists:        true,
-			Text:          text,
-			HasPageField:  strings.Contains(raw, " PAGE "),
-			HasNumPages:   strings.Contains(raw, " NUMPAGES ") || hasChineseTotalPageText(text),
-			HasDoubleLine: strings.Contains(raw, `w:val="double"`),
-		}
-		if font := fontPattern.FindString(raw); font != "" {
-			rule.FontEastAsia = attrs(font)["w:eastAsia"]
-		}
-		if size := sizePattern.FindString(raw); size != "" {
-			rule.FontSizeHalfPt = attrs(size)["w:val"]
-		}
+		rule := extractHeaderFooterRule(string(content))
 		score := len([]rune(rule.Text))
 		if rule.HasPageField {
 			score += 100
@@ -968,6 +1339,69 @@ func extractHeaderFooter(pkg *ooxmlpkg.DocxPackage, header bool) HeaderFooterRul
 		}
 	}
 	return best
+}
+
+func extractHeaderFooterVariants(profile *Profile, pkg *ooxmlpkg.DocxPackage, documentXML string) {
+	if profile == nil || pkg == nil {
+		return
+	}
+	relsContent, ok := pkg.Get("word/_rels/document.xml.rels")
+	if !ok {
+		return
+	}
+	targets := map[string]string{}
+	for _, relationship := range relationshipPattern.FindAllString(string(relsContent), -1) {
+		values := attrs(relationship)
+		if values["Id"] != "" && values["Target"] != "" {
+			targets[values["Id"]] = pathpkg.Clean(pathpkg.Join("word", values["Target"]))
+		}
+	}
+	for _, reference := range headerFooterReferencePattern.FindAllString(documentXML, -1) {
+		values := attrs(reference)
+		content, ok := pkg.Get(targets[values["r:id"]])
+		if !ok {
+			continue
+		}
+		rule := extractHeaderFooterRule(string(content))
+		kind := values["w:type"]
+		switch {
+		case strings.HasPrefix(reference, "<w:header") && kind == "first":
+			profile.HeaderFirst = rule
+		case strings.HasPrefix(reference, "<w:header") && kind == "even":
+			profile.HeaderEven = rule
+		case strings.HasPrefix(reference, "<w:header"):
+			profile.Header = rule
+		case kind == "first":
+			profile.FooterFirst = rule
+		case kind == "even":
+			profile.FooterEven = rule
+		default:
+			profile.Footer = rule
+		}
+	}
+	if profile.HeaderEven.Exists {
+		profile.RulePack.HeaderPolicy = "odd_even"
+		profile.RulePack.OddHeaderText = profile.Header.Text
+		profile.RulePack.EvenHeaderText = profile.HeaderEven.Text
+	}
+}
+
+func extractHeaderFooterRule(raw string) HeaderFooterRule {
+	text := extractText(raw)
+	rule := HeaderFooterRule{
+		Exists:        true,
+		Text:          text,
+		HasPageField:  strings.Contains(raw, " PAGE "),
+		HasNumPages:   strings.Contains(raw, " NUMPAGES ") || hasChineseTotalPageText(text),
+		HasDoubleLine: strings.Contains(raw, `w:val="double"`),
+	}
+	if font := fontPattern.FindString(raw); font != "" {
+		rule.FontEastAsia = attrs(font)["w:eastAsia"]
+	}
+	if size := sizePattern.FindString(raw); size != "" {
+		rule.FontSizeHalfPt = attrs(size)["w:val"]
+	}
+	return rule
 }
 
 func hasChineseTotalPageText(text string) bool {

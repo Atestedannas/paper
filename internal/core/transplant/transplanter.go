@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,7 +19,9 @@ import (
 	"github.com/paper-format-checker/backend/internal/core/blockmap"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
+	"github.com/paper-format-checker/backend/internal/core/repaircontract"
 	"github.com/paper-format-checker/backend/internal/core/templatecompile"
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
 const defaultPatchTarget = "word/document.xml"
@@ -70,6 +73,7 @@ type GenerateInput struct {
 	CompiledTemplate *templatecompile.CompiledTemplatePackage
 	Mapping          *blockmap.MappingResult
 	OutputPath       string
+	RepairContract   *repaircontract.Contract
 }
 
 type Transplanter struct{}
@@ -96,6 +100,7 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 	if err := validateInput(input); err != nil {
 		return err
 	}
+	log.Printf("component=transplant stage=start targets=%d bindings=%d", len(input.CompiledTemplate.PatchTargets), len(input.Mapping.Bindings))
 
 	pkg, err := ooxmlpkg.Open(input.CompiledTemplate.SkeletonPath)
 	if err != nil {
@@ -103,26 +108,32 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 	}
 	usesCQRWSTNormalizers := packageUsesCQRWSTNormalizers(pkg)
 
-	replacements := buildReplacements(input.Mapping.Bindings, input.CompiledTemplate.MappingContract)
+	allowContentRewrite := input.RepairContract == nil || !input.RepairContract.Blocks("visible_content_rewrite")
+	replacements := buildReplacements(input.Mapping.Bindings, input.CompiledTemplate.MappingContract, input.CompiledTemplate.StyleProfiles, allowContentRewrite)
 	coverFields := input.Mapping.CoverFields
 	for _, target := range patchTargets(input.CompiledTemplate.PatchTargets) {
+		log.Printf("component=transplant stage=patch target=%q", target)
 		content, ok := pkg.Get(target)
 		if !ok {
 			return fmt.Errorf("patch target %q not found in skeleton docx", target)
 		}
 		patched, applied := applyReplacements(string(content), replacements)
 		fullBodyRebuilt := false
-		if target == defaultPatchTarget {
+		if target == defaultPatchTarget && usesCQRWSTNormalizers {
 			if rebuilt := rebuildCQRWSTDocumentBody(patched, coverFields, replacements.fallbackParagraphs, replacements.fallbackReferences, replacements.fallbackThanks); rebuilt != "" {
 				patched = rebuilt
 				applied = true
 				fullBodyRebuilt = true
-			} else if !applied && strings.TrimSpace(replacements.fallbackParagraphs) != "" {
-				patched = injectParagraphsBeforeFinalSection(patched, replacements.fallbackParagraphs)
 			}
 		}
+		if target == defaultPatchTarget && !fullBodyRebuilt && !applied && strings.TrimSpace(replacements.fallbackParagraphs) != "" {
+			patched = injectParagraphsBeforeFinalSection(patched, replacements.fallbackParagraphs)
+		}
 		if target == defaultPatchTarget && len(coverFields) > 0 && !fullBodyRebuilt {
-			if rebuilt := rebuildCQRWSTCoverPage(patched, coverFields); rebuilt != "" {
+			if !usesCQRWSTNormalizers {
+				patched = fillCoverTableFields(patched, coverFields)
+				patched = fillCoverTextBoxFields(patched, coverFields)
+			} else if rebuilt := rebuildCQRWSTCoverPage(patched, coverFields); rebuilt != "" {
 				patched = rebuilt
 			} else {
 				patched = fillCoverTableFields(patched, coverFields)
@@ -133,9 +144,6 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 			patched = injectParagraphsAfterHeading(patched, replacements.fallbackReferences, []string{"References", "参考文献"})
 		}
 		patched = normalizeRendererIncompatibleXML(patched)
-		if target == defaultPatchTarget {
-			patched = titleCaseEnglishAbstractBodies(patched)
-		}
 		if target == defaultPatchTarget {
 			if err := validateXML(patched); err != nil {
 				return fmt.Errorf("generated %s is invalid XML: %w", target, err)
@@ -164,7 +172,7 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 	if err := pkg.Write(input.OutputPath); err != nil {
 		return fmt.Errorf("write generated docx %q: %w", input.OutputPath, err)
 	}
-
+	log.Printf("component=transplant stage=complete")
 	return nil
 }
 
@@ -295,38 +303,58 @@ func patchTargets(targets []string) []string {
 	return targets
 }
 
-func buildReplacements(bindings []blockmap.Binding, contract templatecompile.MappingContract) replacementSet {
-	grouped := make(map[string][]string)
+func buildReplacements(bindings []blockmap.Binding, contract templatecompile.MappingContract, profiles []templatecompile.StyleProfile, allowContentRewrite ...bool) replacementSet {
+	canRewrite := len(allowContentRewrite) == 0 || allowContentRewrite[0]
+	grouped := make(map[string][]blockmap.Binding)
 	for _, binding := range bindings {
-		grouped[binding.BlockID] = append(grouped[binding.BlockID], binding.Payload)
+		grouped[binding.BlockID] = append(grouped[binding.BlockID], binding)
 	}
 
 	replacements := replacementSet{
 		inline:    make(map[string]string, len(grouped)),
 		paragraph: make(map[string]string),
 	}
-	for blockID, payloads := range grouped {
+	for blockID, blockBindings := range grouped {
+		payloads := bindingPayloads(blockBindings)
 		replacement := strings.Join(escapePayloads(payloads), "\n")
 		replacements.inline["{{"+blockID+"}}"] = replacement
 		if token := strings.TrimSpace(contract.BlockBindings[blockID]); token != "" {
 			replacements.inline[token] = replacement
 			if blockID == "content_blocks" {
-				replacements.paragraph[token] = renderParagraphs(payloads)
+				replacements.paragraph[token] = renderBindings(blockBindings, canRewrite, profiles...)
 			}
 		}
 		if blockID == "content_blocks" {
-			paragraphs := renderParagraphs(payloads)
+			paragraphs := renderBindings(blockBindings, canRewrite, profiles...)
 			replacements.paragraph["{{"+blockID+"}}"] = paragraphs
 			replacements.fallbackParagraphs = paragraphs
 		}
 		if blockID == "references" {
-			replacements.fallbackReferences = renderReferences(payloads)
+			replacements.fallbackReferences = renderReferences(payloads, profiles...)
 		}
 		if blockID == "acknowledgement" {
-			replacements.fallbackThanks = renderAcknowledgements(payloads)
+			replacements.fallbackThanks = renderAcknowledgements(payloads, profiles...)
 		}
 	}
 	return replacements
+}
+
+func bindingPayloads(bindings []blockmap.Binding) []string {
+	payloads := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		payloads = append(payloads, binding.Payload)
+	}
+	return payloads
+}
+
+func renderBindings(bindings []blockmap.Binding, allowContentRewrite bool, profiles ...templatecompile.StyleProfile) string {
+	metadata := make(map[string]blockmap.Binding, len(bindings))
+	for _, binding := range bindings {
+		if binding.PayloadKind != "" {
+			metadata[strings.TrimSpace(binding.Payload)] = binding
+		}
+	}
+	return renderParagraphsWithMetadata(bindingPayloads(bindings), metadata, allowContentRewrite, profiles...)
 }
 
 func escapePayloads(payloads []string) []string {
@@ -337,7 +365,15 @@ func escapePayloads(payloads []string) []string {
 	return escaped
 }
 
-func renderParagraphs(payloads []string) string {
+func renderParagraphs(payloads []string, profiles ...templatecompile.StyleProfile) string {
+	return renderParagraphsWithPolicy(payloads, true, profiles...)
+}
+
+func renderParagraphsWithPolicy(payloads []string, allowContentRewrite bool, profiles ...templatecompile.StyleProfile) string {
+	return renderParagraphsWithMetadata(payloads, nil, allowContentRewrite, profiles...)
+}
+
+func renderParagraphsWithMetadata(payloads []string, metadata map[string]blockmap.Binding, allowContentRewrite bool, profiles ...templatecompile.StyleProfile) string {
 	payloads = coalesceFragmentedTextPayloads(payloads)
 	payloads, hadSourceTOC := removeSourceTOCPayloads(payloads)
 	var builder strings.Builder
@@ -357,7 +393,9 @@ func renderParagraphs(payloads []string) string {
 			generatedTOCWritten = true
 		}
 		if isTableCaption(normalized) && nextNonEmptyPayloadIsTable(payloads, index+1) {
-			normalized = normalizeContinuedTableCaptionNumber(normalized, lastTableNumber)
+			if allowContentRewrite {
+				normalized = normalizeContinuedTableCaptionNumber(normalized, lastTableNumber)
+			}
 			if match := normalTableCaptionNumberPattern.FindStringSubmatch(normalized); len(match) == 4 {
 				lastTableNumber = match[1] + match[2] + match[3]
 			}
@@ -373,7 +411,14 @@ func renderParagraphs(payloads []string) string {
 			}
 			continue
 		}
-		builder.WriteString(renderStyledPayload(payload))
+		if binding, ok := metadata[strings.TrimSpace(payload)]; ok && binding.PayloadKind == "heading" && binding.Level > 0 {
+			if style, found := compiledParagraphStyle(profiles, fmt.Sprintf("heading_%d", binding.Level)); found {
+				style.HeadingLevel = minHeadingLevel(binding.Level, 9)
+				builder.WriteString(paragraphWithStyle(strings.TrimSpace(payload), style))
+				continue
+			}
+		}
+		builder.WriteString(renderStyledPayloadWithPolicy(payload, allowContentRewrite, profiles...))
 	}
 	return builder.String()
 }
@@ -491,12 +536,20 @@ func tocFieldEndParagraph() string {
 	return `<w:p><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`
 }
 
-func renderReferences(payloads []string) string {
-	return renderLinePayloads(payloads, paragraphStyle{Size: 21, FirstLine: 0, Line: 288})
+func renderReferences(payloads []string, profiles ...templatecompile.StyleProfile) string {
+	style, ok := compiledParagraphStyle(profiles, "references")
+	if !ok {
+		style = paragraphStyle{Size: 21, FirstLine: 0, Line: 288}
+	}
+	return renderLinePayloads(payloads, style)
 }
 
-func renderAcknowledgements(payloads []string) string {
-	return renderLinePayloads(payloads, paragraphStyle{Size: 21, FirstLine: 420, FirstLineChars: 200, Line: 360, AsciiFont: "宋体", EastAsiaFont: "宋体"})
+func renderAcknowledgements(payloads []string, profiles ...templatecompile.StyleProfile) string {
+	style, ok := compiledParagraphStyle(profiles, "acknowledgements", "acknowledgement")
+	if !ok {
+		style = paragraphStyle{Size: 21, FirstLine: 420, FirstLineChars: 200, Line: 360, AsciiFont: "宋体", EastAsiaFont: "宋体"}
+	}
+	return renderLinePayloads(payloads, style)
 }
 
 func renderLeadLabelParagraph(text string, label string, asciiFont string, eastAsiaFont string) string {
@@ -676,7 +729,11 @@ func joinTextFragments(left string, right string) string {
 	return left + right
 }
 
-func renderStyledPayload(text string) string {
+func renderStyledPayload(text string, profiles ...templatecompile.StyleProfile) string {
+	return renderStyledPayloadWithPolicy(text, true, profiles...)
+}
+
+func renderStyledPayloadWithPolicy(text string, allowContentRewrite bool, profiles ...templatecompile.StyleProfile) string {
 	normalized := strings.TrimSpace(text)
 	if normalized == "" {
 		return ""
@@ -701,7 +758,9 @@ func renderStyledPayload(text string) string {
 	case strings.HasPrefix(normalized, "Abstract"):
 		return renderLeadLabelParagraph(normalized, leadLabel(normalized, "Abstract:", "Abstract"), "Times New Roman", "Times New Roman")
 	case strings.HasPrefix(normalized, "Key words"), strings.HasPrefix(normalized, "Keywords"):
-		normalized = normalizeEnglishKeywords(normalized)
+		if allowContentRewrite {
+			normalized = normalizeEnglishKeywords(normalized)
+		}
 		if strings.HasPrefix(normalized, "Keywords") {
 			return renderLeadLabelParagraph(normalized, leadLabel(normalized, "Keywords:", "Keywords"), "Times New Roman", "Times New Roman")
 		}
@@ -709,6 +768,10 @@ func renderStyledPayload(text string) string {
 	case isNumberedHeadingText(normalized):
 		normalized = normalizeNumberedHeadingText(normalized)
 		level := headingLevel(normalized)
+		if style, ok := compiledParagraphStyle(profiles, fmt.Sprintf("heading_%d", level)); ok {
+			style.HeadingLevel = minHeadingLevel(level, 9)
+			return paragraphWithStyle(normalized, style)
+		}
 		if level <= 1 {
 			return paragraphWithStyle(normalized, paragraphStyle{Size: 32, Bold: true, Line: 360, Before: 312, BeforeLines: 100, After: 312, AfterLines: 100, Alignment: "left", HeadingLevel: 1, SnapToGridOff: true, AdjustRightIndZero: true, AsciiFont: "宋体", EastAsiaFont: "宋体"})
 		}
@@ -717,6 +780,9 @@ func renderStyledPayload(text string) string {
 		}
 		return paragraphWithStyle(normalized, paragraphStyle{Size: 28, Bold: true, Line: 360, HeadingLevel: minHeadingLevel(level, 9), AsciiFont: "宋体", EastAsiaFont: "宋体"})
 	default:
+		if style, ok := compiledParagraphStyle(profiles, "body"); ok {
+			return paragraphWithStyle(normalized, style)
+		}
 		return paragraphWithStyle(normalized, paragraphStyle{Size: 24, FirstLine: 480, FirstLineChars: 200, Line: 360, AsciiFont: "宋体", EastAsiaFont: "宋体"})
 	}
 }
@@ -736,7 +802,6 @@ func normalizeEnglishKeywords(text string) string {
 		if part == "" {
 			continue
 		}
-		part = strings.ToUpper(part[:1]) + part[1:]
 		cleaned = append(cleaned, part)
 	}
 	return label + " " + strings.Join(cleaned, ",  ")
@@ -1348,23 +1413,69 @@ func pageBreakParagraph() string {
 
 type paragraphStyle struct {
 	Size               int
+	ComplexSize        int
 	Bold               bool
+	Italic             bool
 	BoldPrefix         string
 	FirstLine          int
 	FirstLineChars     int
 	Line               int
+	LineRule           string
 	Before             int
 	After              int
 	BeforeLines        int
 	AfterLines         int
 	Alignment          string
 	HeadingLevel       int
+	OutlineLevel       int
+	OutlineLevelSet    bool
 	KeepNext           bool
 	SnapToGridOff      bool
 	AdjustRightIndZero bool
 	SuperscriptCites   bool
 	AsciiFont          string
 	EastAsiaFont       string
+	FontHint           string
+}
+
+func compiledParagraphStyle(profiles []templatecompile.StyleProfile, names ...string) (paragraphStyle, bool) {
+	for _, name := range names {
+		for _, profile := range profiles {
+			if profile.Name != name {
+				continue
+			}
+			properties := profile.Properties
+			if !hasCompiledStyleProperties(properties) {
+				continue
+			}
+			return paragraphStyle{
+				Size:            properties.FontSizeHalfPoints,
+				ComplexSize:     properties.ComplexSizeHalfPoints,
+				Bold:            properties.Bold,
+				Italic:          properties.Italic,
+				FirstLine:       properties.FirstLineTwips,
+				FirstLineChars:  properties.FirstLineChars,
+				Line:            properties.LineTwips,
+				LineRule:        properties.LineRule,
+				Before:          properties.BeforeTwips,
+				After:           properties.AfterTwips,
+				Alignment:       properties.Alignment,
+				AsciiFont:       properties.ASCIIFont,
+				EastAsiaFont:    properties.EastAsiaFont,
+				FontHint:        properties.FontHint,
+				OutlineLevel:    properties.OutlineLevel,
+				OutlineLevelSet: properties.OutlineLevelSet,
+			}, true
+		}
+	}
+	return paragraphStyle{}, false
+}
+
+func hasCompiledStyleProperties(properties templatecompile.StyleProperties) bool {
+	return properties.EastAsiaFont != "" || properties.ASCIIFont != "" || properties.FontHint != "" || properties.FontSizeHalfPoints > 0 ||
+		properties.ComplexSizeHalfPoints > 0 || properties.BoldSet || properties.ItalicSet || properties.Alignment != "" ||
+		properties.LineTwips > 0 || properties.BeforeTwips > 0 || properties.AfterTwips > 0 || properties.FirstLineChars > 0 ||
+		properties.FirstLineTwips > 0 || properties.OutlineLevelSet
 }
 
 func paragraphWithStyle(text string, style paragraphStyle) string {
@@ -1392,11 +1503,11 @@ func transplantParagraphSpec(text string, style paragraphStyle, includeRunProper
 	asciiFont, eastAsiaFont := fontsForParagraphText(text, style)
 	return ooxmlpatch.ParagraphPropertiesSpec{
 		StyleID:            headingStyleID(style.HeadingLevel),
-		OutlineLevel:       style.HeadingLevel - 1,
-		OutlineLevelSet:    style.HeadingLevel > 0,
+		OutlineLevel:       effectiveOutlineLevel(style),
+		OutlineLevelSet:    style.OutlineLevelSet || style.HeadingLevel > 0,
 		Alignment:          style.Alignment,
 		LineTwips:          style.Line,
-		LineRule:           "auto",
+		LineRule:           firstNonEmpty(style.LineRule, "auto"),
 		BeforeTwips:        style.Before,
 		AfterTwips:         style.After,
 		BeforeLines:        style.BeforeLines,
@@ -1411,12 +1522,30 @@ func transplantParagraphSpec(text string, style paragraphStyle, includeRunProper
 		AdjustRightIndZero: style.AdjustRightIndZero,
 		RunPropertiesInPPr: includeRunProperties,
 		EastAsiaFont:       eastAsiaFont,
+		FontHint:           style.FontHint,
 		AsciiFont:          asciiFont,
 		HAnsiFont:          asciiFont,
 		FontSizeHalfPoints: style.Size,
-		ComplexSizeHalfPts: style.Size,
+		ComplexSizeHalfPts: firstPositive(style.ComplexSize, style.Size),
 		Bold:               style.Bold,
+		Italic:             style.Italic,
 	}
+}
+
+func effectiveOutlineLevel(style paragraphStyle) int {
+	if style.OutlineLevelSet {
+		return style.OutlineLevel
+	}
+	return style.HeadingLevel - 1
+}
+
+func firstPositive(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func headingStyleID(level int) string {
@@ -1456,7 +1585,13 @@ func runXMLForParagraphStyle(text string, style paragraphStyle, bold bool) strin
 	if (style.SuperscriptCites || (style.Size == 24 && style.FirstLineChars == 200)) && !bold && style.HeadingLevel == 0 && bracketCitationPattern.MatchString(text) {
 		return runXMLWithSuperscriptCitations(text, style.Size, asciiFont, eastAsiaFont)
 	}
-	return runXMLWithFonts(text, style.Size, bold, asciiFont, eastAsiaFont)
+	run := runXMLWithFonts(text, style.Size, bold, asciiFont, eastAsiaFont)
+	updated, _ := ooxmlpatch.ApplyRunProperties(run, ooxmlpatch.RunPropertiesSpec{
+		EastAsiaFont: eastAsiaFont, AsciiFont: asciiFont, HAnsiFont: asciiFont,
+		FontHint:           style.FontHint,
+		FontSizeHalfPoints: style.Size, ComplexSizeHalfPts: firstPositive(style.ComplexSize, style.Size), Bold: bold, Italic: style.Italic,
+	})
+	return updated
 }
 
 func runXMLWithSuperscriptCitations(text string, size int, asciiFont string, eastAsiaFont string) string {
@@ -1877,7 +2012,7 @@ func isPlainBlankCoverParagraph(paragraph string) bool {
 	if strings.TrimSpace(xmlText(paragraph)) != "" {
 		return false
 	}
-	for _, marker := range []string{"<w:pict", "<w:drawing", "<v:shape", "<w:sectPr", "<w:br"} {
+	for _, marker := range []string{"<w:pict", "<w:drawing", "<v:shape", "<w:sectPr", "<w:br", "<w:pageBreakBefore", "<w:lastRenderedPageBreak"} {
 		if strings.Contains(paragraph, marker) {
 			return false
 		}
@@ -1909,7 +2044,7 @@ func fillCoverDate(content string, fields map[string]string) string {
 	for i := len(paragraphs) - 1; i >= 0; i-- {
 		paragraph := paragraphs[i]
 		text := strings.TrimSpace(xmlText(paragraph))
-		if strings.Contains(text, "202X") || strings.Contains(text, "20XX") {
+		if strings.Contains(text, "202X") || strings.Contains(text, "20XX") || looksLikeCoverDatePlaceholder(text) {
 			updated := replaceParagraphTextPreservingStyle(paragraph, date)
 			return strings.Replace(content, paragraph, updated, 1)
 		}
@@ -1922,6 +2057,11 @@ func fillCoverDate(content string, fields map[string]string) string {
 		}
 	}
 	return content + centerParagraphWithStyle(date, paragraphStyle{Size: 32, Bold: true, Line: 360})
+}
+
+func looksLikeCoverDatePlaceholder(text string) bool {
+	compact := strings.Join(strings.Fields(text), "")
+	return strings.Contains(compact, "****年**月") || strings.Contains(compact, "____年__月") || strings.Contains(compact, "年月")
 }
 
 func rebuildCQRWSTCoverPage(content string, fields map[string]string) string {
@@ -1986,8 +2126,7 @@ func splitCQRWSTFrontMatterAndBody(bodyXML string) (string, string) {
 	seenBodyHeading := 0
 	for _, match := range paragraphs {
 		text := strings.Join(strings.Fields(xmlText(bodyXML[match[0]:match[1]])), " ")
-		compact := strings.Join(strings.Fields(text), "")
-		if strings.HasPrefix(compact, "1绪论") || strings.HasPrefix(strings.ToLower(text), "1 introduction") {
+		if templateprofile.IsBodyStartParagraph(text) || strings.HasPrefix(strings.ToLower(strings.TrimSpace(text)), "1 introduction") {
 			seenBodyHeading++
 			if seenBodyHeading >= 2 {
 				bodyStart = match[0]

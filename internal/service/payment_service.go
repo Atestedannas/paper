@@ -1,16 +1,23 @@
 package service
 
 import (
-	"encoding/json"
+	"bytes"
+	"crypto/subtle"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/config"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
+	"gorm.io/gorm"
 )
 
 // PaymentService 支付服务接口
@@ -59,23 +66,35 @@ func (s *paymentService) CreatePayment(orderID uuid.UUID, paymentMethod string, 
 		return nil, nil, errors.New("order has expired")
 	}
 
-	// 幂等：同订单存在 pending 支付记录则复用；若用户切换微信/支付宝，同步更新 payment_method
+	// 幂等：同订单存在 pending 支付记录则复用；切换渠道前先关闭旧渠道订单。
 	var existing model.PaymentRecord
 	if err := database.DB.
 		Where("order_id = ? AND payment_status = 'pending'", orderID).
 		First(&existing).Error; err == nil {
 		if existing.PaymentMethod != paymentMethod {
-			existing.PaymentMethod = paymentMethod
-			existing.UpdatedAt = time.Now()
-			if err := database.DB.Save(&existing).Error; err != nil {
+			if err := s.closePendingProviderOrder(existing.PaymentMethod, order.OrderNo); err != nil {
+				return nil, nil, fmt.Errorf("close previous payment order: %w", err)
+			}
+			if err := database.DB.Transaction(func(tx *gorm.DB) error {
+				if err := tx.Model(&existing).Updates(map[string]interface{}{
+					"payment_method": paymentMethod,
+					"updated_at":     time.Now(),
+				}).Error; err != nil {
+					return err
+				}
+				return tx.Model(order).Update("payment_method", paymentMethod).Error
+			}); err != nil {
 				return nil, nil, err
 			}
+			existing.PaymentMethod = paymentMethod
 		}
 		paymentParams, err := s.generatePaymentParams(&existing, order, clientIP, paymentMethod, paymentType)
 		if err != nil {
 			return nil, nil, err
 		}
 		return &existing, paymentParams, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil, err
 	}
 
 	// 新建支付记录，用 UUID 前缀占位，避免空字符串重复违反唯一约束
@@ -102,6 +121,17 @@ func (s *paymentService) CreatePayment(orderID uuid.UUID, paymentMethod string, 
 	}
 
 	return payment, paymentParams, nil
+}
+
+func (s *paymentService) closePendingProviderOrder(paymentMethod, orderNo string) error {
+	switch paymentMethod {
+	case "wechat":
+		return s.wechatNativeService.CloseOrder(orderNo)
+	case "alipay":
+		return s.alipayPagePayService.CloseTrade(orderNo)
+	default:
+		return fmt.Errorf("unsupported payment method %q", paymentMethod)
+	}
 }
 
 // generatePaymentParams 使用本次请求的 paymentMethod（避免复用 pending 记录时仍走旧的微信/支付宝分支）
@@ -144,7 +174,7 @@ func (s *paymentService) generateWeChatPaymentParams(payment *model.PaymentRecor
 			"nonce_str":        nonceStr,
 			"body":             fmt.Sprintf("购买%s会员", order.MemberLevel.LevelName),
 			"out_trade_no":     payment.ID.String(),
-			"total_fee":        int(order.TotalAmount * 100),
+			"total_fee":        int(math.Round(order.TotalAmount * 100)),
 			"spbill_create_ip": clientIP,
 			"notify_url":       s.config.Wechat.NotifyURL,
 			"trade_type":       "JSAPI",
@@ -194,14 +224,21 @@ func (s *paymentService) generateWeChatSign(params map[string]interface{}) (stri
 
 // verifyWeChatSign 验证微信支付签名
 func (s *paymentService) verifyWeChatSign(params map[string]interface{}) error {
-	// TODO: 实现真实的微信支付签名验证逻辑
-	// 1. 从参数中提取sign
-	// 2. 移除sign参数
-	// 3. 参数排序
-	// 4. 拼接字符串 + key
-	// 5. MD5哈希并比较
-
-	// 临时跳过验证，实际项目中需要实现
+	if strings.TrimSpace(s.config.Wechat.ApiKey) == "" {
+		return errors.New("wechat API key is not configured")
+	}
+	stringParams := make(map[string]string, len(params))
+	for key, value := range params {
+		stringParams[key] = fmt.Sprint(value)
+	}
+	provided := strings.ToUpper(strings.TrimSpace(stringParams["sign"]))
+	if provided == "" {
+		return errors.New("missing sign")
+	}
+	expected := s.wechatNativeService.GenerateSign(stringParams)
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+		return errors.New("invalid sign")
+	}
 	return nil
 }
 
@@ -258,19 +295,6 @@ func (s *paymentService) generateAlipayPaymentParams(payment *model.PaymentRecor
 	}
 }
 
-// generateAlipaySign 生成支付宝签名
-func (s *paymentService) generateAlipaySign(params map[string]interface{}) (string, error) {
-	// TODO: 实现真实的RSA2签名逻辑
-	// 这里需要根据支付宝的签名规则实现
-	// 1. 参数排序
-	// 2. 拼接字符串
-	// 3. RSA2签名
-	// 4. Base64编码
-
-	// 临时返回模拟签名，实际项目中需要替换
-	return "mock_alipay_signature", nil
-}
-
 // verifyAlipaySign 验证支付宝异步通知签名（需配置开放平台「支付宝公钥」，非应用公钥）
 func (s *paymentService) verifyAlipaySign(params map[string]interface{}) error {
 	strParams := make(map[string]string)
@@ -295,68 +319,72 @@ func (s *paymentService) verifyAlipaySign(params map[string]interface{}) error {
 
 // HandleWeChatCallback 处理微信支付回调
 func (s *paymentService) HandleWeChatCallback(data []byte) (map[string]interface{}, error) {
-	// 解析微信回调数据（实际项目中需要解析XML格式）
-	var callbackData map[string]interface{}
-	if err := json.Unmarshal(data, &callbackData); err != nil {
+	callbackData, err := parseWechatCallbackXML(data)
+	if err != nil {
 		return nil, err
 	}
-
-	// 验证签名
 	if err := s.verifyWeChatSign(callbackData); err != nil {
 		return nil, fmt.Errorf("wechat signature verification failed: %w", err)
 	}
-
-	// 获取支付结果
-	resultCode, _ := callbackData["result_code"].(string)
-	outTradeNo, _ := callbackData["out_trade_no"].(string)
-	transactionID, _ := callbackData["transaction_id"].(string)
-
-	// 转换支付ID
-	paymentID, err := uuid.Parse(outTradeNo)
+	if callbackData["return_code"] != "SUCCESS" || callbackData["result_code"] != "SUCCESS" {
+		return nil, fmt.Errorf("wechat callback reported failure: %v", callbackData["return_msg"])
+	}
+	if callbackData["appid"] != s.config.Wechat.AppID || callbackData["mch_id"] != s.config.Wechat.MchID {
+		return nil, errors.New("wechat merchant identity mismatch")
+	}
+	payment, err := s.resolvePaymentByOutTradeNo(fmt.Sprint(callbackData["out_trade_no"]))
 	if err != nil {
 		return nil, err
 	}
-
-	// 获取支付记录
-	payment, err := s.GetPaymentByID(paymentID)
-	if err != nil {
+	totalFee, err := strconv.ParseInt(fmt.Sprint(callbackData["total_fee"]), 10, 64)
+	if err != nil || totalFee != int64(math.Round(payment.PaymentAmount*100)) {
+		return nil, errors.New("wechat payment amount mismatch")
+	}
+	if err := s.UpdatePaymentStatus(payment.ID, "success", fmt.Sprint(callbackData["transaction_id"])); err != nil {
 		return nil, err
 	}
-
-	// 更新支付状态
-	if resultCode == "SUCCESS" {
-		// 支付成功
-		err = s.UpdatePaymentStatus(paymentID, "success", transactionID)
-		if err != nil {
-			return nil, err
-		}
-
-		// 更新订单状态
-		orderService := NewOrderService()
-		err = orderService.UpdateOrderStatus(payment.OrderID, "completed", "paid")
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		// 支付失败
-		err = s.UpdatePaymentStatus(paymentID, "failed", transactionID)
-		if err != nil {
-			return nil, err
-		}
-
-		// 更新订单状态
-		orderService := NewOrderService()
-		err = orderService.UpdateOrderStatus(payment.OrderID, "failed", "failed")
-		if err != nil {
-			return nil, err
-		}
+	if err := NewOrderService().UpdateOrderStatus(payment.OrderID, "completed", "paid"); err != nil {
+		return nil, err
 	}
-
-	// 返回微信要求的响应格式
 	return map[string]interface{}{
 		"return_code": "SUCCESS",
 		"return_msg":  "OK",
 	}, nil
+}
+
+func parseWechatCallbackXML(data []byte) (map[string]interface{}, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	values := make(map[string]interface{})
+	var field string
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("invalid wechat callback XML: %w", err)
+		}
+		switch value := token.(type) {
+		case xml.Directive:
+			return nil, errors.New("XML directives are not allowed")
+		case xml.StartElement:
+			if value.Name.Local != "xml" {
+				field = value.Name.Local
+			}
+		case xml.CharData:
+			if field != "" {
+				values[field] = strings.TrimSpace(string(value))
+			}
+		case xml.EndElement:
+			if value.Name.Local == field {
+				field = ""
+			}
+		}
+	}
+	if len(values) == 0 {
+		return nil, errors.New("empty wechat callback")
+	}
+	return values, nil
 }
 
 // resolvePaymentByOutTradeNo out_trade_no 为订单号（ORD…）或支付记录 UUID
@@ -401,6 +429,13 @@ func (s *paymentService) HandleAlipayCallback(data map[string]interface{}) error
 	if err != nil {
 		log.Printf("[AlipayCallback] 根据订单号 %s 查找支付记录失败: %v", outTradeNo, err)
 		return err
+	}
+	if fmt.Sprint(data["app_id"]) != s.alipayPagePayService.effectiveAppID() {
+		return errors.New("alipay app identity mismatch")
+	}
+	totalAmount, err := strconv.ParseFloat(fmt.Sprint(data["total_amount"]), 64)
+	if err != nil || math.Abs(totalAmount-payment.PaymentAmount) > 0.001 {
+		return errors.New("alipay payment amount mismatch")
 	}
 	paymentID := payment.ID
 	log.Printf("[AlipayCallback] 找到支付记录: paymentID=%s, orderID=%s", paymentID, payment.OrderID)
@@ -459,7 +494,19 @@ func (s *paymentService) GetPaymentByTransactionID(transactionID string) (*model
 
 // UpdatePaymentStatus 更新支付状态
 func (s *paymentService) UpdatePaymentStatus(id uuid.UUID, status string, transactionID string) error {
-	// 更新支付记录
+	var current model.PaymentRecord
+	if err := database.DB.First(&current, "id = ?", id).Error; err != nil {
+		return err
+	}
+	if current.PaymentStatus == status {
+		return nil
+	}
+	allowed := (current.PaymentStatus == "pending" && (status == "success" || status == "failed")) ||
+		(current.PaymentStatus == "failed" && status == "success") ||
+		(current.PaymentStatus == "success" && status == "refunded")
+	if !allowed {
+		return fmt.Errorf("invalid payment status transition: %s -> %s", current.PaymentStatus, status)
+	}
 	updates := map[string]interface{}{
 		"payment_status": status,
 		"transaction_id": transactionID,
@@ -467,7 +514,16 @@ func (s *paymentService) UpdatePaymentStatus(id uuid.UUID, status string, transa
 		"updated_at":     time.Now(),
 	}
 
-	return database.DB.Model(&model.PaymentRecord{}).Where("id = ?", id).Updates(updates).Error
+	result := database.DB.Model(&model.PaymentRecord{}).
+		Where("id = ? AND payment_status = ?", id, current.PaymentStatus).
+		Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("payment status changed concurrently")
+	}
+	return nil
 }
 
 // RefundPayment 退款
@@ -488,13 +544,30 @@ func (s *paymentService) RefundPayment(paymentID uuid.UUID, amount float64) erro
 		return errors.New("invalid refund amount")
 	}
 
-	// 调用支付平台的退款API
-	// 实际项目中需要调用微信或支付宝的退款API
+	switch payment.PaymentMethod {
+	case "wechat":
+		result, err := s.wechatNativeService.RefundOrder(&payment.Order, amount, payment.TransactionID)
+		if err != nil {
+			return err
+		}
+		if result.ResultCode != "SUCCESS" {
+			return fmt.Errorf("wechat refund failed: %s", result.ReturnMsg)
+		}
+	case "alipay":
+		result, err := s.alipayPagePayService.RefundTrade(payment.Order.OrderNo, amount)
+		if err != nil {
+			return err
+		}
+		if result.AlipayTradeRefundResponse.RefundAmount == "" {
+			return errors.New("alipay refund was not confirmed")
+		}
+	default:
+		return errors.New("unsupported payment method")
+	}
 
-	// 更新支付记录状态
-	// 实际项目中需要记录退款信息
-
-	// 更新订单状态
+	if err := s.UpdatePaymentStatus(payment.ID, "refunded", payment.TransactionID); err != nil {
+		return err
+	}
 	orderService := NewOrderService()
 	err = orderService.UpdateOrderStatus(payment.OrderID, "refunded", "refunded")
 	if err != nil {

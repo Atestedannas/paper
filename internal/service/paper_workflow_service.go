@@ -158,6 +158,30 @@ func (s *paperWorkflowService) CompileTemplate(ctx context.Context, input Compil
 	if err != nil {
 		return nil, err
 	}
+	manifestJSON, err := workflowJSON(compiled.Manifest)
+	if err != nil {
+		return nil, fmt.Errorf("marshal compiled template manifest: %w", err)
+	}
+	blockCatalogJSON, err := workflowJSON(compiled.BlockCatalog)
+	if err != nil {
+		return nil, fmt.Errorf("marshal compiled block catalog: %w", err)
+	}
+	styleProfilesJSON, err := workflowJSON(compiled.StyleProfiles)
+	if err != nil {
+		return nil, fmt.Errorf("marshal compiled style profiles: %w", err)
+	}
+	mappingContractJSON, err := workflowJSON(compiled.MappingContract)
+	if err != nil {
+		return nil, fmt.Errorf("marshal mapping contract: %w", err)
+	}
+	verificationRulesJSON, err := workflowJSON(compiled.VerificationRules)
+	if err != nil {
+		return nil, fmt.Errorf("marshal verification rules: %w", err)
+	}
+	patchTargetsJSON, err := workflowJSON(compiled.PatchTargets)
+	if err != nil {
+		return nil, fmt.Errorf("marshal patch targets: %w", err)
+	}
 
 	record := model.CompiledTemplate{
 		ID:                    uuid.New(),
@@ -166,12 +190,12 @@ func (s *paperWorkflowService) CompileTemplate(ctx context.Context, input Compil
 		TemplateVersion:       compiled.Manifest.Version,
 		SourceFilePath:        input.FilePath,
 		SkeletonPath:          compiled.SkeletonPath,
-		ManifestJSON:          mustWorkflowJSON(compiled.Manifest),
-		BlockCatalogJSON:      mustWorkflowJSON(compiled.BlockCatalog),
-		StyleProfilesJSON:     mustWorkflowJSON(compiled.StyleProfiles),
-		MappingContractJSON:   mustWorkflowJSON(compiled.MappingContract),
-		VerificationRulesJSON: mustWorkflowJSON(compiled.VerificationRules),
-		PatchTargetsJSON:      mustWorkflowJSON(compiled.PatchTargets),
+		ManifestJSON:          manifestJSON,
+		BlockCatalogJSON:      blockCatalogJSON,
+		StyleProfilesJSON:     styleProfilesJSON,
+		MappingContractJSON:   mappingContractJSON,
+		VerificationRulesJSON: verificationRulesJSON,
+		PatchTargetsJSON:      patchTargetsJSON,
 		Status:                "compiled",
 	}
 	if err := s.db.WithContext(ctx).Create(&record).Error; err != nil {
@@ -330,7 +354,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	if err != nil {
 		return nil, err
 	}
-	profile, err := s.buildWorkflowOutput(ctx, job.Paper.FilePath, outputPath, job.CompiledTemplate)
+	profile, err := templateprofile.Parse(job.CompiledTemplate.StyleProfilesJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -340,6 +364,10 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	}
 	rules := templatecontract.Build(profile)
 	contract := repaircontract.Build(rules, ast)
+	profile, err = s.buildWorkflowOutput(ctx, job.Paper.FilePath, outputPath, job.CompiledTemplate, profile, &contract)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.persistWorkflowContracts(ctx, job, profile, rules, ast, contract); err != nil {
 		return nil, err
 	}
@@ -359,6 +387,17 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			return nil, err
 		}
 		return s.GetJobForUser(id, userID)
+	}
+	contractBaseline, err := paperast.Extract(outputPath)
+	if err != nil {
+		return nil, err
+	}
+	contractBackup := outputPath + ".contract-backup"
+	if contract.Blocks("visible_content_rewrite") {
+		if err := copyFile(outputPath, contractBackup); err != nil {
+			return nil, err
+		}
+		defer os.Remove(contractBackup)
 	}
 
 	transplantEnabled := templateTransplantEnabled(job.CompiledTemplate.SourceFilePath, profile)
@@ -434,6 +473,21 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			if err != nil {
 				return nil, err
 			}
+		}
+	}
+	if contract.Blocks("visible_content_rewrite") {
+		finalAST, extractErr := paperast.Extract(outputPath)
+		if extractErr != nil {
+			if restoreErr := copyFile(contractBackup, outputPath); restoreErr != nil {
+				return nil, fmt.Errorf("extract final paper: %v; restore backup: %w", extractErr, restoreErr)
+			}
+			return nil, extractErr
+		}
+		if issues := repaircontract.ValidateVisibleContentPreserved(contractBaseline, finalAST); len(issues) > 0 {
+			if restoreErr := copyFile(contractBackup, outputPath); restoreErr != nil {
+				return nil, fmt.Errorf("repair contract violation: %s; restore backup: %w", issues[0].Message, restoreErr)
+			}
+			return nil, fmt.Errorf("repair contract violation: %s", issues[0].Message)
 		}
 	}
 
@@ -1150,12 +1204,8 @@ func (s *paperWorkflowService) workflowOutputPath(jobID uuid.UUID) (string, erro
 	return filepath.Join(root, jobID.String(), "final.docx"), nil
 }
 
-func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePath string, outputPath string, record model.CompiledTemplate) (*templateprofile.Profile, error) {
+func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePath string, outputPath string, record model.CompiledTemplate, profile *templateprofile.Profile, contract *repaircontract.Contract) (*templateprofile.Profile, error) {
 	templatePath := strings.TrimSpace(record.SourceFilePath)
-	profile, err := templateprofile.Parse(record.StyleProfilesJSON)
-	if err != nil {
-		return nil, err
-	}
 	if templatePath == "" || templatePath == sourcePath || profile == nil {
 		return nil, copyFile(sourcePath, outputPath)
 	}
@@ -1190,6 +1240,7 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 		CompiledTemplate: compiled,
 		Mapping:          mapping,
 		OutputPath:       outputPath,
+		RepairContract:   contract,
 	}); err != nil {
 		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("generate final paper from template skeleton: %w", err))
 	}
@@ -1382,7 +1433,11 @@ func newDeepSeekSemanticBlockClient() cqrwst.SemanticAIClient {
 }
 
 func copyFileWithTemplateFallbackNotice(sourcePath string, outputPath string, cause error) error {
-	fmt.Printf("[WORKFLOW_TEMPLATE] fallback to copy-and-fix route: %v\n", cause)
+	rootCause := cause
+	for errors.Unwrap(rootCause) != nil {
+		rootCause = errors.Unwrap(rootCause)
+	}
+	log.Printf("component=workflow_template stage=fallback error=%q", rootCause.Error())
 	return copyFile(sourcePath, outputPath)
 }
 
@@ -1543,12 +1598,12 @@ func workflowJobDownloadURL(id uuid.UUID) string {
 	return "/api/v2/jobs/" + id.String() + "/download"
 }
 
-func mustWorkflowJSON(value any) string {
+func workflowJSON(value any) (string, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
-		return "{}"
+		return "", err
 	}
-	return string(data)
+	return string(data), nil
 }
 
 func copyFile(src string, dst string) error {

@@ -69,7 +69,10 @@ func PerformMigration() error {
 	}
 
 	if err := RunMigrations(); err != nil {
-		log.Printf("WARNING: custom migrations finished with errors, continuing with AutoMigrate: %v", err)
+		return fmt.Errorf("custom migrations failed: %w", err)
+	}
+	if err := normalizeCheckResultTemplateID(DB); err != nil {
+		return fmt.Errorf("normalize check result template id: %w", err)
 	}
 
 	// 2. 自动迁移数据库表（GORM AutoMigrate）
@@ -137,15 +140,32 @@ func PerformMigration() error {
 	return nil
 }
 
+func normalizeCheckResultTemplateID(db *gorm.DB) error {
+	if db == nil || !db.Migrator().HasTable(&model.CheckResult{}) || !db.Migrator().HasColumn("check_results", "format_template_id") {
+		return nil
+	}
+	if !db.Migrator().HasColumn(&model.CheckResult{}, "template_id") {
+		if err := db.Migrator().AddColumn(&model.CheckResult{}, "TemplateID"); err != nil {
+			return err
+		}
+	}
+	if err := db.Exec("UPDATE check_results SET template_id = format_template_id WHERE template_id IS NULL").Error; err != nil {
+		return err
+	}
+	return db.Exec("ALTER TABLE check_results DROP COLUMN format_template_id").Error
+}
+
 // migrateDatabase 迁移数据库表结构（重构后的模型）
 func migrateDatabase() error {
 	// 自动迁移所有模型
 	return DB.AutoMigrate(
 		// 核心模型
 		&model.User{},
+		&model.TokenBlacklist{},
 		&model.RefreshToken{},
 		&model.University{},
 		&model.FormatTemplate{},
+		&model.FormatTemplateRuleRevision{},
 		&model.Paper{},
 		&model.CheckResult{},
 		&model.FormatCorrection{},

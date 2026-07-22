@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 )
@@ -248,15 +249,15 @@ func TestFixDOCXAppliesCQRWSTParagraphAndRunStyles(t *testing.T) {
 		`w:eastAsia="宋体"`,
 		`w:sz w:val="32"`,
 		`<w:b/>`,
-		`w:beforeLines="100"`,
-		`w:afterLines="100"`,
+		`w:before="240"`,
+		`w:after="240"`,
+		`w:jc w:val="center"`,
 	})
 	assertParagraphHas(t, documentXML, "1.1 研究背景", []string{
 		`w:eastAsia="宋体"`,
 		`w:sz w:val="30"`,
 		`<w:b/>`,
-		`w:beforeLines="0"`,
-		`w:afterLines="0"`,
+		`w:jc w:val="left"`,
 	})
 	assertParagraphHas(t, documentXML, "正文内容。", []string{
 		`w:eastAsia="宋体"`,
@@ -771,6 +772,29 @@ func TestFixDOCXStylesNestedTextBoxParagraphsUntilStable(t *testing.T) {
 	}
 }
 
+func TestCleanupOldDebugTracesRemovesExpiredDirectories(t *testing.T) {
+	root := t.TempDir()
+	oldDir := filepath.Join(root, "old")
+	recentDir := filepath.Join(root, "recent")
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(recentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(oldDir, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	cleanupOldDebugTraces(root, time.Now().Add(-7*24*time.Hour))
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Fatalf("expired trace still exists: %v", err)
+	}
+	if _, err := os.Stat(recentDir); err != nil {
+		t.Fatalf("recent trace removed: %v", err)
+	}
+}
+
 func TestFixDOCXWritesCQRWSTDebugTraceWhenEnabled(t *testing.T) {
 	debugDir := t.TempDir()
 	t.Setenv("CQRWST_DEBUG", "1")
@@ -937,6 +961,28 @@ func TestFixDOCXAddsMissingTableAndFigureCaptions(t *testing.T) {
 	}
 	assertParagraphHas(t, documentXML, "\u88681.1", []string{`w:jc w:val="center"`, `w:sz w:val="21"`})
 	assertParagraphHas(t, documentXML, "\u56fe1.1", []string{`w:jc w:val="center"`, `w:sz w:val="21"`})
+}
+
+func TestBodyStartSupportsChineseNumbering(t *testing.T) {
+	for _, text := range []string{"第一章 绪论", "第1章 绪论", "一、绪论"} {
+		if !isBodyStartParagraph(text) {
+			t.Fatalf("isBodyStartParagraph(%q) = false", text)
+		}
+	}
+}
+
+func TestMergedBodyLayoutTableIsNotDataTable(t *testing.T) {
+	block := semanticBlock{IsTable: true, InBody: true, Rows: 2, Cells: 4, HasMergedCells: true, AverageCellLen: 5}
+	if shouldTreatAsDataTable(block) {
+		t.Fatal("merged short-cell layout table classified as data table")
+	}
+}
+
+func TestBodyTableLabelsDoNotForceCoverLayoutClassification(t *testing.T) {
+	block := semanticBlock{IsTable: true, InBody: true, Text: "专业选择 学生偏好", Rows: 10, Cells: 20, AverageCellLen: 18}
+	if !shouldTreatAsDataTable(block) {
+		t.Fatal("body data table was classified as cover layout table")
+	}
 }
 
 func TestFixDOCXNormalizesUnnumberedTableCaptionWithoutDuplicating(t *testing.T) {

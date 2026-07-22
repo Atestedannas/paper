@@ -30,7 +30,7 @@ var visibleReviewFieldPattern = regexp.MustCompile(`(?is)<w:instrText\b[^>]*>\s*
 var unmaterializedTOCPagePattern = regexp.MustCompile(`(?s)TOC \\o .*?<w:tab/>.*?<w:t>0</w:t>.*?w:fldCharType="end"`)
 var verifyParagraphPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
 var verifyTextPattern = regexp.MustCompile(`(?s)<w:t(?:\s[^>]*)?>(.*?)</w:t>`)
-var captionTextPattern = regexp.MustCompile(`^(图|表)\s*(\d+(?:[-.．]\d+)*)\s*\S+`)
+var captionTextPattern = regexp.MustCompile(`(?i)^(图|表|Figure|Table)\s*(\d+(?:[-.．]\d+)*)\s*\S+`)
 var captionNumberSeparatorPattern = regexp.MustCompile(`[-.．]`)
 var verifySectionPropertiesPattern = regexp.MustCompile(`(?s)<w:sectPr\b[^>]*/>|<w:sectPr\b[^>]*>.*?</w:sectPr>`)
 var verifyHeaderReferenceIDPattern = regexp.MustCompile(`<w:headerReference\b[^>]*\br:id="([^"]+)"[^>]*/>`)
@@ -205,8 +205,8 @@ func (v *Verifier) Verify(ctx context.Context, docxPath string) (Result, error) 
 	addCaptionNumberingIssues(document, &result)
 	addSectionHeaderFooterIssues(document, &result)
 	addPageNumberingIssues(pkg, document, &result)
-	addTableFormattingIssues(document, &result)
-	addImageFormulaReferenceIssues(document, &result)
+	addTableFormattingIssues(document, &result, v.templateProfile)
+	addImageFormulaReferenceIssues(document, &result, v.templateProfile)
 	addFieldUpdateIssues(pkg, &result)
 	v.checkClosureArtifacts(&result)
 	v.checkRenderedOutput(ctx, docxPath, &result)
@@ -477,12 +477,15 @@ func addPageNumberingIssues(pkg *ooxmlpkg.DocxPackage, document string, result *
 		return
 	}
 
-	cover := sections[0]
-	front := sections[1]
-	body := sections[len(sections)-1]
-	if strings.Contains(cover, "<w:footerReference") || strings.Contains(cover, "<w:pgNumType") {
-		appendRepairableIssueOnce(result, "cover_page_number_present", "cover section contains page-number/footer settings; cover pages should not display page numbers.", documentTarget)
+	frontIndex, bodyIndex := pageNumberSectionIndexes(sections)
+	for index := 0; index < frontIndex; index++ {
+		if strings.Contains(sections[index], "<w:footerReference") || strings.Contains(sections[index], "<w:pgNumType") {
+			appendRepairableIssueOnce(result, "cover_page_number_present", "cover section contains page-number/footer settings; cover pages should not display page numbers.", documentTarget)
+			break
+		}
 	}
+	front := sections[frontIndex]
+	body := sections[bodyIndex]
 	if !sectionHasPageFormat(front, map[string]bool{"upperRoman": true, "lowerRoman": true}, 1) {
 		appendRepairableIssueOnce(result, "front_page_number_not_roman", "abstract/catalog front matter should use Roman page numbers starting from 1.", documentTarget)
 	}
@@ -516,6 +519,34 @@ func addPageNumberingIssues(pkg *ooxmlpkg.DocxPackage, document string, result *
 			}
 		}
 	}
+}
+
+func pageNumberSectionIndexes(sections []string) (int, int) {
+	frontIndex, bodyIndex := -1, -1
+	for index, section := range sections {
+		format := attributeValue(regexp.MustCompile(`<w:pgNumType\b[^>]*/>`).FindString(section), "w:fmt")
+		if frontIndex < 0 && (format == "upperRoman" || format == "lowerRoman") {
+			frontIndex = index
+			continue
+		}
+		if frontIndex >= 0 && bodyIndex < 0 && (format == "decimal" || format == "") && strings.Contains(section, "<w:pgNumType") {
+			bodyIndex = index
+		}
+	}
+	if frontIndex < 0 {
+		frontIndex = minInt(1, len(sections)-1)
+	}
+	if bodyIndex < 0 || bodyIndex <= frontIndex {
+		bodyIndex = len(sections) - 1
+	}
+	return frontIndex, bodyIndex
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func sectionHasPageFormat(section string, allowedFormats map[string]bool, start int) bool {
@@ -578,15 +609,20 @@ func footerPageNumberCentered(footerXML string) bool {
 	return strings.Contains(footerXML, `<w:jc w:val="center"`)
 }
 
-func addTableFormattingIssues(document string, result *Result) {
+func addTableFormattingIssues(document string, result *Result, profiles ...*templateprofile.Profile) {
 	if result == nil {
 		return
 	}
+	var profile *templateprofile.Profile
+	if len(profiles) > 0 {
+		profile = profiles[0]
+	}
+	tableStyle := templateTableStyle(profile)
 	for _, table := range verifyTablePattern.FindAllString(document, -1) {
 		if isCoverLayoutTable(table) {
 			continue
 		}
-		if !tableHasThreeLineBorders(table) {
+		if profile != nil && strings.EqualFold(strings.TrimSpace(profile.RulePack.TableStyle), "three-line") && !tableHasThreeLineBorders(table) {
 			appendRepairableIssueOnce(result, "table_three_line_format", "table borders are not in three-line format; keep top/header/bottom rules and remove vertical/extra inner rules.", documentTarget)
 		}
 		if !tableLayoutIsStable(table) {
@@ -595,10 +631,22 @@ func addTableFormattingIssues(document string, result *Result) {
 		if !tableHasRepeatingHeader(table) {
 			appendRepairableIssueOnce(result, "table_repeating_header_missing", "long tables should mark the first row as a repeating header row.", documentTarget)
 		}
-		if !tableCellsFollowStyle(table) {
-			appendRepairableIssueOnce(result, "table_cell_style_mismatch", "table cell text should use Chinese Songti/English Times New Roman, compact size, single spacing, horizontal and vertical centering.", documentTarget)
+		if tableStyle != nil && !tableCellsFollowStyle(table, tableStyle) {
+			appendRepairableIssueOnce(result, "table_cell_style_mismatch", "table cell text does not match the table style extracted from the template.", documentTarget)
 		}
 	}
+}
+
+func templateTableStyle(profile *templateprofile.Profile) *templateprofile.StyleRule {
+	if profile == nil {
+		return nil
+	}
+	for _, key := range []string{"table_body", "table_content", "table"} {
+		if style, ok := profile.Styles[key]; ok {
+			return &style
+		}
+	}
+	return nil
 }
 
 func isCoverLayoutTable(table string) bool {
@@ -651,28 +699,29 @@ func tableHasRepeatingHeader(table string) bool {
 	return firstRow != "" && strings.Contains(firstRow, "<w:tblHeader")
 }
 
-func tableCellsFollowStyle(table string) bool {
+func tableCellsFollowStyle(table string, styles ...*templateprofile.StyleRule) bool {
+	if len(styles) == 0 || styles[0] == nil {
+		return true
+	}
+	style := styles[0]
 	cells := verifyTableCellPattern.FindAllString(table, -1)
 	if len(cells) == 0 {
 		return true
 	}
 	for _, cell := range cells {
-		if !strings.Contains(cell, `<w:vAlign w:val="center"`) {
+		if style.Alignment != "" && !strings.Contains(cell, `<w:jc w:val="`+style.Alignment+`"`) {
 			return false
 		}
-		if !strings.Contains(cell, `<w:jc w:val="center"`) {
+		if style.Line != "" && (!strings.Contains(cell, `<w:spacing`) || !strings.Contains(cell, `w:line="`+style.Line+`"`)) {
 			return false
 		}
-		if !strings.Contains(cell, `<w:spacing`) || !strings.Contains(cell, `w:line="240"`) {
+		if style.FontASCII != "" && !strings.Contains(cell, `w:ascii="`+style.FontASCII+`"`) && !strings.Contains(cell, `w:hAnsi="`+style.FontASCII+`"`) {
 			return false
 		}
-		if !strings.Contains(cell, `w:ascii="Times New Roman"`) && !strings.Contains(cell, `w:hAnsi="Times New Roman"`) {
+		if style.FontEastAsia != "" && !strings.Contains(cell, `w:eastAsia="`+style.FontEastAsia+`"`) {
 			return false
 		}
-		if !strings.Contains(cell, `w:eastAsia="宋体"`) && !strings.Contains(cell, `w:eastAsia="SimSun"`) {
-			return false
-		}
-		if !strings.Contains(cell, `<w:sz w:val="16"`) && !strings.Contains(cell, `<w:sz w:val="18"`) && !strings.Contains(cell, `<w:sz w:val="21"`) {
+		if style.FontSizeHalfPt != "" && !strings.Contains(cell, `<w:sz w:val="`+style.FontSizeHalfPt+`"`) {
 			return false
 		}
 	}
@@ -688,7 +737,7 @@ func attributeValue(element string, name string) string {
 	return ""
 }
 
-func addImageFormulaReferenceIssues(document string, result *Result) {
+func addImageFormulaReferenceIssues(document string, result *Result, profiles ...*templateprofile.Profile) {
 	if result == nil {
 		return
 	}
@@ -717,7 +766,7 @@ func addImageFormulaReferenceIssues(document string, result *Result) {
 			if strings.Contains(paragraph, "<wp:anchor") {
 				appendRepairableIssueOnce(result, "floating_image_anchor", "image uses floating/anchored layout; use inline layout so it stays fixed in the paragraph.", documentTarget)
 			}
-			if imageWidthOverTextArea(paragraph) {
+			if imageWidthOverTextArea(paragraph, profileTextAreaWidthEMU(profiles...)) {
 				appendRepairableIssueOnce(result, "image_width_over_text_area", "image width appears larger than the page text area; scale it proportionally within the text area.", documentTarget)
 			}
 			nextCaption := nextNonBlankParagraphText(paragraphs, index+1)
@@ -765,7 +814,7 @@ func looksLikeNumberedFormulaTable(table string) bool {
 	}
 	formula := strings.TrimSpace(verifyXMLText(cells[0]))
 	number := strings.TrimSpace(verifyXMLText(cells[len(cells)-1]))
-	return formula != "" && strings.ContainsAny(formula, "=+-×÷∑√") && formulaNumberPattern.MatchString(number)
+	return formula != "" && strings.ContainsAny(formula, "=+-×÷∑√∫∬∭∮∏∆∂∞≈≠≤≥[]{}|∇") && formulaNumberPattern.MatchString(number)
 }
 
 func appendWarningIssueOnce(result *Result, kind string, message string, target string) {
@@ -780,17 +829,35 @@ func appendWarningIssueOnce(result *Result, kind string, message string, target 
 	})
 }
 
-func imageWidthOverTextArea(paragraph string) bool {
+func imageWidthOverTextArea(paragraph string, widths ...int) bool {
+	maxWidth := 5800000
+	if len(widths) > 0 && widths[0] > 0 {
+		maxWidth = widths[0]
+	}
 	for _, match := range imageExtentPattern.FindAllStringSubmatch(paragraph, -1) {
 		if len(match) != 2 {
 			continue
 		}
 		width, err := strconv.Atoi(match[1])
-		if err == nil && width > 5800000 {
+		if err == nil && width > maxWidth {
 			return true
 		}
 	}
 	return false
+}
+
+func profileTextAreaWidthEMU(profiles ...*templateprofile.Profile) int {
+	if len(profiles) == 0 || profiles[0] == nil {
+		return 0
+	}
+	page := profiles[0].PageSetup
+	width, _ := strconv.Atoi(page.PageWidthTwips)
+	left, _ := strconv.Atoi(page.MarginLeftTwips)
+	right, _ := strconv.Atoi(page.MarginRightTwips)
+	if width <= left+right {
+		return 0
+	}
+	return (width - left - right) * 635
 }
 
 func nextNonBlankParagraphText(paragraphs []string, start int) string {
@@ -1451,7 +1518,9 @@ func (v *Verifier) checkRenderedOutput(ctx context.Context, docxPath string, res
 	goldenOptions.RequiredText = nil
 	goldenOptions.ForbiddenText = nil
 	goldenOptions.SamePageRules = nil
+	goldenOptions.TextStyleRules = nil
 	goldenOptions.AllowBlankPage = nil
+	goldenOptions.CheckPageFooter = false
 	goldenResult, err := renderverify.Check(ctx, v.goldenPath, goldenOptions)
 	if err != nil {
 		result.FatalIssues = append(result.FatalIssues, Issue{
@@ -1464,20 +1533,19 @@ func (v *Verifier) checkRenderedOutput(ctx context.Context, docxPath string, res
 	}
 	if !goldenResult.Passed {
 		for _, issue := range goldenResult.Issues {
-			appendRenderIssue(result, issue)
+			result.Warnings = append(result.Warnings, Issue{Kind: "golden_baseline_unavailable", Severity: "warning", Message: issue.Message, Target: v.goldenPath})
 		}
 		return
 	}
+	landmarks := deriveGoldenLandmarks(v.closure)
 	regression := goldenregression.CompareSnapshots(goldenregression.Options{
-		Candidate:      goldenregression.PageSnapshot{Pages: renderResult.PageTexts},
-		Golden:         goldenregression.PageSnapshot{Pages: goldenResult.PageTexts},
-		CheckPageCount: envBool("GOLDEN_PAGE_COUNT_STRICT"),
-		MaxPageDelta:   envInt("GOLDEN_PAGE_COUNT_MAX_DELTA", 0),
-		Landmarks: []goldenregression.Landmark{
-			{Name: "abstract", Text: "摘要"},
-			{Name: "toc", Text: "目录"},
-		},
+		Candidate:        goldenregression.PageSnapshot{Pages: renderResult.PageTexts, Spans: goldenSpans(renderResult.TextSpans)},
+		Golden:           goldenregression.PageSnapshot{Pages: goldenResult.PageTexts, Spans: goldenSpans(goldenResult.TextSpans)},
+		CheckPageCount:   envBool("GOLDEN_PAGE_COUNT_STRICT"),
+		MaxPageDelta:     envInt("GOLDEN_PAGE_COUNT_MAX_DELTA", 0),
+		Landmarks:        landmarks,
 		SamePageLandmark: deriveGoldenSamePageLandmarks(v.closure),
+		CompareStyles:    true,
 	})
 	result.GoldenRegression = &regression
 	for _, issue := range regression.Issues {
@@ -1498,6 +1566,35 @@ func (v *Verifier) checkRenderedOutput(ctx context.Context, docxPath string, res
 			})
 		}
 	}
+}
+
+func goldenSpans(spans []renderverify.TextSpan) []goldenregression.TextSpan {
+	result := make([]goldenregression.TextSpan, 0, len(spans))
+	for _, span := range spans {
+		result = append(result, goldenregression.TextSpan{Page: span.Page, Text: span.Text, Font: span.Font, FontSize: span.FontSize, X: span.X})
+	}
+	return result
+}
+
+func deriveGoldenLandmarks(closure *ClosureArtifacts) []goldenregression.Landmark {
+	if closure == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var landmarks []goldenregression.Landmark
+	for _, node := range closure.PaperAST.Nodes {
+		role := strings.ToLower(strings.TrimSpace(node.SemanticRole))
+		if role != "abstract_cn" && role != "abstract_en" && role != "toc_title" {
+			continue
+		}
+		text := strings.TrimSpace(node.Text)
+		if text == "" || seen[role] {
+			continue
+		}
+		seen[role] = true
+		landmarks = append(landmarks, goldenregression.Landmark{Name: role, Text: text})
+	}
+	return landmarks
 }
 
 func (v *Verifier) configureRenderGateFromEnv() {
@@ -1574,9 +1671,9 @@ func findTitleAndAbstractLandmarks(ast paperast.Snapshot) (string, string) {
 		if text == "" {
 			continue
 		}
-		if node.SemanticRole == "abstract_cn" || strings.HasPrefix(compactText(text), "摘要") {
+		if node.SemanticRole == "abstract_cn" || node.SemanticRole == "abstract_en" || strings.HasPrefix(compactText(text), "摘要") || strings.HasPrefix(strings.ToLower(compactText(text)), "abstract") {
 			abstractIndex = index
-			abstractText = "摘要"
+			abstractText = text
 			break
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -40,6 +41,31 @@ func TestDocxPackageRoundTrip(t *testing.T) {
 	if _, ok := reopened.Get("word/document.xml"); !ok {
 		t.Fatal("Get(word/document.xml) after round trip ok = false")
 	}
+}
+
+func TestDocxPackageOpenIsLazyAndConcurrentSafe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lazy.docx")
+	createMinimalDocx(t, path)
+	pkg, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if len(pkg.modified) != 0 {
+		t.Fatalf("Open() eagerly loaded %d entries", len(pkg.modified))
+	}
+
+	var wait sync.WaitGroup
+	for index := 0; index < 20; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			name := "custom/item.xml"
+			pkg.Set(name, []byte("value"))
+			_, _ = pkg.Get(name)
+			_ = pkg.Names()
+		}(index)
+	}
+	wait.Wait()
 }
 
 func TestDocxPackageSetWritesNewAndReplacedEntries(t *testing.T) {
@@ -79,6 +105,20 @@ func TestDocxPackageSetWritesNewAndReplacedEntries(t *testing.T) {
 	}
 	if string(content) != "<item>new</item>" {
 		t.Fatalf("new custom/item.xml = %q", string(content))
+	}
+}
+
+func TestDocxPackageRejectsUnsafeEntryNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "minimal.docx")
+	createMinimalDocx(t, path)
+	pkg, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	for _, name := range []string{"../escaped.xml", "/absolute.xml", `word\\document.xml`} {
+		if err := pkg.Set(name, []byte("unsafe")); err == nil {
+			t.Fatalf("Set(%q) accepted unsafe entry name", name)
+		}
 	}
 }
 

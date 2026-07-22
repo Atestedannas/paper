@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
@@ -33,6 +34,12 @@ func (h *PaperHandler) saveUploadedFile(c *gin.Context, file *multipart.FileHead
 	filePath := filepath.Join(uploadDir, file.Filename)
 	if err := c.SaveUploadedFile(file, filePath); err != nil {
 		return "", err
+	}
+	if strings.EqualFold(filepath.Ext(filePath), ".docx") {
+		if err := ooxmlpkg.Validate(filePath); err != nil {
+			_ = os.Remove(filePath)
+			return "", err
+		}
 	}
 
 	return filePath, nil
@@ -122,6 +129,12 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 	realType, detectErr := h.detectFileType(tempFilePath)
 	if detectErr == nil && realType != "" && realType != ext {
 		ext = realType
+	}
+	if ext == ".docx" {
+		if err := ooxmlpkg.Validate(tempFilePath); err != nil {
+			utils.ErrorResponse(c, http.StatusBadRequest, "DOCX 文件不安全或已损坏", err.Error())
+			return
+		}
 	}
 
 	// 根据真实格式提取文本
@@ -292,14 +305,16 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 			utils.ErrorResponse(c, http.StatusInternalServerError, "保存模板文件失败", persistErr.Error())
 			return
 		}
-		existingTemplate.FormatRules = string(formatRulesJSON)
-		existingTemplate.FilePath = stablePath
-		existingTemplate.GoldenTemplatePath = stablePath
-		existingTemplate.UpdatedAt = time.Now()
-		if description != "" {
-			existingTemplate.Description = description
+		updates := map[string]interface{}{
+			"format_rules":         string(formatRulesJSON),
+			"file_path":            stablePath,
+			"golden_template_path": stablePath,
+			"updated_at":           time.Now(),
 		}
-		if err := database.DB.Save(&existingTemplate).Error; err != nil {
+		if description != "" {
+			updates["description"] = description
+		}
+		if err := database.UpdateFormatTemplateWithAudit(&existingTemplate, updates, auditActorID(c)); err != nil {
 			utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式模板失败", err.Error())
 			return
 		}
@@ -487,13 +502,15 @@ func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string) {
 	err = database.DB.Where("university_id = ? AND document_type = ? AND subject = ?",
 		university.ID, documentType, subject).First(&existingTemplate).Error
 	if err == nil {
-		existingTemplate.FormatRules = string(formatRulesJSON)
-		existingTemplate.ParseConfidence = parseResult.Quality.QualityScore
-		existingTemplate.UpdatedAt = time.Now()
-		if description != "" {
-			existingTemplate.Description = description
+		updates := map[string]interface{}{
+			"format_rules":     string(formatRulesJSON),
+			"parse_confidence": parseResult.Quality.QualityScore,
+			"updated_at":       time.Now(),
 		}
-		if err := database.DB.Save(&existingTemplate).Error; err != nil {
+		if description != "" {
+			updates["description"] = description
+		}
+		if err := database.UpdateFormatTemplateWithAudit(&existingTemplate, updates, auditActorID(c)); err != nil {
 			utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式模板失败", err.Error())
 			return
 		}

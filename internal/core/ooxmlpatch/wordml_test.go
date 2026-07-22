@@ -40,6 +40,24 @@ func TestApplySectionPropertiesWritesISO29500PageSetup(t *testing.T) {
 	}
 }
 
+func TestApplySectionPropertiesAtUpdatesRequestedSection(t *testing.T) {
+	document := `<w:document><w:body><w:p><w:pPr><w:sectPr><w:pgNumType w:fmt="decimal"/></w:sectPr></w:pPr></w:p><w:sectPr><w:pgNumType w:fmt="decimal"/></w:sectPr></w:body></w:document>`
+	updated, changed := ApplySectionPropertiesAt(document, 0, SectionPropertiesSpec{PageNumberFormat: "lowerRoman", PageNumberStart: 1})
+	if !changed || !strings.Contains(updated, `<w:pgNumType w:fmt="lowerRoman" w:start="1"/>`) {
+		t.Fatalf("requested front section was not updated: %s", updated)
+	}
+	if strings.Count(updated, `w:fmt="decimal"`) != 1 {
+		t.Fatalf("non-target section changed: %s", updated)
+	}
+}
+
+func TestElementBodyHandlesGreaterThanInQuotedAttribute(t *testing.T) {
+	element := `<w:pPr data-test="a>b"><w:jc w:val="center"/></w:pPr>`
+	if got := elementBody(element); got != `<w:jc w:val="center"/>` {
+		t.Fatalf("elementBody() = %q", got)
+	}
+}
+
 func TestApplySettingsPropertiesWritesEvenOddHeaderSwitch(t *testing.T) {
 	settings := `<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="100"/></w:settings>`
 
@@ -91,6 +109,7 @@ func TestApplyParagraphAndRunPropertiesWritesPreciseWordprocessingML(t *testing.
 		EastAsiaFont:       "黑体",
 		AsciiFont:          "Times New Roman",
 		HAnsiFont:          "Times New Roman",
+		FontHint:           "eastAsia",
 		FontSizeHalfPoints: 32,
 		ComplexSizeHalfPts: 32,
 		Bold:               true,
@@ -108,7 +127,7 @@ func TestApplyParagraphAndRunPropertiesWritesPreciseWordprocessingML(t *testing.
 		`<w:keepNext/>`,
 		`<w:snapToGrid w:val="0"/>`,
 		`<w:adjustRightInd w:val="0"/>`,
-		`<w:rFonts w:eastAsia="黑体" w:ascii="Times New Roman" w:hAnsi="Times New Roman"/>`,
+		`<w:rFonts w:eastAsia="黑体" w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:hint="eastAsia"/>`,
 		`<w:sz w:val="32"/>`,
 		`<w:szCs w:val="32"/>`,
 		`<w:b/>`,

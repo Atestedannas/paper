@@ -35,11 +35,14 @@ type semanticBlock struct {
 	HasFigureShape bool
 	Rows           int
 	Cells          int
+	AverageCellLen int
+	HasMergedCells bool
 }
 
 var (
-	tableRowPattern  = regexp.MustCompile(`(?s)<w:tr\b[^>]*>.*?</w:tr>`)
-	tableCellPattern = regexp.MustCompile(`(?s)<w:tc\b[^>]*>.*?</w:tc>`)
+	tableRowPattern   = regexp.MustCompile(`(?s)<w:tr\b[^>]*>.*?</w:tr>`)
+	tableCellPattern  = regexp.MustCompile(`(?s)<w:tc\b[^>]*>.*?</w:tc>`)
+	tableMergePattern = regexp.MustCompile(`<w:(?:gridSpan|vMerge)\b`)
 )
 
 func buildSemanticBlocks(documentXML string) []semanticBlock {
@@ -66,6 +69,8 @@ func buildSemanticBlocks(documentXML string) []semanticBlock {
 		if block.IsTable {
 			block.Rows = len(tableRowPattern.FindAllString(child, -1))
 			block.Cells = len(tableCellPattern.FindAllString(child, -1))
+			block.AverageCellLen = averageVisibleCellLength(child)
+			block.HasMergedCells = tableMergePattern.MatchString(child)
 		}
 
 		normalizedText := normalizeChineseLabelText(block.Text)
@@ -148,10 +153,17 @@ func shouldTreatAsDataTable(block semanticBlock) bool {
 	if !block.IsTable || !block.InBody {
 		return false
 	}
-	if containsCoverLayoutLabels(block.Text) {
-		return false
+	score := 1
+	if block.AverageCellLen > 15 {
+		score += 2
 	}
-	return true
+	if block.Rows > 8 {
+		score++
+	}
+	if block.HasMergedCells {
+		score -= 2
+	}
+	return score > 0
 }
 
 func containsCoverLayoutLabels(text string) bool {

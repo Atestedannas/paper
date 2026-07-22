@@ -1,11 +1,16 @@
 package service
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/model"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type TokenBlacklistService struct {
@@ -18,7 +23,7 @@ func NewTokenBlacklistService(db *gorm.DB) *TokenBlacklistService {
 
 func (s *TokenBlacklistService) AddToken(token string, tokenType model.TokenType, userID uuid.UUID, expiresAt time.Time, reason string) error {
 	blacklist := &model.TokenBlacklist{
-		Token:     token,
+		Token:     tokenHash(token),
 		TokenType: tokenType,
 		UserID:    userID,
 		ExpiresAt: expiresAt,
@@ -30,7 +35,7 @@ func (s *TokenBlacklistService) AddToken(token string, tokenType model.TokenType
 func (s *TokenBlacklistService) IsTokenBlacklisted(token string) bool {
 	var count int64
 	err := s.db.Model(&model.TokenBlacklist{}).
-		Where("token = ? AND expires_at > ?", token, time.Now()).
+		Where("token IN ? AND expires_at > ?", []string{tokenHash(token), token}, time.Now()).
 		Count(&count).Error
 	return err == nil && count > 0
 }
@@ -67,14 +72,51 @@ func (s *TokenBlacklistService) GetBlacklistedTokensByType(tokenType model.Token
 }
 
 func (s *TokenBlacklistService) RemoveToken(token string) error {
-	return s.db.Where("token = ?", token).Delete(&model.TokenBlacklist{}).Error
+	return s.db.Where("token IN ?", []string{tokenHash(token), token}).Delete(&model.TokenBlacklist{}).Error
 }
 
-func (s *TokenBlacklistService) StartCleanupTask(interval time.Duration) {
+func (s *TokenBlacklistService) RevokeUserAccessTokens(userID uuid.UUID, expiresAt time.Time, reason string) error {
+	now := time.Now()
+	entry := model.TokenBlacklist{
+		Token: tokenHash("user:" + userID.String()), TokenType: model.TokenTypeAccessAll,
+		UserID: userID, ExpiresAt: expiresAt, RevokedAt: now, Reason: reason,
+	}
+	return s.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "token"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"expires_at": expiresAt, "revoked_at": now, "reason": reason, "updated_at": now,
+		}),
+	}).Create(&entry).Error
+}
+
+func (s *TokenBlacklistService) AreUserAccessTokensRevoked(userID uuid.UUID, issuedAt time.Time) bool {
+	var entry model.TokenBlacklist
+	err := s.db.Where("token = ? AND token_type = ? AND expires_at > ?", tokenHash("user:"+userID.String()), model.TokenTypeAccessAll, time.Now()).
+		First(&entry).Error
+	return err == nil && !issuedAt.After(entry.RevokedAt)
+}
+
+func tokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *TokenBlacklistService) StartCleanupTask(ctx context.Context, interval time.Duration) {
+	if ctx == nil || interval <= 0 {
+		return
+	}
 	ticker := time.NewTicker(interval)
 	go func() {
-		for range ticker.C {
-			s.CleanupExpiredTokens()
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := s.CleanupExpiredTokens(); err != nil {
+					log.Printf("component=token_blacklist_cleanup error=%q", err)
+				}
+			}
 		}
 	}()
 }

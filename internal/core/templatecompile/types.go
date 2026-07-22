@@ -75,10 +75,31 @@ type VerifyPolicy struct {
 }
 
 type StyleProfile struct {
-	StyleProfileID string            `json:"style_profile_id"`
-	Name           string            `json:"name"`
-	BasedOn        string            `json:"based_on"`
-	Properties     map[string]string `json:"properties"`
+	StyleProfileID string          `json:"style_profile_id"`
+	Name           string          `json:"name"`
+	BasedOn        string          `json:"based_on"`
+	Properties     StyleProperties `json:"properties"`
+}
+
+type StyleProperties struct {
+	EastAsiaFont          string `json:"east_asia_font,omitempty"`
+	ASCIIFont             string `json:"ascii_font,omitempty"`
+	FontHint              string `json:"font_hint,omitempty"`
+	FontSizeHalfPoints    int    `json:"font_size_half_points,omitempty"`
+	ComplexSizeHalfPoints int    `json:"complex_size_half_points,omitempty"`
+	Bold                  bool   `json:"bold"`
+	BoldSet               bool   `json:"bold_set"`
+	Italic                bool   `json:"italic"`
+	ItalicSet             bool   `json:"italic_set"`
+	Alignment             string `json:"alignment,omitempty"`
+	LineTwips             int    `json:"line_twips,omitempty"`
+	LineRule              string `json:"line_rule,omitempty"`
+	BeforeTwips           int    `json:"before_twips,omitempty"`
+	AfterTwips            int    `json:"after_twips,omitempty"`
+	FirstLineChars        int    `json:"first_line_chars,omitempty"`
+	FirstLineTwips        int    `json:"first_line_twips,omitempty"`
+	OutlineLevel          int    `json:"outline_level,omitempty"`
+	OutlineLevelSet       bool   `json:"outline_level_set"`
 }
 
 type MappingContract struct {
@@ -99,11 +120,31 @@ func (p *CompiledTemplatePackage) MustBlock(kind string) (TemplateBlock, error) 
 		return TemplateBlock{}, fmt.Errorf("compiled template package is nil")
 	}
 
-	for _, block := range p.BlockCatalog {
+	var found *TemplateBlock
+	for index := range p.BlockCatalog {
+		block := &p.BlockCatalog[index]
 		if block.Kind == kind {
-			return block, nil
+			if found != nil {
+				return TemplateBlock{}, fmt.Errorf("template block kind %q is ambiguous; use block_id", kind)
+			}
+			found = block
 		}
+	}
+	if found != nil {
+		return *found, nil
 	}
 
 	return TemplateBlock{}, fmt.Errorf("template block %q not found", kind)
+}
+
+func (p *CompiledTemplatePackage) MustBlockID(blockID string) (TemplateBlock, error) {
+	if p == nil {
+		return TemplateBlock{}, fmt.Errorf("compiled template package is nil")
+	}
+	for _, block := range p.BlockCatalog {
+		if block.BlockID == blockID {
+			return block, nil
+		}
+	}
+	return TemplateBlock{}, fmt.Errorf("template block id %q not found", blockID)
 }

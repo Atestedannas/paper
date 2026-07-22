@@ -26,10 +26,15 @@ type RunResult struct {
 	Status       Status
 	VerifyResult verify.Result
 	Attempts     int
+	PatchSummary []string
 }
 
 type PatchWriter interface {
 	Apply(context.Context, string) error
+}
+
+type StagedPatchWriter interface {
+	ApplyStages(context.Context, string) ([]string, error)
 }
 
 type Verifier interface {

@@ -1,9 +1,11 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,8 +41,33 @@ func NewOrderService() OrderService {
 
 // generateOrderNo 生成订单号
 func generateOrderNo() string {
-	now := time.Now()
-	return fmt.Sprintf("ORD%s%06d", now.Format("20060102150405"), now.Nanosecond()%1000000)
+	return "ORD" + time.Now().UTC().Format("20060102150405") + strings.ToUpper(strings.ReplaceAll(uuid.NewString(), "-", ""))[:12]
+}
+
+func ExpirePendingOrders() (int64, error) {
+	result := database.DB.Model(&model.Order{}).
+		Where("expired_at < ? AND order_status = ? AND payment_status = ?", time.Now(), "created", "pending").
+		Updates(map[string]interface{}{
+			"order_status":   "cancelled",
+			"payment_status": "expired",
+			"updated_at":     time.Now(),
+		})
+	return result.RowsAffected, result.Error
+}
+
+func StartOrderExpirationTask(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if _, err := ExpirePendingOrders(); err != nil {
+			log.Printf("expire pending orders: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // CreateOrder 创建订单
@@ -49,6 +76,15 @@ func (s *orderService) CreateOrder(userID, memberLevelID uuid.UUID, paymentMetho
 	memberService := NewMemberService()
 	level, err := memberService.GetMemberLevelByID(memberLevelID)
 	if err != nil {
+		return nil, err
+	}
+	var existing model.Order
+	if err := database.DB.Preload("MemberLevel").Where(
+		"user_id = ? AND member_level_id = ? AND order_status = ? AND payment_status = ? AND expired_at > ?",
+		userID, memberLevelID, "created", "pending", time.Now(),
+	).Order("created_at DESC").First(&existing).Error; err == nil {
+		return &existing, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
 
@@ -87,6 +123,23 @@ func (s *orderService) CreateOrder(userID, memberLevelID uuid.UUID, paymentMetho
 
 // CreatePaperCheckOrder 创建论文检查订单
 func (s *orderService) CreatePaperCheckOrder(userID uuid.UUID, serviceType string, amount float64, paperID, templateID, paymentMethod string) (*model.Order, error) {
+	var parsedPaperID *uuid.UUID
+	if value := strings.TrimSpace(paperID); value != "" {
+		id, err := uuid.Parse(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid paper id: %w", err)
+		}
+		parsedPaperID = &id
+		var existing model.Order
+		if err := database.DB.Where(
+			"user_id = ? AND service_type = ? AND paper_id = ? AND order_status = ? AND payment_status = ? AND expired_at > ?",
+			userID, serviceType, id, "created", "pending", time.Now(),
+		).Order("created_at DESC").First(&existing).Error; err == nil {
+			return &existing, nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
 	// 生成订单号
 	orderNo := generateOrderNo()
 
@@ -105,6 +158,7 @@ func (s *orderService) CreatePaperCheckOrder(userID uuid.UUID, serviceType strin
 		PaymentStatus: "pending",
 		OrderStatus:   "created",
 		ServiceType:   serviceType,
+		PaperID:       parsedPaperID,
 		ExpiredAt:     startDate.Add(30 * time.Minute), // 订单30分钟后过期
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
@@ -215,26 +269,49 @@ func (s *orderService) GetAllOrders(page, pageSize int, statusFilter string) ([]
 
 // UpdateOrderStatus 更新订单状态
 func (s *orderService) UpdateOrderStatus(orderID uuid.UUID, orderStatus, paymentStatus string) error {
-	// 更新订单状态
+	order, err := s.GetOrderByID(orderID)
+	if err != nil {
+		return err
+	}
+	sameState := order.OrderStatus == orderStatus && order.PaymentStatus == paymentStatus
+	if sameState && !(orderStatus == "completed" && paymentStatus == "paid" && order.MemberLevelID != uuid.Nil && order.UsedAt == nil) {
+		return nil
+	}
+	if !sameState && !validOrderTransition(order.OrderStatus, orderStatus, order.PaymentStatus, paymentStatus) {
+		return fmt.Errorf("invalid order status transition: %s/%s -> %s/%s", order.OrderStatus, order.PaymentStatus, orderStatus, paymentStatus)
+	}
+
 	updates := map[string]interface{}{
 		"order_status":   orderStatus,
 		"payment_status": paymentStatus,
 		"updated_at":     time.Now(),
 	}
 
-	if err := database.DB.Model(&model.Order{}).Where("id = ?", orderID).Updates(updates).Error; err != nil {
-		return err
+	if !sameState {
+		result := database.DB.Model(&model.Order{}).
+			Where("id = ? AND order_status = ? AND payment_status = ?", orderID, order.OrderStatus, order.PaymentStatus).
+			Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return errors.New("order status changed concurrently")
+		}
 	}
 
 	// 如果订单已支付，创建或更新会员信息
 	if paymentStatus == "paid" && orderStatus == "completed" {
 		// 获取订单信息
-		order, err := s.GetOrderByID(orderID)
-		if err != nil {
-			return fmt.Errorf("获取订单信息失败: %w", err)
-		}
 		// Paper service orders are one-time entitlements, not membership purchases.
 		if order.MemberLevelID == uuid.Nil {
+			return nil
+		}
+		claimedAt := time.Now()
+		claim := database.DB.Model(&model.Order{}).Where("id = ? AND used_at IS NULL", orderID).Update("used_at", claimedAt)
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected == 0 {
 			return nil
 		}
 
@@ -245,6 +322,7 @@ func (s *orderService) UpdateOrderStatus(orderID uuid.UUID, orderStatus, payment
 			// 会员不存在，创建新会员
 			newMember, err := memberService.CreateMember(order.UserID, order.MemberLevelID)
 			if err != nil {
+				database.DB.Model(&model.Order{}).Where("id = ? AND used_at = ?", orderID, claimedAt).Update("used_at", nil)
 				return fmt.Errorf("创建会员失败: %w", err)
 			}
 			log.Printf("新会员创建成功: 用户ID %s, 会员等级 %s", order.UserID, newMember.MemberLevel.LevelName)
@@ -252,6 +330,7 @@ func (s *orderService) UpdateOrderStatus(orderID uuid.UUID, orderStatus, payment
 			// 会员已存在，续费会员
 			renewedMember, err := memberService.RenewMember(order.UserID, order.MemberLevelID)
 			if err != nil {
+				database.DB.Model(&model.Order{}).Where("id = ? AND used_at = ?", orderID, claimedAt).Update("used_at", nil)
 				return fmt.Errorf("续费会员失败: %w", err)
 			}
 			log.Printf("会员续费成功: 用户ID %s, 会员等级 %s, 新到期时间 %s", order.UserID, renewedMember.MemberLevel.LevelName, renewedMember.EndDate)
@@ -259,6 +338,20 @@ func (s *orderService) UpdateOrderStatus(orderID uuid.UUID, orderStatus, payment
 	}
 
 	return nil
+}
+
+func validOrderTransition(currentOrder, nextOrder, currentPayment, nextPayment string) bool {
+	orderAllowed := map[string]map[string]bool{
+		"created":   {"completed": true, "cancelled": true, "failed": true},
+		"failed":    {"completed": true},
+		"completed": {"refunded": true},
+	}
+	paymentAllowed := map[string]map[string]bool{
+		"pending": {"paid": true, "cancelled": true, "expired": true, "failed": true},
+		"failed":  {"paid": true},
+		"paid":    {"refunded": true},
+	}
+	return orderAllowed[currentOrder][nextOrder] && paymentAllowed[currentPayment][nextPayment]
 }
 
 // GetOrderStatistics 获取订单统计信息

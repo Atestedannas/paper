@@ -15,6 +15,7 @@ type Patch struct {
 	Target  string
 	Find    string
 	Replace string
+	RawXML  bool
 }
 
 type Writer struct {
@@ -101,7 +102,11 @@ func applyPatches(content string, patches []Patch) string {
 		matched := false
 		for _, patch := range patches {
 			if strings.HasPrefix(content[offset:], patch.Find) {
-				builder.WriteString(html.EscapeString(patch.Replace))
+				if patch.RawXML {
+					builder.WriteString(patch.Replace)
+				} else {
+					builder.WriteString(html.EscapeString(patch.Replace))
+				}
 				offset += len(patch.Find)
 				matched = true
 				break

@@ -56,3 +56,23 @@ func TestValidateRejectsIncompleteRuleSet(t *testing.T) {
 		t.Fatal("Validate() issues = nil, want strict policy/artifact issues")
 	}
 }
+
+func TestValidateRejectsInvalidSemanticRules(t *testing.T) {
+	rules := Build(&templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+		"body": {Label: "body", BeforeTwips: "0", BeforeLines: "120", LineRule: "unsupported"},
+	}, RulePack: templateprofile.RulePack{KeywordMin: 6, KeywordMax: 3}})
+
+	issues := Validate(rules)
+	if len(issues) < 2 {
+		t.Fatalf("Validate() did not reject invalid semantic rules: %#v", issues)
+	}
+}
+
+func TestValidateAllowsCustomArtifactSet(t *testing.T) {
+	rules := Build(&templateprofile.Profile{})
+	rules.Verification.RequiredArtifacts = []string{"custom_render_report"}
+
+	if issues := Validate(rules); len(issues) != 0 {
+		t.Fatalf("custom artifact declarations should be extensible: %#v", issues)
+	}
+}

@@ -51,12 +51,12 @@ type Order struct {
 	OrderNo       string     `gorm:"size:50;uniqueIndex;not null" json:"order_no"`    // 订单号
 	TotalAmount   float64    `gorm:"type:decimal(10,2);not null" json:"total_amount"` // 订单金额
 	PaymentMethod string     `gorm:"size:20;not null" json:"payment_method"`          // wechat, alipay
-	PaymentStatus string     `gorm:"size:20;default:pending" json:"payment_status"`   // pending, paid, cancelled, refunded
-	OrderStatus   string     `gorm:"size:20;default:created" json:"order_status"`     // created, completed, cancelled
+	PaymentStatus string     `gorm:"size:20;default:pending;check:payment_status IN ('pending','paid','cancelled','expired','failed','refunded')" json:"payment_status"`
+	OrderStatus   string     `gorm:"size:20;default:created;check:order_status IN ('created','completed','cancelled','failed','refunded')" json:"order_status"`
 	ServiceType   string     `gorm:"size:32;index" json:"service_type,omitempty"`
 	PaperID       *uuid.UUID `gorm:"type:uuid;index" json:"paper_id,omitempty"`
 	UsedAt        *time.Time `json:"used_at,omitempty"`
-	ExpiredAt     time.Time  `json:"expired_at"` // 订单过期时间
+	ExpiredAt     time.Time  `gorm:"not null;index" json:"expired_at"`
 	CreatedAt     time.Time  `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt     time.Time  `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
 
@@ -73,9 +73,9 @@ type PaymentRecord struct {
 	TransactionID string    `gorm:"size:100;uniqueIndex" json:"transaction_id"` // 支付平台交易ID
 	PaymentAmount float64   `gorm:"type:decimal(10,2);not null" json:"payment_amount"`
 	PaymentMethod string    `gorm:"size:20;not null" json:"payment_method"` // wechat, alipay
-	PaymentStatus string    `gorm:"size:20;not null" json:"payment_status"` // success, failed, pending
-	PaymentTime   time.Time `json:"payment_time"`                           // 支付时间
-	ExtraData     string    `gorm:"type:jsonb" json:"extra_data"`           // 额外数据（JSON格式）
+	PaymentStatus string    `gorm:"size:20;not null;check:payment_status IN ('pending','success','failed','refunded')" json:"payment_status"`
+	PaymentTime   time.Time `json:"payment_time"`                 // 支付时间
+	ExtraData     string    `gorm:"type:jsonb" json:"extra_data"` // 额外数据（JSON格式）
 	CreatedAt     time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt     time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
 
@@ -94,6 +94,13 @@ func (m *MemberLevel) BeforeCreate(tx *gorm.DB) error {
 func (p *PaymentRecord) BeforeCreate(tx *gorm.DB) error {
 	if p.ExtraData == "" {
 		p.ExtraData = "{}"
+	}
+	return nil
+}
+
+func (o *Order) BeforeCreate(tx *gorm.DB) error {
+	if o.ExpiredAt.IsZero() {
+		o.ExpiredAt = time.Now().Add(30 * time.Minute)
 	}
 	return nil
 }

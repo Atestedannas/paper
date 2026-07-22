@@ -46,3 +46,18 @@ func TestCompareSnapshotsFailsOnPageCountDrift(t *testing.T) {
 		t.Fatalf("Issues = %#v, want page_count_drift", result.Issues)
 	}
 }
+
+func TestCompareSnapshotsFailsOnLandmarkFontDrift(t *testing.T) {
+	result := CompareSnapshots(Options{
+		Candidate:     PageSnapshot{Pages: []string{"Abstract"}, Spans: []TextSpan{{Page: 1, Text: "Abstract", Font: "Arial", FontSize: 15, X: 72}}},
+		Golden:        PageSnapshot{Pages: []string{"Abstract"}, Spans: []TextSpan{{Page: 1, Text: "Abstract", Font: "Times New Roman", FontSize: 15, X: 72}}},
+		Landmarks:     []Landmark{{Name: "abstract_en", Text: "Abstract"}},
+		CompareStyles: true,
+	})
+	if result.Passed {
+		t.Fatal("Passed = true, want false")
+	}
+	if len(result.Issues) != 1 || result.Issues[0].Kind != "landmark_font_drift" {
+		t.Fatalf("Issues = %#v", result.Issues)
+	}
+}

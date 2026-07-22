@@ -26,7 +26,7 @@ func TestAdminUniversityTemplatePreviewAndPermanentDelete(t *testing.T) {
 		`CREATE TABLE universities (id INTEGER PRIMARY KEY, name TEXT)`,
 		`CREATE TABLE format_templates (id TEXT PRIMARY KEY, university_id INTEGER, file_path TEXT, golden_template_path TEXT, is_active BOOLEAN, created_at DATETIME)`,
 		`CREATE TABLE papers (id TEXT PRIMARY KEY, selected_template_id TEXT, updated_at DATETIME, deleted_at DATETIME)`,
-		`CREATE TABLE check_results (id TEXT PRIMARY KEY, format_template_id TEXT)`,
+		`CREATE TABLE check_results (id TEXT PRIMARY KEY, template_id TEXT)`,
 		`CREATE TABLE format_corrections (id TEXT PRIMARY KEY, check_result_id TEXT)`,
 	} {
 		if err := db.Exec(statement).Error; err != nil {
@@ -44,7 +44,7 @@ func TestAdminUniversityTemplatePreviewAndPermanentDelete(t *testing.T) {
 	db.Exec(`INSERT INTO universities (id, name) VALUES (1, 'Test University')`)
 	db.Exec(`INSERT INTO format_templates (id, university_id, file_path, is_active, created_at) VALUES (?, 1, ?, 1, CURRENT_TIMESTAMP)`, templateID, templatePath)
 	db.Exec(`INSERT INTO papers (id, selected_template_id) VALUES (?, ?)`, uuid.New(), templateID)
-	db.Exec(`INSERT INTO check_results (id, format_template_id) VALUES (?, ?)`, checkID, templateID)
+	db.Exec(`INSERT INTO check_results (id, template_id) VALUES (?, ?)`, checkID, templateID)
 	db.Exec(`INSERT INTO format_corrections (id, check_result_id) VALUES (?, ?)`, uuid.New(), checkID)
 
 	gin.SetMode(gin.TestMode)

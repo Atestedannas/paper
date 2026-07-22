@@ -119,6 +119,41 @@ func TestCheckChineseTotalFooterMismatchFails(t *testing.T) {
 	}
 }
 
+func TestCheckValidatesRenderedTextStyle(t *testing.T) {
+	result, err := Check(context.Background(), "paper.docx", Options{
+		Enabled:  true,
+		Strict:   true,
+		Renderer: fakeRenderer{},
+		TextExtractor: fakeLayoutExtractor{
+			pages: []string{"Abstract"},
+			spans: []TextSpan{{Page: 1, Text: "Abstract", Font: "ABCDEF+TimesNewRoman", FontSize: 15, X: 250, Width: 95, PageWidth: 595}},
+		},
+		TextStyleRules: []TextStyleRule{{Name: "abstract", Text: "Abstract", FontContains: "Times New Roman", FontSize: 15, Alignment: "center"}},
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if !result.Passed || len(result.TextSpans) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestCheckRejectsRenderedFontSizeMismatch(t *testing.T) {
+	result, err := Check(context.Background(), "paper.docx", Options{
+		Enabled:        true,
+		Strict:         true,
+		Renderer:       fakeRenderer{},
+		TextExtractor:  fakeLayoutExtractor{pages: []string{"摘要"}, spans: []TextSpan{{Page: 1, Text: "摘要", Font: "SimHei", FontSize: 12}}},
+		TextStyleRules: []TextStyleRule{{Name: "abstract", Text: "摘要", FontSize: 15}},
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if result.Passed || len(result.Issues) != 1 || result.Issues[0].Kind != "rendered_font_size_mismatch" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestParsePythonPDFTextOutput(t *testing.T) {
 	pages, err := parsePythonPDFTextOutput([]byte(`["封面","正文 第1页 共24页"]`))
 	if err != nil {
@@ -176,6 +211,16 @@ func (r fakeRasterizer) RasterizePDF(context.Context, string, string) ([]string,
 type fakeExtractor struct {
 	pages []string
 	err   error
+}
+
+type fakeLayoutExtractor struct {
+	pages []string
+	spans []TextSpan
+}
+
+func (e fakeLayoutExtractor) ExtractPageTexts(string) ([]string, error) { return e.pages, nil }
+func (e fakeLayoutExtractor) ExtractPageLayout(string) ([]string, []TextSpan, error) {
+	return e.pages, e.spans, nil
 }
 
 func (e fakeExtractor) ExtractPageTexts(string) ([]string, error) {

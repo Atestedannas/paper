@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
 func TestCompilerBuildsCompiledTemplatePackage(t *testing.T) {
@@ -100,6 +102,9 @@ func TestCompilerBuildsCompiledTemplatePackage(t *testing.T) {
 		t.Fatal("expected style profiles")
 	}
 	assertStyleProfileContract(t, result.StyleProfiles[0])
+	if result.StyleProfiles[0].Properties.FontSizeHalfPoints == 0 {
+		t.Fatalf("compiled profile did not extract template font size: %#v", result.StyleProfiles[0])
+	}
 	if result.MappingContract.ContractID == "" {
 		t.Fatal("expected mapping contract id")
 	}
@@ -113,6 +118,27 @@ func TestCompilerBuildsCompiledTemplatePackage(t *testing.T) {
 		t.Fatal("expected verification rules")
 	}
 	assertVerificationRuleContract(t, result.VerificationRules[0])
+}
+
+func TestCompileCatalogIncludesExtractedHeadingLevels(t *testing.T) {
+	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{"heading_2": {FontSizeHalfPt: "30"}}}
+	blocks := compileBlockCatalog(profile)
+	found := false
+	for _, block := range blocks {
+		if block.BlockID == "heading_2" && block.StyleProfileID == "style-heading-2" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("extracted heading_2 was dropped from block catalog")
+	}
+}
+
+func TestValidateProfileNumbersRejectsInvalidOOXMLValue(t *testing.T) {
+	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{"body": {FontSizeHalfPt: "auto"}}}
+	if err := validateProfileNumbers(profile); err == nil {
+		t.Fatal("invalid numeric style value was silently converted to zero")
+	}
 }
 
 func TestCompilerCreatesUniquePackageDirectories(t *testing.T) {
@@ -246,9 +272,10 @@ func writeSimpleTemplateDocx(t *testing.T) string {
 	entries := map[string]string{
 		"[Content_Types].xml":          `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>`,
 		"_rels/.rels":                  `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`,
-		"word/document.xml":            `<w:document><w:body><w:p><w:r><w:t>{{cover_title}}</w:t></w:r></w:p></w:body></w:document>`,
+		"word/document.xml":            `<w:document><w:body><w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>1 绪论</w:t></w:r></w:p></w:body></w:document>`,
 		"word/_rels/document.xml.rels": `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`,
 		"word/settings.xml":            `<w:settings></w:settings>`,
+		"word/styles.xml":              `<w:styles><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:rPr><w:rFonts w:eastAsia="黑体" w:ascii="Times New Roman"/><w:sz w:val="32"/><w:b/></w:rPr></w:style></w:styles>`,
 	}
 
 	for name, content := range entries {
@@ -373,7 +400,7 @@ func assertStyleProfileContract(t *testing.T, profile StyleProfile) {
 	if profile.StyleProfileID == "" || profile.Name == "" || profile.BasedOn == "" {
 		t.Fatalf("style profile is too shallow: %#v", profile)
 	}
-	if len(profile.Properties) == 0 {
+	if profile.Properties == (StyleProperties{}) {
 		t.Fatalf("style profile missing properties: %#v", profile)
 	}
 }

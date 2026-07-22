@@ -20,7 +20,16 @@ type Issue struct {
 }
 
 type PageSnapshot struct {
-	Pages []string `json:"pages"`
+	Pages []string   `json:"pages"`
+	Spans []TextSpan `json:"spans,omitempty"`
+}
+
+type TextSpan struct {
+	Page     int     `json:"page"`
+	Text     string  `json:"text"`
+	Font     string  `json:"font,omitempty"`
+	FontSize float64 `json:"font_size,omitempty"`
+	X        float64 `json:"x,omitempty"`
 }
 
 type Landmark struct {
@@ -41,6 +50,7 @@ type Options struct {
 	MaxPageDelta     int
 	Landmarks        []Landmark
 	SamePageLandmark []SamePageLandmark
+	CompareStyles    bool
 }
 
 type Result struct {
@@ -101,6 +111,9 @@ func CompareSnapshots(options Options) Result {
 				Target:   landmark.Name,
 			})
 		}
+		if options.CompareStyles {
+			compareLandmarkStyle(&result, landmark, options.Candidate.Spans, options.Golden.Spans)
+		}
 	}
 
 	for _, pair := range options.SamePageLandmark {
@@ -131,6 +144,50 @@ func CompareSnapshots(options Options) Result {
 
 	result.Passed = !hasErrors(result.Issues)
 	return result
+}
+
+func compareLandmarkStyle(result *Result, landmark Landmark, candidate, golden []TextSpan) {
+	candidateSpan, candidateOK := findSpan(candidate, landmark.Text)
+	goldenSpan, goldenOK := findSpan(golden, landmark.Text)
+	if !candidateOK || !goldenOK {
+		result.Issues = append(result.Issues, Issue{Kind: "landmark_style_unavailable", Severity: SeverityWarning, Message: "rendered font metadata is unavailable for landmark", Target: landmark.Name})
+		return
+	}
+	if normalizeFont(candidateSpan.Font) != normalizeFont(goldenSpan.Font) {
+		result.Issues = append(result.Issues, Issue{Kind: "landmark_font_drift", Severity: SeverityError, Message: fmt.Sprintf("landmark %q font changed from %q to %q", landmark.Name, goldenSpan.Font, candidateSpan.Font), Target: landmark.Name})
+	}
+	if abs(candidateSpan.FontSize-goldenSpan.FontSize) > 0.25 {
+		result.Issues = append(result.Issues, Issue{Kind: "landmark_font_size_drift", Severity: SeverityError, Message: fmt.Sprintf("landmark %q font size changed from %.2fpt to %.2fpt", landmark.Name, goldenSpan.FontSize, candidateSpan.FontSize), Target: landmark.Name})
+	}
+	if abs(candidateSpan.X-goldenSpan.X) > 3 {
+		result.Issues = append(result.Issues, Issue{Kind: "landmark_horizontal_drift", Severity: SeverityError, Message: fmt.Sprintf("landmark %q horizontal position drifted by %.2fpt", landmark.Name, candidateSpan.X-goldenSpan.X), Target: landmark.Name})
+	}
+}
+
+func findSpan(spans []TextSpan, text string) (TextSpan, bool) {
+	needle := normalizeText(text)
+	for _, span := range spans {
+		value := normalizeText(span.Text)
+		if value != "" && (strings.Contains(value, needle) || strings.Contains(needle, value)) {
+			return span, true
+		}
+	}
+	return TextSpan{}, false
+}
+
+func normalizeFont(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if index := strings.Index(value, "+"); index >= 0 {
+		value = value[index+1:]
+	}
+	return strings.NewReplacer(" ", "", "-", "", "_", "").Replace(value)
+}
+
+func abs(value float64) float64 {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func findPage(pages []string, needle string) int {

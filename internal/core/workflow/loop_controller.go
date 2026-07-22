@@ -3,8 +3,13 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
+
+	"github.com/paper-format-checker/backend/internal/core/verify"
 )
+
+const maxPatchAttempts = 3
 
 type LoopController struct {
 	store       interface{}
@@ -34,31 +39,53 @@ func (c *LoopController) Run(ctx context.Context, input RunInput) (RunResult, er
 		return RunResult{}, fmt.Errorf("verifier is nil")
 	}
 
-	firstResult, err := c.verifier.Verify(ctx, input.OutputPath)
+	current, err := c.verifier.Verify(ctx, input.OutputPath)
 	if err != nil {
 		return RunResult{}, err
 	}
-	if firstResult.Passed {
-		return RunResult{Status: StatusVerifiedPass, VerifyResult: firstResult}, nil
+	result := RunResult{VerifyResult: current}
+	seen := map[string]bool{}
+	for {
+		result.VerifyResult = current
+		if current.Passed {
+			result.Status = StatusVerifiedPass
+			return result, nil
+		}
+		if len(current.FatalIssues) > 0 || len(current.RepairableIssues) == 0 || c.patchWriter == nil || result.Attempts >= maxPatchAttempts {
+			result.Status = StatusManualReview
+			return result, nil
+		}
+		fingerprint := issueFingerprint(current.RepairableIssues)
+		if seen[fingerprint] {
+			result.Status = StatusManualReview
+			return result, nil
+		}
+		seen[fingerprint] = true
+		summary, err := applyPatchWriter(ctx, c.patchWriter, input.OutputPath)
+		if err != nil {
+			return RunResult{}, err
+		}
+		result.Attempts++
+		result.PatchSummary = append(result.PatchSummary, summary...)
+		current, err = c.verifier.Verify(ctx, input.OutputPath)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
-	if len(firstResult.FatalIssues) > 0 {
-		return RunResult{Status: StatusManualReview, VerifyResult: firstResult}, nil
-	}
-	if len(firstResult.RepairableIssues) == 0 || c.patchWriter == nil {
-		return RunResult{Status: StatusManualReview, VerifyResult: firstResult}, nil
-	}
+}
 
-	if err := c.patchWriter.Apply(ctx, input.OutputPath); err != nil {
-		return RunResult{}, err
+func applyPatchWriter(ctx context.Context, writer PatchWriter, path string) ([]string, error) {
+	if staged, ok := writer.(StagedPatchWriter); ok {
+		return staged.ApplyStages(ctx, path)
 	}
+	return nil, writer.Apply(ctx, path)
+}
 
-	secondResult, err := c.verifier.Verify(ctx, input.OutputPath)
-	if err != nil {
-		return RunResult{}, err
+func issueFingerprint(issues []verify.Issue) string {
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		parts = append(parts, issue.Kind+"|"+issue.Target+"|"+issue.Message)
 	}
-	if secondResult.Passed {
-		return RunResult{Status: StatusVerifiedPass, VerifyResult: secondResult, Attempts: 1}, nil
-	}
-
-	return RunResult{Status: StatusManualReview, VerifyResult: secondResult, Attempts: 1}, nil
+	sort.Strings(parts)
+	return strings.Join(parts, "\n")
 }

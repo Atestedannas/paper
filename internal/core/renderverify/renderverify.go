@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"rsc.io/pdf"
 )
@@ -47,6 +49,30 @@ type TextExtractor interface {
 	ExtractPageTexts(pdfPath string) ([]string, error)
 }
 
+type LayoutExtractor interface {
+	ExtractPageLayout(pdfPath string) ([]string, []TextSpan, error)
+}
+
+type TextSpan struct {
+	Page      int     `json:"page"`
+	Text      string  `json:"text"`
+	Font      string  `json:"font,omitempty"`
+	FontSize  float64 `json:"font_size,omitempty"`
+	X         float64 `json:"x,omitempty"`
+	Y         float64 `json:"y,omitempty"`
+	Width     float64 `json:"width,omitempty"`
+	PageWidth float64 `json:"page_width,omitempty"`
+}
+
+type TextStyleRule struct {
+	Name          string  `json:"name"`
+	Text          string  `json:"text"`
+	FontContains  string  `json:"font_contains,omitempty"`
+	FontSize      float64 `json:"font_size,omitempty"`
+	SizeTolerance float64 `json:"size_tolerance,omitempty"`
+	Alignment     string  `json:"alignment,omitempty"`
+}
+
 type SamePageRule struct {
 	Name      string `json:"name"`
 	LeftText  string `json:"left_text"`
@@ -64,18 +90,20 @@ type Options struct {
 	RequiredText    []string
 	ForbiddenText   []string
 	SamePageRules   []SamePageRule
+	TextStyleRules  []TextStyleRule
 	AllowBlankPage  map[int]bool
 	CheckPageFooter bool
 }
 
 type Result struct {
-	Enabled   bool     `json:"enabled"`
-	Passed    bool     `json:"passed"`
-	PDFPath   string   `json:"pdf_path,omitempty"`
-	PNGPaths  []string `json:"png_paths,omitempty"`
-	PageCount int      `json:"page_count"`
-	Issues    []Issue  `json:"issues,omitempty"`
-	PageTexts []string `json:"-"`
+	Enabled   bool       `json:"enabled"`
+	Passed    bool       `json:"passed"`
+	PDFPath   string     `json:"pdf_path,omitempty"`
+	PNGPaths  []string   `json:"png_paths,omitempty"`
+	PageCount int        `json:"page_count"`
+	Issues    []Issue    `json:"issues,omitempty"`
+	PageTexts []string   `json:"-"`
+	TextSpans []TextSpan `json:"-"`
 }
 
 func DefaultEnabled() bool {
@@ -147,7 +175,13 @@ func Check(ctx context.Context, docxPath string, options Options) (Result, error
 		}
 	}
 
-	pageTexts, err := extractor.ExtractPageTexts(artifact.Path)
+	var pageTexts []string
+	var textSpans []TextSpan
+	if layoutExtractor, ok := extractor.(LayoutExtractor); ok {
+		pageTexts, textSpans, err = layoutExtractor.ExtractPageLayout(artifact.Path)
+	} else {
+		pageTexts, err = extractor.ExtractPageTexts(artifact.Path)
+	}
 	if err != nil {
 		result.Issues = append(result.Issues, Issue{
 			Kind:     "extract_pdf_text",
@@ -159,6 +193,7 @@ func Check(ctx context.Context, docxPath string, options Options) (Result, error
 		return result, nil
 	}
 	result.PageTexts = pageTexts
+	result.TextSpans = textSpans
 	result.PageCount = len(pageTexts)
 	validateRenderedText(&result, options)
 	result.Passed = !hasBlockingIssues(result.Issues)
@@ -207,8 +242,9 @@ func (r LibreOfficeRenderer) RenderPDF(ctx context.Context, docxPath string, out
 }
 
 type PopplerRasterizer struct {
-	Binary string
-	DPI    int
+	Binary  string
+	DPI     int
+	Timeout time.Duration
 }
 
 func (r PopplerRasterizer) RasterizePDF(ctx context.Context, pdfPath string, outputDir string) ([]string, error) {
@@ -227,12 +263,25 @@ func (r PopplerRasterizer) RasterizePDF(ctx context.Context, pdfPath string, out
 	for _, old := range mustGlob(prefix + "-*.png") {
 		_ = os.Remove(old)
 	}
-	cmd := exec.CommandContext(ctx, binary, "-png", "-r", strconv.Itoa(dpi), pdfPath, prefix)
+	commandContext := ctx
+	cancel := func() {}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		timeout := r.Timeout
+		if timeout <= 0 {
+			timeout = 2 * time.Minute
+		}
+		commandContext, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+	cmd := exec.CommandContext(commandContext, binary, "-png", "-r", strconv.Itoa(dpi), pdfPath, prefix)
 	if runtime.GOOS == "windows" {
 		cmd.Env = append(os.Environ(), "PATH="+filepath.Dir(binary)+";"+os.Getenv("PATH"))
 	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if commandContext.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("pdftoppm timed out: %w", commandContext.Err())
+		}
 		return nil, fmt.Errorf("pdftoppm: %w, binary=%s pdf_exists=%t output_dir_exists=%t prefix=%s output: %s", err, binary, fileExists(pdfPath), dirExists(outputDir), prefix, strings.TrimSpace(string(output)))
 	}
 	paths := mustGlob(prefix + "-*.png")
@@ -339,20 +388,43 @@ func (r LibreOfficeRenderer) resolveBinary() (string, error) {
 type RscPDFTextExtractor struct{}
 
 func (RscPDFTextExtractor) ExtractPageTexts(pdfPath string) ([]string, error) {
+	pages, _, err := (RscPDFTextExtractor{}).ExtractPageLayout(pdfPath)
+	return pages, err
+}
+
+func (RscPDFTextExtractor) ExtractPageLayout(pdfPath string) ([]string, []TextSpan, error) {
 	reader, err := pdf.Open(pdfPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	pageTexts := make([]string, 0, reader.NumPage())
+	spans := make([]TextSpan, 0)
 	for pageNumber := 1; pageNumber <= reader.NumPage(); pageNumber++ {
-		content := reader.Page(pageNumber).Content()
+		page := reader.Page(pageNumber)
+		content := page.Content()
+		pageWidth := pdfPageWidth(page)
+		sort.SliceStable(content.Text, func(i, j int) bool {
+			if delta := content.Text[i].Y - content.Text[j].Y; delta > 0.5 || delta < -0.5 {
+				return content.Text[i].Y > content.Text[j].Y
+			}
+			return content.Text[i].X < content.Text[j].X
+		})
 		var builder strings.Builder
 		for _, text := range content.Text {
 			builder.WriteString(text.S)
+			spans = append(spans, TextSpan{Page: pageNumber, Text: text.S, Font: text.Font, FontSize: text.FontSize, X: text.X, Y: text.Y, Width: text.W, PageWidth: pageWidth})
 		}
 		pageTexts = append(pageTexts, normalizeText(builder.String()))
 	}
-	return pageTexts, nil
+	return pageTexts, spans, nil
+}
+
+func pdfPageWidth(page pdf.Page) float64 {
+	mediaBox := page.V.Key("MediaBox")
+	if mediaBox.Len() < 4 {
+		return 0
+	}
+	return mediaBox.Index(2).Float64() - mediaBox.Index(0).Float64()
 }
 
 func validateRenderedText(result *Result, options Options) {
@@ -424,6 +496,69 @@ func validateRenderedText(result *Result, options Options) {
 	if options.CheckPageFooter {
 		validateChineseTotalFooter(result)
 	}
+	validateTextStyles(result, options.TextStyleRules)
+}
+
+func validateTextStyles(result *Result, rules []TextStyleRule) {
+	for _, rule := range rules {
+		span, ok := findTextSpan(result.TextSpans, rule.Text)
+		if !ok {
+			result.Issues = append(result.Issues, Issue{Kind: "rendered_style_target_missing", Severity: SeverityError, Message: "rendered PDF cannot locate style target", Target: rule.Name})
+			continue
+		}
+		if expected := normalizeFontName(rule.FontContains); expected != "" && !strings.Contains(normalizeFontName(span.Font), expected) {
+			result.Issues = append(result.Issues, Issue{Kind: "rendered_font_mismatch", Severity: SeverityError, Message: fmt.Sprintf("rendered font %q does not match %q", span.Font, rule.FontContains), Target: rule.Name})
+		}
+		if rule.FontSize > 0 {
+			tolerance := rule.SizeTolerance
+			if tolerance <= 0 {
+				tolerance = 0.25
+			}
+			if abs(span.FontSize-rule.FontSize) > tolerance {
+				result.Issues = append(result.Issues, Issue{Kind: "rendered_font_size_mismatch", Severity: SeverityError, Message: fmt.Sprintf("rendered font size %.2fpt does not match %.2fpt", span.FontSize, rule.FontSize), Target: rule.Name})
+			}
+		}
+		if expected := strings.ToLower(strings.TrimSpace(rule.Alignment)); expected != "" && span.PageWidth > 0 && renderedAlignment(span) != expected {
+			result.Issues = append(result.Issues, Issue{Kind: "rendered_alignment_mismatch", Severity: SeverityError, Message: fmt.Sprintf("rendered alignment %q does not match %q", renderedAlignment(span), expected), Target: rule.Name})
+		}
+	}
+}
+
+func findTextSpan(spans []TextSpan, text string) (TextSpan, bool) {
+	needle := normalizeText(text)
+	for _, span := range spans {
+		value := normalizeText(span.Text)
+		if value != "" && (strings.Contains(value, needle) || strings.Contains(needle, value)) {
+			return span, true
+		}
+	}
+	return TextSpan{}, false
+}
+
+func renderedAlignment(span TextSpan) string {
+	center := span.X + span.Width/2
+	if abs(center-span.PageWidth/2) <= 6 {
+		return "center"
+	}
+	if span.X > span.PageWidth/2 {
+		return "right"
+	}
+	return "left"
+}
+
+func normalizeFontName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if index := strings.Index(value, "+"); index >= 0 {
+		value = value[index+1:]
+	}
+	return strings.NewReplacer(" ", "", "-", "", "_", "").Replace(value)
+}
+
+func abs(value float64) float64 {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 type PythonPDFTextExtractor struct {
@@ -458,7 +593,7 @@ func parsePythonPDFTextOutput(output []byte) ([]string, error) {
 	return pages, nil
 }
 
-var chineseTotalFooterPattern = regexp.MustCompile(`第(\d+)页共(\d+)页`)
+var chineseTotalFooterPattern = regexp.MustCompile(`第(\d+)页[，,/·]*共(\d+)页`)
 
 func validateChineseTotalFooter(result *Result) {
 	if result == nil || result.PageCount == 0 {

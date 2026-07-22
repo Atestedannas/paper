@@ -816,7 +816,13 @@ func TestVerifierReportsTableFormattingProblems(t *testing.T) {
 			`</w:body></w:document>`,
 	})
 
-	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	profile := &templateprofile.Profile{
+		RulePack: templateprofile.RulePack{TableStyle: "three-line"},
+		Styles: map[string]templateprofile.StyleRule{
+			"table": {FontEastAsia: "SimSun", FontASCII: "Times New Roman", FontSizeHalfPt: "18", Alignment: "center", Line: "240"},
+		},
+	}
+	result, err := NewVerifierWithTemplateProfile(profile).WithoutCQRWSTRules().Verify(context.Background(), docxPath)
 	if err != nil {
 		t.Fatalf("Verify() error = %v", err)
 	}
@@ -852,10 +858,11 @@ func TestVerifierSkipsCoverLayoutTables(t *testing.T) {
 	}
 }
 
-func TestVerifierAllowsCompactTableCellSize(t *testing.T) {
+func TestVerifierAllowsTemplateDefinedTableCellStyle(t *testing.T) {
 	table := `<w:tbl><w:tr><w:tc><w:tcPr><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:spacing w:line="240"/><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:eastAsia="SimSun"/><w:sz w:val="16"/></w:rPr><w:t>P</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
-	if !tableCellsFollowStyle(table) {
-		t.Fatalf("compact 8pt table text should be accepted")
+	style := &templateprofile.StyleRule{FontEastAsia: "SimSun", FontASCII: "Times New Roman", FontSizeHalfPt: "16", Alignment: "center", Line: "240"}
+	if !tableCellsFollowStyle(table, style) {
+		t.Fatalf("template-defined table text should be accepted")
 	}
 }
 

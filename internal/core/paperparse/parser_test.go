@@ -108,6 +108,20 @@ func TestParserPreservesOrderedContentBlocks(t *testing.T) {
 	}
 }
 
+func TestParserRecognizesChineseHeadingNumbering(t *testing.T) {
+	paper := parseParagraphs([]string{"第一章 绪论", "正文", "一、研究背景"})
+	want := []Heading{{Level: 1, Text: "绪论"}, {Level: 1, Text: "研究背景"}}
+	if !reflect.DeepEqual(paper.Headings, want) {
+		t.Fatalf("Headings = %#v, want %#v", paper.Headings, want)
+	}
+}
+
+func TestSplitSectionMarkerAcceptsSemicolon(t *testing.T) {
+	if content, ok := splitSectionMarker("关键词；护理, 糖尿病", "关键词"); !ok || content != "护理, 糖尿病" {
+		t.Fatalf("splitSectionMarker() = %q, %v", content, ok)
+	}
+}
+
 func TestParserUsesWordHeadingStylesAndOutlineLevels(t *testing.T) {
 	docPath := filepath.Join(t.TempDir(), "styled-headings.docx")
 	documentXML := `<?xml version="1.0" encoding="UTF-8"?>` +

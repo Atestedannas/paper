@@ -2,6 +2,8 @@ package templatecontract
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
@@ -108,10 +110,43 @@ func Validate(rules RuleSet) []ValidationIssue {
 	if len(rules.Verification.RequiredArtifacts) == 0 {
 		issues = append(issues, ValidationIssue{Kind: "template_rule_artifacts", Message: "required closure artifacts are not declared"})
 	}
-	for _, artifact := range []string{"template_rule_json", "paper_ast_snapshot", "repair_contract", "verify_result"} {
-		if !containsArtifact(rules.Verification.RequiredArtifacts, artifact) {
-			issues = append(issues, ValidationIssue{Kind: "template_rule_artifacts", Message: "required artifact is missing: " + artifact})
+	seenArtifacts := map[string]bool{}
+	for _, artifact := range rules.Verification.RequiredArtifacts {
+		artifact = strings.TrimSpace(artifact)
+		if artifact == "" || seenArtifacts[artifact] {
+			issues = append(issues, ValidationIssue{Kind: "template_rule_artifacts", Message: "required artifacts must be non-empty and unique"})
+			break
 		}
+		seenArtifacts[artifact] = true
+	}
+	for key, style := range rules.Styles {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(style.Label) == "" {
+			issues = append(issues, ValidationIssue{Kind: "template_rule_style", Message: "style key and label are required"})
+			continue
+		}
+		for field, value := range map[string]string{
+			"font_size_half_pt": style.FontSizeHalfPt,
+			"line":              style.Line,
+			"before_twips":      style.BeforeTwips,
+			"after_twips":       style.AfterTwips,
+			"before_lines":      style.BeforeLines,
+			"after_lines":       style.AfterLines,
+			"first_line_chars":  style.FirstLineChars,
+		} {
+			if value == "" {
+				continue
+			}
+			number, err := strconv.Atoi(value)
+			if err != nil || number < 0 || (field == "font_size_half_pt" && number == 0) {
+				issues = append(issues, ValidationIssue{Kind: "template_rule_style", Message: fmt.Sprintf("style %s has invalid %s", key, field)})
+			}
+		}
+		if style.LineRule != "" && style.LineRule != "auto" && style.LineRule != "exact" && style.LineRule != "atLeast" {
+			issues = append(issues, ValidationIssue{Kind: "template_rule_style", Message: "style " + key + " has invalid line_rule"})
+		}
+	}
+	if rules.RulePack.KeywordMin > 0 && rules.RulePack.KeywordMax > 0 && rules.RulePack.KeywordMin > rules.RulePack.KeywordMax {
+		issues = append(issues, ValidationIssue{Kind: "template_rule_conflict", Message: "keyword_min cannot exceed keyword_max"})
 	}
 	if !rules.DeterministicOnly {
 		issues = append(issues, ValidationIssue{Kind: "template_rule_determinism", Message: "template rule must be deterministic-only for compliance output"})

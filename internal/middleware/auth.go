@@ -84,6 +84,7 @@ func effectiveUserRole(user *model.User) string {
 // AuthMiddleware 认证中间件
 func AuthMiddleware(config *config.Config, db *gorm.DB) gin.HandlerFunc {
 	tokenBlacklistService := service.NewTokenBlacklistService(db)
+	userService := service.NewUserService()
 
 	return func(c *gin.Context) {
 		// 获取Authorization头
@@ -115,7 +116,7 @@ func AuthMiddleware(config *config.Config, db *gorm.DB) gin.HandlerFunc {
 		claims := &JWTClaims{}
 		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 			// 验证签名算法
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			if token.Method != jwt.SigningMethodHS256 {
 				return nil, errors.New("unexpected signing method")
 			}
 			return []byte(config.JWT.Secret), nil
@@ -133,9 +134,13 @@ func AuthMiddleware(config *config.Config, db *gorm.DB) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		if claims.IssuedAt == nil || tokenBlacklistService.AreUserAccessTokensRevoked(claims.UserID, claims.IssuedAt.Time) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "token has been invalidated"})
+			c.Abort()
+			return
+		}
 
 		// 获取用户信息
-		userService := service.NewUserService()
 		user, err := userService.GetUserByID(claims.UserID)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})

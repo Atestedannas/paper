@@ -3,6 +3,7 @@ package repaircontract
 import (
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/paper-format-checker/backend/internal/core/paperast"
@@ -11,6 +12,8 @@ import (
 
 const Version = "repair-contract-v1"
 
+var generatedTOCPagePattern = regexp.MustCompile(`^(\d+(?:\.\d+)*\s+\S.*?)\d+$`)
+
 type Contract struct {
 	Version       string                 `json:"version"`
 	TemplateRules string                 `json:"template_rules_version"`
@@ -18,6 +21,7 @@ type Contract struct {
 	Mode          string                 `json:"mode"`
 	Steps         []Step                 `json:"steps"`
 	Blocked       []BlockedAction        `json:"blocked_actions"`
+	Targets       []TargetPolicy         `json:"targets"`
 	Artifacts     []string               `json:"artifacts"`
 	Stats         map[string]interface{} `json:"stats"`
 }
@@ -34,6 +38,14 @@ type Step struct {
 type BlockedAction struct {
 	Action string `json:"action"`
 	Reason string `json:"reason"`
+}
+
+type TargetPolicy struct {
+	NodeID         string   `json:"node_id"`
+	SourcePart     string   `json:"source_part"`
+	Index          int      `json:"index"`
+	SemanticRole   string   `json:"semantic_role"`
+	AllowedActions []string `json:"allowed_actions"`
 }
 
 type ValidationIssue struct {
@@ -114,11 +126,61 @@ func Build(rules templatecontract.RuleSet, ast paperast.Snapshot) Contract {
 			"template_sections": len(rules.Sections),
 		},
 	}
+	contract.Targets = make([]TargetPolicy, 0, len(ast.Nodes))
+	for _, node := range ast.Nodes {
+		contract.Targets = append(contract.Targets, TargetPolicy{
+			NodeID: node.NodeID, SourcePart: node.SourcePart, Index: node.Index, SemanticRole: node.SemanticRole,
+			AllowedActions: []string{"style_update", "layout_update"},
+		})
+	}
 	if contentNormalizationEnabled() {
 		contract.Blocked = removeBlocked(contract.Blocked, "visible_content_rewrite")
 		contract.Stats["content_normalization_override"] = true
 	}
 	return contract
+}
+
+func (contract Contract) Blocks(action string) bool {
+	return hasBlockedAction(contract, action)
+}
+
+func ValidateVisibleContentPreserved(before, after paperast.Snapshot) []ValidationIssue {
+	remaining := visibleNodeTexts(after.Nodes)
+	position := 0
+	var issues []ValidationIssue
+	for _, text := range visibleNodeTexts(before.Nodes) {
+		found := false
+		for position < len(remaining) {
+			if remaining[position] == text {
+				found = true
+				position++
+				break
+			}
+			position++
+		}
+		if !found {
+			issues = append(issues, ValidationIssue{Kind: "visible_content_rewrite", Message: "repair removed, reordered, or rewrote visible content: " + text})
+			break
+		}
+	}
+	return issues
+}
+
+func visibleNodeTexts(nodes []paperast.Node) []string {
+	texts := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node.SectionID == "toc" {
+			continue
+		}
+		text := strings.TrimSpace(node.Text)
+		if match := generatedTOCPagePattern.FindStringSubmatch(text); len(match) == 2 {
+			text = match[1]
+		}
+		if text != "" {
+			texts = append(texts, text)
+		}
+	}
+	return texts
 }
 
 func Marshal(contract Contract) string {

@@ -8,11 +8,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
-const compilerVersion = "templatecompile-skeleton-v1"
+const compilerVersion = "templatecompile-style-profile-v2"
 
 type Compiler struct{}
 
@@ -29,6 +33,13 @@ func (c *Compiler) Compile(ctx context.Context, templatePath string, opts Compil
 	}
 	if opts.OutputDir == "" {
 		return nil, fmt.Errorf("output dir is required")
+	}
+	profile, err := templateprofile.Extract(templatePath)
+	if err != nil {
+		return nil, fmt.Errorf("extract template styles: %w", err)
+	}
+	if err := validateProfileNumbers(profile); err != nil {
+		return nil, err
 	}
 
 	source, err := os.Open(templatePath)
@@ -75,6 +86,11 @@ func (c *Compiler) Compile(ctx context.Context, templatePath string, opts Compil
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	blockCatalog := compileBlockCatalog(profile)
+	bindings := make(map[string]string, len(blockCatalog))
+	for _, block := range blockCatalog {
+		bindings[block.BlockID] = block.Anchor.Match
+	}
 
 	success = true
 	return &CompiledTemplatePackage{
@@ -86,16 +102,7 @@ func (c *Compiler) Compile(ctx context.Context, templatePath string, opts Compil
 			CompilerVersion: compilerVersion,
 			CompiledAt:      time.Now().UTC(),
 		},
-		BlockCatalog: []TemplateBlock{
-			newBlock("cover_title", "cover_title", "text", 0, "", "style-cover-title", "{{cover_title}}", true),
-			newBlock("abstract_cn_body", "abstract_cn_body", "rich_text", 1, "", "style-body-cn", "{{abstract_cn_body}}", true),
-			newBlock("keywords_cn", "keywords_cn", "text", 2, "", "style-body-cn", "{{keywords_cn}}", false),
-			newBlock("heading_1", "heading_1", "repeatable", 3, "", "style-heading-1", "{{heading_1}}", false),
-			newBlock("body", "body", "repeatable", 4, "", "style-body-cn", "{{body}}", false),
-			newBlock("content_blocks", "content_blocks", "repeatable", 5, "", "style-body-cn", "{{content_blocks}}", false),
-			newBlock("references", "references", "repeatable", 6, "", "style-reference", "{{references}}", false),
-			newBlock("acknowledgement", "acknowledgement", "rich_text", 7, "", "style-body-cn", "{{acknowledgement}}", false),
-		},
+		BlockCatalog:   blockCatalog,
 		SkeletonPath:   skeletonPath,
 		SkeletonSource: templatePath,
 		PatchTargets: []string{
@@ -103,47 +110,11 @@ func (c *Compiler) Compile(ctx context.Context, templatePath string, opts Compil
 			"word/_rels/document.xml.rels",
 			"word/settings.xml",
 		},
-		StyleProfiles: []StyleProfile{
-			{
-				StyleProfileID: "style-cover-title",
-				Name:           "Cover Title",
-				BasedOn:        "Title",
-				Properties: map[string]string{
-					"alignment": "center",
-					"bold":      "true",
-				},
-			},
-			{
-				StyleProfileID: "style-body-cn",
-				Name:           "Chinese Body",
-				BasedOn:        "Normal",
-				Properties: map[string]string{
-					"language": "zh-CN",
-					"spacing":  "single",
-				},
-			},
-			{
-				StyleProfileID: "style-heading-1",
-				Name:           "Heading 1",
-				BasedOn:        "Heading1",
-				Properties: map[string]string{
-					"outlineLevel": "1",
-				},
-			},
-		},
+		StyleProfiles: compileStyleProfiles(profile),
 		MappingContract: MappingContract{
-			ContractID:  "mapping-default",
-			PatchTarget: "word/document.xml",
-			BlockBindings: map[string]string{
-				"cover_title":      "{{cover_title}}",
-				"abstract_cn_body": "{{abstract_cn_body}}",
-				"keywords_cn":      "{{keywords_cn}}",
-				"heading_1":        "{{heading_1}}",
-				"body":             "{{body}}",
-				"content_blocks":   "{{content_blocks}}",
-				"references":       "{{references}}",
-				"acknowledgement":  "{{acknowledgement}}",
-			},
+			ContractID:    "mapping-default",
+			PatchTarget:   "word/document.xml",
+			BlockBindings: bindings,
 		},
 		VerificationRules: []VerificationRule{
 			{
@@ -160,6 +131,137 @@ func (c *Compiler) Compile(ctx context.Context, templatePath string, opts Compil
 			},
 		},
 	}, nil
+}
+
+func compileBlockCatalog(profile *templateprofile.Profile) []TemplateBlock {
+	type blockSpec struct {
+		id, slot, style string
+		required        bool
+	}
+	defaults := []blockSpec{
+		{"cover_title", "text", "style-cover-title", true},
+		{"abstract_cn_body", "rich_text", "style-body-cn", true},
+		{"keywords_cn", "text", "style-body-cn", false},
+		{"heading_1", "repeatable", "style-heading-1", false},
+		{"body", "repeatable", "style-body-cn", false},
+		{"content_blocks", "repeatable", "style-body-cn", false},
+		{"references", "repeatable", "style-reference", false},
+		{"acknowledgement", "rich_text", "style-body-cn", false},
+	}
+	seen := make(map[string]bool, len(defaults))
+	blocks := make([]TemplateBlock, 0, len(defaults)+len(profile.Styles))
+	for _, spec := range defaults {
+		seen[spec.id] = true
+		blocks = append(blocks, newBlock(spec.id, spec.id, spec.slot, len(blocks), "", spec.style, "{{"+spec.id+"}}", spec.required))
+	}
+	keys := make([]string, 0, len(profile.Styles))
+	for key := range profile.Styles {
+		if !seen[key] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		slot := "rich_text"
+		if strings.HasPrefix(key, "heading_") || key == "body_start" || strings.Contains(key, "references") {
+			slot = "repeatable"
+		}
+		blocks = append(blocks, newBlock(key, key, slot, len(blocks), "", styleProfileID(key), "{{"+key+"}}", false))
+	}
+	return blocks
+}
+
+func styleProfileID(key string) string {
+	switch key {
+	case "title", "cover_title":
+		return "style-cover-title"
+	case "body", "body_start":
+		return "style-body-cn"
+	case "heading_1":
+		return "style-heading-1"
+	case "references":
+		return "style-reference"
+	default:
+		return "style-" + strings.ReplaceAll(key, "_", "-")
+	}
+}
+
+func compileStyleProfiles(profile *templateprofile.Profile) []StyleProfile {
+	profiles := make([]StyleProfile, 0, len(profile.Styles))
+	keys := make([]string, 0, len(profile.Styles))
+	for key := range profile.Styles {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	seen := map[string]bool{}
+	for _, key := range keys {
+		style := profile.Styles[key]
+		id, basedOn := styleProfileID(key), "Normal"
+		switch key {
+		case "title", "cover_title":
+			basedOn = "Title"
+		case "heading_1":
+			basedOn = "Heading1"
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		profiles = append(profiles, StyleProfile{
+			StyleProfileID: id,
+			Name:           key,
+			BasedOn:        basedOn,
+			Properties: StyleProperties{
+				EastAsiaFont:          style.FontEastAsia,
+				ASCIIFont:             style.FontASCII,
+				FontHint:              style.FontHint,
+				FontSizeHalfPoints:    atoi(style.FontSizeHalfPt),
+				ComplexSizeHalfPoints: atoi(style.ComplexSizeHalfPt),
+				Bold:                  style.Bold,
+				BoldSet:               style.BoldSet,
+				Italic:                style.Italic,
+				ItalicSet:             style.ItalicSet,
+				Alignment:             style.Alignment,
+				LineTwips:             atoi(style.Line),
+				LineRule:              style.LineRule,
+				BeforeTwips:           atoi(style.BeforeTwips),
+				AfterTwips:            atoi(style.AfterTwips),
+				FirstLineChars:        atoi(style.FirstLineChars),
+				FirstLineTwips:        atoi(style.FirstLineTwips),
+				OutlineLevel:          atoi(style.OutlineLevel),
+				OutlineLevelSet:       strings.TrimSpace(style.OutlineLevel) != "",
+			},
+		})
+	}
+	return profiles
+}
+
+func atoi(value string) int {
+	number, _ := strconv.Atoi(strings.TrimSpace(value))
+	return number
+}
+
+func validateProfileNumbers(profile *templateprofile.Profile) error {
+	if profile == nil {
+		return fmt.Errorf("template profile is nil")
+	}
+	for name, style := range profile.Styles {
+		values := map[string]string{
+			"font_size_half_pt": style.FontSizeHalfPt, "complex_size_half_pt": style.ComplexSizeHalfPt,
+			"line": style.Line, "before_twips": style.BeforeTwips, "after_twips": style.AfterTwips,
+			"first_line_chars": style.FirstLineChars, "first_line_twips": style.FirstLineTwips,
+			"outline_level": style.OutlineLevel,
+		}
+		for field, value := range values {
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			if _, err := strconv.Atoi(strings.TrimSpace(value)); err != nil {
+				return fmt.Errorf("invalid numeric style property %s.%s=%q", name, field, value)
+			}
+		}
+	}
+	return nil
 }
 
 func newBlock(blockID, kind, slotType string, orderIndex int, parentBlockID, styleProfileID, anchorMatch string, required bool) TemplateBlock {

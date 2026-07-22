@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -9,11 +10,12 @@ import (
 	"github.com/paper-format-checker/backend/internal/handler"
 	"github.com/paper-format-checker/backend/internal/logger"
 	"github.com/paper-format-checker/backend/internal/middleware"
-	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
 	"log"
-	"net"
 	"net/http"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 func main() {
@@ -28,47 +30,33 @@ func main() {
 	}
 	log.Printf("RBAC model: %s", cfg.RBAC.Model)
 
-	// Let systemd/deployment own process lifecycle. A second server must not kill the active one.
-	if isPortInUse(cfg.Server.Port) {
-		log.Fatalf("Port %d is already in use", cfg.Server.Port)
-	}
-
-	// Initialize database (allow failure in demo mode)
+	// Initialize database.
 	if err := database.InitDatabase(cfg); err != nil {
-		log.Printf("Warning: Failed to initialize database: %v", err)
-	}
-
-	// Auto migrate Token related tables
-	if database.DB != nil {
-		if err := database.DB.AutoMigrate(&model.TokenBlacklist{}, &model.RefreshToken{}); err != nil {
-			log.Printf("Warning: Failed to migrate token tables: %v", err)
-		} else {
-			log.Println("Successfully migrated token tables")
-		}
-
-		// Initialize Casbin
-		casbinService := service.NewCasbinService()
-		if err := casbinService.Init(); err != nil {
-			log.Printf("Warning: Failed to initialize Casbin: %v", err)
-		} else {
-			log.Println("Successfully initialized Casbin")
-		}
+		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
 	// Fix foreign key constraint for orders table member_level_id field
 	if err := database.ResetOrdersMemberLevel(); err != nil {
-		log.Printf("Warning: Failed to reset member_level_id: %v", err)
+		log.Fatalf("Failed to reset member_level_id: %v", err)
 	} else {
 		log.Println("Successfully reset member_level_id constraint")
 	}
 
 	// Execute database migration and initialization (explicitly call at startup)
 	if err := database.PerformMigration(); err != nil {
-		log.Printf("Warning: Failed to perform database migration: %v", err)
+		log.Fatalf("Failed to perform database migration: %v", err)
+	}
+
+	casbinService := service.NewCasbinService()
+	if err := casbinService.Init(); err != nil {
+		log.Fatalf("Failed to initialize Casbin: %v", err)
 	}
 
 	// Create Gin router
 	router := gin.Default()
+	if err := router.SetTrustedProxies(nil); err != nil {
+		log.Fatalf("Failed to disable forwarded-IP trust: %v", err)
+	}
 
 	// Configure CORS
 	router.Use(cors.New(cors.Config{
@@ -135,7 +123,7 @@ func main() {
 		auth := api.Group("/auth")
 		{
 			auth.POST("/register", authHandler.Register)
-			auth.POST("/login", authHandler.Login)
+			auth.POST("/login", middleware.LoginRateLimitMiddleware(), authHandler.Login)
 			auth.POST("/refresh", authHandler.RefreshToken) // Add refresh token route
 			auth.POST("/forgot-password", authHandler.SendResetCode)
 			auth.POST("/verify-reset-code", authHandler.VerifyResetCode)
@@ -416,7 +404,7 @@ func main() {
 		auth := apiV1.Group("/auth")
 		{
 			auth.POST("/register", authHandler.Register)
-			auth.POST("/login", authHandler.Login)
+			auth.POST("/login", middleware.LoginRateLimitMiddleware(), authHandler.Login)
 			auth.POST("/refresh", authHandler.RefreshToken)
 			auth.POST("/forgot-password", authHandler.SendResetCode)
 			auth.POST("/verify-reset-code", authHandler.VerifyResetCode)
@@ -842,16 +830,20 @@ func main() {
 	// Start server
 	serverAddr := fmt.Sprintf(":%d", cfg.Server.Port)
 
-	if err := http.ListenAndServe(serverAddr, router); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	go service.StartOrderExpirationTask(ctx, time.Minute)
+
+	server := &http.Server{Addr: serverAddr, Handler: router}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Server shutdown failed: %v", err)
+		}
+	}()
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Failed to start server: %v", err)
 	}
-}
-
-func isPortInUse(port int) bool {
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		return true
-	}
-	listener.Close()
-	return false
 }

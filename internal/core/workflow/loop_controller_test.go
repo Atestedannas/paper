@@ -141,6 +141,30 @@ func TestLoopControllerReturnsPatchError(t *testing.T) {
 	}
 }
 
+func TestLoopControllerConvergesAcrossMultiplePatchAttempts(t *testing.T) {
+	verifier := &sequenceVerifier{results: []verify.Result{
+		{RepairableIssues: []verify.Issue{{Kind: "page", Target: "document"}}},
+		{RepairableIssues: []verify.Issue{{Kind: "paragraph", Target: "document"}}},
+		{Passed: true},
+	}}
+	writer := &countingPatchWriter{}
+	result, err := NewLoopController(nil, writer, verifier).Run(context.Background(), RunInput{OutputPath: "out.docx"})
+	if err != nil || !result.VerifyResult.Passed || result.Attempts != 2 {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+}
+
+func TestLoopControllerStopsOnOscillatingIssues(t *testing.T) {
+	issueA := verify.Result{RepairableIssues: []verify.Issue{{Kind: "font", Target: "document"}}}
+	issueB := verify.Result{RepairableIssues: []verify.Issue{{Kind: "spacing", Target: "document"}}}
+	verifier := &sequenceVerifier{results: []verify.Result{issueA, issueB, issueA}}
+	writer := &countingPatchWriter{}
+	result, err := NewLoopController(nil, writer, verifier).Run(context.Background(), RunInput{OutputPath: "out.docx"})
+	if err != nil || result.Status != StatusManualReview || result.Attempts != 2 || writer.calls != 2 {
+		t.Fatalf("Run() = %#v, %v; patch calls = %d", result, err, writer.calls)
+	}
+}
+
 func containsWorkflowText(got, want string) bool {
 	return len(want) == 0 || (len(got) >= len(want) && stringContains(got, want))
 }

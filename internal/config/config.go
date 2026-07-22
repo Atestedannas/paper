@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -154,7 +156,7 @@ func LoadConfig(configPath string) (*Config, error) {
 			SSLMode:  "disable",
 		},
 		JWT: JWTConfig{
-			Secret:             "your-secret-key",
+			Secret:             "",
 			Expiration:         24 * time.Hour,
 			AccessTokenExpiry:  1 * time.Hour,
 			RefreshTokenExpiry: 30 * 24 * time.Hour,
@@ -467,7 +469,30 @@ func LoadConfig(configPath string) (*Config, error) {
 		config.Formatter.SchoolSpecPath = sp
 	}
 
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	return config, nil
+}
+
+func (c *Config) Validate() error {
+	if c == nil {
+		return fmt.Errorf("config is nil")
+	}
+	secret := strings.TrimSpace(c.JWT.Secret)
+	if len(secret) < 32 || strings.Contains(strings.ToLower(secret), "your-secret-key") {
+		return fmt.Errorf("JWT_SECRET must be set to a non-default value of at least 32 characters")
+	}
+	if c.Server.Port < 1 || c.Server.Port > 65535 {
+		return fmt.Errorf("SERVER_PORT must be between 1 and 65535")
+	}
+	if c.File.MaxSize <= 0 {
+		return fmt.Errorf("MAX_FILE_SIZE must be greater than zero")
+	}
+	if c.JWT.AccessTokenExpiry <= 0 || c.JWT.RefreshTokenExpiry <= 0 {
+		return fmt.Errorf("JWT token expirations must be greater than zero")
+	}
+	return nil
 }
 
 // getEnv 获取环境变量，如果不存在则返回默认值

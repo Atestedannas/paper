@@ -379,11 +379,6 @@ func (p *EnhancedProcessor) applyPreciseFormatting(doc *document.Document, rules
 	log.Println("[步骤0a] ---- 应用 Section 级别格式 ----")
 	p.ApplySectionLevelFormatting(doc)
 
-	// 步骤 0b: 修改样式定义
-	log.Println("[步骤0b] ---- 修改 styles.xml 样式定义 ----")
-	p.applyStyleDefinitions(doc, rules)
-	log.Println("[步骤0b] ---- 样式定义修改完成 ----")
-
 	// 步骤 1: 页面设置 (JSON覆盖)
 	log.Println("[步骤1] ---- 应用页面设置 ----")
 	if err := p.applyPageSetup(doc, rules); err != nil {

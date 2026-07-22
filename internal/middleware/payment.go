@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -11,6 +12,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
+	"gorm.io/gorm"
 )
 
 type ServiceType string
@@ -64,7 +66,16 @@ func PaymentMiddleware(config *config.Config, serviceType ServiceType) gin.Handl
 			return
 		}
 
+		reserved, err := reserveMemberCheck(userID, serviceType)
+		if err != nil {
+			c.AbortWithStatusJSON(500, gin.H{"error": "payment_check_failed", "message": err.Error()})
+			return
+		}
 		c.Next()
+		if reserved && c.Writer.Status() >= 400 {
+			_ = database.DB.Model(&model.Member{}).Where("user_id = ? AND total_checks > 0", userID).
+				UpdateColumn("total_checks", gorm.Expr("total_checks - 1")).Error
+		}
 	}
 }
 
@@ -136,11 +147,6 @@ func CheckUserPaymentStatus(userID uuid.UUID, serviceType ServiceType, price flo
 				if memberLevel.MaxChecks > 0 && member.TotalChecks >= memberLevel.MaxChecks {
 					return false, errors.New("已达到会员最大使用次数限制")
 				}
-
-				if err := database.DB.Model(&member).Update("total_checks", member.TotalChecks+1).Error; err != nil {
-					return false, fmt.Errorf("更新使用次数失败: %v", err)
-				}
-
 				return true, nil
 			}
 		}
@@ -156,6 +162,47 @@ func CheckUserPaymentStatus(userID uuid.UUID, serviceType ServiceType, price flo
 	}
 
 	return false, nil
+}
+
+func reserveMemberCheck(userID uuid.UUID, serviceType ServiceType) (bool, error) {
+	var user model.User
+	if err := database.DB.First(&user, "id = ?", userID).Error; err != nil {
+		return false, err
+	}
+	if user.Role == "admin" || user.IsFreeUser {
+		return false, nil
+	}
+	var member model.Member
+	if err := database.DB.Where("user_id = ? AND status = ? AND end_date > ?", userID, "active", time.Now()).First(&member).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	var level model.MemberLevel
+	if err := database.DB.First(&level, "id = ?", member.MemberLevelID).Error; err != nil {
+		return false, err
+	}
+	features := make(map[string]interface{})
+	if err := json.Unmarshal([]byte(level.Features), &features); err != nil {
+		return false, err
+	}
+	allowed, _ := features[getServiceFeatureKey(serviceType)].(bool)
+	if !allowed {
+		return false, nil
+	}
+	query := database.DB.Model(&model.Member{}).Where("id = ?", member.ID)
+	if level.MaxChecks > 0 {
+		query = query.Where("total_checks < ?", level.MaxChecks)
+	}
+	result := query.UpdateColumn("total_checks", gorm.Expr("total_checks + 1"))
+	if result.Error != nil {
+		return false, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return false, errors.New("已达到会员最大使用次数限制")
+	}
+	return true, nil
 }
 
 func serviceIsFreeBySetting(config map[string]interface{}, serviceType ServiceType) bool {

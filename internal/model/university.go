@@ -65,3 +65,12 @@ type FormatTemplate struct {
 	University *University `gorm:"foreignKey:UniversityID" json:"university,omitempty"`
 	Papers     []Paper     `gorm:"foreignKey:SelectedTemplateID" json:"papers,omitempty"`
 }
+
+type FormatTemplateRuleRevision struct {
+	ID               uuid.UUID  `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	FormatTemplateID uuid.UUID  `gorm:"type:uuid;index;not null" json:"format_template_id"`
+	FormatRules      string     `gorm:"type:jsonb;not null" json:"format_rules"`
+	TemplateVersion  string     `gorm:"size:20" json:"template_version"`
+	ChangedBy        *uuid.UUID `gorm:"type:uuid;index" json:"changed_by,omitempty"`
+	CreatedAt        time.Time  `gorm:"default:CURRENT_TIMESTAMP;index" json:"created_at"`
+}

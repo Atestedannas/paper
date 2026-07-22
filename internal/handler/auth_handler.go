@@ -135,30 +135,10 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	// 注册用户
 	user, err := h.userService.Register(req.Username, req.Email, req.Password)
 	if err != nil {
-		// 演示模式：数据库不可用时返回模拟响应
 		if err.Error() == "service unavailable" {
-			// 生成模拟用户数据
-			mockUser := struct {
-				ID       string `json:"id"`
-				Username string `json:"username"`
-				Email    string `json:"email"`
-			}{}
-
-			// 生成模拟JWT令牌
-			mockToken, _ := middleware.GenerateToken(h.config, uuid.New(), req.Username)
-			mockRefreshToken, _, _ := middleware.GenerateRefreshToken(h.config, uuid.New())
-
-			utils.Created(c, gin.H{
-				"access_token":  mockToken,
-				"refresh_token": mockRefreshToken,
-				"token_type":    "Bearer",
-				"expires_in":    int64(h.config.JWT.AccessTokenExpiry.Seconds()),
-				"user":          mockUser,
-			})
+			utils.InternalServerError(c, "registration service unavailable")
 			return
 		}
-
-		// 其他错误正常返回
 		utils.BadRequest(c, err.Error())
 		return
 	}
@@ -354,7 +334,7 @@ func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 		utils.BadRequest(c, "missing authorization code")
 		return
 	}
-	if state != "" && !alipayLoginStateMatches(c, state) {
+	if state == "" || (!alipayLoginStateMatches(c, state) && !h.alipayQRSessionStore.HasState(state)) {
 		if h.failAlipayQRSession(c, state, "invalid alipay login state") {
 			return
 		}
@@ -481,13 +461,14 @@ func alipayQRLoginFailedHTML() string {
 }
 
 func setAlipayLoginStateCookie(c *gin.Context, state string) {
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("alipay_login_state", state, 600, "/", "", false, true)
 }
 
 func alipayLoginStateMatches(c *gin.Context, state string) bool {
 	expected, err := c.Cookie("alipay_login_state")
 	if err != nil {
-		return true
+		return false
 	}
 	c.SetCookie("alipay_login_state", "", -1, "/", "", false, true)
 	return expected == state
@@ -539,7 +520,7 @@ func (h *AuthHandler) WechatAuthCallback(c *gin.Context) {
 		utils.BadRequest(c, "missing authorization code")
 		return
 	}
-	if state != "" && !wechatLoginStateMatches(c, state) {
+	if state == "" || !wechatLoginStateMatches(c, state) {
 		utils.BadRequest(c, "invalid wechat login state")
 		return
 	}
@@ -598,13 +579,14 @@ func (h *AuthHandler) WechatAuthCallback(c *gin.Context) {
 }
 
 func setWechatLoginStateCookie(c *gin.Context, state string) {
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("wechat_login_state", state, 600, "/", "", false, true)
 }
 
 func wechatLoginStateMatches(c *gin.Context, state string) bool {
 	expected, err := c.Cookie("wechat_login_state")
 	if err != nil {
-		return true
+		return false
 	}
 	c.SetCookie("wechat_login_state", "", -1, "/", "", false, true)
 	return expected == state
@@ -651,19 +633,9 @@ func (h *AuthHandler) SendResetCode(c *gin.Context) {
 		return
 	}
 
-	email := strings.ToLower(strings.TrimSpace(req.Email))
-	if _, err := h.userService.GetUserByEmail(email); err != nil {
-		utils.NotFound(c, "user not found")
-		return
-	}
-
-	code := randomSixDigitCode()
-	passwordResetMu.Lock()
-	passwordResetCodes[email] = passwordResetCode{Code: code, ExpiresAt: time.Now().Add(10 * time.Minute)}
-	passwordResetMu.Unlock()
-
-	// ponytail: return code until a real mailer is wired in.
-	utils.Success(c, gin.H{"reset_code": code, "expires_in": 600})
+	// Fail closed until a real out-of-band delivery channel is configured.
+	// Returning the code in the API response lets anyone reset any account.
+	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "password reset delivery is not configured"})
 }
 
 func (h *AuthHandler) VerifyResetCode(c *gin.Context) {
@@ -737,6 +709,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	// 解析请求数据
 	var req struct {
 		RefreshToken string `json:"refresh_token" binding:"required"`
+		AccessToken  string `json:"access_token"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -771,6 +744,14 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		utils.Unauthorized(c, "user not found")
 		return
 	}
+	var oldAccessClaims *middleware.JWTClaims
+	if req.AccessToken != "" {
+		oldAccessClaims, err = h.parseAccessToken(req.AccessToken)
+		if err != nil || oldAccessClaims.UserID != user.ID {
+			utils.Unauthorized(c, "invalid access token")
+			return
+		}
+	}
 
 	// 生成新的访问令牌
 	newAccessToken, err := middleware.GenerateToken(h.config, user.ID, user.Username)
@@ -798,9 +779,12 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	// 将旧的access_token加入黑名单
-	// 注意：这里需要从请求头获取旧的access_token，但刷新接口可能没有
-	// 所以我们只在客户端明确传递时才加入黑名单
+	if oldAccessClaims != nil {
+		if err := h.tokenBlacklistService.AddToken(req.AccessToken, model.TokenTypeAccess, user.ID, oldAccessClaims.ExpiresAt.Time, "token refreshed"); err != nil {
+			utils.InternalServerError(c, "failed to invalidate old access token")
+			return
+		}
+	}
 
 	// 返回响应
 	utils.Success(c, gin.H{
@@ -821,37 +805,34 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		return
 	}
 
-	// 获取Authorization头
-	authHeader := c.GetHeader("Authorization")
-	if authHeader != "" {
-		// 解析Bearer令牌
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) == 2 && parts[0] == "Bearer" {
-			accessToken := parts[1]
-
-			// 将access_token加入黑名单
-			claims := &middleware.JWTClaims{}
-			token, err := jwt.ParseWithClaims(accessToken, claims, func(token *jwt.Token) (interface{}, error) {
-				return []byte(h.config.JWT.Secret), nil
-			})
-
-			if err == nil && token.Valid {
-				_ = h.tokenBlacklistService.AddToken(
-					accessToken,
-					"access",
-					userID.(uuid.UUID),
-					claims.ExpiresAt.Time,
-					"user logout",
-				)
-			}
-		}
+	expiresAt := time.Now().Add(h.config.JWT.AccessTokenExpiry)
+	if err := h.tokenBlacklistService.RevokeUserAccessTokens(userID.(uuid.UUID), expiresAt, "user logout"); err != nil {
+		utils.InternalServerError(c, "failed to revoke access tokens")
+		return
 	}
 
 	// 撤销用户的所有刷新令牌
-	_ = h.refreshTokenService.RevokeUserRefreshTokens(userID.(uuid.UUID), "user logout")
+	if err := h.refreshTokenService.RevokeUserRefreshTokens(userID.(uuid.UUID), "user logout"); err != nil {
+		utils.InternalServerError(c, "failed to revoke refresh tokens")
+		return
+	}
 
 	// 返回响应
 	utils.Success(c, gin.H{"message": "logged out successfully"})
+}
+
+func (h *AuthHandler) parseAccessToken(tokenString string) (*middleware.JWTClaims, error) {
+	claims := &middleware.JWTClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return []byte(h.config.JWT.Secret), nil
+	})
+	if err != nil || !token.Valid || claims.ExpiresAt == nil {
+		return nil, fmt.Errorf("invalid access token")
+	}
+	return claims, nil
 }
 
 // isPasswordComplex 检查密码复杂度
