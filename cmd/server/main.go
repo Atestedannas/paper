@@ -641,6 +641,7 @@ func main() {
 			admin.PATCH("/promo-codes/:id/status", promoCodeHandler.SetActive)
 			admin.GET("/promo-codes/:id/grants", promoCodeHandler.ListGrants)
 			admin.GET("/stats", adminHandler.GetSystemStats)
+
 			admin.GET("/users", adminHandler.GetUsers)
 			admin.POST("/users", adminHandler.CreateUser)                                    // Create user
 			admin.PUT("/users/:id", adminHandler.UpdateUser)                                 // Update user
