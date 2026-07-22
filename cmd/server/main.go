@@ -655,6 +655,7 @@ func main() {
 			admin.POST("/papers/batch-force-delete", adminHandler.BatchForceDeletePapers)
 			admin.POST("/papers/batch-check", adminHandler.BatchCheckPapers)
 			admin.POST("/papers/:id/check-format", adminHandler.CheckPaperFormat)
+
 			admin.GET("/papers/:id/file", adminHandler.DownloadPaperFile)
 
 			// Paper restore endpoints (soft delete recovery)
