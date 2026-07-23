@@ -37,9 +37,10 @@ import (
 )
 
 var (
-	ErrInvalidJobID       = errors.New("invalid job id")
-	ErrInvalidPaperUpload = errors.New("invalid paper upload")
-	ErrServiceUnavailable = errors.New("paper workflow service unavailable")
+	ErrInvalidJobID        = errors.New("invalid job id")
+	ErrInvalidPaperUpload  = errors.New("invalid paper upload")
+	ErrTemplateDOCXMissing = errors.New("selected template has no readable DOCX file")
+	ErrServiceUnavailable  = errors.New("paper workflow service unavailable")
 )
 
 const defaultWorkflowOutputRoot = "uploads/workflow_outputs"
@@ -243,12 +244,12 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 		if err := s.db.WithContext(ctx).Preload("University").First(&formatTemplate, "id = ? AND is_active = ?", input.FormatTemplateID, true).Error; err != nil {
 			return nil, err
 		}
-		templatePath = firstWorkflowTemplatePath(formatTemplate)
+		templatePath = WorkflowTemplatePath(formatTemplate)
 		if templatePath == "" && formatTemplate.University != nil && strings.Contains(formatTemplate.University.Name, "重庆人文科技学院") {
 			templatePath = resolveCQRWSTTemplatePath()
 		}
 		if templatePath == "" {
-			return nil, fmt.Errorf("selected template has no DOCX file")
+			return nil, ErrTemplateDOCXMissing
 		}
 		selectedTemplateID = &formatTemplate.ID
 		templateName = formatTemplate.Name
@@ -1254,10 +1255,10 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 	return profile, nil
 }
 
-func firstWorkflowTemplatePath(template model.FormatTemplate) string {
+func WorkflowTemplatePath(template model.FormatTemplate) string {
 	for _, candidate := range []string{template.GoldenTemplatePath, template.FilePath} {
 		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
+		if candidate == "" || !strings.EqualFold(filepath.Ext(candidate), ".docx") {
 			continue
 		}
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {

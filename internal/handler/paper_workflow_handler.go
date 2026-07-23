@@ -192,15 +192,25 @@ func resolveWorkflowFormatTemplateID(raw string, documentType string) (uuid.UUID
 	} else {
 		query = query.Where("document_type = ?", "本科论文")
 	}
-	var template model.FormatTemplate
-	if err := query.Order("updated_at DESC").First(&template).Error; err == nil {
-		return template.ID, nil
+	var templates []model.FormatTemplate
+	if err := query.Order("updated_at DESC").Find(&templates).Error; err != nil {
+		return uuid.Nil, err
+	}
+	for _, template := range templates {
+		if service.WorkflowTemplatePath(template) != "" {
+			return template.ID, nil
+		}
 	}
 	if err := database.DB.Where("university_id = ? AND is_active = ?", universityID, true).
-		Order("updated_at DESC").First(&template).Error; err != nil {
-		return uuid.Nil, fmt.Errorf("no active template for university %d: %w", universityID, err)
+		Order("updated_at DESC").Find(&templates).Error; err != nil {
+		return uuid.Nil, err
 	}
-	return template.ID, nil
+	for _, template := range templates {
+		if service.WorkflowTemplatePath(template) != "" {
+			return template.ID, nil
+		}
+	}
+	return uuid.Nil, fmt.Errorf("no active DOCX template for university %d", universityID)
 }
 
 func (h *PaperWorkflowHandler) authorizePaperJob(c *gin.Context, userID uuid.UUID) (uuid.UUID, uuid.UUID, error) {
@@ -349,6 +359,8 @@ func (h *PaperWorkflowHandler) respondWorkflowError(c *gin.Context, err error) {
 		utils.ErrorResponse(c, http.StatusBadRequest, "invalid job id", err.Error())
 	case errors.Is(err, service.ErrInvalidPaperUpload):
 		utils.ErrorResponse(c, http.StatusBadRequest, "invalid paper upload", err.Error())
+	case errors.Is(err, service.ErrTemplateDOCXMissing):
+		utils.ErrorResponse(c, http.StatusUnprocessableEntity, "selected template is not usable", err.Error())
 	case errors.Is(err, service.ErrServiceUnavailable):
 		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, err.Error())
 	case errors.Is(err, gorm.ErrRecordNotFound):
