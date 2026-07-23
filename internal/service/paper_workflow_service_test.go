@@ -148,6 +148,57 @@ func TestPaperWorkflowServiceUsesSelectedFormatTemplateFromCreationThroughOutput
 	}
 }
 
+func TestPaperWorkflowServiceUsesPaperSkeletonWhenSelectedTemplateHasNoDOCX(t *testing.T) {
+	db := openPaperWorkflowServiceTestDB(t)
+	if err := db.Exec(`CREATE TABLE format_templates (
+		id text PRIMARY KEY, template_id text, name text, university_id integer,
+		document_type text, subject text, file_path text, source text, version text,
+		is_public integer, is_active integer, format_rules text,
+		parsed_from_paper_id text, parse_confidence real, usage_count integer,
+		success_rate real, golden_template_path text, description text,
+		created_at datetime, updated_at datetime
+	)`).Error; err != nil {
+		t.Fatalf("create format_templates table: %v", err)
+	}
+
+	templateID := uuid.New()
+	formatRules := `{"headings":{"level1":{"font_name":"AdminFont","font_size_pt":18}}}`
+	if err := db.Exec(`INSERT INTO format_templates
+		(id, template_id, name, version, is_active, is_public, format_rules)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, templateID, "rules-only-template", "Rules only", "1.0", true, true, formatRules).Error; err != nil {
+		t.Fatalf("insert format template: %v", err)
+	}
+
+	inputPath := filepath.Join(t.TempDir(), "paper.docx")
+	writeMinimalWorkflowDocx(t, inputPath, "1 Introduction")
+	t.Setenv("DEEPSEEK_ENABLED", "false")
+	created, err := NewPaperWorkflowService(db).CreatePaperJob(context.Background(), CreatePaperJobInput{
+		UserID:           uuid.New(),
+		FormatTemplateID: templateID,
+		FilePath:         inputPath,
+		FileName:         "paper.docx",
+		FileType:         "docx",
+	})
+	if err != nil {
+		t.Fatalf("CreatePaperJob() error = %v", err)
+	}
+
+	var compiled model.CompiledTemplate
+	if err := db.First(&compiled, "id = ?", created.CompiledTemplateID).Error; err != nil {
+		t.Fatalf("load compiled template: %v", err)
+	}
+	if compiled.SkeletonPath != inputPath {
+		t.Fatalf("SkeletonPath = %q, want uploaded paper %q", compiled.SkeletonPath, inputPath)
+	}
+	var profile templateprofile.Profile
+	if err := json.Unmarshal([]byte(compiled.StyleProfilesJSON), &profile); err != nil {
+		t.Fatalf("decode profile snapshot: %v", err)
+	}
+	if profile.Styles["heading_1"].FontEastAsia != "AdminFont" {
+		t.Fatalf("administrator rules were not applied: %#v", profile.Styles["heading_1"])
+	}
+}
+
 func TestPaperWorkflowServiceRunJobWithoutTemplateRequiresManualReview(t *testing.T) {
 	db := openPaperWorkflowServiceTestDB(t)
 	outputRoot := t.TempDir()

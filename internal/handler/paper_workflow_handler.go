@@ -192,15 +192,16 @@ func resolveWorkflowFormatTemplateID(raw string, documentType string) (uuid.UUID
 	} else {
 		query = query.Where("document_type = ?", "本科论文")
 	}
-	var templates []model.FormatTemplate
-	if err := query.Order("updated_at DESC").Find(&templates).Error; err != nil {
+	var preferredTemplates []model.FormatTemplate
+	if err := query.Order("updated_at DESC").Find(&preferredTemplates).Error; err != nil {
 		return uuid.Nil, err
 	}
-	for _, template := range templates {
+	for _, template := range preferredTemplates {
 		if service.WorkflowTemplatePath(template) != "" {
 			return template.ID, nil
 		}
 	}
+	var templates []model.FormatTemplate
 	if err := database.DB.Where("university_id = ? AND is_active = ?", universityID, true).
 		Order("updated_at DESC").Find(&templates).Error; err != nil {
 		return uuid.Nil, err
@@ -210,7 +211,13 @@ func resolveWorkflowFormatTemplateID(raw string, documentType string) (uuid.UUID
 			return template.ID, nil
 		}
 	}
-	return uuid.Nil, fmt.Errorf("no active DOCX template for university %d", universityID)
+	if len(preferredTemplates) > 0 {
+		return preferredTemplates[0].ID, nil
+	}
+	if len(templates) > 0 {
+		return templates[0].ID, nil
+	}
+	return uuid.Nil, fmt.Errorf("no active template for university %d", universityID)
 }
 
 func (h *PaperWorkflowHandler) authorizePaperJob(c *gin.Context, userID uuid.UUID) (uuid.UUID, uuid.UUID, error) {

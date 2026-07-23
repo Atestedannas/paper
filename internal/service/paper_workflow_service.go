@@ -249,7 +249,8 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 			templatePath = resolveCQRWSTTemplatePath()
 		}
 		if templatePath == "" {
-			return nil, ErrTemplateDOCXMissing
+			log.Printf("[WORKFLOW_TEMPLATE] template %s has no readable DOCX; using uploaded paper as skeleton", formatTemplate.ID)
+			templatePath = input.FilePath
 		}
 		selectedTemplateID = &formatTemplate.ID
 		templateName = formatTemplate.Name
@@ -1256,7 +1257,11 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 }
 
 func WorkflowTemplatePath(template model.FormatTemplate) string {
-	for _, candidate := range []string{template.GoldenTemplatePath, template.FilePath} {
+	candidates := []string{template.GoldenTemplatePath, template.FilePath}
+	if template.ID != uuid.Nil {
+		candidates = append(candidates, filepath.Join("uploads", "templates", template.ID.String(), "template.docx"))
+	}
+	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" || !strings.EqualFold(filepath.Ext(candidate), ".docx") {
 			continue
