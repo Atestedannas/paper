@@ -122,8 +122,8 @@ func (m *MigrationRBACEnhanced) createMenusTable(tx *gorm.DB) error {
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	
-	CREATE INDEX idx_menus_parent_id ON menus(parent_id);
-	CREATE INDEX idx_menus_sort_order ON menus(sort_order);
+	CREATE INDEX IF NOT EXISTS idx_menus_parent_id ON menus(parent_id);
+	CREATE INDEX IF NOT EXISTS idx_menus_sort_order ON menus(sort_order);
 	`
 	return tx.Exec(sql).Error
 }
@@ -144,8 +144,8 @@ func (m *MigrationRBACEnhanced) createAuthoritiesTable(tx *gorm.DB) error {
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	
-	CREATE INDEX idx_authorities_code ON authorities(code);
-	CREATE INDEX idx_authorities_type ON authorities(type);
+	CREATE INDEX IF NOT EXISTS idx_authorities_code ON authorities(code);
+	CREATE INDEX IF NOT EXISTS idx_authorities_type ON authorities(type);
 	`
 	return tx.Exec(sql).Error
 }
@@ -165,9 +165,9 @@ func (m *MigrationRBACEnhanced) createCasbinRulesTable(tx *gorm.DB) error {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	
-	CREATE INDEX idx_casbin_rules_p_type ON casbin_rules(p_type);
-	CREATE INDEX idx_casbin_rules_v0 ON casbin_rules(v0);
-	CREATE INDEX idx_casbin_rules_v1 ON casbin_rules(v1);
+	CREATE INDEX IF NOT EXISTS idx_casbin_rules_p_type ON casbin_rules(p_type);
+	CREATE INDEX IF NOT EXISTS idx_casbin_rules_v0 ON casbin_rules(v0);
+	CREATE INDEX IF NOT EXISTS idx_casbin_rules_v1 ON casbin_rules(v1);
 	`
 	return tx.Exec(sql).Error
 }
@@ -186,8 +186,8 @@ func (m *MigrationRBACEnhanced) createDataPermissionRulesTable(tx *gorm.DB) erro
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	
-	CREATE INDEX idx_data_permission_rules_role_id ON data_permission_rules(role_id);
-	CREATE INDEX idx_data_permission_rules_resource_type ON data_permission_rules(resource_type);
+	CREATE INDEX IF NOT EXISTS idx_data_permission_rules_role_id ON data_permission_rules(role_id);
+	CREATE INDEX IF NOT EXISTS idx_data_permission_rules_resource_type ON data_permission_rules(resource_type);
 	`
 	return tx.Exec(sql).Error
 }
@@ -210,9 +210,9 @@ func (m *MigrationRBACEnhanced) createOperationLogsTable(tx *gorm.DB) error {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	
-	CREATE INDEX idx_operation_logs_user_id ON operation_logs(user_id);
-	CREATE INDEX idx_operation_logs_created_at ON operation_logs(created_at);
-	CREATE INDEX idx_operation_logs_operation ON operation_logs(operation);
+	CREATE INDEX IF NOT EXISTS idx_operation_logs_user_id ON operation_logs(user_id);
+	CREATE INDEX IF NOT EXISTS idx_operation_logs_created_at ON operation_logs(created_at);
+	CREATE INDEX IF NOT EXISTS idx_operation_logs_operation ON operation_logs(operation);
 	`
 	return tx.Exec(sql).Error
 }
@@ -226,8 +226,8 @@ func (m *MigrationRBACEnhanced) createRoleMenusTable(tx *gorm.DB) error {
 		PRIMARY KEY (role_id, menu_id)
 	);
 	
-	CREATE INDEX idx_role_menus_role_id ON role_menus(role_id);
-	CREATE INDEX idx_role_menus_menu_id ON role_menus(menu_id);
+	CREATE INDEX IF NOT EXISTS idx_role_menus_role_id ON role_menus(role_id);
+	CREATE INDEX IF NOT EXISTS idx_role_menus_menu_id ON role_menus(menu_id);
 	`
 	return tx.Exec(sql).Error
 }
@@ -241,8 +241,8 @@ func (m *MigrationRBACEnhanced) createRoleAuthoritiesTable(tx *gorm.DB) error {
 		PRIMARY KEY (role_id, authority_id)
 	);
 	
-	CREATE INDEX idx_role_authorities_role_id ON role_authorities(role_id);
-	CREATE INDEX idx_role_authorities_authority_id ON role_authorities(authority_id);
+	CREATE INDEX IF NOT EXISTS idx_role_authorities_role_id ON role_authorities(role_id);
+	CREATE INDEX IF NOT EXISTS idx_role_authorities_authority_id ON role_authorities(authority_id);
 	`
 	return tx.Exec(sql).Error
 }
