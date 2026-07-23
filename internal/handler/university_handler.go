@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/utils"
@@ -54,6 +55,42 @@ func (h *UniversityHandler) GetUniversities(c *gin.Context) {
 	if result.Error != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "获取高校列表失败", result.Error.Error())
 		return
+	}
+	if len(universities) > 0 {
+		universityIDs := make([]int64, 0, len(universities))
+		for _, university := range universities {
+			universityIDs = append(universityIDs, university.ID)
+		}
+		var templates []model.FormatTemplate
+		if err := database.DB.Where("university_id IN ? AND is_active = ?", universityIDs, true).
+			Order("updated_at DESC").Find(&templates).Error; err != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "获取高校模板失败", err.Error())
+			return
+		}
+		latest := make(map[int64]uuid.UUID, len(universities))
+		undergraduate := make(map[int64]uuid.UUID, len(universities))
+		for _, template := range templates {
+			if template.UniversityID == nil {
+				continue
+			}
+			if _, ok := latest[*template.UniversityID]; !ok {
+				latest[*template.UniversityID] = template.ID
+			}
+			if template.DocumentType == "本科论文" {
+				if _, ok := undergraduate[*template.UniversityID]; !ok {
+					undergraduate[*template.UniversityID] = template.ID
+				}
+			}
+		}
+		for index := range universities {
+			templateID, ok := undergraduate[universities[index].ID]
+			if !ok {
+				templateID, ok = latest[universities[index].ID]
+			}
+			if ok {
+				universities[index].ActiveTemplateID = &templateID
+			}
+		}
 	}
 
 	utils.SuccessResponse(c, "获取成功", gin.H{

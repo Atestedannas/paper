@@ -25,6 +25,7 @@ type University struct {
 	PdfTemplateURL     string          `gorm:"-" json:"pdf_template_url"`    // PDF模板URL
 	Subject            string          `gorm:"-" json:"subject"`             // 学科类别（来自关联模板）
 	DocumentType       string          `gorm:"-" json:"document_type"`       // 文档类型（来自关联模板）
+	ActiveTemplateID   *uuid.UUID      `gorm:"-" json:"template_id,omitempty"`
 
 	// 关联
 	Templates []FormatTemplate `gorm:"foreignKey:UniversityID" json:"templates,omitempty"`
