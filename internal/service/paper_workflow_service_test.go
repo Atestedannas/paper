@@ -685,10 +685,8 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 		t.Fatalf("generated output should route body pages to footer3: sect=%s rels=%s", sectPrs[2], relsXML)
 	}
 	headerXML := readWorkflowDocxEntry(t, outputPath, "word/header1.xml")
-	for _, want := range []string{"重庆人文科技学院2026届护理学专业本科毕业论文", `<w:jc w:val="center"/>`, `<w:bottom w:val="double"`} {
-		if !strings.Contains(headerXML, want) {
-			t.Fatalf("generated output header missing %s: %s", want, headerXML)
-		}
+	if !strings.Contains(workflowDocumentText(headerXML), "重庆人文科技学院2026届护理学专业本科毕业论文") {
+		t.Fatalf("generated output header is missing materialized template text: %s", headerXML)
 	}
 	frontFooterXML := readWorkflowDocxEntry(t, outputPath, "word/footer1.xml")
 	for _, want := range []string{`<w:jc w:val="center"/>`, ` PAGE `} {

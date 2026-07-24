@@ -105,7 +105,9 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 
 	// ── 步骤 5b: 应用 Section 级别高级格式（页眉/页脚/三线表/上标等）──
 	log.Println("[V2][步骤5b] 应用高级Section格式...")
-	e.processor.ApplyTemplateSectionLevelFormatting(studentDoc)
+	if err := e.processor.ApplyTemplateSectionLevelFormatting(studentDoc); err != nil {
+		log.Printf("[V2][步骤5b] 警告: Section 格式部分失败: %v", err)
+	}
 
 	// ── 步骤 6: 确定性段落分类 ──
 	log.Println("[V2][步骤6] 确定性段落分类...")
@@ -113,12 +115,20 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	classified := classifier.Classify(studentDoc.Paragraphs())
 
 	// ── 步骤 7: XML格式克隆（非封面、非特殊段落）──
+	// 职责：复制模板段落的完整 XML 节点（含 pPr + rPr），处理非格式属性
+	//       （如大纲级别、列表编号、修订标记等 cloneRPr/clonePPr 无法覆盖的深层结构）。
+	// 注意：步骤 7b 会在克隆基础上对标题/正文等做专项格式覆写——这是有意设计：
+	//       ① 克隆保证"不低于模板"的基准；② 智能格式化按学校规范做精确调整。
+	//       两步骤职责不重叠：克隆管结构完整性，智能格式化管语义精确性。
 	log.Println("[V2][步骤7] XML格式克隆...")
 	cloner := NewV2FormatCloner(store)
 	fixCount := cloner.ApplyAll(classified)
 	log.Printf("[V2][步骤7] 修正了 %d 个段落", fixCount)
 
 	// ── 步骤 7b: 智能格式化（题目/摘要/标题/页眉等特殊段落）──
+	// 职责：对标题、摘要、正文等特殊段落按学校规范做精确格式调整。
+	//       内置跳过逻辑：若段落当前格式已与目标一致，则跳过写入，避免
+	//       对步骤 7 已正确克隆的段落做无意义覆盖。
 	log.Println("[V2][步骤7b] 智能格式化...")
 	smartFmt := NewV2SmartFormatter(e.processor)
 	smartFmt.ApplySmartFormatting(studentDoc, classified)

@@ -90,6 +90,29 @@ func FixDOCXWithTemplateProfile(ctx context.Context, path string, profile *templ
 	return fixDOCXWithTemplateProfileProcessors(ctx, path, profile, templateProfileProcessors())
 }
 
+func ApplyTemplateProfileStylesAndPageSetup(ctx context.Context, path string, profile *templateprofile.Profile) (int, error) {
+	if profile == nil {
+		return 0, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	count := 0
+	_, styleCount, err := applyTemplateProfileStyles(path, profile)
+	if err != nil {
+		return 0, err
+	}
+	count += styleCount
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	_, pageCount, err := applyTemplateProfilePageSetup(path, profile)
+	if err != nil {
+		return 0, err
+	}
+	return count + pageCount, nil
+}
+
 func fixDOCXWithTemplateProfileProcessors(ctx context.Context, path string, profile *templateprofile.Profile, processors []TemplateProfileProcessor) (Result, error) {
 	result := Result{}
 	original, err := os.ReadFile(path)
@@ -236,7 +259,9 @@ func applyTemplateProfileHeaderFooterAndPageNumbering(path string, profile *temp
 		if headerSpec.Policy == "" && profile.Header.Exists {
 			headerSpec.Policy = "template"
 		}
-		if headerSpec.Policy == "template" && profile.Header.Exists {
+		if headerSpec.Policy == "template" && profile.Header.Exists && documentHasTemplateProfilePartReference(documentContent, "header") {
+			headerSpec = ooxmlpatch.HeaderFooterPolicySpec{}
+		} else if headerSpec.Policy == "template" && profile.Header.Exists {
 			headerText := profile.Header.Text
 			if strings.Contains(headerText, "XXX") {
 				if paperHeader := extractHeaderTextFromDocumentXML(string(documentContent)); !strings.Contains(paperHeader, "XXX") {
@@ -260,6 +285,9 @@ func applyTemplateProfileHeaderFooterAndPageNumbering(path string, profile *temp
 		if templateFooterUsesChineseTotalPages(profile.Footer) {
 			pageSpec.BodyWrapper = "chinese_total"
 		}
+		if profile.Footer.Exists && documentHasTemplateProfilePartReference(documentContent, "footer") {
+			pageSpec = ooxmlpatch.PageNumberingPolicySpec{}
+		}
 	}
 	if headerSpec.Policy == "" && pageSpec.Policy == "" && pageSpec.FrontFormat == "" && pageSpec.BodyFormat == "" && pageSpec.BodyWrapper == "" && pageSpec.BodyStart == 0 {
 		return 0, nil
@@ -272,6 +300,10 @@ func applyTemplateProfileHeaderFooterAndPageNumbering(path string, profile *temp
 		return 0, err
 	}
 	return count, nil
+}
+
+func documentHasTemplateProfilePartReference(documentXML []byte, kind string) bool {
+	return strings.Contains(string(documentXML), "<w:"+kind+"Reference")
 }
 
 func templateFooterUsesChineseTotalPages(footer templateprofile.HeaderFooterRule) bool {
@@ -1353,7 +1385,7 @@ func applyTemplateProfileStylesToDocumentXML(documentXML string, profile *templa
 	referenceMisses := 0
 	updated := paragraphPattern.ReplaceAllStringFunc(documentXML, func(paragraph string) string {
 		text := strings.TrimSpace(extractParagraphText(paragraph))
-		if text == "" {
+		if text == "" || isTemplateProfileTOCParagraph(paragraph) {
 			return paragraph
 		}
 		if currentSection == "references" && !referenceEntryPattern.MatchString(text) && !isReferenceTitleText(text) {
@@ -1393,6 +1425,12 @@ func applyTemplateProfileStylesToDocumentXML(documentXML string, profile *templa
 		return next
 	})
 	return updated, count
+}
+
+func isTemplateProfileTOCParagraph(paragraph string) bool {
+	return strings.Contains(paragraph, " TOC ") ||
+		strings.Contains(paragraph, `<w:tab w:val="right" w:leader="dot"`) ||
+		strings.Contains(paragraph, `<w:tab w:leader="dot"`)
 }
 
 func paragraphStyleForTemplateProfileKey(key string, rule templateprofile.StyleRule) (paragraphStyle, bool) {

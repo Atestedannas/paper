@@ -1243,6 +1243,7 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 		Mapping:          mapping,
 		OutputPath:       outputPath,
 		RepairContract:   contract,
+		TemplateProfile:  profile,
 	}); err != nil {
 		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("generate final paper from template skeleton: %w", err))
 	}
@@ -1251,6 +1252,11 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 	}
 	if missing := missingGeneratedSourceContent(ctx, parsed, outputPath); len(missing) > 0 {
 		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("generated template output lost source content: %s", strings.Join(missing, " | ")))
+	}
+	if !transplant.UsesCQRWSTNormalizers(templatePath) {
+		if _, err := cqrwst.ApplyTemplateProfileStylesAndPageSetup(ctx, outputPath, profile); err != nil {
+			return profile, fmt.Errorf("apply selected template profile to generated paper: %w", err)
+		}
 	}
 
 	return profile, nil

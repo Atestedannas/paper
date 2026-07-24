@@ -1472,7 +1472,7 @@ func cqrwstHeaderReference() string {
 
 func cqrwstPageSettings() string {
 	return `<w:pgSz w:w="11906" w:h="16838"/>` +
-		`<w:pgMar w:top="1418" w:right="1134" w:bottom="1134" w:left="1418" w:header="851" w:footer="992" w:gutter="0"/>`
+		`<w:pgMar w:top="1418" w:right="1418" w:bottom="1418" w:left="1418" w:header="851" w:footer="992" w:gutter="0"/>`
 }
 
 func cqrwstPageNumber(format string) string {

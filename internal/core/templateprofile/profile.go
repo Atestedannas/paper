@@ -182,7 +182,9 @@ type HeaderFooterRule struct {
 	HasPageField   bool   `json:"has_page_field,omitempty"`
 	HasNumPages    bool   `json:"has_num_pages,omitempty"`
 	HasDoubleLine  bool   `json:"has_double_line,omitempty"`
+	HasUnderline   bool   `json:"has_underline,omitempty"`
 	FontEastAsia   string `json:"font_east_asia,omitempty"`
+	FontAscii      string `json:"font_ascii,omitempty"`
 	FontSizeHalfPt string `json:"font_size_half_pt,omitempty"`
 }
 
@@ -887,9 +889,13 @@ func applyHeaderFooterOverrides(profile *Profile, rules map[string]interface{}) 
 		if value := stringRule(header["font_name"]); value != "" {
 			profile.Header.FontEastAsia = value
 		}
+		if value := stringRule(header["font_ascii"]); value != "" {
+			profile.Header.FontAscii = value
+		}
 		if points, ok := fontPoints(header); ok {
 			profile.Header.FontSizeHalfPt = strconv.Itoa(int(points * 2))
 		}
+		profile.Header.HasUnderline = boolRule(header["has_underline"], profile.Header.HasUnderline)
 	}
 	if footer := mapRule(rules["page_number"]); footer != nil {
 		profile.Footer.Exists = true
@@ -1394,9 +1400,12 @@ func extractHeaderFooterRule(raw string) HeaderFooterRule {
 		HasPageField:  strings.Contains(raw, " PAGE "),
 		HasNumPages:   strings.Contains(raw, " NUMPAGES ") || hasChineseTotalPageText(text),
 		HasDoubleLine: strings.Contains(raw, `w:val="double"`),
+		HasUnderline:  strings.Contains(raw, "<w:u ") || strings.Contains(raw, "<w:u/>"),
 	}
 	if font := fontPattern.FindString(raw); font != "" {
-		rule.FontEastAsia = attrs(font)["w:eastAsia"]
+		fontAttrs := attrs(font)
+		rule.FontEastAsia = fontAttrs["w:eastAsia"]
+		rule.FontAscii = fontAttrs["w:ascii"]
 	}
 	if size := sizePattern.FindString(raw); size != "" {
 		rule.FontSizeHalfPt = attrs(size)["w:val"]

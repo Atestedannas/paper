@@ -13,6 +13,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/core/blockmap"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/templatecompile"
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
 func TestGenerateWritesDocxWithReplacedDocumentXML(t *testing.T) {
@@ -229,6 +230,31 @@ func TestGenerateDoesNotOverwriteGenericTemplateHeaderFooter(t *testing.T) {
 	footer := readDocxEntry(t, outputPath, "word/footer1.xml")
 	if !strings.Contains(footer, "Generic Footer") || strings.Contains(footer, "NUMPAGES") {
 		t.Fatalf("generic template footer was overwritten: %s", footer)
+	}
+}
+
+func TestGenerateWithTemplateProfilePreservesCQRWSTHeaderLayout(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	headerXML := `<w:hdr><w:p><w:pPr><w:tabs><w:tab w:val="right" w:pos="9000"/></w:tabs><w:pBdr><w:bottom w:val="single" w:sz="8"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="仿宋"/><w:sz w:val="18"/></w:rPr><w:t>重庆人文科技学院</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>本科毕业论文</w:t></w:r></w:p></w:hdr>`
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml":            `<w:document xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rIdHeader"/></w:sectPr></w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>`,
+		"word/header1.xml":             headerXML,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping:          &blockmap.MappingResult{Bindings: []blockmap.Binding{{BlockID: "content_blocks", Payload: "1 Introduction"}}},
+		OutputPath:       outputPath,
+		TemplateProfile:  &templateprofile.Profile{Header: templateprofile.HeaderFooterRule{Exists: true}},
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if got := readDocxEntry(t, outputPath, "word/header1.xml"); got != headerXML {
+		t.Fatalf("template header layout was replaced:\n%s", got)
 	}
 }
 

@@ -74,6 +74,7 @@ type GenerateInput struct {
 	Mapping          *blockmap.MappingResult
 	OutputPath       string
 	RepairContract   *repaircontract.Contract
+	TemplateProfile  *templateprofile.Profile
 }
 
 type Transplanter struct{}
@@ -158,7 +159,11 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 		return err
 	}
 	if usesCQRWSTNormalizers {
-		normalizeCQRWSTMainHeader(pkg, coverFields)
+		if input.TemplateProfile == nil || !input.TemplateProfile.Header.Exists {
+			normalizeCQRWSTMainHeader(pkg, coverFields)
+		} else {
+			materializeCQRWSTMainHeader(pkg, coverFields)
+		}
 		normalizeCQRWSTFrontFooter(pkg)
 		normalizeCQRWSTMainFooter(pkg)
 	}
@@ -190,6 +195,11 @@ func packageUsesCQRWSTNormalizers(pkg *ooxmlpkg.DocxPackage) bool {
 		}
 	}
 	return false
+}
+
+func UsesCQRWSTNormalizers(path string) bool {
+	pkg, err := ooxmlpkg.Open(path)
+	return err == nil && packageUsesCQRWSTNormalizers(pkg)
 }
 
 func packageContainsRefreshableField(pkg *ooxmlpkg.DocxPackage) bool {
@@ -2700,6 +2710,53 @@ func normalizeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]stri
 		}
 		pkg.Set(headerTarget, []byte(renderCQRWSTMainHeaderXML(fields, templateHeader)))
 	}
+}
+
+func materializeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]string) {
+	if pkg == nil || len(fields) == 0 {
+		return
+	}
+	document, ok := pkg.Get(defaultPatchTarget)
+	if !ok {
+		return
+	}
+	for _, headerTarget := range referencedHeaderTargets(pkg, string(document)) {
+		content, ok := pkg.Get(headerTarget)
+		if !ok {
+			continue
+		}
+		headerXML := string(content)
+		templateHeader := xmlText(headerXML)
+		if !containsCQRWSTMarker(templateHeader) && !containsCQRWSTMarker(headerXML) {
+			continue
+		}
+		updated := headerXML
+		if major := cqrwstCoverMajor(fields); major != "" && major != "XXX" {
+			updated = strings.ReplaceAll(updated, ">XXX<", ">"+html.EscapeString(major)+"<")
+		}
+		switch cqrwstHeaderDocumentType(fields, templateHeader) {
+		case "\u8bba\u6587":
+			updated = removeCQRWSTHeaderDesignSuffix(updated)
+		case "\u8bbe\u8ba1":
+			updated = strings.ReplaceAll(updated, "\u6bd5\u4e1a\u8bba\u6587", "\u6bd5\u4e1a\u8bbe\u8ba1")
+			updated = removeCQRWSTHeaderDesignSuffix(updated)
+		}
+		if updated != headerXML {
+			pkg.Set(headerTarget, []byte(updated))
+		}
+	}
+}
+
+func removeCQRWSTHeaderDesignSuffix(headerXML string) string {
+	runs := regexp.MustCompile(`(?s)<w:r\b[^>]*>.*?</w:r>`).FindAllStringIndex(headerXML, -1)
+	for index := len(runs) - 2; index >= 0; index-- {
+		current := headerXML[runs[index][0]:runs[index][1]]
+		next := headerXML[runs[index+1][0]:runs[index+1][1]]
+		if xmlText(current) == "/" && xmlText(next) == "设计" {
+			return headerXML[:runs[index][0]] + headerXML[runs[index+1][1]:]
+		}
+	}
+	return headerXML
 }
 
 func mainBodyHeaderReferenceID(documentXML string) string {

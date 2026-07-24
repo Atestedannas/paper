@@ -225,7 +225,9 @@ func ApplyThreeLineTableBorders(tableXML string, spec TableBordersSpec) (string,
 func updateSectionPropertiesBody(body string, spec SectionPropertiesSpec) string {
 	body = pageSizeElement.ReplaceAllString(body, "")
 	body = pageMarginElement.ReplaceAllString(body, "")
-	body = pageNumberTypeElement.ReplaceAllString(body, "")
+	if spec.PageNumberFormat != "" || spec.PageNumberStart > 0 {
+		body = pageNumberTypeElement.ReplaceAllString(body, "")
+	}
 	if spec.RemoveHeaderFooter {
 		body = headerFooterReferenceElement.ReplaceAllString(body, "")
 	}

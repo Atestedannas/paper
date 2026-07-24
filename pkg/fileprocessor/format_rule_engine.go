@@ -229,8 +229,11 @@ func headerFooterFormatSpec(rule templateprofile.HeaderFooterRule) (ParagraphFor
 	}
 	spec := ParagraphFormatSpec{
 		FontEastAsia: rule.FontEastAsia,
-		FontAscii:    "Times New Roman",
+		Underline:    rule.HasUnderline,
 		SampleCount:  1,
+	}
+	if rule.FontAscii != "" {
+		spec.FontAscii = rule.FontAscii
 	}
 	if value, err := strconv.ParseUint(strings.TrimSpace(rule.FontSizeHalfPt), 10, 64); err == nil {
 		spec.FontSizeHalfPt = value
@@ -241,13 +244,18 @@ func headerFooterFormatSpec(rule templateprofile.HeaderFooterRule) (ParagraphFor
 
 func defaultParagraphFormatSpecs() map[string]ParagraphFormatSpec {
 	return map[string]ParagraphFormatSpec{
+		"title": {
+			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 36,
+			Bold: true, AlignmentSet: true, Alignment: wml.ST_JcCenter,
+			SampleCount: 3,
+		},
 		"body": {
 			FontEastAsia: "宋体", FontAscii: "Times New Roman", FontSizeHalfPt: 24,
 			AlignmentSet: true, Alignment: wml.ST_JcBoth, LineSpacingVal: 360,
 			LineSpacingRule: wml.ST_LineSpacingRuleAuto, FirstLineIndent: 480, SampleCount: 3,
 		},
 		"heading_1": {
-			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 32,
+			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 36,
 			Bold: true, AlignmentSet: true, Alignment: wml.ST_JcCenter, SampleCount: 3,
 		},
 		"heading_2": {

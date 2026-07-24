@@ -385,7 +385,9 @@ func (p *EnhancedProcessor) applyPreciseFormatting(doc *document.Document, rules
 
 	// 步骤 0a: Section 级别格式（A4纸张、标准边距、双线页眉、页脚页码、三线表、上标等）
 	log.Println("[步骤0a] ---- 应用 Section 级别格式 ----")
-	p.ApplySectionLevelFormatting(doc)
+	if err := p.ApplySectionLevelFormatting(doc); err != nil {
+		log.Printf("[步骤0a] 警告: Section 级别格式部分失败: %v", err)
+	}
 
 	// 步骤 1: 页面设置 (JSON覆盖)
 	log.Println("[步骤1] ---- 应用页面设置 ----")
@@ -573,9 +575,11 @@ func getSchoolIDFromCorrectionsList(corrections []map[string]interface{}) string
 // applyTemplateFormatting 新方案：直接从模板OOXML格式规范应用格式
 // 步骤：页面设置/页眉页脚（保留JSON规则）→ AI分类 → 直接应用模板格式规范 → 表格格式
 func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rules map[string]interface{}, specs map[string]ParagraphFormatSpec) (*FormatLockManager, error) {
-	// 注意：模板模式下不调用 applyStyleDefinitions——该函数会全局修改 docDefaults/Named Styles，
-	// 导致封面等跳过段落的字体被意外修改。模板模式通过 AIFormatApplier 直接写入 run-level rPr，
-	// 无需再改 styles.xml 层。
+	// 模板模式下也需要设置 docDefaults 和命名样式（Heading1-3 等），
+	// 为 TOC/导航窗格等依赖样式定义的功能提供正确的格式基础。
+	// AIFormatApplier 随后会在 run-level 写入显式 rPr，覆盖样式级默认值，
+	// 因此不会导致封面等跳过段落的字体被意外修改。
+	p.applyStyleDefinitions(doc, rules)
 
 	plan, err := NewFormatPlanner().Plan()
 	if err != nil {
@@ -584,19 +588,34 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 	locks := NewFormatLockManager()
 	var classified map[string][]document.Paragraph
 	skipCategories := map[string]bool{}
+
+	// 10b: 收集所有步骤的错误，而非静默吞错
+	var stepErrors []string
+	// 10c: 标记关键步骤是否失败
+	var paragraphsStepFailed bool
+	// 9d: 记录修正前的段落总数
+	initialParaCount := len(doc.Paragraphs())
+
 	for _, step := range plan {
 		log.Printf("[格式规划器] 执行步骤: %s", step)
 		switch step {
 		case FormatStepSection:
-			p.ApplyTemplateSectionLevelFormatting(doc)
+			if err := p.ApplyTemplateSectionLevelFormatting(doc); err != nil {
+				stepErrors = append(stepErrors, fmt.Sprintf("Section失败: %v", err))
+			}
+			// 9a: 验证页面尺寸
+			p.verifySectionPageSize(doc)
+
 		case FormatStepPageSetup:
 			if err := p.applyPageSetup(doc, rules); err != nil {
-				log.Printf("[格式规划器] 页面设置失败: %v", err)
+				stepErrors = append(stepErrors, fmt.Sprintf("PageSetup失败: %v", err))
 			}
+			// 9b: 验证页边距
+			p.verifyPageSetupMargins(doc, 2.5, 2.5, 2.5, 2.5)
+
 		case FormatStepHeaderFooter:
 			if err := p.applyHeaderFooter(doc, rules, specs); err != nil {
-				log.Printf("[格式规划器] 页眉页脚设置失败: %v", err)
-				continue
+				stepErrors = append(stepErrors, fmt.Sprintf("HeaderFooter失败: %v", err))
 			}
 			if spec, ok := specs["header"]; ok && headerFooterMatchesSpec(doc, spec, true) {
 				locks.Lock("header", len(doc.Headers()))
@@ -604,14 +623,27 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 			if spec, ok := specs["footer"]; ok && headerFooterMatchesSpec(doc, spec, false) {
 				locks.Lock("footer", len(doc.Footers()))
 			}
+
 		case FormatStepClassify:
 			classified = p.classifyParagraphs(doc.Paragraphs())
+			// 9c: 验证分类覆盖率
+			p.verifyClassificationCoverage(doc, classified)
+
 		case FormatStepParagraphs:
 			if classified == nil {
 				return nil, fmt.Errorf("paragraph formatting planned before classification")
 			}
 			totalFixed := NewAIFormatApplier(p).Apply(classified, specs, skipCategories)
 			log.Printf("[格式规划器] 段落格式修正=%d", totalFixed)
+			// 9d: 验证段落数一致性
+			finalParaCount := len(doc.Paragraphs())
+			if finalParaCount != initialParaCount {
+				errMsg := fmt.Sprintf("段落数不一致: 修正前=%d 修正后=%d (可能丢失段落)", initialParaCount, finalParaCount)
+				log.Printf("[严重警告] %s", errMsg)
+				stepErrors = append(stepErrors, errMsg)
+				paragraphsStepFailed = true
+			}
+
 		case FormatStepPageBreaks:
 			for _, category := range []string{"references_title", "acknowledgements_title", "appendix_title", "notes_title"} {
 				if paras := classified[category]; len(paras) > 0 {
@@ -620,19 +652,164 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 					}
 				}
 			}
+
 		case FormatStepTables:
+			// 9e: 记录修正前的表格数
+			tableCountBefore := len(doc.Tables())
 			skipParaSet := map[*wml.CT_P]bool{}
 			if bodySpec, ok := specs["body"]; ok && !bodySpec.IsEmpty() {
 				p.applyTableFormattingWithSpec(doc, bodySpec, skipParaSet)
 			} else {
 				p.applyTableFormatting(doc, rules, skipParaSet)
 			}
+			// 9e: 验证表格数一致性
+			tableCountAfter := len(doc.Tables())
+			if tableCountAfter != tableCountBefore {
+				log.Printf("[验证] 表格数变化: 修正前=%d 修正后=%d", tableCountBefore, tableCountAfter)
+			}
+
 		case FormatStepVerify:
 			// 验证由独立 RepairAgent 在执行器完成后统一处理。
 		}
 	}
 
-	// 步骤 3.5: 生成差异报告（修正后重新扫描，找出仍有偏差的段落）
+	// 10b: 输出汇总日志
+	if len(stepErrors) > 0 {
+		log.Printf("[格式规划器] ⚠️  %d 个步骤报告错误:", len(stepErrors))
+		for i, e := range stepErrors {
+			log.Printf("[格式规划器]   %d) %s", i+1, e)
+		}
+	}
+
+	// 10c: 段落修正失败时跳过 diffReport（数据已不可靠）
+	if paragraphsStepFailed {
+		log.Printf("[格式规划器] 段落修正步骤失败，跳过差异报告生成")
+	} else {
+		// 步骤 3.5: 生成差异报告（修正后重新扫描，找出仍有偏差的段落）
+		diffReport, err := p.buildDiffReport(doc, classified, specs, skipCategories)
+		if err != nil {
+			stepErrors = append(stepErrors, fmt.Sprintf("DiffReport失败: %v", err))
+		} else {
+			log.Printf("[差异报告] 扫描 %d 段，发现 %d 错误 %d 警告",
+				diffReport.TotalParas, diffReport.ErrorCount, diffReport.WarningCount)
+			p.lastDiffReport = diffReport
+		}
+	}
+
+	// 返回聚合错误（如果有）
+	if len(stepErrors) > 0 {
+		return locks, fmt.Errorf("applyTemplateFormatting: %d 个步骤失败: %s", len(stepErrors), strings.Join(stepErrors[:min(len(stepErrors), 5)], "; "))
+	}
+	return locks, nil
+}
+
+// ── 步骤间验证辅助函数 ──
+
+// verifySectionPageSize 验证文档的第一个 section 是否为 A4 纸张
+func (p *EnhancedProcessor) verifySectionPageSize(doc *document.Document) {
+	section := doc.BodySection()
+	if section.WSection == nil {
+		log.Printf("[验证] FormatStepSection: body section 为空")
+		return
+	}
+	sectPr := section.X()
+	if sectPr == nil || sectPr.PgSz == nil {
+		log.Printf("[验证] FormatStepSection: sectPr 或 PgSz 为空，无法验证页面尺寸")
+		return
+	}
+	w := sectPr.PgSz.WAttr
+	h := sectPr.PgSz.HAttr
+	if w == nil || h == nil {
+		log.Printf("[验证] FormatStepSection: PgSz.W 或 H 为空")
+		return
+	}
+	if *w.ST_UnsignedDecimalNumber != 11906 {
+		log.Printf("[验证] FormatStepSection: 页面宽度=%d twips (A4预期11906)，可能非A4", *w.ST_UnsignedDecimalNumber)
+	}
+	if *h.ST_UnsignedDecimalNumber != 16838 {
+		log.Printf("[验证] FormatStepSection: 页面高度=%d twips (A4预期16838)，可能非A4", *h.ST_UnsignedDecimalNumber)
+	}
+}
+
+// verifyPageSetupMargins 验证文档边距是否与预期值一致（单位：cm，允许 5% 偏差）
+func (p *EnhancedProcessor) verifyPageSetupMargins(doc *document.Document, expectedTop, expectedBottom, expectedLeft, expectedRight float64) {
+	// 1cm = 567 twips (approx)
+	expected := map[string]int64{
+		"top":    int64(expectedTop * 567),
+		"bottom": int64(expectedBottom * 567),
+		"left":   int64(expectedLeft * 567),
+		"right":  int64(expectedRight * 567),
+	}
+
+	section := doc.BodySection()
+	if section.WSection == nil {
+		log.Printf("[验证] FormatStepPageSetup: body section 为空")
+		return
+	}
+	sectPr := section.X()
+	if sectPr == nil || sectPr.PgMar == nil {
+		log.Printf("[验证] FormatStepPageSetup: sectPr 或 PgMar 为空，无法验证边距")
+		return
+	}
+	pgMar := sectPr.PgMar
+
+	for name, expectedVal := range expected {
+		var actual int64
+		var ok bool
+		switch name {
+		case "top":
+			if pgMar.TopAttr.Int64 != nil {
+				actual, ok = *pgMar.TopAttr.Int64, true
+			}
+		case "bottom":
+			if pgMar.BottomAttr.Int64 != nil {
+				actual, ok = *pgMar.BottomAttr.Int64, true
+			}
+		case "left":
+			if pgMar.LeftAttr.ST_UnsignedDecimalNumber != nil {
+				actual, ok = int64(*pgMar.LeftAttr.ST_UnsignedDecimalNumber), true
+			}
+		case "right":
+			if pgMar.RightAttr.ST_UnsignedDecimalNumber != nil {
+				actual, ok = int64(*pgMar.RightAttr.ST_UnsignedDecimalNumber), true
+			}
+		}
+		if !ok {
+			log.Printf("[验证] FormatStepPageSetup: %s 边距为空", name)
+			continue
+		}
+		diff := actual - expectedVal
+		if diff < 0 {
+			diff = -diff
+		}
+		if float64(diff) > float64(expectedVal)*0.05 {
+			log.Printf("[验证] FormatStepPageSetup: %s 边距=%d twips (预期%d，偏差>5%%)", name, actual, expectedVal)
+		}
+	}
+}
+
+// verifyClassificationCoverage 验证段落分类覆盖率
+func (p *EnhancedProcessor) verifyClassificationCoverage(doc *document.Document, classified map[string][]document.Paragraph) {
+	totalParas := len(doc.Paragraphs())
+	if totalParas == 0 {
+		return
+	}
+	classifiedCount := 0
+	for _, paras := range classified {
+		classifiedCount += len(paras)
+	}
+	coverage := float64(classifiedCount) / float64(totalParas) * 100
+	if coverage < 70.0 {
+		log.Printf("[验证] FormatStepClassify: 分类覆盖率=%.1f%% (%d/%d) — 大量段落未分类，后续修正可能不完整",
+			coverage, classifiedCount, totalParas)
+	} else {
+		log.Printf("[验证] FormatStepClassify: 分类覆盖率=%.1f%% (%d/%d)", coverage, classifiedCount, totalParas)
+	}
+}
+
+// buildDiffReport 从分类结果和格式规范生成差异报告
+func (p *EnhancedProcessor) buildDiffReport(doc *document.Document, classified map[string][]document.Paragraph, specs map[string]ParagraphFormatSpec, skipCategories map[string]bool) (*DocDiffReport, error) {
+	_ = doc // may be used in future
 	diffReport := &DocDiffReport{}
 	paraIdx := 0
 	for category, paras := range classified {
@@ -675,11 +852,7 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 			diffReport.TotalParas++
 		}
 	}
-	log.Printf("[差异报告] 扫描 %d 段，发现 %d 错误 %d 警告",
-		diffReport.TotalParas, diffReport.ErrorCount, diffReport.WarningCount)
-	p.lastDiffReport = diffReport
-
-	return locks, nil
+	return diffReport, nil
 }
 
 func ruleEngineRules(engine *FormatRuleEngine, err error) map[string]ParagraphFormatSpec {
@@ -1723,94 +1896,94 @@ func min(a, b int) int {
 }
 
 // applyPageSetup 应用页面设置
+// applyPageSetup 是唯一的页面边距设置入口（模板路径）。
+// 非模板路径（includeDefaultHeaderFooter=true）另由 applyStandardMargins 处理。
 func (p *EnhancedProcessor) applyPageSetup(doc *document.Document, rules map[string]interface{}) error {
-	pageSetupRules, ok := rules["page_setup"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	section := doc.BodySection()
-
 	// 解析页边距，默认按重庆工程学院等通用规范 2.5cm
 	var marginTop, marginBottom, marginLeft, marginRight float64 = 2.5, 2.5, 2.5, 2.5
 	var headerDistance, footerDistance float64 = 1.6, 2.1
 	var gutter float64 = 0
 
-	// 兼容两种结构：
-	// 1) { "page_setup": { "margins": { "top": 2.5, "bottom": 2.5, ... } } }
-	// 2) { "page_setup": { "margin_top": 2.5, "margin_bottom": 2.5, ... } }  // CQIEC 模板
+	pageSetupRules, hasRules := rules["page_setup"].(map[string]interface{})
+	if hasRules {
+		// 兼容两种结构：
+		// 1) { "page_setup": { "margins": { "top": 2.5, "bottom": 2.5, ... } } }
+		// 2) { "page_setup": { "margin_top": 2.5, "margin_bottom": 2.5, ... } }  // CQIEC 模板
 
-	if margins, ok := pageSetupRules["margins"].(map[string]interface{}); ok {
-		if v := parseCmValue(margins["top"]); v > 0 {
-			marginTop = v
+		if margins, ok := pageSetupRules["margins"].(map[string]interface{}); ok {
+			if v := parseCmValue(margins["top"]); v > 0 {
+				marginTop = v
+			}
+			if v := parseCmValue(margins["bottom"]); v > 0 {
+				marginBottom = v
+			}
+			if v := parseCmValue(margins["left"]); v > 0 {
+				marginLeft = v
+			}
+			if v := parseCmValue(margins["right"]); v > 0 {
+				marginRight = v
+			}
+		} else {
+			if v := parseCmValue(pageSetupRules["margin_top"]); v > 0 {
+				marginTop = v
+			}
+			if v := parseCmValue(pageSetupRules["margin_bottom"]); v > 0 {
+				marginBottom = v
+			}
+			if v := parseCmValue(pageSetupRules["margin_left"]); v > 0 {
+				marginLeft = v
+			}
+			if v := parseCmValue(pageSetupRules["margin_right"]); v > 0 {
+				marginRight = v
+			}
 		}
-		if v := parseCmValue(margins["bottom"]); v > 0 {
-			marginBottom = v
+
+		// 解析页眉页脚距离，兼容多种结构：
+		// a) page_setup.header = { "distance": 1.5 }
+		// b) page_setup.header_distance = 1.5
+		// c) page_setup.header = 1.5 (直接数值)
+		if header, ok := pageSetupRules["header"].(map[string]interface{}); ok {
+			if v := parseCmValue(header["distance"]); v > 0 {
+				headerDistance = v
+			}
+		} else if v := parseCmValue(pageSetupRules["header_distance"]); v > 0 {
+			headerDistance = v
+		} else if v := parseCmValue(pageSetupRules["header"]); v > 0 {
+			headerDistance = v
 		}
-		if v := parseCmValue(margins["left"]); v > 0 {
-			marginLeft = v
+		if footer, ok := pageSetupRules["footer"].(map[string]interface{}); ok {
+			if v := parseCmValue(footer["distance"]); v > 0 {
+				footerDistance = v
+			}
+		} else if v := parseCmValue(pageSetupRules["footer_distance"]); v > 0 {
+			footerDistance = v
+		} else if v := parseCmValue(pageSetupRules["footer"]); v > 0 {
+			footerDistance = v
 		}
-		if v := parseCmValue(margins["right"]); v > 0 {
-			marginRight = v
-		}
-	} else {
-		if v := parseCmValue(pageSetupRules["margin_top"]); v > 0 {
-			marginTop = v
-		}
-		if v := parseCmValue(pageSetupRules["margin_bottom"]); v > 0 {
-			marginBottom = v
-		}
-		if v := parseCmValue(pageSetupRules["margin_left"]); v > 0 {
-			marginLeft = v
-		}
-		if v := parseCmValue(pageSetupRules["margin_right"]); v > 0 {
-			marginRight = v
+
+		// 装订线/装订边距（gutter），单位 cm
+		if g, ok := pageSetupRules["gutter"].(float64); ok {
+			gutter = g
+		} else if gStr, ok := pageSetupRules["gutter"].(string); ok {
+			// 兼容 "0.8cm" / "8mm" / "10mm" 这种写法
+			gStr = strings.TrimSpace(gStr)
+			if strings.HasSuffix(gStr, "mm") {
+				if val, err := strconv.ParseFloat(strings.TrimSuffix(gStr, "mm"), 64); err == nil {
+					gutter = val / 10.0
+				}
+			} else if strings.HasSuffix(gStr, "cm") {
+				if val, err := strconv.ParseFloat(strings.TrimSuffix(gStr, "cm"), 64); err == nil {
+					gutter = val
+				}
+			} else if val, err := strconv.ParseFloat(gStr, 64); err == nil {
+				gutter = val
+			}
 		}
 	}
 
 	log.Printf("[页面设置] 页边距: 上=%.2fcm 下=%.2fcm 左=%.2fcm 右=%.2fcm", marginTop, marginBottom, marginLeft, marginRight)
 
-	// 解析页眉页脚距离，兼容多种结构：
-	// a) page_setup.header = { "distance": 1.5 }
-	// b) page_setup.header_distance = 1.5
-	// c) page_setup.header = 1.5 (直接数值)
-	if header, ok := pageSetupRules["header"].(map[string]interface{}); ok {
-		if v := parseCmValue(header["distance"]); v > 0 {
-			headerDistance = v
-		}
-	} else if v := parseCmValue(pageSetupRules["header_distance"]); v > 0 {
-		headerDistance = v
-	} else if v := parseCmValue(pageSetupRules["header"]); v > 0 {
-		headerDistance = v
-	}
-	if footer, ok := pageSetupRules["footer"].(map[string]interface{}); ok {
-		if v := parseCmValue(footer["distance"]); v > 0 {
-			footerDistance = v
-		}
-	} else if v := parseCmValue(pageSetupRules["footer_distance"]); v > 0 {
-		footerDistance = v
-	} else if v := parseCmValue(pageSetupRules["footer"]); v > 0 {
-		footerDistance = v
-	}
-
-	// 装订线/装订边距（gutter），单位 cm
-	if g, ok := pageSetupRules["gutter"].(float64); ok {
-		gutter = g
-	} else if gStr, ok := pageSetupRules["gutter"].(string); ok {
-		// 兼容 "0.8cm" / "8mm" / "10mm" 这种写法
-		gStr = strings.TrimSpace(gStr)
-		if strings.HasSuffix(gStr, "mm") {
-			if val, err := strconv.ParseFloat(strings.TrimSuffix(gStr, "mm"), 64); err == nil {
-				gutter = val / 10.0
-			}
-		} else if strings.HasSuffix(gStr, "cm") {
-			if val, err := strconv.ParseFloat(strings.TrimSuffix(gStr, "cm"), 64); err == nil {
-				gutter = val
-			}
-		} else if val, err := strconv.ParseFloat(gStr, 64); err == nil {
-			gutter = val
-		}
-	}
+	section := doc.BodySection()
 
 	// 应用页面设置
 	section.SetPageMargins(
@@ -1929,10 +2102,8 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 	if _, hasContent := headerRules["content"]; !hasContent || headerRules["content"] == "" {
 		// 规则中无页眉内容时，用封面信息自动构建完整页眉
 		major, _ := coverInfo["专业"]
-		college, _ := coverInfo["学院"]
-		if college == "" {
-			college = "重庆人文科技学院"
-		}
+		// 学校名固定为重庆人文科技学院，不使用封面中"学院"字段（该字段是系/二级学院名称）
+		college := "重庆人文科技学院"
 		if major != "" {
 			headerText := college
 			if gradeYear != "" {
@@ -2045,8 +2216,8 @@ func headerFooterMatchesSpec(doc *document.Document, spec ParagraphFormatSpec, h
 
 // setupHeader 设置页眉（支持奇偶页、论文题目引用、下边框线）
 func (p *EnhancedProcessor) setupHeader(doc *document.Document, section document.Section, headerRules map[string]interface{}) {
-	fontName := "宋体"
-	fontSize := 10.5 // 五号
+	var fontName string
+	var fontSize float64
 	if fn, ok := headerRules["font_name"].(string); ok {
 		fontName = fn
 	}
@@ -2055,6 +2226,9 @@ func (p *EnhancedProcessor) setupHeader(doc *document.Document, section document
 	} else if fs, ok := headerRules["font_size"].(float64); ok {
 		fontSize = fs
 	}
+
+	underline, _ := headerRules["underline"].(bool)
+	alignment, _ := headerRules["alignment"].(string)
 
 	content, _ := headerRules["content"].(string)
 	if content == "" {
@@ -2082,12 +2256,12 @@ func (p *EnhancedProcessor) setupHeader(doc *document.Document, section document
 
 		// 默认页眉 = 奇数页
 		hdrOdd := doc.AddHeader()
-		p.buildHeaderParagraph(hdrOdd, oddText, fontName, fontSize)
+		p.buildHeaderParagraph(hdrOdd, oddText, fontName, fontSize, underline, alignment)
 		section.SetHeader(hdrOdd, wml.ST_HdrFtrDefault)
 
 		// 偶数页页眉
 		hdrEven := doc.AddHeader()
-		p.buildHeaderParagraph(hdrEven, evenText, fontName, fontSize)
+		p.buildHeaderParagraph(hdrEven, evenText, fontName, fontSize, underline, alignment)
 		section.SetHeader(hdrEven, wml.ST_HdrFtrEven)
 
 		// 开启奇偶页页眉设置 (在 document settings 中)
@@ -2100,37 +2274,48 @@ func (p *EnhancedProcessor) setupHeader(doc *document.Document, section document
 			text = evenText
 		}
 		hdr := doc.AddHeader()
-		p.buildHeaderParagraph(hdr, text, fontName, fontSize)
+		p.buildHeaderParagraph(hdr, text, fontName, fontSize, underline, alignment)
 		section.SetHeader(hdr, wml.ST_HdrFtrDefault)
 
 		log.Printf("[页眉] 已设置: text=%q font=%s size=%.1fpt", text, fontName, fontSize)
 	}
 }
 
-// buildHeaderParagraph 构建页眉段落（居中、字体、下边框线）
-func (p *EnhancedProcessor) buildHeaderParagraph(hdr document.Header, text string, fontName string, fontSize float64) {
+// buildHeaderParagraph 构建页眉段落（字体、run 级下划线）
+func (p *EnhancedProcessor) buildHeaderParagraph(hdr document.Header, text string, fontName string, fontSize float64, underline bool, alignment string) {
 	hdr.Clear()
 	para := hdr.AddParagraph()
-	para.Properties().SetAlignment(wml.ST_JcCenter)
 
-	// 添加下边框线（学术论文页眉标准格式）
-	pPr := para.X().PPr
-	if pPr == nil {
-		pPr = wml.NewCT_PPr()
-		para.X().PPr = pPr
+	// 仅当 rules 明确指定对齐方式时才设置
+	switch alignment {
+	case "center":
+		para.Properties().SetAlignment(wml.ST_JcCenter)
+	case "left":
+		para.Properties().SetAlignment(wml.ST_JcLeft)
+	case "right":
+		para.Properties().SetAlignment(wml.ST_JcRight)
+	case "justify":
+		para.Properties().SetAlignment(wml.ST_JcBoth)
 	}
-	pPr.PBdr = wml.NewCT_PBdr()
-	pPr.PBdr.Bottom = wml.NewCT_Border()
-	pPr.PBdr.Bottom.ValAttr = wml.ST_BorderSingle
-	sz4 := uint64(4) // 0.5pt
-	pPr.PBdr.Bottom.SzAttr = &sz4
-	pPr.PBdr.Bottom.SpaceAttr = new(uint64)
-	*pPr.PBdr.Bottom.SpaceAttr = 1
-	pPr.PBdr.Bottom.ColorAttr = &wml.ST_HexColor{ST_HexColorAuto: wml.ST_HexColorAutoAuto}
 
 	run := para.AddRun()
 	run.AddText(text)
-	p.setRunFont(run, fontName, fontSize, false)
+
+	// 仅当 fontName 或 fontSize 明确设置时才写 font 属性
+	if fontName != "" || fontSize > 0 {
+		p.setRunFont(run, fontName, fontSize, false)
+	}
+
+	// run 级下划线（模板使用 w:u w:val="single"，而非段落级 pBdr）
+	if underline {
+		rPr := run.X().RPr
+		if rPr == nil {
+			rPr = wml.NewCT_RPr()
+			run.X().RPr = rPr
+		}
+		rPr.U = wml.NewCT_Underline()
+		rPr.U.ValAttr = wml.ST_UnderlineSingle
+	}
 }
 
 // parseHeaderContent 解析页眉内容，返回 (奇数页文本, 偶数页文本)
@@ -3850,19 +4035,6 @@ func (p *EnhancedProcessor) applyParagraphFormatting(para document.Paragraph, ru
 		p.setPageBreakBefore(para)
 	} else if pb, ok := rules["page_break"].(bool); ok && pb {
 		p.setPageBreakBefore(para)
-	}
-
-	// 清除段落的 Word 内建样式引用（如 "Normal"、"Heading1" 等），
-	// 避免样式定义覆盖我们直接设置的格式。
-	if pPr := para.X().PPr; pPr != nil && pPr.PStyle != nil {
-		pPr.PStyle = nil
-	}
-
-	// 同时清除所有 Run 上可能继承的 rStyle
-	for _, run := range para.Runs() {
-		if rPr := run.X().RPr; rPr != nil && rPr.RStyle != nil {
-			rPr.RStyle = nil
-		}
 	}
 
 	if alignment, ok := rules["alignment"].(string); ok {

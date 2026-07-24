@@ -51,6 +51,17 @@ func TestApplySectionPropertiesAtUpdatesRequestedSection(t *testing.T) {
 	}
 }
 
+func TestApplySectionPropertiesPreservesPageNumberingWhenOnlyPageSetupChanges(t *testing.T) {
+	document := `<w:document><w:body><w:sectPr><w:pgNumType w:fmt="decimal" w:start="1"/><w:pgMar w:top="1440"/></w:sectPr></w:body></w:document>`
+	updated, changed := ApplySectionProperties(document, SectionPropertiesSpec{MarginTopTwips: 720})
+	if !changed {
+		t.Fatal("ApplySectionProperties() changed = false, want true")
+	}
+	if !strings.Contains(updated, `<w:pgNumType w:fmt="decimal" w:start="1"/>`) {
+		t.Fatalf("page numbering was removed while changing margins: %s", updated)
+	}
+}
+
 func TestElementBodyHandlesGreaterThanInQuotedAttribute(t *testing.T) {
 	element := `<w:pPr data-test="a>b"><w:jc w:val="center"/></w:pPr>`
 	if got := elementBody(element); got != `<w:jc w:val="center"/>` {

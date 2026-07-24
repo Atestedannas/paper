@@ -36,9 +36,9 @@ func (f *V2SmartFormatter) ApplySmartFormatting(doc *document.Document, classifi
 		}
 	}
 	debugLog("v2_smart_format.go:ApplySmartFormatting", "H3_SMART_FMT_ENTRY", map[string]interface{}{
-		"hypothesisId": "H3",
-		"totalParas":   len(classified),
-		"coverCount":   coverCount,
+		"hypothesisId":  "H3",
+		"totalParas":    len(classified),
+		"coverCount":    coverCount,
 		"abstractCount": absCount,
 		"heading1Count": h1Count,
 	})
@@ -386,10 +386,10 @@ func (f *V2SmartFormatter) formatHeading1(classified []V2ClassifiedPara) {
 			hasStyleRef = para.X().PPr.PStyle.ValAttr
 		}
 		debugLog("v2_smart_format.go:formatHeading1", "H5_HEADING1_BEFORE", map[string]interface{}{
-			"hypothesisId":    "H5",
-			"text":            truncStr(classified[i].Text, 30),
+			"hypothesisId":       "H5",
+			"text":               truncStr(classified[i].Text, 30),
 			"hasPageBreakBefore": hasPBB,
-			"styleRef":        hasStyleRef,
+			"styleRef":           hasStyleRef,
 		})
 		// #endregion
 
@@ -607,6 +607,9 @@ func (f *V2SmartFormatter) ApplyBodyFormats(classified []V2ClassifiedPara) {
 }
 
 func (f *V2SmartFormatter) formatHeading2(para document.Paragraph) {
+	if v2RunFontMatches(para, "宋体", 15, 1) {
+		return
+	}
 	pPr := para.X().PPr
 	if pPr == nil {
 		pPr = wml.NewCT_PPr()
@@ -627,6 +630,9 @@ func (f *V2SmartFormatter) formatHeading2(para document.Paragraph) {
 }
 
 func (f *V2SmartFormatter) formatHeading3(para document.Paragraph) {
+	if v2RunFontMatches(para, "宋体", 14, 1) {
+		return
+	}
 	pPr := para.X().PPr
 	if pPr == nil {
 		pPr = wml.NewCT_PPr()
@@ -646,6 +652,9 @@ func (f *V2SmartFormatter) formatHeading3(para document.Paragraph) {
 
 // formatHeading4 四级标题：四号宋体，不加粗，1.5倍行距
 func (f *V2SmartFormatter) formatHeading4(para document.Paragraph) {
+	if v2RunFontMatches(para, "宋体", 14, 1) {
+		return
+	}
 	pPr := para.X().PPr
 	if pPr == nil {
 		pPr = wml.NewCT_PPr()
@@ -663,7 +672,41 @@ func (f *V2SmartFormatter) formatHeading4(para document.Paragraph) {
 	}
 }
 
+// v2RunFontMatches 检查段落所有 run 的东亚字体/字号是否已与目标一致。
+// 若全部匹配则说明步骤 7 克隆已生效，步骤 7b 可跳过此段避免无意义覆写。
+// targetPt: 目标字号（pt），tolerance half-pt 公差（1 half-pt = 0.5pt）。
+func v2RunFontMatches(para document.Paragraph, eastAsiaFont string, targetPt float64, tolerance uint64) bool {
+	if len(para.Runs()) == 0 {
+		return false
+	}
+	targetHalfPt := uint64(targetPt * 2)
+	for _, r := range para.Runs() {
+		if strings.TrimSpace(r.Text()) == "" {
+			continue
+		}
+		rPr := r.X().RPr
+		if rPr == nil || rPr.Sz == nil || rPr.Sz.ValAttr.ST_UnsignedDecimalNumber == nil {
+			return false
+		}
+		currHalfPt := *rPr.Sz.ValAttr.ST_UnsignedDecimalNumber
+		if currHalfPt < targetHalfPt-tolerance || currHalfPt > targetHalfPt+tolerance {
+			return false
+		}
+		// 仅检查东亚字体（中文段落的关键区分因素）
+		if rPr.RFonts != nil && rPr.RFonts.EastAsiaAttr != nil {
+			if *rPr.RFonts.EastAsiaAttr != eastAsiaFont {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (f *V2SmartFormatter) formatBodyPara(para document.Paragraph) {
+	// 跳过逻辑：若步骤 7 克隆已将 run 字体设为宋体 12pt，则无需覆写
+	if v2RunFontMatches(para, "宋体", 12, 1) {
+		return
+	}
 	pPr := para.X().PPr
 	if pPr == nil {
 		pPr = wml.NewCT_PPr()

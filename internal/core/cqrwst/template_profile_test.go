@@ -180,6 +180,17 @@ func TestFixDOCXWithTemplateProfileAppliesProfileStyles(t *testing.T) {
 	})
 }
 
+func TestApplyTemplateProfileStylesSkipsTOCEntries(t *testing.T) {
+	documentXML := `<w:document><w:body><w:p><w:pPr><w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9000"/></w:tabs><w:spacing w:line="240"/></w:pPr><w:r><w:t>1 绪论</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>1</w:t></w:r></w:p></w:body></w:document>`
+	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+		"heading_1": {FontEastAsia: "黑体", FontSizeHalfPt: "36", Alignment: "center"},
+	}}
+	updated, count := applyTemplateProfileStylesToDocumentXML(documentXML, profile)
+	if count != 0 || updated != documentXML {
+		t.Fatalf("TOC entry was modified: count=%d xml=%s", count, updated)
+	}
+}
+
 func TestCheckDOCXWithTemplateProfileUsesProfileStyles(t *testing.T) {
 	docxPath := writeCQRWSTDocx(t,
 		`<w:p><w:r><w:t>1 Introduction</w:t></w:r></w:p>`+
@@ -797,6 +808,34 @@ func TestFixDOCXWithTemplateProfileUsesTemplateHeaderByDefaultAndFillsPlaceholde
 	want := "重庆人文科技学院2026届护理学专业本科毕业论文"
 	if !strings.Contains(headerXML, want) || strings.Contains(headerXML, "XXX") || strings.Contains(headerXML, " 或 ") {
 		t.Fatalf("header should contain one materialized title %q:\n%s", want, headerXML)
+	}
+}
+
+func TestFixDOCXWithTemplateProfilePreservesReferencedTemplateHeaderAndFooter(t *testing.T) {
+	headerXML := `<w:hdr><w:p><w:pPr><w:tabs><w:tab w:val="right" w:pos="9000"/></w:tabs><w:pBdr><w:bottom w:val="single" w:sz="8"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="仿宋"/><w:sz w:val="18"/></w:rPr><w:t>学校名称</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>论文标题</w:t></w:r></w:p></w:hdr>`
+	footerXML := `<w:ftr><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Times New Roman"/><w:sz w:val="21"/></w:rPr><w:t>第</w:t></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:t>页</w:t></w:r></w:p></w:ftr>`
+	docxPath := writeCQRWSTDocxWithEntries(t,
+		`<w:p><w:r><w:t>正文内容</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rIdHeader"/><w:footerReference w:type="default" r:id="rIdFooter"/></w:sectPr>`,
+		map[string]string{
+			"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="rIdFooter" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>`,
+			"word/header1.xml":             headerXML,
+			"word/footer1.xml":             footerXML,
+		},
+	)
+	profile := &templateprofile.Profile{
+		Version: templateprofile.Version,
+		Header:  templateprofile.HeaderFooterRule{Exists: true, Text: "学校名称论文标题", FontEastAsia: "仿宋", FontSizeHalfPt: "18"},
+		Footer:  templateprofile.HeaderFooterRule{Exists: true, HasPageField: true, Text: "第 页", FontSizeHalfPt: "21"},
+	}
+
+	if _, err := FixDOCXWithTemplateProfile(context.Background(), docxPath, profile); err != nil {
+		t.Fatalf("FixDOCXWithTemplateProfile() error = %v", err)
+	}
+	if got := readCQRWSTEntry(t, docxPath, "word/header1.xml"); got != headerXML {
+		t.Fatalf("referenced template header was rebuilt:\n%s", got)
+	}
+	if got := readCQRWSTEntry(t, docxPath, "word/footer1.xml"); got != footerXML {
+		t.Fatalf("referenced template footer was rebuilt:\n%s", got)
 	}
 }
 

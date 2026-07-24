@@ -294,6 +294,44 @@ func (v *FormatVerifier) compareOneParaWithRules(category string, idx int, text 
 		}
 	}
 
+	// 行距（值 + 规则）
+	if expLineVal, ok := numberValue(expected["line_spacing_val"]); ok && expLineVal > 0 {
+		if actual.LineSpacing != int64(expLineVal) {
+			diffs = append(diffs, FormatDiff{category, idx, snip, "line_spacing",
+				fmt.Sprintf("%d", int64(expLineVal)), fmt.Sprintf("%d", actual.LineSpacing)})
+		}
+	}
+	if expLineRule, ok := expected["line_spacing_rule"].(string); ok && expLineRule != "" {
+		if actual.LineRule != "" && actual.LineRule != expLineRule {
+			diffs = append(diffs, FormatDiff{category, idx, snip, "line_spacing_rule",
+				expLineRule, actual.LineRule})
+		}
+	}
+
+	// 首行缩进
+	if expIndent, ok := numberValue(expected["first_line_indent_twips"]); ok && expIndent > 0 {
+		if actual.FirstIndent != int64(expIndent) {
+			diffs = append(diffs, FormatDiff{category, idx, snip, "first_line_indent",
+				fmt.Sprintf("%d twips", int64(expIndent)), fmt.Sprintf("%d twips", actual.FirstIndent)})
+		}
+	}
+
+	// 段前间距
+	if expBefore, ok := numberValue(expected["space_before_twips"]); ok && expBefore > 0 {
+		if actual.SpaceBefore != int64(expBefore) {
+			diffs = append(diffs, FormatDiff{category, idx, snip, "space_before",
+				fmt.Sprintf("%d twips", int64(expBefore)), fmt.Sprintf("%d twips", actual.SpaceBefore)})
+		}
+	}
+
+	// 段后间距
+	if expAfter, ok := numberValue(expected["space_after_twips"]); ok && expAfter > 0 {
+		if actual.SpaceAfter != int64(expAfter) {
+			diffs = append(diffs, FormatDiff{category, idx, snip, "space_after",
+				fmt.Sprintf("%d twips", int64(expAfter)), fmt.Sprintf("%d twips", actual.SpaceAfter)})
+		}
+	}
+
 	return diffs
 }
 

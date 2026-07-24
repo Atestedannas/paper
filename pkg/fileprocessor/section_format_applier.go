@@ -1,6 +1,7 @@
 package fileprocessor
 
 import (
+	"fmt"
 	"log"
 	"os/exec"
 	"strings"
@@ -37,12 +38,12 @@ func (p *EnhancedProcessor) applyA4PageSize(doc *document.Document) {
 
 func (p *EnhancedProcessor) applyStandardMargins(doc *document.Document) {
 	section := doc.BodySection()
-	// 上2.5cm 下2.0cm 左2.5cm 右2.0cm，页眉1.5cm，页脚1.75cm，装订线0
+	// 上2.5cm 下2.5cm 左2.5cm 右2.5cm，页眉1.5cm，页脚1.75cm，装订线0
 	section.SetPageMargins(
 		measurement.Distance(2.5)*measurement.Centimeter,  // top
-		measurement.Distance(2.0)*measurement.Centimeter,  // bottom
+		measurement.Distance(2.5)*measurement.Centimeter,  // bottom
 		measurement.Distance(2.5)*measurement.Centimeter,  // left
-		measurement.Distance(2.0)*measurement.Centimeter,  // right
+		measurement.Distance(2.5)*measurement.Centimeter,  // right
 		measurement.Distance(1.5)*measurement.Centimeter,  // header
 		measurement.Distance(1.75)*measurement.Centimeter, // footer
 		0, // gutter
@@ -81,6 +82,9 @@ func (p *EnhancedProcessor) buildDoubleLineHeaderParagraph(hdr document.Header, 
 	p.setRunFont(run, fontName, fontSize, false)
 }
 
+// applySchoolHeader 旧路径硬编码页眉（双线下划线、宋体 9pt）。
+// Deprecated: 仅非模板流程使用（includeDefaultHeaderFooter=true）。
+// 模板路径的页眉由 enhanced_processor.go 中的 applyHeaderFooter 从 templateprofile 规则驱动。
 func (p *EnhancedProcessor) applySchoolHeader(doc *document.Document) {
 	section := doc.BodySection()
 	sectPr := section.X()
@@ -133,6 +137,9 @@ func (p *EnhancedProcessor) applySchoolHeader(doc *document.Document) {
 // 3. 页脚：第×页 共×页，宋体小五居中
 // ──────────────────────────────────────────────────────────────────────────────
 
+// applyStandardFooter 旧路径硬编码页脚（"第×页 共×页"、宋体 9pt）。
+// Deprecated: 仅非模板流程使用（includeDefaultHeaderFooter=true）。
+// 模板路径的页脚由 enhanced_processor.go 中的 applyHeaderFooter 从 templateprofile 规则驱动。
 func (p *EnhancedProcessor) applyStandardFooter(doc *document.Document) {
 	section := doc.BodySection()
 
@@ -396,26 +403,44 @@ func resolveSofficeBinaryFromProcessor() (string, error) {
 // 7. Master entry point: apply all section-level formatting
 // ──────────────────────────────────────────────────────────────────────────────
 
-func (p *EnhancedProcessor) ApplySectionLevelFormatting(doc *document.Document) {
-	p.applySectionLevelFormatting(doc, true)
+func (p *EnhancedProcessor) ApplySectionLevelFormatting(doc *document.Document) error {
+	return p.applySectionLevelFormatting(doc, true)
 }
 
 // ApplyTemplateSectionLevelFormatting 保留页面、分节、表格等全局处理，
 // 但页眉页脚只允许后续从模板 Rule Engine 写入，避免生成硬编码孤立部件。
-func (p *EnhancedProcessor) ApplyTemplateSectionLevelFormatting(doc *document.Document) {
-	p.applySectionLevelFormatting(doc, false)
+func (p *EnhancedProcessor) ApplyTemplateSectionLevelFormatting(doc *document.Document) error {
+	return p.applySectionLevelFormatting(doc, false)
 }
 
-func (p *EnhancedProcessor) applySectionLevelFormatting(doc *document.Document, includeDefaultHeaderFooter bool) {
+func (p *EnhancedProcessor) applySectionLevelFormatting(doc *document.Document, includeDefaultHeaderFooter bool) error {
 	log.Println("[全局格式] ══════ 开始应用 Section 级别格式 ══════")
 
-	// 1. A4 纸张
-	p.applyA4PageSize(doc)
+	// 前置验证：文档是否存在 valid body section
+	section := doc.BodySection()
+	if section.WSection == nil {
+		return fmt.Errorf("applySectionLevelFormatting: 文档缺少有效的 body section")
+	}
 
-	// 2. 标准边距
-	p.applyStandardMargins(doc)
+	var errs []string
+
+	// 1. A4 纸张
+	{
+		p.applyA4PageSize(doc)
+		sectPr := section.X()
+		if sectPr == nil || sectPr.PgSz == nil ||
+			sectPr.PgSz.WAttr == nil || sectPr.PgSz.HAttr == nil {
+			errs = append(errs, "A4纸张设置后验证失败：PgSz 缺失")
+		} else if *sectPr.PgSz.WAttr.ST_UnsignedDecimalNumber != 11906 ||
+			*sectPr.PgSz.HAttr.ST_UnsignedDecimalNumber != 16838 {
+			errs = append(errs, "A4纸张设置后验证失败：尺寸不匹配 (预期 11906×16838 twips)")
+		}
+	}
 
 	if includeDefaultHeaderFooter {
+		// 2. 标准边距（仅非模板路径：模板路径的边距由 applyPageSetup 统一处理，避免 sectPr 双重写入）
+		p.applyStandardMargins(doc)
+
 		// 3. 页眉：0.5磅双线、宋体小五居中
 		p.applySchoolHeader(doc)
 
@@ -434,4 +459,9 @@ func (p *EnhancedProcessor) applySectionLevelFormatting(doc *document.Document, 
 
 	log.Println("[全局格式] ══════ Section 级别格式应用完成 ══════")
 	p.runDocumentFormattingSelfCheck("ApplySectionLevelFormatting", doc)
+
+	if len(errs) > 0 {
+		return fmt.Errorf("applySectionLevelFormatting: %d 个步骤验证失败: %s", len(errs), strings.Join(errs, "; "))
+	}
+	return nil
 }
