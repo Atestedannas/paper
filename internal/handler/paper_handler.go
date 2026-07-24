@@ -18,7 +18,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	wzdoc "github.com/nineya/wordZero/pkg/document"
 	"github.com/paper-format-checker/backend/internal/config"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
@@ -166,7 +165,6 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 		deepseekRawBody        string
 		segmentFormatHints     []service.PaperSegmentFormatHint
 		templateFormatsRawBody string
-		wordzeroOutPath        string
 	)
 	if fileType == "docx" || fileType == "doc" {
 		paperpath := filepath.Clean(paper.FilePath)
@@ -227,7 +225,7 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 		}
 	}
 
-	//  DeepSeek：对照模板论文版式，得到与学生稿 segments 一一对齐的 segment_formats（再交给 WordZero）
+	//  DeepSeek：对照模板论文版式，得到与学生稿 segments 一一对齐的 segment_formats
 	if paperSectionsReady && len(paperSections) > 0 {
 		tmplPath := h.formatTemplateGoldenOrFilePath(paper, req)
 		var tmplPlain string
@@ -245,217 +243,6 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 		templateFormatsRawBody = rawTF
 		if tfErr != nil {
 			log.Printf("[上传论文] 模板分段格式 DeepSeek: %v", tfErr)
-		}
-	}
-
-	//  使用wordzero  和规则  和设计对应的规则来实现新的符合格式的.docx
-	//  按学生稿 segments 顺序写段；每段样式与 segment_formats 同下标一一对应（来自模板 DeepSeek 或默认）。
-	if paperSectionsReady && len(paperSections) > 0 && len(segmentFormatHints) == len(paperSections) {
-		doc := wzdoc.New()
-		if err := doc.SetPageMargins(25.4, 25.4, 25.4, 31.7); err != nil {
-			log.Printf("[上传论文] WordZero SetPageMargins: %v", err)
-		}
-		if err := doc.SetPageSize(wzdoc.PageSizeA4); err != nil {
-			log.Printf("[上传论文] WordZero SetPageSize: %v", err)
-		}
-		for _, seg := range paperSections {
-
-			switch seg.Key {
-			case "cover":
-				fullText := seg.Text
-				para := doc.AddParagraph(fullText)
-				para.AddFormattedText(fullText, &wzdoc.TextFormat{
-					FontFamily: "宋体",
-					FontSize:   18,
-					Bold:       false,
-					Italic:     false,
-					FontColor:  "000000",
-				})
-
-			case "abstract_cn":
-				// 处理中文摘要
-				para := doc.AddParagraph(seg.Text)
-				// 设置段落格式：首行缩进2字符、段后两行、1.5倍行距、两端对齐
-				para.SetSpacing(&wzdoc.SpacingConfig{
-					FirstLineIndent: 24,  // 小四号2字符≈24pt
-					AfterPara:       36,  // 段后两行（1.5倍行距下，两行=36pt）
-					LineSpacing:     1.5, // 1.5倍行距
-				})
-				para.SetAlignment(wzdoc.AlignJustify) // 两端对齐
-
-				// 添加“Abstract:”部分（Times New Roman 小三加粗）
-				para.AddFormattedText("Abstract: ", &wzdoc.TextFormat{
-					FontFamily: "Times New Roman",
-					FontSize:   15, // 小三号 = 15pt
-					Bold:       true,
-					FontColor:  "000000",
-				})
-
-				// 添加英文摘要内容（Times New Roman 小四号）
-				para.AddFormattedText(seg.Text, &wzdoc.TextFormat{
-					FontFamily: "Times New Roman",
-					FontSize:   12, // 小四号 = 12pt
-					Bold:       false,
-					FontColor:  "000000",
-				})
-			case "keywords_cn":
-				para := doc.AddParagraph(seg.Text)
-				// 设置段落格式：首行缩进2字符、1.5倍行距、段后两行
-				para.SetSpacing(&wzdoc.SpacingConfig{
-					FirstLineIndent: 24,  // 首行缩进2字符（小四号≈24pt）
-					LineSpacing:     1.5, // 1.5倍行距
-					AfterPara:       36,  // 段后两行（1.5倍行距下，两行=36pt）
-				})
-
-				// 添加“关键词：”标签（黑体小三加粗）
-				para.AddFormattedText("关键词：", &wzdoc.TextFormat{
-					FontFamily: "黑体", // 或 "SimHei"
-					FontSize:   15,   // 小三号 = 15pt
-					Bold:       true,
-					FontColor:  "000000",
-				})
-
-				// 添加关键词内容（宋体小四号，假设 seg.Text 已用中文分号分隔）
-				para.AddFormattedText(seg.Text, &wzdoc.TextFormat{
-					FontFamily: "宋体", // 或 "SimSun"
-					FontSize:   12,   // 小四号 = 12pt
-					Bold:       false,
-					FontColor:  "000000",
-				})
-
-			case "toc":
-				// 1. 添加“目录”标题
-				titlePara := doc.AddParagraph(seg.Text)
-				titlePara.AddFormattedText("目录", &wzdoc.TextFormat{
-					FontFamily: "黑体",
-					FontSize:   16, // 三号 = 16pt
-					Bold:       true,
-					FontColor:  "000000",
-				})
-				titlePara.SetAlignment(wzdoc.AlignCenter) // 居中
-				titlePara.SetSpacing(&wzdoc.SpacingConfig{
-					AfterPara: 24, // 段后2行（三号字下2行约48pt？此处取24pt合适，可按需调整）
-				})
-
-				// 2. 添加目录内容（自动生成 TOC 字段）
-				tocPara := doc.AddParagraph(seg.Text)
-				// 设置目录段落样式：宋体五号、1.5倍行距、两端对齐
-				tocPara.SetSpacing(&wzdoc.SpacingConfig{
-					LineSpacing: 1.5, // 1.5倍行距
-				})
-				tocPara.SetAlignment(wzdoc.AlignJustify) // 两端对齐
-
-			case "heading_1":
-				para := doc.AddParagraph(seg.Text)
-				// 设置段落对齐：顶格（左对齐）
-				para.SetAlignment(wzdoc.AlignLeft)
-
-				// 设置段落间距：段前24pt、段后24pt、1.5倍行距
-				para.SetSpacing(&wzdoc.SpacingConfig{
-					BeforePara:  24,  // 段前1行 ≈ 24pt
-					AfterPara:   24,  // 段后1行 ≈ 24pt
-					LineSpacing: 1.5, // 1.5倍行距
-				})
-
-				// 添加文本并应用字体格式
-				para.AddFormattedText(seg.Text, &wzdoc.TextFormat{
-					FontFamily: "宋体", // 或 "SimSun"
-					FontSize:   16,   // 三号 = 16pt
-					Bold:       true,
-					FontColor:  "000000", // 黑色
-				})
-			case "heading_2":
-				para := doc.AddParagraph(seg.Text)
-				// 左对齐（顶格）
-				para.SetAlignment(wzdoc.AlignLeft)
-
-				// 设置段落间距：1.5倍行距，段前段后均为0
-				para.SetSpacing(&wzdoc.SpacingConfig{
-					LineSpacing: 1.5, // 1.5倍行距
-					// BeforePara 和 AfterPara 不设置或设为0即无空行
-				})
-
-				// 添加文本并应用字体格式
-				para.AddFormattedText(seg.Text, &wzdoc.TextFormat{
-					FontFamily: "宋体", // 或 "SimSun"
-					FontSize:   15,   // 小三号 = 15pt
-					Bold:       true,
-					FontColor:  "000000",
-				})
-			case "heading_3":
-				para := doc.AddParagraph(seg.Text)
-
-				// 左对齐（顶格）
-				para.SetAlignment(wzdoc.AlignLeft)
-
-				// 设置段落间距：1.5倍行距，段前段后均为0（不设置即默认为0）
-				para.SetSpacing(&wzdoc.SpacingConfig{
-					LineSpacing: 1.5, // 1.5倍行距
-					// BeforePara 和 AfterPara 不写或写0均可
-				})
-
-				// 添加文本并应用字体格式
-				para.AddFormattedText(seg.Text, &wzdoc.TextFormat{
-					FontFamily: "宋体", // 或 "SimSun"
-					FontSize:   14,   // 四号 = 14pt
-					Bold:       true,
-					FontColor:  "000000",
-				})
-			case "body":
-				// 处理正文
-				para := doc.AddParagraph(seg.Text)
-				para.SetSpacing(&wzdoc.SpacingConfig{
-					FirstLineIndent: 24,
-					LineSpacing:     1.5,
-				})
-				para.SetAlignment(wzdoc.AlignJustify)
-
-				// 添加正文示例（带注释和引用）
-
-			}
-
-			//txt := strings.TrimSpace(seg.Text)
-			//if txt == "" {
-			//	continue
-			//}
-			//h := segmentFormatHints[k]
-			//tf := &wzdoc.TextFormat{
-			//	FontFamily: h.FontFamily,
-			//	FontSize:   h.FontSizePt,
-			//	Bold:       h.Bold,
-			//}
-			//para := doc.AddFormattedParagraph(txt, tf)
-			//para.SetSpacing(&wzdoc.SpacingConfig{
-			//	FirstLineIndent: h.FirstLineIndentPt,
-			//	LineSpacing:     h.LineSpacingMultiple,
-			//	BeforePara:      h.BeforeParaPt,
-			//	AfterPara:       h.AfterParaPt,
-			//})
-
-		}
-
-		// 与配置 UploadPath 一致（默认 ./uploads），勿用 \uploads\... —— 在 Windows 上会落到「当前盘符根目录」如 C:\uploads\...，不在项目里
-		dir := filepath.Join(filepath.Clean(h.config.File.UploadPath), "papers", "update")
-		outPath := filepath.Join(dir, fmt.Sprintf("thesis_wz_formatted_%s.docx", paper.ID.String()))
-		absOut, _ := filepath.Abs(outPath)
-		log.Printf("[上传论文] WordZero 将保存到: %s（相对: %s）", absOut, filepath.ToSlash(outPath))
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			log.Printf("[上传论文] WordZero 创建输出目录失败: %v", err)
-		} else if err := doc.Save(outPath); err != nil {
-			log.Printf("[上传论文] WordZero Save 失败: %v", err)
-		} else {
-			wordzeroOutPath = filepath.ToSlash(outPath)
-			log.Printf("[上传论文] WordZero 已生成（segments+模板格式对齐）: %s", absOut)
-		}
-	} else if fileType == "docx" || fileType == "doc" {
-		// 便于排查：未进 WordZero 时也能在控制台看到原因（成功时不会走这里）
-		switch {
-		case !paperSectionsReady:
-			log.Printf("[上传论文] WordZero 未执行：学生稿 DeepSeek 分段未成功（paperSectionsReady=false）")
-		case len(paperSections) == 0:
-			log.Printf("[上传论文] WordZero 未执行：segments 为空")
-		case len(segmentFormatHints) != len(paperSections):
-			log.Printf("[上传论文] WordZero 未执行：section_formats 条数 %d 与 segments %d 不一致", len(segmentFormatHints), len(paperSections))
 		}
 	}
 
@@ -480,7 +267,7 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 		resp["sections"] = paperSections
 	}
 	if len(segmentFormatHints) > 0 && len(segmentFormatHints) == len(paperSections) {
-		// 与 sections 按下标一一对应，供前端/WordZero 对照
+		// 与 sections 按下标一一对应，供前端对照
 		resp["section_formats"] = segmentFormatHints
 	}
 	if uploadPaperExposeDeepSeekRaw(c) && deepseekRawBody != "" {
@@ -488,9 +275,6 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 	}
 	if uploadPaperExposeDeepSeekRaw(c) && templateFormatsRawBody != "" {
 		resp["template_formats_raw"] = templateFormatsRawBody
-	}
-	if wordzeroOutPath != "" {
-		resp["formatted_wz_docx"] = wordzeroOutPath
 	}
 	utils.Created(c, resp)
 }

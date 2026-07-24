@@ -7,8 +7,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-
-	wzdocument "github.com/nineya/wordZero/pkg/document"
 )
 
 // SingleTemplateFormatConfig defines the fixed input/output paths used by the
@@ -72,10 +70,6 @@ func FormatSingleTemplateDocument(ctx context.Context, config SingleTemplateForm
 		return "", err
 	}
 
-	if err := probeSingleTemplateInputsWithWordZero(config.UserPaperPath, config.TemplatePath); err != nil {
-		log.Printf("[single-template] wordZero preflight warning: %v", err)
-	}
-
 	outputPath, err := runSingleTemplateBaseFormatter(ctx, config)
 	if err != nil {
 		return "", fmt.Errorf("single-template formatting failed: %w", err)
@@ -113,25 +107,6 @@ func validateSingleTemplateConfig(config SingleTemplateFormatConfig) error {
 	}
 	if err := os.MkdirAll(filepath.Dir(config.OutputPath), 0755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
-	}
-	return nil
-}
-
-func probeSingleTemplateInputsWithWordZero(userPaperPath, templatePath string) error {
-	userDoc, err := wzdocument.Open(userPaperPath)
-	if err != nil {
-		return fmt.Errorf("wordZero open user paper: %w", err)
-	}
-	if userDoc.GetPageSettings() == nil {
-		return fmt.Errorf("wordZero could not read user paper page settings")
-	}
-
-	templateDoc, err := wzdocument.Open(templatePath)
-	if err != nil {
-		return fmt.Errorf("wordZero open template: %w", err)
-	}
-	if templateDoc.GetPageSettings() == nil {
-		return fmt.Errorf("wordZero could not read template page settings")
 	}
 	return nil
 }

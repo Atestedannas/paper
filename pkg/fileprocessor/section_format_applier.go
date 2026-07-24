@@ -397,6 +397,16 @@ func resolveSofficeBinaryFromProcessor() (string, error) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 func (p *EnhancedProcessor) ApplySectionLevelFormatting(doc *document.Document) {
+	p.applySectionLevelFormatting(doc, true)
+}
+
+// ApplyTemplateSectionLevelFormatting 保留页面、分节、表格等全局处理，
+// 但页眉页脚只允许后续从模板 Rule Engine 写入，避免生成硬编码孤立部件。
+func (p *EnhancedProcessor) ApplyTemplateSectionLevelFormatting(doc *document.Document) {
+	p.applySectionLevelFormatting(doc, false)
+}
+
+func (p *EnhancedProcessor) applySectionLevelFormatting(doc *document.Document, includeDefaultHeaderFooter bool) {
 	log.Println("[全局格式] ══════ 开始应用 Section 级别格式 ══════")
 
 	// 1. A4 纸张
@@ -405,11 +415,13 @@ func (p *EnhancedProcessor) ApplySectionLevelFormatting(doc *document.Document) 
 	// 2. 标准边距
 	p.applyStandardMargins(doc)
 
-	// 3. 页眉：0.5磅双线、宋体小五居中
-	p.applySchoolHeader(doc)
+	if includeDefaultHeaderFooter {
+		// 3. 页眉：0.5磅双线、宋体小五居中
+		p.applySchoolHeader(doc)
 
-	// 4. 页脚："第×页 共×页"
-	p.applyStandardFooter(doc)
+		// 4. 页脚："第×页 共×页"
+		p.applyStandardFooter(doc)
+	}
 
 	// 5. 分节符 + 摘要罗马数字/正文阿拉伯数字页码
 	p.applySectionBreaksForPageNumbering(doc)

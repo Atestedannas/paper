@@ -277,6 +277,7 @@ func (p *EnhancedProcessor) ApplyCorrections(ctx context.Context, docPath string
 	// ── 尝试AI模板直读方案（精确，无JSON误差）──────────────────────────
 	log.Println("[格式修正] ================= 开始应用格式 =================")
 	var templateSpecs map[string]ParagraphFormatSpec
+	var formatLocks *FormatLockManager
 
 	// 模板路径三级查找：① SetTemplatePath字段 → ② corrections map → ③ 自动扫描目录
 	activeTplPath := p.templatePath
@@ -318,10 +319,12 @@ func (p *EnhancedProcessor) ApplyCorrections(ctx context.Context, docPath string
 
 	if templateSpecs != nil {
 		// 新方案：直接从模板OOXML格式规范应用，精确复制模板格式
-		if err := p.applyTemplateFormatting(doc, formatRules, templateSpecs); err != nil {
-			log.Printf("[格式修正] ❌ 模板格式应用失败: %v", err)
+		var applyErr error
+		formatLocks, applyErr = p.applyTemplateFormatting(doc, formatRules, templateSpecs)
+		if applyErr != nil {
+			log.Printf("[格式修正] ❌ 模板格式应用失败: %v", applyErr)
 			log.Println("++++++++++++ 格式修正流程 结束（修正失败） ++++++++++++")
-			return "", fmt.Errorf("格式修正失败: %w", err)
+			return "", fmt.Errorf("格式修正失败: %w", applyErr)
 		}
 	} else {
 		// 旧方案：JSON规则（兼容回退）
@@ -343,7 +346,7 @@ func (p *EnhancedProcessor) ApplyCorrections(ctx context.Context, docPath string
 	}
 	var fixCount int
 	if templateSpecs != nil {
-		result := NewRepairAgent(p, 3).Run(doc, templateSpecs)
+		result := NewRepairAgent(p, 3, p.repairDiagnosticClient()).WithLocks(formatLocks).Run(doc, templateSpecs)
 		fixCount = result.TotalFixes
 		if result.NeedsManualReview {
 			log.Printf("[修复代理] 三轮后仍有 %d 处差异，标记为需人工复核", result.FinalDiffs)
@@ -569,35 +572,43 @@ func getSchoolIDFromCorrectionsList(corrections []map[string]interface{}) string
 
 // applyTemplateFormatting 新方案：直接从模板OOXML格式规范应用格式
 // 步骤：页面设置/页眉页脚（保留JSON规则）→ AI分类 → 直接应用模板格式规范 → 表格格式
-func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rules map[string]interface{}, specs map[string]ParagraphFormatSpec) error {
+func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rules map[string]interface{}, specs map[string]ParagraphFormatSpec) (*FormatLockManager, error) {
 	// 注意：模板模式下不调用 applyStyleDefinitions——该函数会全局修改 docDefaults/Named Styles，
 	// 导致封面等跳过段落的字体被意外修改。模板模式通过 AIFormatApplier 直接写入 run-level rPr，
 	// 无需再改 styles.xml 层。
 
 	plan, err := NewFormatPlanner().Plan()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	locks := NewFormatLockManager()
 	var classified map[string][]document.Paragraph
 	skipCategories := map[string]bool{}
 	for _, step := range plan {
 		log.Printf("[格式规划器] 执行步骤: %s", step)
 		switch step {
 		case FormatStepSection:
-			p.ApplySectionLevelFormatting(doc)
+			p.ApplyTemplateSectionLevelFormatting(doc)
 		case FormatStepPageSetup:
 			if err := p.applyPageSetup(doc, rules); err != nil {
 				log.Printf("[格式规划器] 页面设置失败: %v", err)
 			}
 		case FormatStepHeaderFooter:
-			if err := p.applyHeaderFooter(doc, rules); err != nil {
+			if err := p.applyHeaderFooter(doc, rules, specs); err != nil {
 				log.Printf("[格式规划器] 页眉页脚设置失败: %v", err)
+				continue
+			}
+			if spec, ok := specs["header"]; ok && headerFooterMatchesSpec(doc, spec, true) {
+				locks.Lock("header", len(doc.Headers()))
+			}
+			if spec, ok := specs["footer"]; ok && headerFooterMatchesSpec(doc, spec, false) {
+				locks.Lock("footer", len(doc.Footers()))
 			}
 		case FormatStepClassify:
 			classified = p.classifyParagraphs(doc.Paragraphs())
 		case FormatStepParagraphs:
 			if classified == nil {
-				return fmt.Errorf("paragraph formatting planned before classification")
+				return nil, fmt.Errorf("paragraph formatting planned before classification")
 			}
 			totalFixed := NewAIFormatApplier(p).Apply(classified, specs, skipCategories)
 			log.Printf("[格式规划器] 段落格式修正=%d", totalFixed)
@@ -668,7 +679,7 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 		diffReport.TotalParas, diffReport.ErrorCount, diffReport.WarningCount)
 	p.lastDiffReport = diffReport
 
-	return nil
+	return locks, nil
 }
 
 func ruleEngineRules(engine *FormatRuleEngine, err error) map[string]ParagraphFormatSpec {
@@ -1864,7 +1875,7 @@ func (p *EnhancedProcessor) extractCellText(cell document.Cell) string {
 }
 
 // applyHeaderFooter 应用页眉、页脚和页码设置
-func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[string]interface{}) error {
+func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[string]interface{}, specSets ...map[string]ParagraphFormatSpec) error {
 	pageSetupRules, _ := rules["page_setup"].(map[string]interface{})
 
 	section := doc.BodySection()
@@ -1882,6 +1893,11 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 	}
 	if headerRules == nil {
 		headerRules = make(map[string]interface{})
+	} else {
+		headerRules = cloneFormatRuleMap(headerRules)
+	}
+	if len(specSets) > 0 {
+		applyHeaderFooterSpec(headerRules, specSets[0]["header"])
 	}
 	// 自动从封面解析学院/专业并注入页眉内容
 	coverInfo := p.extractCoverInfo(doc)
@@ -1973,6 +1989,9 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 	for k, v := range pageNumRules {
 		merged[k] = v
 	}
+	if len(specSets) > 0 {
+		applyHeaderFooterSpec(merged, specSets[0]["footer"])
+	}
 
 	if len(merged) > 0 {
 		p.setupFooterWithPageNumber(doc, section, merged)
@@ -1981,6 +2000,47 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 	}
 
 	return nil
+}
+
+func cloneFormatRuleMap(source map[string]interface{}) map[string]interface{} {
+	cloned := make(map[string]interface{}, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func applyHeaderFooterSpec(rules map[string]interface{}, spec ParagraphFormatSpec) {
+	if spec.FontEastAsia != "" {
+		rules["font_name"] = spec.FontEastAsia
+	}
+	if spec.FontSizeHalfPt > 0 {
+		rules["font_size"] = spec.FontSizePt()
+	}
+}
+
+func headerFooterMatchesSpec(doc *document.Document, spec ParagraphFormatSpec, header bool) bool {
+	var paragraphs []document.Paragraph
+	if header {
+		for _, part := range doc.Headers() {
+			paragraphs = append(paragraphs, part.Paragraphs()...)
+		}
+	} else {
+		for _, part := range doc.Footers() {
+			paragraphs = append(paragraphs, part.Paragraphs()...)
+		}
+	}
+	for _, paragraph := range paragraphs {
+		actual := extractParaFormatSpec(paragraph)
+		if spec.FontEastAsia != "" && actual.FontEastAsia != spec.FontEastAsia {
+			continue
+		}
+		if spec.FontSizeHalfPt > 0 && actual.FontSizeHalfPt != spec.FontSizeHalfPt {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // setupHeader 设置页眉（支持奇偶页、论文题目引用、下边框线）

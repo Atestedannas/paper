@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
 // FormatRuleEngine 是段落格式的唯一查询入口。
@@ -31,9 +32,19 @@ func NewFormatRuleEngine(processor *EnhancedProcessor, templatePath string, user
 		return engine, nil
 	}
 
-	engine.compiled, _ = NewTemplateFormatLoader(processor).LoadSampledFromFile(templatePath)
+	if sampled, sampledErr := NewTemplateFormatLoader(processor).LoadSampledFromFile(templatePath); sampledErr == nil {
+		engine.compiled = sampled
+	}
 	if named, namedErr := NewTemplateStyleExtractor().ExtractFromTemplate(templatePath); namedErr == nil {
 		engine.namedStyles = named
+	}
+	if profile, profileErr := templateprofile.Extract(templatePath); profileErr == nil {
+		if header, ok := headerFooterFormatSpec(profile.Header); ok {
+			engine.compiled["header"] = header
+		}
+		if footer, ok := headerFooterFormatSpec(profile.Footer); ok {
+			engine.compiled["footer"] = footer
+		}
 	}
 	if len(engine.compiled) == 0 && len(engine.namedStyles) == 0 {
 		return nil, fmt.Errorf("template contains no usable paragraph rules")
@@ -97,6 +108,38 @@ func (e *FormatRuleEngine) Rules() map[string]ParagraphFormatSpec {
 }
 
 func (e *FormatRuleEngine) overrideFor(paragraphType string) map[string]interface{} {
+	if paragraphType == "header" || paragraphType == "footer" {
+		merged := map[string]interface{}{}
+		if direct, ok := e.userOverrides[paragraphType].(map[string]interface{}); ok {
+			for key, value := range direct {
+				merged[key] = value
+			}
+		}
+		if pageSetup, ok := e.userOverrides["page_setup"].(map[string]interface{}); ok {
+			if rule, ok := pageSetup[paragraphType].(map[string]interface{}); ok {
+				for key, value := range rule {
+					merged[key] = value
+				}
+			}
+			if paragraphType == "footer" {
+				if rule, ok := pageSetup["page_number"].(map[string]interface{}); ok {
+					for key, value := range rule {
+						merged[key] = value
+					}
+				}
+			}
+		}
+		if paragraphType == "footer" {
+			if rule, ok := e.userOverrides["page_number"].(map[string]interface{}); ok {
+				for key, value := range rule {
+					merged[key] = value
+				}
+			}
+		}
+		if len(merged) > 0 {
+			return merged
+		}
+	}
 	if direct, ok := e.userOverrides[paragraphType].(map[string]interface{}); ok {
 		return direct
 	}
@@ -178,6 +221,22 @@ func (e *FormatRuleEngine) applyUserOverride(spec ParagraphFormatSpec, rule map[
 		spec.PageBreak = value
 	}
 	return spec
+}
+
+func headerFooterFormatSpec(rule templateprofile.HeaderFooterRule) (ParagraphFormatSpec, bool) {
+	if !rule.Exists {
+		return ParagraphFormatSpec{}, false
+	}
+	spec := ParagraphFormatSpec{
+		FontEastAsia: rule.FontEastAsia,
+		FontAscii:    "Times New Roman",
+		SampleCount:  1,
+	}
+	if value, err := strconv.ParseUint(strings.TrimSpace(rule.FontSizeHalfPt), 10, 64); err == nil {
+		spec.FontSizeHalfPt = value
+		spec.FontSizeCSHalfPt = value
+	}
+	return spec, !spec.IsEmpty()
 }
 
 func defaultParagraphFormatSpecs() map[string]ParagraphFormatSpec {

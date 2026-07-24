@@ -18,7 +18,6 @@ import (
 
 	"github.com/paper-format-checker/backend/internal/core/transplant"
 	"github.com/paper-format-checker/backend/pkg/docconvert"
-	"github.com/paper-format-checker/backend/pkg/formatengine"
 )
 
 // v2ApplyDedupe 合并对同一文档 + 相同 corrections 的并发 ApplyCorrectionsV2（避免双请求产生两套审计日志与重复 CPU）。
@@ -106,7 +105,7 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 
 	// ── 步骤 5b: 应用 Section 级别高级格式（页眉/页脚/三线表/上标等）──
 	log.Println("[V2][步骤5b] 应用高级Section格式...")
-	e.processor.ApplySectionLevelFormatting(studentDoc)
+	e.processor.ApplyTemplateSectionLevelFormatting(studentDoc)
 
 	// ── 步骤 6: 确定性段落分类 ──
 	log.Println("[V2][步骤6] 确定性段落分类...")
@@ -424,7 +423,7 @@ func logPaperFormatAudit(phase, action string, fields map[string]interface{}) {
 // ── 集成到 EnhancedProcessor ──
 
 // ApplyCorrectionsV2 V2版格式修正入口
-// 可选 formatengine.UseWordZero → StyleFormatter (python-docx) → V2FormatEngine (unioffice) 回退链
+// 可选 StyleFormatter (python-docx) → V2FormatEngine (unioffice) 回退链
 func (p *EnhancedProcessor) ApplyCorrectionsV2(ctx context.Context, docPath string, corrections []map[string]interface{}) (string, error) {
 	v := strings.TrimSpace(os.Getenv("PAPER_V2_APPLY_DEDUPE"))
 	if v == "0" || strings.EqualFold(v, "off") || strings.EqualFold(v, "false") {
@@ -527,36 +526,6 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 		}
 	}
 
-	// ── 新主路径：模板驱动重建（WordZero 读取模板样式 + TemplateFiller 重建正文）──
-	if TemplateDrivenRebuildEnabled() {
-		log.Println("[V2入口] USE_TEMPLATE_DRIVEN_REBUILD=true，尝试模板驱动重建...")
-		outPath, rebuildErr := p.RunTemplateDrivenRebuild(ctx, docPath, templatePath, corrections)
-		if rebuildErr == nil {
-			finalPath, finErr := finalizeOutput("TemplateDrivenRebuild", outPath)
-			if finErr != nil {
-				return "", finErr
-			}
-			log.Println("================= V2 格式修正流程 完成 (TemplateDrivenRebuild) =================")
-			return finalPath, nil
-		}
-		log.Printf("[V2入口] 模板驱动重建失败: %v，继续尝试 WordZero / StyleFormatter / V2FormatEngine", rebuildErr)
-	}
-
-	// ── 编译期开关：pkg/formatengine.UseWordZero（见该包注释）──
-	if formatengine.UseWordZero {
-		log.Println("[V2入口] formatengine.UseWordZero=true，尝试 WordZero...")
-		outPath, wzErr := p.RunWordZeroFormatter(ctx, docPath, templatePath)
-		if wzErr == nil {
-			finalPath, finErr := finalizeOutput("WordZero", outPath)
-			if finErr != nil {
-				return "", finErr
-			}
-			log.Println("================= V2 格式修正流程 完成 (WordZero) =================")
-			return finalPath, nil
-		}
-		log.Printf("[V2入口] WordZero 失败: %v，回退 StyleFormatter / V2FormatEngine", wzErr)
-	}
-
 	// ── 优先尝试 StyleFormatter (python-docx 引擎) ──
 	sfConfig := DefaultStyleFormatterConfig()
 
@@ -602,11 +571,12 @@ func (p *EnhancedProcessor) applyUnifiedRulePlanToFile(path, templatePath string
 	if err != nil {
 		return "", err
 	}
-	if err := p.applyTemplateFormatting(doc, rules, specs); err != nil {
+	locks, err := p.applyTemplateFormatting(doc, rules, specs)
+	if err != nil {
 		doc.Close()
 		return "", err
 	}
-	repair := NewRepairAgent(p, 3).Run(doc, specs)
+	repair := NewRepairAgent(p, 3, p.repairDiagnosticClient()).WithLocks(locks).Run(doc, specs)
 	if repair.NeedsManualReview {
 		log.Printf("[修复代理] 规划执行后三轮仍有 %d 处差异，标记为需人工复核", repair.FinalDiffs)
 	}
@@ -736,7 +706,7 @@ func (p *EnhancedProcessor) enforceStrongFormatConsistency(
 		return p.fallbackToV2Engine(ctx, sourceDocPath, templatePath, corrections, initialDiffs, threshold)
 	}
 
-	repair := NewRepairAgent(p, 3).Run(doc, specs)
+	repair := NewRepairAgent(p, 3, p.repairDiagnosticClient()).Run(doc, specs)
 	fixes := repair.TotalFixes
 	p.lastStrongVerify.RepairRounds = repair.Rounds
 	p.lastStrongVerify.NeedsManualReview = repair.NeedsManualReview

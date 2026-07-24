@@ -18,7 +18,7 @@ type LocalWordPostProcessor struct {
 
 func NewLocalWordPostProcessor() *LocalWordPostProcessor {
 	return &LocalWordPostProcessor{
-		ApplyPageSetup:        ApplyWordZeroPageSetupFromTemplate,
+		ApplyPageSetup:        nil,
 		CopyHeaderFooter:      copyTemplateHeaderFooterPackage,
 		RestoreCoverTables:    restoreStrictCoverTablesFromTemplate,
 		SanitizeOutputPackage: postProcessStrictOutput,
