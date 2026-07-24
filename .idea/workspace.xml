@@ -4,8 +4,7 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="修复 DOCX ZIP">
-      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="fix 论文修复">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
     </list>
@@ -195,12 +194,6 @@
       <path value="D:/workpace/博客/paper/backend" />
       <path value="D:/workpace/博客/pentagi" />
     </ignored-roots>
-    <MESSAGE value="ooxmlpath" />
-    <MESSAGE value="ooxmlpath1" />
-    <MESSAGE value="ci  .env  配置更新后不丢失" />
-    <MESSAGE value="页眉修改！" />
-    <MESSAGE value="页眉修改！12" />
-    <MESSAGE value="人工修改思路" />
     <MESSAGE value="codex  修改" />
     <MESSAGE value="action 修改" />
     <MESSAGE value="支付宝登陆" />
@@ -220,7 +213,13 @@
     <MESSAGE value="修改1" />
     <MESSAGE value="修复 DOCX ZIP 路径穿越、XML 资源限制" />
     <MESSAGE value="修复 DOCX ZIP" />
-    <option name="LAST_COMMIT_MESSAGE" value="修复 DOCX ZIP" />
+    <MESSAGE value="迁移脚本由于使用了 IF NOT EXISTS" />
+    <MESSAGE value="模板文件" />
+    <MESSAGE value="模板文件12" />
+    <MESSAGE value="模板uuid" />
+    <MESSAGE value="修改修复流程" />
+    <MESSAGE value="fix 论文修复" />
+    <option name="LAST_COMMIT_MESSAGE" value="fix 论文修复" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>
