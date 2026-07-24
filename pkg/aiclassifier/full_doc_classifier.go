@@ -84,6 +84,8 @@ type paraDesc struct {
 	T string `json:"t"` // 文本前 30 字
 	S int    `json:"s"` // 字号（半磅，如 24=12pt）
 	B bool   `json:"b"` // 是否加粗
+	A string `json:"a"` // 对齐方式
+	P string `json:"p"` // 前一段分类
 	R string `json:"r"` // 规则引擎分类结果（供参考）
 }
 
@@ -113,6 +115,8 @@ func (c *FullDocumentClassifier) classifyBatch(
 			T: text,
 			S: int(f.FontSizePt * 2),
 			B: f.IsBold,
+			A: f.Alignment,
+			P: f.PrevType,
 			R: ruleResults[i].Label,
 		}
 	}
@@ -120,7 +124,7 @@ func (c *FullDocumentClassifier) classifyBatch(
 	descJSON, _ := json.Marshal(descs)
 
 	prompt := fmt.Sprintf(`你是中文本科毕业论文格式分析专家。
-下面是论文中第%d~%d段（共%d段）的摘要，每条字段含义：i=段落序号,t=文本前30字,s=字号(半磅,24=12pt),b=加粗,r=规则引擎猜测。
+下面是论文中第%d~%d段（共%d段）的摘要，每条字段含义：i=段落序号,t=文本前30字,s=字号(半磅,24=12pt),b=加粗,a=对齐,p=前一段分类,r=规则引擎猜测。
 
 论文结构固定顺序：封面 → 中文摘要 → 英文摘要 → 目录 → 正文章节 → 参考文献 → 致谢 → 附录
 

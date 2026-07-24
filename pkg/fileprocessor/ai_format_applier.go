@@ -8,9 +8,11 @@ import (
 	"gitee.com/greatmusicians/unioffice/document"
 	"gitee.com/greatmusicians/unioffice/measurement"
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
+	"github.com/paper-format-checker/backend/pkg/aiclassifier"
 )
 
-// AIFormatApplier 基于ParagraphFormatSpec直接写入OOXML的格式应用器
+// AIFormatApplier 基于ParagraphFormatSpec直接写入OOXML的确定性格式应用器。
+// AI 只负责上游语义分类，不参与格式值计算。
 // 完全绕过JSON规则解析链，消除多层转换带来的误差
 type AIFormatApplier struct {
 	processor *EnhancedProcessor
@@ -35,7 +37,7 @@ func (a *AIFormatApplier) Apply(
 ) int {
 	total := 0
 	for category, paras := range classified {
-		if skipCategories[category] {
+		if skipCategories[category] || isProtectedFormatCategory(category) {
 			log.Printf("[AI应用] 跳过 %s (%d段)", category, len(paras))
 			continue
 		}
@@ -50,41 +52,14 @@ func (a *AIFormatApplier) Apply(
 			if text == "" {
 				continue
 			}
-		applySpec := spec
-		// 摘要/英文摘要：不加粗，字号最大12pt
-		if isAbstractCategory(category) {
-			applySpec.Bold = false
-			if applySpec.FontSizeHalfPt == 0 || applySpec.FontSizeHalfPt > 24 {
-				applySpec.FontSizeHalfPt = 24 // 小四=12pt
-			}
-		}
-		// 安全兜底：Named Style集成后应少触发，但保留防污染保护
-		switch category {
-		case "references":
-			// Named Style未提供字体/字号时才兜底（防止空spec）
-			if applySpec.FontEastAsia == "" || applySpec.FontEastAsia == "黑体" || applySpec.FontEastAsia == "仿宋" {
-				applySpec.FontEastAsia = "宋体"
-				applySpec.FontAscii = "SimSun"
-			}
-			if applySpec.FontSizeHalfPt == 0 || applySpec.FontSizeHalfPt > 28 {
-				applySpec.FontSizeHalfPt = 24 // 宋体小四=12pt
-			}
-			applySpec.Bold = false
-		case "body":
-			// Named Style后font应是正确的宋体；黑体说明Named Style也未生效，兜底
-			if applySpec.FontEastAsia == "" || applySpec.FontEastAsia == "黑体" || applySpec.FontEastAsia == "SimHei" {
-				applySpec.FontEastAsia = "宋体"
-				applySpec.FontAscii = "SimSun"
-			}
-			if applySpec.FontSizeHalfPt == 0 || applySpec.FontSizeHalfPt > 28 {
-				applySpec.FontSizeHalfPt = 24
-			}
-			applySpec.Bold = false
-		}
+			applySpec := spec
 			// #region agent log H2
 			if count == 0 { // 每类只记第一段
 				actualSpec := extractParaFormatSpec(para)
-				preview := []rune(text); if len(preview) > 25 { preview = preview[:25] }
+				preview := []rune(text)
+				if len(preview) > 25 {
+					preview = preview[:25]
+				}
 				dbgLog("H2", "ai_format_applier.go:Apply",
 					"applying spec to para",
 					fmt.Sprintf(`{"category":%q,"text":%q,"specFont":%q,"specSizeHalfPt":%d,"specBold":%v,"actualFont":%q,"actualSizeHalfPt":%d,"actualBold":%v}`,
@@ -104,6 +79,15 @@ func (a *AIFormatApplier) Apply(
 		}
 	}
 	return total
+}
+
+func isProtectedFormatCategory(category string) bool {
+	switch category {
+	case aiclassifier.TypeTOCTitle, aiclassifier.TypeTOC, aiclassifier.TypeReferencesTitle:
+		return true
+	default:
+		return false
+	}
 }
 
 // ApplySpecToPara 将格式规范直接写入段落的OOXML，无JSON解析

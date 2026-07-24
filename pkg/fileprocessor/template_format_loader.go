@@ -85,8 +85,19 @@ func NewTemplateFormatLoader(proc *EnhancedProcessor) *TemplateFormatLoader {
 // LoadFromFile 从模板文件加载格式规范，带内存缓存
 // templatePath: 模板文件路径（绝对或相对于工作目录）
 func (l *TemplateFormatLoader) LoadFromFile(templatePath string) (map[string]ParagraphFormatSpec, error) {
+	return l.loadFromFile(templatePath, true)
+}
+
+// LoadSampledFromFile 只提取模板段落的聚合样式，不混入 Named Style。
+// 统一规则引擎使用此入口，以便按“默认值 → Named Style → 模板采样 → 用户覆盖”逐层仲裁。
+func (l *TemplateFormatLoader) LoadSampledFromFile(templatePath string) (map[string]ParagraphFormatSpec, error) {
+	return l.loadFromFile(templatePath, false)
+}
+
+func (l *TemplateFormatLoader) loadFromFile(templatePath string, includeNamedStyles bool) (map[string]ParagraphFormatSpec, error) {
+	cacheKey := fmt.Sprintf("%s|named=%t", templatePath, includeNamedStyles)
 	l.mu.Lock()
-	if specs, ok := l.cache[templatePath]; ok {
+	if specs, ok := l.cache[cacheKey]; ok {
 		l.mu.Unlock()
 		log.Printf("[模板加载] 命中缓存: %s (%d种类型)", templatePath, len(specs))
 		return specs, nil
@@ -180,59 +191,110 @@ func (l *TemplateFormatLoader) LoadFromFile(templatePath string) (map[string]Par
 		return nil, fmt.Errorf("模板解析结果为空，无法提取任何格式规范")
 	}
 
-	// ── Named Style 补充/覆盖（权威来源，无采样噪声） ──
-	// 从 styles.xml 的命名样式定义中提取格式，覆盖采样结果中可能污染的字体/字号/加粗字段
-	extractor := NewTemplateStyleExtractor()
-	if styleSpecs, err2 := extractor.ExtractFromTemplate(templatePath); err2 == nil && len(styleSpecs) > 0 {
-		for category, styleSpec := range styleSpecs {
-			if styleSpec.IsEmpty() {
-				continue
+	if includeNamedStyles {
+		// ── Named Style 补充/覆盖（兼容旧调用） ──
+		extractor := NewTemplateStyleExtractor()
+		if styleSpecs, err2 := extractor.ExtractFromTemplate(templatePath); err2 == nil && len(styleSpecs) > 0 {
+			for category, styleSpec := range styleSpecs {
+				if styleSpec.IsEmpty() {
+					continue
+				}
+				if existing, ok := specs[category]; ok {
+					specs[category] = mergeLegacyNamedStyle(existing, styleSpec)
+				} else {
+					specs[category] = styleSpec
+				}
 			}
-			if existing, ok := specs[category]; ok {
-				// 合并策略：Named Style 提供字体/字号/加粗（更权威），采样保留行距/缩进（更贴近段落实际设置）
-				merged := existing
-				if styleSpec.FontEastAsia != "" {
-					merged.FontEastAsia = styleSpec.FontEastAsia
-				}
-				if styleSpec.FontAscii != "" {
-					merged.FontAscii = styleSpec.FontAscii
-				}
-				if styleSpec.FontSizeHalfPt > 0 {
-					merged.FontSizeHalfPt = styleSpec.FontSizeHalfPt
-				}
-				merged.Bold = styleSpec.Bold
-				if styleSpec.AlignmentSet {
-					merged.AlignmentSet = styleSpec.AlignmentSet
-					merged.Alignment = styleSpec.Alignment
-				}
-				// 行距/缩进：若采样结果为0则用Named Style的值
-				if merged.LineSpacingVal == 0 && styleSpec.LineSpacingVal != 0 {
-					merged.LineSpacingVal = styleSpec.LineSpacingVal
-					merged.LineSpacingRule = styleSpec.LineSpacingRule
-				}
-				if merged.FirstLineIndent == 0 && styleSpec.FirstLineIndent != 0 {
-					merged.FirstLineIndent = styleSpec.FirstLineIndent
-				}
-				specs[category] = merged
-				log.Printf("[模板加载] %s: Named Style覆盖 → font=%q size=%.1fpt bold=%v",
-					category, merged.FontEastAsia, merged.FontSizePt(), merged.Bold)
-			} else {
-				// 采样没有该类型，直接用 Named Style 结果
-				specs[category] = styleSpec
-				log.Printf("[模板加载] %s: 仅Named Style → font=%q size=%.1fpt bold=%v",
-					category, styleSpec.FontEastAsia, styleSpec.FontSizePt(), styleSpec.Bold)
-			}
+		} else {
+			log.Printf("[模板加载] ⚠️ Named Style提取失败，使用纯采样结果: %v", err2)
 		}
-	} else {
-		log.Printf("[模板加载] ⚠️ Named Style提取失败，使用纯采样结果: %v", err2)
 	}
 
 	l.mu.Lock()
-	l.cache[templatePath] = specs
+	l.cache[cacheKey] = specs
 	l.mu.Unlock()
 
-	log.Printf("[模板加载] ════════ 完成：提取 %d 种格式规范（含Named Style覆盖） ════════", len(specs))
+	log.Printf("[模板加载] ════════ 完成：提取 %d 种格式规范（Named Style=%t） ════════", len(specs), includeNamedStyles)
 	return specs, nil
+}
+
+func mergeLegacyNamedStyle(sampled, named ParagraphFormatSpec) ParagraphFormatSpec {
+	if named.FontEastAsia != "" {
+		sampled.FontEastAsia = named.FontEastAsia
+	}
+	if named.FontAscii != "" {
+		sampled.FontAscii = named.FontAscii
+	}
+	if named.FontSizeHalfPt > 0 {
+		sampled.FontSizeHalfPt = named.FontSizeHalfPt
+	}
+	sampled.Bold = named.Bold
+	if named.AlignmentSet {
+		sampled.AlignmentSet = true
+		sampled.Alignment = named.Alignment
+	}
+	if sampled.LineSpacingVal == 0 && named.LineSpacingVal != 0 {
+		sampled.LineSpacingVal = named.LineSpacingVal
+		sampled.LineSpacingRule = named.LineSpacingRule
+	}
+	if sampled.FirstLineIndent == 0 && named.FirstLineIndent != 0 {
+		sampled.FirstLineIndent = named.FirstLineIndent
+	}
+	return sampled
+}
+
+func mergeFormatSpec(base, override ParagraphFormatSpec) ParagraphFormatSpec {
+	if override.FontEastAsia != "" {
+		base.FontEastAsia = override.FontEastAsia
+	}
+	if override.FontAscii != "" {
+		base.FontAscii = override.FontAscii
+	}
+	if override.FontSizeHalfPt > 0 {
+		base.FontSizeHalfPt = override.FontSizeHalfPt
+	}
+	if override.FontSizeCSHalfPt > 0 {
+		base.FontSizeCSHalfPt = override.FontSizeCSHalfPt
+	}
+	base.Bold = override.Bold
+	base.Italic = override.Italic
+	base.Underline = override.Underline
+	if override.AlignmentSet {
+		base.AlignmentSet = true
+		base.Alignment = override.Alignment
+	}
+	if override.LineSpacingVal != 0 {
+		base.LineSpacingVal = override.LineSpacingVal
+		base.LineSpacingRule = override.LineSpacingRule
+	}
+	if override.SpaceBefore != 0 {
+		base.SpaceBefore = override.SpaceBefore
+	}
+	if override.SpaceAfter != 0 {
+		base.SpaceAfter = override.SpaceAfter
+	}
+	if override.FirstLineIndent != 0 {
+		base.FirstLineIndent = override.FirstLineIndent
+	}
+	if override.IndentLeft != 0 {
+		base.IndentLeft = override.IndentLeft
+	}
+	if override.IndentRight != 0 {
+		base.IndentRight = override.IndentRight
+	}
+	if override.ColorHex != "" {
+		base.ColorHex = override.ColorHex
+	}
+	if override.OutlineLevel != 0 {
+		base.OutlineLevel = override.OutlineLevel
+	}
+	base.PageBreak = override.PageBreak
+	base.KeepWithNext = override.KeepWithNext
+	base.KeepLines = override.KeepLines
+	if override.SampleCount > 0 {
+		base.SampleCount = override.SampleCount
+	}
+	return base
 }
 
 // extractParaFormatSpec 从单个段落提取OOXML格式属性

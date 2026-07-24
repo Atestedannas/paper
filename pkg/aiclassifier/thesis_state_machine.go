@@ -11,14 +11,14 @@ import (
 type ThesisZone int
 
 const (
-	ZoneCover         ThesisZone = iota // 0: 封面 & 原创性声明
-	ZoneAbstract                        // 1: 中文摘要
-	ZoneEnAbstract                      // 2: 英文摘要
-	ZoneTOC                             // 3: 目录
-	ZoneBody                            // 4: 正文（含各级标题）
-	ZoneReferences                      // 5: 参考文献
-	ZoneAcknowledgements                // 6: 致谢
-	ZoneAppendix                        // 7: 附录
+	ZoneCover            ThesisZone = iota // 0: 封面 & 原创性声明
+	ZoneAbstract                           // 1: 中文摘要
+	ZoneEnAbstract                         // 2: 英文摘要
+	ZoneTOC                                // 3: 目录
+	ZoneBody                               // 4: 正文（含各级标题）
+	ZoneReferences                         // 5: 参考文献
+	ZoneAcknowledgements                   // 6: 致谢
+	ZoneAppendix                           // 7: 附录
 )
 
 // ThesisStateMachine 论文结构状态机
@@ -35,6 +35,14 @@ func NewThesisStateMachine() *ThesisStateMachine {
 // tryAdvance 尝试根据强信号标签推进区段（只前进，不回退）
 func (sm *ThesisStateMachine) tryAdvance(label string, text string) {
 	switch {
+	case smContainsAppendix(text):
+		sm.zone = ZoneAppendix
+	case smContainsAcknowledgement(text):
+		sm.zone = ZoneAcknowledgements
+	case sm.zone == ZoneReferences &&
+		(label == TypeHeading1 || label == TypeHeading2 || label == TypeHeading3) &&
+		!smLooksTOCEntry(text):
+		sm.zone = ZoneBody
 	case sm.zone <= ZoneCover && (label == TypeAbstractTitle || label == TypeAbstract):
 		sm.zone = ZoneAbstract
 	case sm.zone <= ZoneAbstract && (label == TypeEnAbstractTitle || label == TypeEnAbstract || label == TypeEnKeywords):
@@ -53,8 +61,6 @@ func (sm *ThesisStateMachine) tryAdvance(label string, text string) {
 				smTruncate(text, 30), label, smLooksTOCEntry(text)))
 		// #endregion agent log H5
 		sm.zone = ZoneReferences
-	case sm.zone <= ZoneReferences && smContainsAcknowledgement(text):
-		sm.zone = ZoneAcknowledgements
 	}
 }
 
@@ -106,8 +112,25 @@ func (sm *ThesisStateMachine) Reclassify(label string, text string) string {
 			return "acknowledgements"
 		}
 		return label
+	case ZoneAppendix:
+		if label == TypeBody || label == TypeReferences {
+			return "appendix_content"
+		}
+		return label
 	}
 	return label
+}
+
+func smContainsAppendix(text string) bool {
+	if len([]rune(text)) > 30 {
+		return false
+	}
+	for _, keyword := range []string{"附录", "APPENDIX", "Appendix"} {
+		if smContainsStr(text, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func smContainsAcknowledgement(text string) bool {

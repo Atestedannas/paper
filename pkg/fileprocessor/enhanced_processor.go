@@ -35,15 +35,17 @@ func (p *EnhancedProcessor) GetLastDiffReport() *DocDiffReport {
 
 // StrongVerifyResult 记录一次强校验流程的关键统计信息。
 type StrongVerifyResult struct {
-	Enabled      bool   `json:"enabled"`
-	Threshold    int    `json:"threshold"`
-	InitialDiffs int    `json:"initial_diffs"`
-	RetryDiffs   int    `json:"retry_diffs"`
-	FinalDiffs   int    `json:"final_diffs"`
-	Retried      bool   `json:"retried"`
-	FallbackUsed bool   `json:"fallback_used"`
-	Passed       bool   `json:"passed"`
-	FinalEngine  string `json:"final_engine"`
+	Enabled           bool   `json:"enabled"`
+	Threshold         int    `json:"threshold"`
+	InitialDiffs      int    `json:"initial_diffs"`
+	RetryDiffs        int    `json:"retry_diffs"`
+	FinalDiffs        int    `json:"final_diffs"`
+	RepairRounds      int    `json:"repair_rounds"`
+	Retried           bool   `json:"retried"`
+	FallbackUsed      bool   `json:"fallback_used"`
+	NeedsManualReview bool   `json:"needs_manual_review"`
+	Passed            bool   `json:"passed"`
+	FinalEngine       string `json:"final_engine"`
 }
 
 // GetLastStrongVerifyResult 返回最近一次 ApplyCorrectionsV2 的强校验摘要。
@@ -305,12 +307,12 @@ func (p *EnhancedProcessor) ApplyCorrections(ctx context.Context, docPath string
 	log.Printf("[格式修正] 最终模板路径: %q", activeTplPath)
 
 	if activeTplPath != "" {
-		loader := NewTemplateFormatLoader(p)
-		if specs, loadErr := loader.LoadFromFile(activeTplPath); loadErr == nil && len(specs) > 0 {
+		ruleEngine, ruleErr := NewFormatRuleEngine(p, activeTplPath, formatRules)
+		if specs := ruleEngineRules(ruleEngine, ruleErr); len(specs) > 0 {
 			templateSpecs = specs
-			log.Printf("[格式修正] ✅ 模板直读方案：成功加载 %d 种格式规范", len(specs))
+			log.Printf("[格式修正] ✅ 统一规则引擎：成功解析 %d 种格式规范", len(specs))
 		} else {
-			log.Printf("[格式修正] ⚠️  模板直读加载失败(%v)，回退到JSON规则方案", loadErr)
+			log.Printf("[格式修正] ⚠️  统一规则引擎加载失败(%v)，回退到JSON规则方案", ruleErr)
 		}
 	}
 
@@ -339,13 +341,16 @@ func (p *EnhancedProcessor) ApplyCorrections(ctx context.Context, docPath string
 	if p.smartClassifier != nil {
 		dsClient = p.smartClassifier.GetDeepSeekClient()
 	}
-	verifier := NewFormatVerifier(p, dsClient)
 	var fixCount int
 	if templateSpecs != nil {
-		// 新方案：用模板规范验证（高精度）
-		fixCount = verifier.VerifyAndFixWithSpecs(doc, templateSpecs)
+		result := NewRepairAgent(p, 3).Run(doc, templateSpecs)
+		fixCount = result.TotalFixes
+		if result.NeedsManualReview {
+			log.Printf("[修复代理] 三轮后仍有 %d 处差异，标记为需人工复核", result.FinalDiffs)
+		}
 	} else {
 		// 旧方案：JSON规则验证
+		verifier := NewFormatVerifier(p, dsClient)
 		fixCount = verifier.VerifyAndFix(doc, formatRules)
 	}
 	if fixCount > 0 {
@@ -569,47 +574,52 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 	// 导致封面等跳过段落的字体被意外修改。模板模式通过 AIFormatApplier 直接写入 run-level rPr，
 	// 无需再改 styles.xml 层。
 
-	// 步骤 0: Section 级别格式（A4纸张、标准边距、双线页眉、页脚页码、三线表、上标等）
-	log.Println("[模板方案][步骤0] 应用 Section 级别格式")
-	p.ApplySectionLevelFormatting(doc)
-
-	// 步骤 1: 页面设置（JSON规则覆盖，如果有的话）
-	log.Println("[模板方案][步骤1] 应用页面设置(JSON覆盖)")
-	if err := p.applyPageSetup(doc, rules); err != nil {
-		log.Printf("[模板方案][步骤1] ⚠️  页面设置失败: %v", err)
+	plan, err := NewFormatPlanner().Plan()
+	if err != nil {
+		return err
 	}
-
-	// 步骤 1b: 页眉页脚&页码（JSON覆盖）
-	log.Println("[模板方案][步骤1b] 应用页眉页脚和页码(JSON覆盖)")
-	if err := p.applyHeaderFooter(doc, rules); err != nil {
-		log.Printf("[模板方案][步骤1b] ⚠️  页眉页脚设置失败: %v", err)
-	}
-
-	// 步骤 2: 段落分类
-	log.Println("[模板方案][步骤2] 段落分类")
-	paragraphs := doc.Paragraphs()
-	log.Printf("[模板方案][步骤2] 文档总段落数: %d", len(paragraphs))
-	classified := p.classifyParagraphs(paragraphs)
-
-	// 输出分类详情
-	for category, paras := range classified {
-		sampleText := ""
-		if len(paras) > 0 {
-			t := p.extractParagraphText(paras[0])
-			if len(t) > 50 {
-				t = t[:50] + "..."
-			}
-			sampleText = t
-		}
-		log.Printf("[模板方案][步骤2]   %s: %d 个段落, 首段: %q", category, len(paras), sampleText)
-	}
-
-	// 步骤 3: 使用AI格式应用器直接按模板规范修正
-	log.Printf("[模板方案][步骤3] 应用模板格式规范（%d种类型，全文含封面/声明）", len(specs))
+	var classified map[string][]document.Paragraph
 	skipCategories := map[string]bool{}
-	applier := NewAIFormatApplier(p)
-	totalFixed := applier.Apply(classified, specs, skipCategories)
-	log.Printf("[模板方案][步骤3] 共修正 %d 个段落", totalFixed)
+	for _, step := range plan {
+		log.Printf("[格式规划器] 执行步骤: %s", step)
+		switch step {
+		case FormatStepSection:
+			p.ApplySectionLevelFormatting(doc)
+		case FormatStepPageSetup:
+			if err := p.applyPageSetup(doc, rules); err != nil {
+				log.Printf("[格式规划器] 页面设置失败: %v", err)
+			}
+		case FormatStepHeaderFooter:
+			if err := p.applyHeaderFooter(doc, rules); err != nil {
+				log.Printf("[格式规划器] 页眉页脚设置失败: %v", err)
+			}
+		case FormatStepClassify:
+			classified = p.classifyParagraphs(doc.Paragraphs())
+		case FormatStepParagraphs:
+			if classified == nil {
+				return fmt.Errorf("paragraph formatting planned before classification")
+			}
+			totalFixed := NewAIFormatApplier(p).Apply(classified, specs, skipCategories)
+			log.Printf("[格式规划器] 段落格式修正=%d", totalFixed)
+		case FormatStepPageBreaks:
+			for _, category := range []string{"references_title", "acknowledgements_title", "appendix_title", "notes_title"} {
+				if paras := classified[category]; len(paras) > 0 {
+					if spec, ok := specs[category]; ok && spec.PageBreak {
+						p.setPageBreakBefore(paras[0])
+					}
+				}
+			}
+		case FormatStepTables:
+			skipParaSet := map[*wml.CT_P]bool{}
+			if bodySpec, ok := specs["body"]; ok && !bodySpec.IsEmpty() {
+				p.applyTableFormattingWithSpec(doc, bodySpec, skipParaSet)
+			} else {
+				p.applyTableFormatting(doc, rules, skipParaSet)
+			}
+		case FormatStepVerify:
+			// 验证由独立 RepairAgent 在执行器完成后统一处理。
+		}
+	}
 
 	// 步骤 3.5: 生成差异报告（修正后重新扫描，找出仍有偏差的段落）
 	diffReport := &DocDiffReport{}
@@ -658,29 +668,14 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 		diffReport.TotalParas, diffReport.ErrorCount, diffReport.WarningCount)
 	p.lastDiffReport = diffReport
 
-	// 步骤 4: 参考文献"另起页"处理
-	// 如果模板规范中 references_title 有 PageBreak，已由applier处理
-	// 但为安全起见，仍从JSON规则中读取 new_page/page_break 标志
-	for _, category := range []string{"references_title", "acknowledgements_title", "appendix_title", "notes_title"} {
-		if paras, ok := classified[category]; ok && len(paras) > 0 {
-			// 从规范中获取 PageBreak 设置
-			if spec, ok := specs[category]; ok && spec.PageBreak {
-				p.setPageBreakBefore(paras[0])
-			}
-		}
-	}
-
-	// 步骤 5: 表格内文字格式（全文应用）
-	log.Println("[模板方案][步骤5] 应用表格内格式")
-	skipParaSet := map[*wml.CT_P]bool{}
-	// 如果有模板规范，用模板中 body 字体/字号覆盖表格内文字（保证一致性）
-	if bodySpec, ok := specs["body"]; ok && !bodySpec.IsEmpty() {
-		p.applyTableFormattingWithSpec(doc, bodySpec, skipParaSet)
-	} else {
-		p.applyTableFormatting(doc, rules, skipParaSet)
-	}
-
 	return nil
+}
+
+func ruleEngineRules(engine *FormatRuleEngine, err error) map[string]ParagraphFormatSpec {
+	if err != nil || engine == nil {
+		return nil
+	}
+	return engine.Rules()
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -1,6 +1,10 @@
 package fileprocessor
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestPlanStrongVerificationAction(t *testing.T) {
 	tests := []struct {
@@ -53,5 +57,29 @@ func TestPlanStrongVerificationAction(t *testing.T) {
 					tt.initialDiffs, tt.retryDiffs, tt.threshold, gotRetry, gotFallback, tt.wantRetry, tt.wantFallback)
 			}
 		})
+	}
+}
+
+func TestStrongVerificationRetryIsPromotedOnlyAfterValidation(t *testing.T) {
+	dir := t.TempDir()
+	candidate := filepath.Join(dir, "candidate.docx")
+	retry := filepath.Join(dir, "retry.docx")
+	if err := os.WriteFile(candidate, []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyStrongVerificationCandidate(candidate, retry); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(retry, []byte("verified"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	finalPath := promoteStrongVerificationRetry(retry, candidate)
+	content, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "verified" {
+		t.Fatalf("promoted content = %q, want verified", content)
 	}
 }

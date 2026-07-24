@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -468,7 +469,11 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 		"shell_enabled": false,
 	})
 	finalizeOutput := func(primaryEngine, outPath string) (string, error) {
-		finalPath, finalEngine, err := p.enforceStrongFormatConsistency(ctx, docPath, outPath, templatePath, corrections, primaryEngine)
+		plannedPath, err := p.applyUnifiedRulePlanToFile(outPath, templatePath, corrections)
+		if err != nil {
+			return "", fmt.Errorf("apply unified format plan: %w", err)
+		}
+		finalPath, finalEngine, err := p.enforceStrongFormatConsistency(ctx, docPath, plannedPath, templatePath, corrections, primaryEngine)
 		if err != nil {
 			return "", err
 		}
@@ -586,6 +591,34 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 	return finalPath, nil
 }
 
+func (p *EnhancedProcessor) applyUnifiedRulePlanToFile(path, templatePath string, corrections []map[string]interface{}) (string, error) {
+	rules := normalizedFormatRulesFromCorrections(p, corrections)
+	engine, err := NewFormatRuleEngine(p, templatePath, rules)
+	if err != nil {
+		return "", err
+	}
+	specs := engine.Rules()
+	doc, err := document.Open(path)
+	if err != nil {
+		return "", err
+	}
+	if err := p.applyTemplateFormatting(doc, rules, specs); err != nil {
+		doc.Close()
+		return "", err
+	}
+	repair := NewRepairAgent(p, 3).Run(doc, specs)
+	if repair.NeedsManualReview {
+		log.Printf("[修复代理] 规划执行后三轮仍有 %d 处差异，标记为需人工复核", repair.FinalDiffs)
+	}
+	tempPath := fmt.Sprintf("%s.rule-plan-%d.docx", strings.TrimSuffix(path, filepath.Ext(path)), time.Now().UnixNano())
+	if err := doc.SaveToFile(tempPath); err != nil {
+		doc.Close()
+		return "", err
+	}
+	doc.Close()
+	return promoteStrongVerificationRetry(tempPath, path), nil
+}
+
 func strongVerificationEnabled() bool {
 	v := strings.TrimSpace(os.Getenv("FORMAT_STRONG_VERIFY_ENABLED"))
 	if v == "" {
@@ -621,12 +654,12 @@ func planStrongVerificationAction(initialDiffs, retryDiffs, threshold int) (shou
 	return true, retryDiffs > threshold
 }
 
-func (p *EnhancedProcessor) countTemplateSpecDiffs(docPath, templatePath string) (int, error) {
-	loader := NewTemplateFormatLoader(p)
-	specs, err := loader.LoadFromFile(templatePath)
+func (p *EnhancedProcessor) countTemplateSpecDiffs(docPath, templatePath string, rules map[string]interface{}) (int, error) {
+	engine, err := NewFormatRuleEngine(p, templatePath, rules)
 	if err != nil {
 		return 0, err
 	}
+	specs := engine.Rules()
 	if len(specs) == 0 {
 		return 0, fmt.Errorf("no template specs loaded")
 	}
@@ -664,9 +697,10 @@ func (p *EnhancedProcessor) enforceStrongFormatConsistency(
 		return candidatePath, primaryEngine, nil
 	}
 	threshold := strongVerificationThreshold()
+	formatRules := normalizedFormatRulesFromCorrections(p, corrections)
 	p.lastStrongVerify.Enabled = true
 	p.lastStrongVerify.Threshold = threshold
-	initialDiffs, err := p.countTemplateSpecDiffs(candidatePath, templatePath)
+	initialDiffs, err := p.countTemplateSpecDiffs(candidatePath, templatePath, formatRules)
 	if err != nil {
 		log.Printf("[强校验] 首次比对失败，保留主路径产物: %v", err)
 		return candidatePath, primaryEngine, nil
@@ -682,51 +716,99 @@ func (p *EnhancedProcessor) enforceStrongFormatConsistency(
 	}
 	p.lastStrongVerify.Retried = true
 
-	doc, openErr := document.Open(candidatePath)
+	retryPath := fmt.Sprintf("%s.strong-retry-%d.docx", strings.TrimSuffix(candidatePath, filepath.Ext(candidatePath)), time.Now().UnixNano())
+	if copyErr := copyStrongVerificationCandidate(candidatePath, retryPath); copyErr != nil {
+		log.Printf("[强校验] 无法创建事务性重试副本，进入V2回退: %v", copyErr)
+		return p.fallbackToV2Engine(ctx, sourceDocPath, templatePath, corrections, initialDiffs, threshold)
+	}
+	doc, openErr := document.Open(retryPath)
 	if openErr != nil {
+		_ = os.Remove(retryPath)
 		log.Printf("[强校验] 重试前打开失败，进入V2回退: %v", openErr)
 		return p.fallbackToV2Engine(ctx, sourceDocPath, templatePath, corrections, initialDiffs, threshold)
 	}
-	defer doc.Close()
-	loader := NewTemplateFormatLoader(p)
-	specs, loadErr := loader.LoadFromFile(templatePath)
+	ruleEngine, loadErr := NewFormatRuleEngine(p, templatePath, formatRules)
+	specs := ruleEngineRules(ruleEngine, loadErr)
 	if loadErr != nil || len(specs) == 0 {
+		doc.Close()
+		_ = os.Remove(retryPath)
 		log.Printf("[强校验] 无法加载模板规范，进入V2回退: %v", loadErr)
 		return p.fallbackToV2Engine(ctx, sourceDocPath, templatePath, corrections, initialDiffs, threshold)
 	}
 
-	verifier := NewFormatVerifier(p, nil)
-	fixes := verifier.VerifyAndFixWithSpecs(doc, specs)
+	repair := NewRepairAgent(p, 3).Run(doc, specs)
+	fixes := repair.TotalFixes
+	p.lastStrongVerify.RepairRounds = repair.Rounds
+	p.lastStrongVerify.NeedsManualReview = repair.NeedsManualReview
 	if fixes > 0 {
-		if saveErr := doc.SaveToFile(candidatePath); saveErr != nil {
+		if saveErr := doc.SaveToFile(retryPath); saveErr != nil {
+			doc.Close()
+			_ = os.Remove(retryPath)
 			log.Printf("[强校验] 重试保存失败，进入V2回退: %v", saveErr)
 			return p.fallbackToV2Engine(ctx, sourceDocPath, templatePath, corrections, initialDiffs, threshold)
 		}
 	}
+	doc.Close()
 
-	retryDiffs, recountErr := p.countTemplateSpecDiffs(candidatePath, templatePath)
+	retryDiffs, recountErr := p.countTemplateSpecDiffs(retryPath, templatePath, formatRules)
 	if recountErr != nil {
+		_ = os.Remove(retryPath)
 		log.Printf("[强校验] 重试后复核失败，进入V2回退: %v", recountErr)
 		return p.fallbackToV2Engine(ctx, sourceDocPath, templatePath, corrections, initialDiffs, threshold)
 	}
 	p.lastStrongVerify.RetryDiffs = retryDiffs
 	_, fallback := planStrongVerificationAction(initialDiffs, retryDiffs, threshold)
 	log.Printf("[强校验] 重试修正=%d 重试后差异=%d 阈值=%d", fixes, retryDiffs, threshold)
+	if retryDiffs > initialDiffs {
+		_ = os.Remove(retryPath)
+		log.Printf("[强校验] 检测到回归：差异 %d -> %d，丢弃重试副本", initialDiffs, retryDiffs)
+		return p.fallbackToV2Engine(ctx, sourceDocPath, templatePath, corrections, initialDiffs, threshold)
+	}
 	if !fallback {
 		finalEngine := primaryEngine + "+StrongVerifyRetry"
 		p.lastStrongVerify.FinalDiffs = retryDiffs
 		p.lastStrongVerify.Passed = retryDiffs <= threshold
 		p.lastStrongVerify.FinalEngine = finalEngine
-		return candidatePath, finalEngine, nil
+		finalPath := promoteStrongVerificationRetry(retryPath, candidatePath)
+		return finalPath, finalEngine, nil
 	}
+	_ = os.Remove(retryPath)
 	return p.fallbackToV2Engine(ctx, sourceDocPath, templatePath, corrections, retryDiffs, threshold)
+}
+
+func copyStrongVerificationCandidate(sourcePath, targetPath string) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	target, err := os.Create(targetPath)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(target, source)
+	closeErr := target.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
+
+func promoteStrongVerificationRetry(retryPath, candidatePath string) string {
+	if err := os.Remove(candidatePath); err != nil {
+		return retryPath
+	}
+	if err := os.Rename(retryPath, candidatePath); err != nil {
+		return retryPath
+	}
+	return candidatePath
 }
 
 func (p *EnhancedProcessor) fallbackToV2Engine(
 	ctx context.Context,
 	sourceDocPath string,
 	templatePath string,
-	_ []map[string]interface{},
+	corrections []map[string]interface{},
 	currentDiffs int,
 	threshold int,
 ) (string, string, error) {
@@ -740,7 +822,7 @@ func (p *EnhancedProcessor) fallbackToV2Engine(
 	if err != nil {
 		return "", "", fmt.Errorf("strong verify fallback failed: %w", err)
 	}
-	finalDiffs, diffErr := p.countTemplateSpecDiffs(outPath, templatePath)
+	finalDiffs, diffErr := p.countTemplateSpecDiffs(outPath, templatePath, normalizedFormatRulesFromCorrections(p, corrections))
 	if diffErr == nil {
 		if p.lastStrongVerify != nil {
 			p.lastStrongVerify.FinalDiffs = finalDiffs
@@ -756,6 +838,15 @@ func (p *EnhancedProcessor) fallbackToV2Engine(
 		}
 	}
 	return outPath, "V2FormatEngineFallback", nil
+}
+
+func normalizedFormatRulesFromCorrections(p *EnhancedProcessor, corrections []map[string]interface{}) map[string]interface{} {
+	for _, correction := range corrections {
+		if rules, ok := correction["format_rules"].(map[string]interface{}); ok {
+			return p.normalizeFormatRules(rules)
+		}
+	}
+	return nil
 }
 
 // resolveTemplatePath searches for a valid golden template path from multiple sources.

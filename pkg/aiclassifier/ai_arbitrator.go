@@ -13,6 +13,17 @@ type AIArbitrator struct {
 	enabled bool
 }
 
+type arbitrationParaItem struct {
+	Index          int     `json:"index"`
+	Text           string  `json:"text"`
+	FontSizePt     float64 `json:"font_size_pt"`
+	Bold           bool    `json:"bold"`
+	Alignment      string  `json:"alignment"`
+	PrevLabel      string  `json:"prev_label,omitempty"`
+	RuleLabel      string  `json:"rule_label"`
+	RuleConfidence float64 `json:"rule_confidence"`
+}
+
 // NewAIArbitrator 创建 AI 仲裁器
 func NewAIArbitrator(cookie, bearer string, enabled bool) *AIArbitrator {
 	var client *DeepSeekWebClient
@@ -37,28 +48,7 @@ func (a *AIArbitrator) ClassifyBatch(paragraphs []ParagraphFeature, ruleResults 
 	}
 
 	// 构建 prompt：只发送规则引擎低置信度的段落
-	type paraItem struct {
-		Index   int    `json:"index"`
-		Text    string `json:"text"`
-		RuleRes string `json:"rule_result"`
-	}
-	var items []paraItem
-	indexMap := make(map[int]int) // prompt index -> original index
-
-	for i, r := range ruleResults {
-		if r.Confidence < 0.90 {
-			snippet := paragraphs[i].Text
-			if len([]rune(snippet)) > 100 {
-				snippet = string([]rune(snippet)[:100]) + "..."
-			}
-			indexMap[i] = i
-			items = append(items, paraItem{
-				Index:   i,
-				Text:    snippet,
-				RuleRes: r.Label,
-			})
-		}
-	}
+	items, indexMap := buildArbitrationItems(paragraphs, ruleResults)
 
 	if len(items) == 0 {
 		return ruleResults, nil
@@ -92,6 +82,7 @@ func (a *AIArbitrator) ClassifyBatch(paragraphs []ParagraphFeature, ruleResults 
 - table_of_contents_title: 目录标题
 - table_of_contents: 目录条目
 
+输入同时包含文本、字号、加粗、对齐、前一段分类与规则初判。你只负责判断段落语义类型，不得输出或推测任何格式值。
 请对每个段落返回JSON数组，格式: [{"index": 0, "label": "body", "confidence": 0.95}]
 只返回JSON，不要其他文字。
 
@@ -124,11 +115,47 @@ func (a *AIArbitrator) ClassifyBatch(paragraphs []ParagraphFeature, ruleResults 
 	return results, nil
 }
 
+func buildArbitrationItems(paragraphs []ParagraphFeature, ruleResults []ClassifyResult) ([]arbitrationParaItem, map[int]int) {
+	items := make([]arbitrationParaItem, 0, len(paragraphs))
+	indexMap := make(map[int]int)
+	for i, result := range ruleResults {
+		if result.Confidence >= 0.90 || i >= len(paragraphs) {
+			continue
+		}
+		snippet := paragraphs[i].Text
+		if len([]rune(snippet)) > 160 {
+			snippet = string([]rune(snippet)[:160]) + "..."
+		}
+		prevLabel := paragraphs[i].PrevType
+		if prevLabel == "" && i > 0 {
+			prevLabel = ruleResults[i-1].Label
+		}
+		indexMap[i] = i
+		items = append(items, arbitrationParaItem{
+			Index:          i,
+			Text:           snippet,
+			FontSizePt:     paragraphs[i].FontSizePt,
+			Bold:           paragraphs[i].IsBold,
+			Alignment:      paragraphs[i].Alignment,
+			PrevLabel:      prevLabel,
+			RuleLabel:      result.Label,
+			RuleConfidence: result.Confidence,
+		})
+	}
+	if len(items) > 30 {
+		items = items[:30]
+	}
+	return items, indexMap
+}
+
 func mergeAIResults(results []ClassifyResult, indexMap map[int]int, aiResults []aiResultItem) int {
 	updated := 0
 	for _, aiRes := range aiResults {
 		origIdx, ok := indexMap[aiRes.Index]
 		if !ok || origIdx < 0 || origIdx >= len(results) {
+			continue
+		}
+		if aiRes.Confidence < results[origIdx].Confidence {
 			continue
 		}
 		results[origIdx] = ClassifyResult{

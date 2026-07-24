@@ -502,6 +502,9 @@ func (v *FormatVerifier) VerifyAndFixWithSpecs(doc *document.Document, specs map
 func (v *FormatVerifier) compareAllWithSpecs(classified map[string][]document.Paragraph, specs map[string]ParagraphFormatSpec) []FormatDiff {
 	var allDiffs []FormatDiff
 	for category, paras := range classified {
+		if isProtectedFormatCategory(category) {
+			continue
+		}
 		spec, ok := specs[category]
 		if !ok || spec.IsEmpty() {
 			continue

@@ -23,13 +23,13 @@ func scDbgLog(hypothesisID, location, message string, jsonData string) {
 }
 
 const (
-	HighConfidenceThreshold = 0.92 // 规则引擎高置信度阈值：直出
+	HighConfidenceThreshold  = 0.92 // 规则引擎高置信度阈值：直出
 	ModelConfidenceThreshold = 0.80 // 本地模型中置信度阈值
 	RetrainDefaultThreshold  = 200  // 默认重训练样本阈值
 
-	PhaseColdStart   = "cold_start"   // 冷启动：依赖规则+AI
-	PhaseApprentice  = "apprentice"   // 学徒期：本地模型+AI辅助
-	PhaseIndependent = "independent"  // 独立期：主要依赖本地模型
+	PhaseColdStart   = "cold_start"  // 冷启动：依赖规则+AI
+	PhaseApprentice  = "apprentice"  // 学徒期：本地模型+AI辅助
+	PhaseIndependent = "independent" // 独立期：主要依赖本地模型
 )
 
 // SmartClassifier 智能分类器 — 三级路由
@@ -42,12 +42,12 @@ const (
 //	                          ↓
 //	                    教学数据库 → 自动重训练
 type SmartClassifier struct {
-	ruleEngine         *RuleEngine
-	localModel         *LocalClassifier
-	aiArbitrator       *AIArbitrator
-	fullDocClassifier  *FullDocumentClassifier // 阶段3：全文档语义分类器
-	db                 *gorm.DB
-	mu                 sync.RWMutex
+	ruleEngine        *RuleEngine
+	localModel        *LocalClassifier
+	aiArbitrator      *AIArbitrator
+	fullDocClassifier *FullDocumentClassifier // 阶段3：全文档语义分类器
+	db                *gorm.DB
+	mu                sync.RWMutex
 
 	// 配置
 	retrainThreshold int
@@ -55,7 +55,7 @@ type SmartClassifier struct {
 	aiCallCount      int // 当前文档的 AI 调用次数
 
 	// 状态
-	phase            string
+	phase                 string
 	samplesSinceLastTrain int
 }
 
@@ -124,12 +124,17 @@ func (sc *SmartClassifier) ClassifyDocument(features []ParagraphFeature, documen
 		}
 		logClassificationStats("规则+本地模型", results)
 	}
+	populateContextLabels(features, results)
 
 	// ── Step 3: AI 仲裁低置信度段落 ──
 	// #region agent log H3
 	{
 		lowConf := 0
-		for _, r := range results { if r.Confidence < 0.90 { lowConf++ } }
+		for _, r := range results {
+			if r.Confidence < 0.90 {
+				lowConf++
+			}
+		}
 		scDbgLog("H3", "smart_classifier.go:ClassifyDocument",
 			"before AI arbitration check",
 			fmt.Sprintf(`{"runId":"post-fix","aiEnabled":%v,"shouldCallAI":%v,"totalParas":%d,"lowConfParas":%d}`,
@@ -145,6 +150,7 @@ func (sc *SmartClassifier) ClassifyDocument(features []ParagraphFeature, documen
 			sc.aiCallCount++
 			sc.mu.Unlock()
 			results = aiResults
+			populateContextLabels(features, results)
 			logClassificationStats("规则+模型+AI", results)
 		}
 	}
@@ -163,13 +169,20 @@ func (sc *SmartClassifier) ClassifyDocument(features []ParagraphFeature, documen
 
 	// ── Step 4: 状态机上下文修正（在全文分类之后再做一次兜底校正） ──
 	results = sc.applyContextRules(features, results)
+	results = stabilizeClassificationByNeighbors(features, results)
 
 	// #region agent log H4
 	{
 		typeCounts := make(map[string]int)
-		for _, r := range results { typeCounts[r.Label]++ }
-		body := typeCounts["body"]; h1 := typeCounts["heading_1"]; h2 := typeCounts["heading_2"]
-		abst := typeCounts["abstract"]; cover := typeCounts["cover"]; refs := typeCounts["references"]
+		for _, r := range results {
+			typeCounts[r.Label]++
+		}
+		body := typeCounts["body"]
+		h1 := typeCounts["heading_1"]
+		h2 := typeCounts["heading_2"]
+		abst := typeCounts["abstract"]
+		cover := typeCounts["cover"]
+		refs := typeCounts["references"]
 		scDbgLog("H4", "smart_classifier.go:ClassifyDocument",
 			"final classification distribution",
 			fmt.Sprintf(`{"runId":"post-fix2","totalParas":%d,"body":%d,"heading_1":%d,"heading_2":%d,"abstract":%d,"cover":%d,"references":%d}`,
@@ -181,6 +194,19 @@ func (sc *SmartClassifier) ClassifyDocument(features []ParagraphFeature, documen
 	go sc.saveSamples(features, results, documentID)
 
 	return results
+}
+
+func populateContextLabels(features []ParagraphFeature, results []ClassifyResult) {
+	for i := range features {
+		features[i].PrevType = ""
+		features[i].NextType = ""
+		if i > 0 {
+			features[i].PrevType = results[i-1].Label
+		}
+		if i+1 < len(results) {
+			features[i].NextType = results[i+1].Label
+		}
+	}
 }
 
 // shouldCallAI 判断是否需要调用 AI
