@@ -398,7 +398,7 @@ func renderParagraphsWithMetadata(payloads []string, metadata map[string]blockma
 		normalized := strings.TrimSpace(payload)
 		if hadSourceTOC && !generatedTOCWritten && numberedHeadingPattern.MatchString(normalized) {
 			builder.WriteString(pageBreakParagraph())
-			builder.WriteString(renderGeneratedTOC(payloads))
+			builder.WriteString(renderGeneratedTOC(payloads, profiles...))
 			builder.WriteString(pageBreakParagraph())
 			generatedTOCWritten = true
 		}
@@ -412,9 +412,9 @@ func renderParagraphsWithMetadata(payloads []string, metadata map[string]blockma
 			if shouldBreakBeforeLongTableCaption(normalized, payloads, index+1) {
 				builder.WriteString(pageBreakParagraph())
 			}
-			builder.WriteString(renderTableCaption(normalized, true))
+			builder.WriteString(renderTableCaption(normalized, true, profiles...))
 			if tableIndex := nextNonEmptyPayloadIndex(payloads, index+1); tableIndex >= 0 {
-				if rendered, ok := renderLongTableChunks(strings.TrimSpace(payloads[tableIndex]), normalized); ok {
+				if rendered, ok := renderLongTableChunks(strings.TrimSpace(payloads[tableIndex]), normalized, profiles...); ok {
 					builder.WriteString(rendered)
 					index = tableIndex
 				}
@@ -442,7 +442,7 @@ func nextNonEmptyPayloadIndex(payloads []string, start int) int {
 	return -1
 }
 
-func renderLongTableChunks(tableXML, caption string) (string, bool) {
+func renderLongTableChunks(tableXML, caption string, profiles ...templatecompile.StyleProfile) (string, bool) {
 	if !isTableXML(tableXML) {
 		return "", false
 	}
@@ -463,7 +463,7 @@ func renderLongTableChunks(tableXML, caption string) (string, bool) {
 		}
 		if start > 1 {
 			builder.WriteString(pageBreakParagraph())
-			builder.WriteString(renderTableCaption(continuedCaption, true))
+			builder.WriteString(renderTableCaption(continuedCaption, true, profiles...))
 		}
 		var chunk strings.Builder
 		chunk.WriteString(prefix)
@@ -513,29 +513,32 @@ func removeSourceTOCPayloads(payloads []string) ([]string, bool) {
 	return filtered, removed
 }
 
-func renderGeneratedTOC(payloads []string) string {
+func renderGeneratedTOC(payloads []string, profiles ...templatecompile.StyleProfile) string {
 	entries := generatedTOCEntries(payloads)
 	if len(entries) == 0 {
 		return ""
 	}
 	var builder strings.Builder
-	builder.WriteString(centeredParagraphWithFonts("\u76ee      \u5f55", paragraphStyle{
-		Size:       32,
-		Line:       360,
-		After:      624,
-		AfterLines: 200,
-	}, "Times New Roman", "黑体"))
+	tocStyle, ok := compiledParagraphStyle(profiles, "toc_title")
+	if !ok {
+		tocStyle = paragraphStyle{Size: 32, Line: 360, After: 624, AfterLines: 200, AsciiFont: "Times New Roman", EastAsiaFont: "黑体"}
+	}
+	builder.WriteString(centeredParagraphWithFonts("\u76ee      \u5f55", tocStyle, tocStyle.AsciiFont, tocStyle.EastAsiaFont))
 	builder.WriteString(tocFieldBeginParagraph())
 	for _, entry := range entries {
-		builder.WriteString(tocEntryParagraph(entry))
+		builder.WriteString(tocEntryParagraph(entry, profiles...))
 	}
 	builder.WriteString(tocFieldEndParagraph())
 	return builder.String()
 }
 
-func tocEntryParagraph(entry string) string {
-	rPr := runPropertiesWithFonts(20, false, "宋体", "宋体")
-	return `<w:p><w:pPr><w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9000"/></w:tabs><w:spacing w:line="240" w:lineRule="auto"/>` + rPr + `</w:pPr><w:r>` + rPr + `<w:t>` + html.EscapeString(entry) + `</w:t></w:r><w:r>` + rPr + `<w:tab/></w:r><w:r>` + rPr + `<w:t>0</w:t></w:r></w:p>`
+func tocEntryParagraph(entry string, profiles ...templatecompile.StyleProfile) string {
+	style, ok := compiledParagraphStyle(profiles, "toc_entry")
+	if !ok {
+		style = paragraphStyle{Size: 20, Line: 240, AsciiFont: "宋体", EastAsiaFont: "宋体"}
+	}
+	rPr := runPropertiesWithFonts(style.Size, false, style.EastAsiaFont, style.EastAsiaFont)
+	return `<w:p><w:pPr><w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9000"/></w:tabs>` + spacingXML(style) + rPr + `</w:pPr><w:r>` + rPr + `<w:t>` + html.EscapeString(entry) + `</w:t></w:r><w:r>` + rPr + `<w:tab/></w:r><w:r>` + rPr + `<w:t>0</w:t></w:r></w:p>`
 }
 
 func tocFieldBeginParagraph() string {
@@ -562,8 +565,11 @@ func renderAcknowledgements(payloads []string, profiles ...templatecompile.Style
 	return renderLinePayloads(payloads, style)
 }
 
-func renderLeadLabelParagraph(text string, label string, asciiFont string, eastAsiaFont string) string {
-	style := paragraphStyle{Size: 24, FirstLine: 480, FirstLineChars: 200, Line: 360, After: 624, AfterLines: 200}
+func renderLeadLabelParagraph(text string, label string, profileKey string, asciiFont string, eastAsiaFont string, profiles ...templatecompile.StyleProfile) string {
+	style, ok := compiledParagraphStyle(profiles, profileKey)
+	if !ok {
+		style = paragraphStyle{Size: 24, FirstLine: 480, FirstLineChars: 200, Line: 360, After: 624, AfterLines: 200}
+	}
 	remainder := strings.TrimPrefix(text, label)
 	paragraphXML, _ := ooxmlpatch.ApplyParagraphProperties(`<w:p></w:p>`, transplantParagraphSpec(text, style, true))
 	insertAt := strings.LastIndex(paragraphXML, "</w:p>")
@@ -760,21 +766,21 @@ func renderStyledPayloadWithPolicy(text string, allowContentRewrite bool, profil
 	case isTOCEntry(normalized):
 		return paragraphWithStyle(normalized, paragraphStyle{Size: 24, FirstLine: 0, Line: 360})
 	case isTableCaption(normalized):
-		return renderTableCaption(normalized, false)
+		return renderTableCaption(normalized, false, profiles...)
 	case strings.HasPrefix(normalized, "摘要"):
-		return renderLeadLabelParagraph(normalized, leadLabel(normalized, "摘要：", "摘要"), "Times New Roman", "黑体")
+		return renderLeadLabelParagraph(normalized, leadLabel(normalized, "摘要：", "摘要"), "abstract_title", "Times New Roman", "黑体", profiles...)
 	case strings.HasPrefix(normalized, "关键词"):
-		return renderLeadLabelParagraph(normalized, leadLabel(normalized, "关键词：", "关键词"), "Times New Roman", "黑体")
+		return renderLeadLabelParagraph(normalized, leadLabel(normalized, "关键词：", "关键词"), "keywords_title", "Times New Roman", "黑体", profiles...)
 	case strings.HasPrefix(normalized, "Abstract"):
-		return renderLeadLabelParagraph(normalized, leadLabel(normalized, "Abstract:", "Abstract"), "Times New Roman", "Times New Roman")
+		return renderLeadLabelParagraph(normalized, leadLabel(normalized, "Abstract:", "Abstract"), "en_abstract_title", "Times New Roman", "Times New Roman", profiles...)
 	case strings.HasPrefix(normalized, "Key words"), strings.HasPrefix(normalized, "Keywords"):
 		if allowContentRewrite {
 			normalized = normalizeEnglishKeywords(normalized)
 		}
 		if strings.HasPrefix(normalized, "Keywords") {
-			return renderLeadLabelParagraph(normalized, leadLabel(normalized, "Keywords:", "Keywords"), "Times New Roman", "Times New Roman")
+			return renderLeadLabelParagraph(normalized, leadLabel(normalized, "Keywords:", "Keywords"), "en_keywords_title", "Times New Roman", "Times New Roman", profiles...)
 		}
-		return renderLeadLabelParagraph(normalized, leadLabel(normalized, "Key words:", "Key words"), "Times New Roman", "Times New Roman")
+		return renderLeadLabelParagraph(normalized, leadLabel(normalized, "Key words:", "Key words"), "en_keywords_title", "Times New Roman", "Times New Roman", profiles...)
 	case isNumberedHeadingText(normalized):
 		normalized = normalizeNumberedHeadingText(normalized)
 		level := headingLevel(normalized)
@@ -853,14 +859,13 @@ func isTableCaption(text string) bool {
 	return tableCaptionPattern.MatchString(strings.TrimSpace(text))
 }
 
-func renderTableCaption(text string, keepNext bool) string {
-	return paragraphWithStyle(text, paragraphStyle{
-		Size:      21,
-		FirstLine: 0,
-		Line:      300,
-		Alignment: "center",
-		KeepNext:  keepNext,
-	})
+func renderTableCaption(text string, keepNext bool, profiles ...templatecompile.StyleProfile) string {
+	style, ok := compiledParagraphStyle(profiles, "table_caption")
+	if !ok {
+		style = paragraphStyle{Size: 21, FirstLine: 0, Line: 300, Alignment: "center"}
+	}
+	style.KeepNext = keepNext
+	return paragraphWithStyle(text, style)
 }
 
 func isTableXML(text string) bool {
@@ -1659,7 +1664,11 @@ func spacingXML(style paragraphStyle) string {
 	if style.After > 0 {
 		builder.WriteString(fmt.Sprintf(` w:after="%d"`, style.After))
 	}
-	builder.WriteString(fmt.Sprintf(` w:line="%d" w:lineRule="auto"/>`, style.Line))
+	lineRule := style.LineRule
+	if lineRule == "" {
+		lineRule = "auto"
+	}
+	builder.WriteString(fmt.Sprintf(` w:line="%d" w:lineRule="%s"/>`, style.Line, lineRule))
 	return builder.String()
 }
 

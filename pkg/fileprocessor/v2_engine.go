@@ -129,8 +129,77 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	// 职责：对标题、摘要、正文等特殊段落按学校规范做精确格式调整。
 	//       内置跳过逻辑：若段落当前格式已与目标一致，则跳过写入，避免
 	//       对步骤 7 已正确克隆的段落做无意义覆盖。
+	// 🔒 LOCKED: 标题格式全部从模板提取 — headingSpecs 从 FormatRuleEngine 传入，不硬编码
 	log.Println("[V2][步骤7b] 智能格式化...")
-	smartFmt := NewV2SmartFormatter(e.processor)
+	var headingSpecs map[string]ParagraphFormatSpec
+	var bodySpec, refSpec *ParagraphFormatSpec
+	var coverTitleSpec, abstractTitleSpec, abstractContentSpec, keywordsSpec *ParagraphFormatSpec
+	var enAbstractTitleSpec, enAbstractContentSpec, enKeywordsSpec *ParagraphFormatSpec
+	var tocTitleSpec, tocEntrySpec, referencesTitleSpec, sectionTitleSpec *ParagraphFormatSpec
+	var notesSpec, captionSpec, headerSpec *ParagraphFormatSpec
+	if ruleEngine, ruleErr := NewFormatRuleEngine(e.processor, e.templatePath, nil); ruleErr == nil {
+		headingSpecs = make(map[string]ParagraphFormatSpec)
+		for _, level := range []string{"heading_1", "heading_2", "heading_3", "heading_4"} {
+			if spec, ok := ruleEngine.GetRule(level); ok {
+				headingSpecs[level] = spec
+			}
+		}
+		// 🔒 LOCKED: 正文段落 — bodySpec 从 FormatRuleEngine 取值（模板 > 硬编码兜底）
+		if bs, ok := ruleEngine.GetRule("body"); ok {
+			bodySpec = &bs
+		}
+		// 🔒 LOCKED: 参考文献条目 — refSpec 从 FormatRuleEngine 取值，行距不硬编码
+		if rs, ok := ruleEngine.GetRule("references"); ok {
+			refSpec = &rs
+		}
+		if spec, ok := ruleEngine.GetRule("cover_title"); ok {
+			coverTitleSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("abstract_title"); ok {
+			abstractTitleSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("abstract"); ok {
+			abstractContentSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("keywords"); ok {
+			keywordsSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("en_abstract_title"); ok {
+			enAbstractTitleSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("en_abstract"); ok {
+			enAbstractContentSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("en_keywords"); ok {
+			enKeywordsSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("toc_title"); ok {
+			tocTitleSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("toc_entry"); ok {
+			tocEntrySpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("references_title"); ok {
+			referencesTitleSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("section_title"); ok {
+			sectionTitleSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("notes"); ok {
+			notesSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("caption"); ok {
+			captionSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("header"); ok {
+			headerSpec = &spec
+		}
+	}
+	smartFmt := NewV2SmartFormatter(e.processor, headingSpecs, bodySpec, refSpec,
+		coverTitleSpec, abstractTitleSpec, abstractContentSpec, keywordsSpec,
+		enAbstractTitleSpec, enAbstractContentSpec, enKeywordsSpec,
+		tocTitleSpec, tocEntrySpec,
+		referencesTitleSpec, sectionTitleSpec, notesSpec, captionSpec, headerSpec)
 	smartFmt.ApplySmartFormatting(studentDoc, classified)
 	smartFmt.ApplyBodyFormats(classified)
 

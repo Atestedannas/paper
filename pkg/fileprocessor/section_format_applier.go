@@ -12,6 +12,33 @@ import (
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
 )
 
+// 🔒 LOCKED: 默认页边距常量（非模板路径兜底，模板路径由 applyPageSetup 从 rules 覆盖）
+const (
+	defaultMarginTop    = 2.5  // cm
+	defaultMarginBottom = 2.5  // cm
+	defaultMarginLeft   = 2.5  // cm
+	defaultMarginRight  = 2.5  // cm
+	defaultHeaderDist   = 1.5  // cm
+	defaultFooterDist   = 1.75 // cm
+)
+
+// defaultHeaderFooterFont 从 defaultParagraphFormatSpecs 获取页眉/页脚兜底字体参数。
+// 🔒 LOCKED: 非模板路径兜底；模板路径由 applyHeaderFooter 从 templateprofile 覆盖。
+func defaultHeaderFooterFont() (fontName string, fontSizePt float64) {
+	spec := defaultParagraphFormatSpecs()["header"]
+	fontName = spec.FontEastAsia
+	if spec.FontSizeHalfPt > 0 {
+		fontSizePt = float64(spec.FontSizeHalfPt) / 2.0
+	}
+	if fontName == "" {
+		fontName = "宋体"
+	}
+	if fontSizePt <= 0 {
+		fontSizePt = 9.0
+	}
+	return
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // 1. 页面设置：A4 纸张 + 标准边距
 // ──────────────────────────────────────────────────────────────────────────────
@@ -38,17 +65,19 @@ func (p *EnhancedProcessor) applyA4PageSize(doc *document.Document) {
 
 func (p *EnhancedProcessor) applyStandardMargins(doc *document.Document) {
 	section := doc.BodySection()
-	// 上2.5cm 下2.5cm 左2.5cm 右2.5cm，页眉1.5cm，页脚1.75cm，装订线0
+	// 🔒 LOCKED: 页边距取自包级常量 defaultMargin*（非模板路径兜底）
 	section.SetPageMargins(
-		measurement.Distance(2.5)*measurement.Centimeter,  // top
-		measurement.Distance(2.5)*measurement.Centimeter,  // bottom
-		measurement.Distance(2.5)*measurement.Centimeter,  // left
-		measurement.Distance(2.5)*measurement.Centimeter,  // right
-		measurement.Distance(1.5)*measurement.Centimeter,  // header
-		measurement.Distance(1.75)*measurement.Centimeter, // footer
+		measurement.Distance(defaultMarginTop)*measurement.Centimeter,
+		measurement.Distance(defaultMarginBottom)*measurement.Centimeter,
+		measurement.Distance(defaultMarginLeft)*measurement.Centimeter,
+		measurement.Distance(defaultMarginRight)*measurement.Centimeter,
+		measurement.Distance(defaultHeaderDist)*measurement.Centimeter,
+		measurement.Distance(defaultFooterDist)*measurement.Centimeter,
 		0, // gutter
 	)
-	log.Println("[页面设置] 标准边距已应用: 上2.5/下2.0/左2.5/右2.0 cm, 页眉1.5cm, 页脚1.75cm")
+	log.Printf("[页面设置] 标准边距已应用: 上%.1f/下%.1f/左%.1f/右%.1f cm, 页眉%.1fcm, 页脚%.1fcm",
+		defaultMarginTop, defaultMarginBottom, defaultMarginLeft, defaultMarginRight,
+		defaultHeaderDist, defaultFooterDist)
 	p.runDocumentFormattingSelfCheck("applyStandardMargins", doc)
 }
 
@@ -128,7 +157,9 @@ func (p *EnhancedProcessor) applySchoolHeader(doc *document.Document) {
 	log.Printf("[页眉] 自动生成页眉: %q", headerText)
 
 	hdr := doc.AddHeader()
-	p.buildDoubleLineHeaderParagraph(hdr, headerText, "宋体", 9) // 小五号 = 9pt
+	// 🔒 LOCKED: 页眉字体取自 defaultParagraphFormatSpecs["header"]（非模板路径兜底）
+	fontName, fontSize := defaultHeaderFooterFont()
+	p.buildDoubleLineHeaderParagraph(hdr, headerText, fontName, fontSize)
 	section.SetHeader(hdr, wml.ST_HdrFtrDefault)
 	p.runDocumentFormattingSelfCheck("applySchoolHeader", doc)
 }
@@ -149,8 +180,8 @@ func (p *EnhancedProcessor) applyStandardFooter(doc *document.Document) {
 	para := ftr.AddParagraph()
 	para.Properties().SetAlignment(wml.ST_JcCenter)
 
-	fontName := "宋体"
-	fontSize := 9.0 // 小五号
+	// 🔒 LOCKED: 页脚字体取自 defaultParagraphFormatSpecs["header"]（非模板路径兜底）
+	fontName, fontSize := defaultHeaderFooterFont()
 
 	// "第"
 	r1 := para.AddRun()
@@ -182,7 +213,7 @@ func (p *EnhancedProcessor) applyStandardFooter(doc *document.Document) {
 	sectPr.PgNumType.StartAttr = &startVal
 	sectPr.PgNumType.FmtAttr = wml.ST_NumberFormatDecimal
 
-	log.Println("[页脚] 已设置: 第×页 共×页, 宋体小五居中")
+	log.Printf("[页脚] 已设置: 第×页 共×页, %s %.0fpt 居中", fontName, fontSize)
 	p.runDocumentFormattingSelfCheck("applyStandardFooter", doc)
 }
 

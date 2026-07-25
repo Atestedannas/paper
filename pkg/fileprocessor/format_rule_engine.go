@@ -38,12 +38,36 @@ func NewFormatRuleEngine(processor *EnhancedProcessor, templatePath string, user
 	if named, namedErr := NewTemplateStyleExtractor().ExtractFromTemplate(templatePath); namedErr == nil {
 		engine.namedStyles = named
 	}
-	if profile, profileErr := templateprofile.Extract(templatePath); profileErr == nil {
+	// 🔒 LOCKED: 标题格式全部从模板提取 — templateprofile.Extract() 优先于硬编码
+	profile, profileErr := templateprofile.Extract(templatePath)
+	if profileErr == nil {
 		if header, ok := headerFooterFormatSpec(profile.Header); ok {
 			engine.compiled["header"] = header
 		}
 		if footer, ok := headerFooterFormatSpec(profile.Footer); ok {
 			engine.compiled["footer"] = footer
+		}
+		// 🔒 LOCKED: 模板 Styles → compiled heading specs (hardcode fallback only when template missing)
+		for _, level := range []string{"heading_1", "heading_2", "heading_3"} {
+			if style, ok := profile.Styles[level]; ok && style.FontEastAsia != "" {
+				if spec, ok := styleRuleToFormatSpec(style); ok {
+					if existing, exists := engine.compiled[level]; exists {
+						engine.compiled[level] = mergeFormatSpec(existing, spec)
+					} else {
+						engine.compiled[level] = spec
+					}
+				}
+			}
+		}
+		// 🔒 LOCKED: 正文段落 — 模板 Styles["body"] 注入 compiled，优先于硬编码
+		if bodyStyle, ok := profile.Styles["body"]; ok && bodyStyle.FontEastAsia != "" {
+			if bodySpec, ok := styleRuleToFormatSpec(bodyStyle); ok {
+				if existing, exists := engine.compiled["body"]; exists {
+					engine.compiled["body"] = mergeFormatSpec(existing, bodySpec)
+				} else {
+					engine.compiled["body"] = bodySpec
+				}
+			}
 		}
 	}
 	if len(engine.compiled) == 0 && len(engine.namedStyles) == 0 {
@@ -242,20 +266,68 @@ func headerFooterFormatSpec(rule templateprofile.HeaderFooterRule) (ParagraphFor
 	return spec, !spec.IsEmpty()
 }
 
+// 🔒 LOCKED: 标题格式全部从模板提取 — styleRuleToFormatSpec 将 templateprofile.StyleRule → ParagraphFormatSpec
+func styleRuleToFormatSpec(style templateprofile.StyleRule) (ParagraphFormatSpec, bool) {
+	spec := ParagraphFormatSpec{
+		FontEastAsia: style.FontEastAsia,
+		FontAscii:    style.FontASCII,
+		Bold:         style.Bold,
+		SampleCount:  1,
+	}
+	if v, err := strconv.ParseUint(style.FontSizeHalfPt, 10, 64); err == nil {
+		spec.FontSizeHalfPt = v
+		spec.FontSizeCSHalfPt = v
+	} else {
+		return spec, false
+	}
+	if alignment, valid := parseAlignment(style.Alignment); valid {
+		spec.AlignmentSet = true
+		spec.Alignment = alignment
+	}
+	if v, err := strconv.ParseInt(style.Line, 10, 64); err == nil && v > 0 {
+		spec.LineSpacingVal = v
+		spec.LineSpacingRule = wml.ST_LineSpacingRuleAuto
+	}
+	if v, err := strconv.ParseUint(style.BeforeTwips, 10, 64); err == nil && v > 0 {
+		spec.SpaceBefore = v
+	}
+	if v, err := strconv.ParseUint(style.AfterTwips, 10, 64); err == nil && v > 0 {
+		spec.SpaceAfter = v
+	}
+	return spec, !spec.IsEmpty()
+}
+
+// defaultParagraphFormatSpecs — 硬编码兜底，仅在模板未提供时使用。
+// 🔒 LOCKED: heading_1/2/3 硬编码仅做 fallback；模板有值时被 templateprofile.Extract() → compiled 覆盖。
 func defaultParagraphFormatSpecs() map[string]ParagraphFormatSpec {
 	return map[string]ParagraphFormatSpec{
+		// 🔒 LOCKED: cover_title - 封面主标题（"本科毕业论文/设计"）
+		"cover_title": {
+			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 36,
+			Bold: true, AlignmentSet: true, Alignment: wml.ST_JcCenter,
+			SampleCount: 3,
+		},
+		// 🔒 LOCKED: cover - 封面字段段落（学院/专业/班级/学号/姓名/指导教师/日期等）
+		"cover": {
+			FontEastAsia: "宋体", FontAscii: "Times New Roman", FontSizeHalfPt: 24,
+			AlignmentSet: true, Alignment: wml.ST_JcCenter,
+			LineSpacingVal: 400, LineSpacingRule: wml.ST_LineSpacingRuleExact,
+			SampleCount: 3,
+		},
 		"title": {
 			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 36,
 			Bold: true, AlignmentSet: true, Alignment: wml.ST_JcCenter,
 			SampleCount: 3,
 		},
+		// 🔒 LOCKED: 正文段落 fallback — 模板有值时被 templateprofile.Extract() → compiled 覆盖
 		"body": {
 			FontEastAsia: "宋体", FontAscii: "Times New Roman", FontSizeHalfPt: 24,
-			AlignmentSet: true, Alignment: wml.ST_JcBoth, LineSpacingVal: 360,
-			LineSpacingRule: wml.ST_LineSpacingRuleAuto, FirstLineIndent: 480, SampleCount: 3,
+			AlignmentSet: true, Alignment: wml.ST_JcBoth, LineSpacingVal: 400,
+			LineSpacingRule: wml.ST_LineSpacingRuleExact, FirstLineIndent: 480, SampleCount: 3,
 		},
+		// 🔒 LOCKED: 标题 fallback — 仅在 templateprofile.Extract() 未提取到标题格式时使用
 		"heading_1": {
-			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 36,
+			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 32,
 			Bold: true, AlignmentSet: true, Alignment: wml.ST_JcCenter, SampleCount: 3,
 		},
 		"heading_2": {
@@ -265,6 +337,114 @@ func defaultParagraphFormatSpecs() map[string]ParagraphFormatSpec {
 		"heading_3": {
 			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 28,
 			Bold: true, AlignmentSet: true, Alignment: wml.ST_JcLeft, SampleCount: 3,
+		},
+		// 🔒 LOCKED: 四级标题 — 四号宋体，1.5倍行距(仅兜底)
+		"heading_4": {
+			FontEastAsia: "宋体", FontAscii: "Times New Roman", FontSizeHalfPt: 28,
+			LineSpacingVal: 360, LineSpacingRule: wml.ST_LineSpacingRuleAuto,
+			SampleCount: 3,
+		},
+		// 🔒 LOCKED: 参考文献标题 — 三号黑体居中(模板规范，仅兜底)
+		"references_title": {
+			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 32,
+			Bold: true, AlignmentSet: true, Alignment: wml.ST_JcCenter,
+			SampleCount: 3,
+		},
+		// 🔒 LOCKED: 参考文献条目 — 五号宋体顶格(模板规范，仅兜底)
+		"references": {
+			FontEastAsia: "宋体", FontAscii: "Times New Roman", FontSizeHalfPt: 21,
+			LineSpacingVal: 400, LineSpacingRule: wml.ST_LineSpacingRuleExact,
+			SampleCount: 3,
+		},
+		// 🔒 LOCKED: 致谢标题 — 三号黑体居中(模板规范，仅兜底)
+		"acknowledgements_title": {
+			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 32,
+			Bold: true, AlignmentSet: true, Alignment: wml.ST_JcCenter,
+			SampleCount: 3,
+		},
+		// 🔒 LOCKED: 致谢内容 — 小四宋体，1.5倍行距(模板规范，仅兜底)
+		"acknowledgements": {
+			FontEastAsia: "宋体", FontAscii: "Times New Roman", FontSizeHalfPt: 24,
+			AlignmentSet: true, Alignment: wml.ST_JcBoth,
+			LineSpacingVal: 400, LineSpacingRule: wml.ST_LineSpacingRuleExact,
+			FirstLineIndent: 480, SampleCount: 3,
+		},
+		// 🔒 LOCKED: 摘要标题 — 四号黑体加粗居中(仅兜底)
+		"abstract_title": {
+			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 30,
+			Bold: true, AlignmentSet: true, Alignment: wml.ST_JcCenter,
+			SpaceBefore: 312, SampleCount: 3,
+		},
+		// 🔒 LOCKED: 摘要内容 — 小四宋体，1.5倍行距，首行缩进(仅兜底)
+		"abstract": {
+			FontEastAsia: "宋体", FontAscii: "Times New Roman", FontSizeHalfPt: 24,
+			AlignmentSet: true, Alignment: wml.ST_JcBoth,
+			LineSpacingVal: 360, LineSpacingRule: wml.ST_LineSpacingRuleAuto,
+			SpaceAfter: 624, FirstLineIndent: 480, SampleCount: 3,
+		},
+		// 🔒 LOCKED: 关键词 — 同摘要内容格式(仅兜底)
+		"keywords": {
+			FontEastAsia: "宋体", FontAscii: "Times New Roman", FontSizeHalfPt: 24,
+			AlignmentSet: true, Alignment: wml.ST_JcBoth,
+			LineSpacingVal: 360, LineSpacingRule: wml.ST_LineSpacingRuleAuto,
+			SpaceAfter: 624, FirstLineIndent: 480, SampleCount: 3,
+		},
+		// 🔒 LOCKED: 英文摘要标题 — 四号 TNR 加粗居中(仅兜底)
+		"en_abstract_title": {
+			FontEastAsia: "Times New Roman", FontAscii: "Times New Roman", FontSizeHalfPt: 30,
+			Bold: true, AlignmentSet: true, Alignment: wml.ST_JcCenter,
+			SampleCount: 3,
+		},
+		// 🔒 LOCKED: 英文摘要内容 — 小四 TNR，1.5倍行距(仅兜底)
+		"en_abstract": {
+			FontEastAsia: "Times New Roman", FontAscii: "Times New Roman", FontSizeHalfPt: 24,
+			AlignmentSet: true, Alignment: wml.ST_JcBoth,
+			LineSpacingVal: 360, LineSpacingRule: wml.ST_LineSpacingRuleAuto,
+			SpaceAfter: 624, FirstLineIndent: 480, SampleCount: 3,
+		},
+		// 🔒 LOCKED: 英文关键词 — 同英文摘要内容格式(仅兜底)
+		"en_keywords": {
+			FontEastAsia: "Times New Roman", FontAscii: "Times New Roman", FontSizeHalfPt: 24,
+			AlignmentSet: true, Alignment: wml.ST_JcBoth,
+			LineSpacingVal: 360, LineSpacingRule: wml.ST_LineSpacingRuleAuto,
+			SpaceAfter: 624, FirstLineIndent: 480, SampleCount: 3,
+		},
+		// 🔒 LOCKED: 目录标题 — 三号黑体居中，段后1行(仅兜底)
+		"toc_title": {
+			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 32,
+			AlignmentSet: true, Alignment: wml.ST_JcCenter,
+			SpaceAfter: 624, SampleCount: 3,
+		},
+		// 🔒 LOCKED: 目录条目 — 五号宋体，1.5倍行距(仅兜底)
+		"toc_entry": {
+			FontEastAsia: "宋体", FontAscii: "Times New Roman", FontSizeHalfPt: 21,
+			AlignmentSet: true, Alignment: wml.ST_JcBoth,
+			LineSpacingVal: 360, LineSpacingRule: wml.ST_LineSpacingRuleAuto,
+			SampleCount: 3,
+		},
+		// 🔒 LOCKED: 章节标题（致谢/附录/注释）— 三号黑体加粗居中(仅兜底)
+		"section_title": {
+			FontEastAsia: "黑体", FontAscii: "Times New Roman", FontSizeHalfPt: 32,
+			Bold: true, AlignmentSet: true, Alignment: wml.ST_JcCenter,
+			SpaceBefore: 312, SpaceAfter: 312, SampleCount: 3,
+		},
+		// 🔒 LOCKED: 注释/致谢内容 — 五号宋体(仅兜底)
+		"notes": {
+			FontEastAsia: "宋体", FontAscii: "Times New Roman", FontSizeHalfPt: 21,
+			AlignmentSet: true, Alignment: wml.ST_JcBoth,
+			LineSpacingVal: 360, LineSpacingRule: wml.ST_LineSpacingRuleAuto,
+			SampleCount: 3,
+		},
+		// 🔒 LOCKED: 图题/表题 — 五号宋体居中(仅兜底)
+		"caption": {
+			FontEastAsia: "宋体", FontAscii: "Times New Roman", FontSizeHalfPt: 21,
+			AlignmentSet: true, Alignment: wml.ST_JcCenter,
+			SampleCount: 3,
+		},
+		// 🔒 LOCKED: 页眉 — 小五宋体(仅兜底)
+		"header": {
+			FontEastAsia: "宋体", FontAscii: "Times New Roman", FontSizeHalfPt: 18,
+			SampleCount: 3,
 		},
 	}
 }

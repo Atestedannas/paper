@@ -17,7 +17,9 @@ import (
 	nethtml "golang.org/x/net/html"
 )
 
-type LocalSemanticHTMLConverter struct{}
+type LocalSemanticHTMLConverter struct {
+	specs map[string]ParagraphFormatSpec
+}
 
 type semanticHTMLBlock struct {
 	Kind  string
@@ -28,6 +30,10 @@ type semanticHTMLBlock struct {
 
 func NewLocalSemanticHTMLConverter() *LocalSemanticHTMLConverter {
 	return &LocalSemanticHTMLConverter{}
+}
+
+func NewLocalSemanticHTMLConverterWithSpecs(specs map[string]ParagraphFormatSpec) *LocalSemanticHTMLConverter {
+	return &LocalSemanticHTMLConverter{specs: specs}
 }
 
 func (c *LocalSemanticHTMLConverter) ConvertDocxToHTML(_ context.Context, inputPath, outputPath string) (string, error) {
@@ -104,11 +110,11 @@ func (c *LocalSemanticHTMLConverter) ConvertHTMLToDocx(_ context.Context, inputP
 	for _, block := range blocks {
 		switch block.Kind {
 		case "heading":
-			writeSemanticHeading(doc, block)
+			c.writeSemanticHeading(doc, block)
 		case "table":
-			writeSemanticTable(doc, block.Table)
+			c.writeSemanticTable(doc, block.Table)
 		default:
-			writeSemanticParagraph(doc, block.Text)
+			c.writeSemanticParagraph(doc, block.Text)
 		}
 	}
 
@@ -435,49 +441,123 @@ func stripHTMLLikeText(input string) string {
 	return htmlstd.UnescapeString(re.ReplaceAllString(input, " "))
 }
 
-func writeSemanticHeading(doc *document.Document, block semanticHTMLBlock) {
+func (c *LocalSemanticHTMLConverter) writeSemanticHeading(doc *document.Document, block semanticHTMLBlock) {
 	para := doc.AddParagraph()
 	level := block.Level
 	if level < 1 || level > 4 {
 		level = 1
 	}
 	para.SetStyle(fmt.Sprintf("Heading%d", level))
+
+	specKey := fmt.Sprintf("heading_%d", level)
+	spec, hasSpec := c.specs[specKey]
+
 	props := para.Properties()
-	props.SetAlignment(wml.ST_JcLeft)
+	// alignment: from spec or fallback
+	if hasSpec && spec.AlignmentSet {
+		props.SetAlignment(spec.Alignment)
+	} else {
+		props.SetAlignment(wml.ST_JcLeft)
+	}
 	props.SetSpacing(measurement.Zero, measurement.Zero)
-	para.SetLineSpacing(18*measurement.Point, wml.ST_LineSpacingRuleAuto)
+
+	// line spacing: from spec or fallback
+	if hasSpec && spec.LineSpacingVal != 0 {
+		ptValue := measurement.Distance(spec.LineSpacingVal) * measurement.Point / 20
+		para.SetLineSpacing(ptValue, spec.LineSpacingRule)
+	} else {
+		para.SetLineSpacing(18*measurement.Point, wml.ST_LineSpacingRuleAuto)
+	}
 
 	run := para.AddRun()
 	run.AddText(block.Text)
 	runProps := run.Properties()
-	runProps.SetBold(true)
-	runProps.SetFontFamily("宋体")
-	runProps.SetSize(semanticHeadingSize(level))
+
+	// bold: from spec or fallback
+	if hasSpec {
+		runProps.SetBold(spec.Bold)
+	} else {
+		runProps.SetBold(true)
+	}
+
+	// font: from spec or fallback
+	if hasSpec && spec.FontEastAsia != "" {
+		runProps.SetFontFamily(spec.FontEastAsia)
+	} else {
+		runProps.SetFontFamily("宋体")
+	}
+
+	// size: from spec or fallback
+	if hasSpec && spec.FontSizeHalfPt != 0 {
+		ptValue := measurement.Distance(spec.FontSizeHalfPt/2) * measurement.Point
+		runProps.SetSize(ptValue)
+	} else {
+		runProps.SetSize(semanticHeadingSize(level))
+	}
 }
 
-func writeSemanticParagraph(doc *document.Document, text string) {
+func (c *LocalSemanticHTMLConverter) writeSemanticParagraph(doc *document.Document, text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
 	}
 	para := doc.AddParagraph()
+
+	spec, hasSpec := c.specs["body"]
+
 	props := para.Properties()
-	props.SetAlignment(wml.ST_JcBoth)
-	props.SetFirstLineIndent(2 * measurement.Character)
+	// alignment: from spec or fallback
+	if hasSpec && spec.AlignmentSet {
+		props.SetAlignment(spec.Alignment)
+	} else {
+		props.SetAlignment(wml.ST_JcBoth)
+	}
+
+	// first line indent: from spec or fallback
+	if hasSpec && spec.FirstLineIndent != 0 {
+		indentTwips := measurement.Distance(spec.FirstLineIndent) * measurement.Point / 20
+		props.SetFirstLineIndent(indentTwips)
+	} else {
+		props.SetFirstLineIndent(2 * measurement.Character)
+	}
+
 	props.SetSpacing(measurement.Zero, measurement.Zero)
-	para.SetLineSpacing(18*measurement.Point, wml.ST_LineSpacingRuleAuto)
+
+	// line spacing: from spec or fallback
+	if hasSpec && spec.LineSpacingVal != 0 {
+		ptValue := measurement.Distance(spec.LineSpacingVal) * measurement.Point / 20
+		para.SetLineSpacing(ptValue, spec.LineSpacingRule)
+	} else {
+		para.SetLineSpacing(18*measurement.Point, wml.ST_LineSpacingRuleAuto)
+	}
 
 	run := para.AddRun()
 	run.AddText(text)
 	runProps := run.Properties()
-	runProps.SetFontFamily("宋体")
-	runProps.SetSize(12 * measurement.Point)
+
+	// font: from spec or fallback
+	if hasSpec && spec.FontEastAsia != "" {
+		runProps.SetFontFamily(spec.FontEastAsia)
+	} else {
+		runProps.SetFontFamily("宋体")
+	}
+
+	// size: from spec or fallback
+	if hasSpec && spec.FontSizeHalfPt != 0 {
+		ptValue := measurement.Distance(spec.FontSizeHalfPt/2) * measurement.Point
+		runProps.SetSize(ptValue)
+	} else {
+		runProps.SetSize(12 * measurement.Point)
+	}
 }
 
-func writeSemanticTable(doc *document.Document, rows [][]string) {
+func (c *LocalSemanticHTMLConverter) writeSemanticTable(doc *document.Document, rows [][]string) {
 	if len(rows) == 0 {
 		return
 	}
+
+	spec, hasSpec := c.specs["table"]
+
 	table := doc.AddTable()
 	borders := table.Properties().Borders()
 	borders.SetAll(wml.ST_BorderSingle, color.Black, measurement.Point)
@@ -488,14 +568,34 @@ func writeSemanticTable(doc *document.Document, rows [][]string) {
 			cell := row.AddCell()
 			para := cell.AddParagraph()
 			props := para.Properties()
-			props.SetAlignment(wml.ST_JcCenter)
+
+			// alignment: from spec or fallback
+			if hasSpec && spec.AlignmentSet {
+				props.SetAlignment(spec.Alignment)
+			} else {
+				props.SetAlignment(wml.ST_JcCenter)
+			}
+
 			props.SetSpacing(measurement.Zero, measurement.Zero)
 
 			run := para.AddRun()
 			run.AddText(cellValue)
 			runProps := run.Properties()
-			runProps.SetFontFamily("宋体")
-			runProps.SetSize(10.5 * measurement.Point)
+
+			// font: from spec or fallback
+			if hasSpec && spec.FontEastAsia != "" {
+				runProps.SetFontFamily(spec.FontEastAsia)
+			} else {
+				runProps.SetFontFamily("宋体")
+			}
+
+			// size: from spec or fallback
+			if hasSpec && spec.FontSizeHalfPt != 0 {
+				ptValue := measurement.Distance(spec.FontSizeHalfPt/2) * measurement.Point
+				runProps.SetSize(ptValue)
+			} else {
+				runProps.SetSize(10.5 * measurement.Point)
+			}
 		}
 	}
 }

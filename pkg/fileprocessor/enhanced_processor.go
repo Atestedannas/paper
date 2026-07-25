@@ -420,6 +420,12 @@ func (p *EnhancedProcessor) applyPreciseFormatting(doc *document.Document, rules
 		log.Printf("[步骤2]   %s: %d 个段落, 首段: %q", category, len(paras), sampleText)
 	}
 
+	// 🔒 LOCKED: 步骤 2b: 封面格式 - 居中、无缩进、黑体标题/宋体字段
+	if coverParas, exists := classifiedParagraphs["cover"]; exists && len(coverParas) > 0 {
+		log.Printf("[步骤2b] ---- 应用封面格式 (%d段) ----", len(coverParas))
+		p.applyCoverFormatting(coverParas, rules)
+	}
+
 	// 步骤 3: 论文标题
 	if titleParas, exists := classifiedParagraphs["title"]; exists && len(titleParas) > 0 {
 		log.Printf("[步骤3] ---- 应用论文标题格式 (%d段) ----", len(titleParas))
@@ -610,8 +616,9 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 			if err := p.applyPageSetup(doc, rules); err != nil {
 				stepErrors = append(stepErrors, fmt.Sprintf("PageSetup失败: %v", err))
 			}
-			// 9b: 验证页边距
-			p.verifyPageSetupMargins(doc, 2.5, 2.5, 2.5, 2.5)
+			// 9b: 验证页边距 — 从 rules 提取期望值，匹配 applyPageSetup 实际应用的值
+			mt, mb, ml, mr := p.extractMarginsFromRules(rules)
+			p.verifyPageSetupMargins(doc, mt, mb, ml, mr)
 
 		case FormatStepHeaderFooter:
 			if err := p.applyHeaderFooter(doc, rules, specs); err != nil {
@@ -786,6 +793,44 @@ func (p *EnhancedProcessor) verifyPageSetupMargins(doc *document.Document, expec
 			log.Printf("[验证] FormatStepPageSetup: %s 边距=%d twips (预期%d，偏差>5%%)", name, actual, expectedVal)
 		}
 	}
+}
+
+// extractMarginsFromRules 从 rules 中提取页边距值（单位 cm）
+// 解析逻辑与 applyPageSetup 保持一致，确保验证值与实际应用值来源相同
+func (p *EnhancedProcessor) extractMarginsFromRules(rules map[string]interface{}) (float64, float64, float64, float64) {
+	mt, mb, ml, mr := 2.5, 2.5, 2.5, 2.5
+	pageSetupRules, ok := rules["page_setup"].(map[string]interface{})
+	if !ok {
+		return mt, mb, ml, mr
+	}
+	if margins, ok := pageSetupRules["margins"].(map[string]interface{}); ok {
+		if v := parseCmValue(margins["top"]); v > 0 {
+			mt = v
+		}
+		if v := parseCmValue(margins["bottom"]); v > 0 {
+			mb = v
+		}
+		if v := parseCmValue(margins["left"]); v > 0 {
+			ml = v
+		}
+		if v := parseCmValue(margins["right"]); v > 0 {
+			mr = v
+		}
+	} else {
+		if v := parseCmValue(pageSetupRules["margin_top"]); v > 0 {
+			mt = v
+		}
+		if v := parseCmValue(pageSetupRules["margin_bottom"]); v > 0 {
+			mb = v
+		}
+		if v := parseCmValue(pageSetupRules["margin_left"]); v > 0 {
+			ml = v
+		}
+		if v := parseCmValue(pageSetupRules["margin_right"]); v > 0 {
+			mr = v
+		}
+	}
+	return mt, mb, ml, mr
 }
 
 // verifyClassificationCoverage 验证段落分类覆盖率
@@ -1277,6 +1322,12 @@ func (p *EnhancedProcessor) classifyParagraphs(paragraphs []document.Paragraph) 
 			classified[r.Label] = append(classified[r.Label], paraInfos[i].para)
 		}
 
+		// 🔒 LOCKED: 后分类封面区修正 - 将封面区内被误分为 body 的段落重分类为 cover
+		classified = p.applyCoverZoneCorrection(classified, paraInfos)
+
+		// 🔒 LOCKED: 后分类标题文本修正 - 将正文区内匹配标题模式的 body 段落重分类为对应标题层级
+		classified = p.applyHeadingTextCorrection(classified, paraInfos)
+
 		logClassifiedStats(classified)
 		return classified
 	}
@@ -1404,6 +1455,129 @@ func (p *EnhancedProcessor) classifyParagraphsFallback(paraInfos []fallbackParaI
 // applyStructureOrderConstraints 利用论文结构顺序约束修正分类错误
 // 论文结构固定顺序：封面 -> 摘要 -> 目录 -> 正文 -> 参考文献 -> 致谢 -> 附录
 // 如果 body 段落出现在参考文献标题之后，应该被重新分类为 references
+// 🔒 LOCKED: applyCoverZoneCorrection - 后分类封面区修正
+// 智能分类器可能将封面区的字段段落误分为 body，此函数将
+// 位于封面区（第一个结构标记之前）的 body 段落重分类为 cover。
+func (p *EnhancedProcessor) applyCoverZoneCorrection(classified map[string][]document.Paragraph, paraInfos []fallbackParaInfo) map[string][]document.Paragraph {
+	// 封面区停止标记：第一个 non-cover 的结构段落
+	stopLabels := map[string]bool{
+		"abstract_title": true, "abstract": true,
+		"en_abstract_title": true, "en_abstract": true,
+		"table_of_contents_title": true, "table_of_contents": true,
+		"heading_1": true, "heading_2": true, "heading_3": true, "heading_4": true,
+		"references_title": true,
+	}
+
+	// 构建段落到 label 的映射
+	paraLabel := make(map[document.Paragraph]string)
+	for label, paras := range classified {
+		for _, para := range paras {
+			paraLabel[para] = label
+		}
+	}
+
+	// 封面区内需修正的段落（body 且无结构标记出现前）
+	var bodyInCover []document.Paragraph
+	stopSeen := false
+	for _, info := range paraInfos {
+		label := paraLabel[info.para]
+		if stopLabels[label] && label != "cover" && label != "cover_title" && label != "originality_declaration" {
+			stopSeen = true
+			continue
+		}
+		if stopSeen {
+			continue
+		}
+		if label == "body" {
+			bodyInCover = append(bodyInCover, info.para)
+		}
+	}
+
+	if len(bodyInCover) > 0 {
+		// 从 body 分类中移除，加入 cover 分类
+		oldBody := classified["body"]
+		newBody := make([]document.Paragraph, 0, len(oldBody))
+		bodySet := make(map[document.Paragraph]bool, len(bodyInCover))
+		for _, p := range bodyInCover {
+			bodySet[p] = true
+		}
+		for _, p := range oldBody {
+			if !bodySet[p] {
+				newBody = append(newBody, p)
+			}
+		}
+		classified["body"] = newBody
+		classified["cover"] = append(classified["cover"], bodyInCover...)
+		log.Printf("[封面区修正] 将 %d 个段落从 body 重分类为 cover", len(bodyInCover))
+	}
+
+	return classified
+}
+
+// 🔒 LOCKED: applyHeadingTextCorrection - 将正文区内匹配标题模式的 body 段落重分类为对应标题层级
+// 智能分类器（AI）可能将"1 绪论"等章节标题误分为 body，此函数基于文本模式纠正。
+func (p *EnhancedProcessor) applyHeadingTextCorrection(classified map[string][]document.Paragraph, paraInfos []fallbackParaInfo) map[string][]document.Paragraph {
+	// 构建段落→label 映射
+	paraLabel := make(map[document.Paragraph]string)
+	for label, paras := range classified {
+		for _, para := range paras {
+			paraLabel[para] = label
+		}
+	}
+
+	// 收集需修正的段落
+	type headingCorrection struct {
+		para  document.Paragraph
+		level int
+	}
+	var corrections []headingCorrection
+
+	for _, info := range paraInfos {
+		if paraLabel[info.para] != "body" {
+			continue
+		}
+		level := p.detectHeadingLevel(info.text)
+		if level > 0 {
+			corrections = append(corrections, headingCorrection{para: info.para, level: level})
+		}
+	}
+
+	if len(corrections) == 0 {
+		return classified
+	}
+
+	// 从 body 分类移除，加入对应 heading 分类
+	correctedSet := make(map[document.Paragraph]bool, len(corrections))
+	for _, c := range corrections {
+		correctedSet[c.para] = true
+	}
+
+	oldBody := classified["body"]
+	newBody := make([]document.Paragraph, 0, len(oldBody))
+	for _, p := range oldBody {
+		if !correctedSet[p] {
+			newBody = append(newBody, p)
+		}
+	}
+	classified["body"] = newBody
+
+	for _, c := range corrections {
+		headingKey := fmt.Sprintf("heading_%d", c.level)
+		classified[headingKey] = append(classified[headingKey], c.para)
+	}
+
+	log.Printf("[标题文本修正] 将 %d 个段落从 body 重分类为标题层级", len(corrections))
+	for _, c := range corrections {
+		txt := p.extractParagraphText(c.para)
+		if len(txt) > 40 {
+			txt = txt[:40]
+		}
+		log.Printf("[标题文本修正]   → heading_%d: %q", c.level, txt)
+	}
+
+	return classified
+}
+
 func (p *EnhancedProcessor) applyStructureOrderConstraints(classified map[string][]document.Paragraph, infos []classifiedInfo) map[string][]document.Paragraph {
 	sectionOrder := []string{
 		"cover", "originality_declaration",
@@ -2170,7 +2344,86 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 		p.setupFooterWithPageNumber(doc, section, nil)
 	}
 
+	// 🔒 LOCKED: 将页眉页脚引用传播到所有分节段落（applySectionBreaksForPageNumbering 创建的段落级 sectPr）
+	// 模板每个 sectPr 都有独立的 headerReference/footerReference，新输出仅 body section 有
+	p.propagateHdrFtrToAllSections(doc)
+
 	return nil
+}
+
+// 🔒 LOCKED: propagateHdrFtrToAllSections — 将 body section 的页眉页脚引用复制到所有段落级 sectPr
+// 解决 applySectionBreaksForPageNumbering 创建的节无页眉页脚问题
+func (p *EnhancedProcessor) propagateHdrFtrToAllSections(doc *document.Document) {
+	bodySection := doc.BodySection()
+	bodySectPr := bodySection.X()
+	if bodySectPr == nil || len(bodySectPr.EG_HdrFtrReferences) == 0 {
+		return
+	}
+
+	// 收集 body section 的 headerReference 和 footerReference
+	var hdrRefs []*wml.CT_HdrFtrRef
+	var ftrRefs []*wml.CT_HdrFtrRef
+	for _, ref := range bodySectPr.EG_HdrFtrReferences {
+		if ref.HeaderReference != nil {
+			hdrRefs = append(hdrRefs, ref.HeaderReference)
+		}
+		if ref.FooterReference != nil {
+			ftrRefs = append(ftrRefs, ref.FooterReference)
+		}
+	}
+
+	if len(hdrRefs) == 0 && len(ftrRefs) == 0 {
+		return
+	}
+
+	count := 0
+	for _, para := range doc.Paragraphs() {
+		pPr := para.X().PPr
+		if pPr == nil || pPr.SectPr == nil {
+			continue
+		}
+		paraSectPr := pPr.SectPr
+
+		// 避免重复添加：如果已有引用则跳过
+		hasHdr := false
+		hasFtr := false
+		for _, ref := range paraSectPr.EG_HdrFtrReferences {
+			if ref.HeaderReference != nil {
+				hasHdr = true
+			}
+			if ref.FooterReference != nil {
+				hasFtr = true
+			}
+		}
+
+		if !hasHdr {
+			for _, hdrRef := range hdrRefs {
+				newRef := wml.NewEG_HdrFtrReferences()
+				newRef.HeaderReference = wml.NewCT_HdrFtrRef()
+				newRef.HeaderReference.TypeAttr = hdrRef.TypeAttr
+				newRef.HeaderReference.IdAttr = hdrRef.IdAttr
+				paraSectPr.EG_HdrFtrReferences = append(paraSectPr.EG_HdrFtrReferences, newRef)
+			}
+		}
+
+		if !hasFtr {
+			for _, ftrRef := range ftrRefs {
+				newRef := wml.NewEG_HdrFtrReferences()
+				newRef.FooterReference = wml.NewCT_HdrFtrRef()
+				newRef.FooterReference.TypeAttr = ftrRef.TypeAttr
+				newRef.FooterReference.IdAttr = ftrRef.IdAttr
+				paraSectPr.EG_HdrFtrReferences = append(paraSectPr.EG_HdrFtrReferences, newRef)
+			}
+		}
+
+		if !hasHdr || !hasFtr {
+			count++
+		}
+	}
+
+	if count > 0 {
+		log.Printf("[页眉页脚] 已向 %d 个分节段落传播页眉页脚引用", count)
+	}
 }
 
 func cloneFormatRuleMap(source map[string]interface{}) map[string]interface{} {
@@ -2181,12 +2434,31 @@ func cloneFormatRuleMap(source map[string]interface{}) map[string]interface{} {
 	return cloned
 }
 
+// 🔒 LOCKED: 页眉页脚格式 spec → rules 全属性传递（已验证模板 a9/a8 样式）
+// 原只传 font_name/font_size，导致 underline/alignment 丢失
 func applyHeaderFooterSpec(rules map[string]interface{}, spec ParagraphFormatSpec) {
 	if spec.FontEastAsia != "" {
 		rules["font_name"] = spec.FontEastAsia
 	}
 	if spec.FontSizeHalfPt > 0 {
 		rules["font_size"] = spec.FontSizePt()
+	}
+	// 🔒 LOCKED: Underline 传递 — 模板页眉使用 w:u val="single"
+	if spec.Underline {
+		rules["underline"] = true
+	}
+	// 🔒 LOCKED: Alignment 传递 — 模板页眉 jc=both
+	if spec.AlignmentSet {
+		switch spec.Alignment {
+		case wml.ST_JcBoth:
+			rules["alignment"] = "both"
+		case wml.ST_JcCenter:
+			rules["alignment"] = "center"
+		case wml.ST_JcLeft:
+			rules["alignment"] = "left"
+		case wml.ST_JcRight:
+			rules["alignment"] = "right"
+		}
 	}
 }
 
@@ -2281,12 +2553,12 @@ func (p *EnhancedProcessor) setupHeader(doc *document.Document, section document
 	}
 }
 
-// buildHeaderParagraph 构建页眉段落（字体、run 级下划线）
+// 🔒 LOCKED: buildHeaderParagraph — 页眉段落格式，默认宋体 10.5pt 匹配模板 a9 样式
 func (p *EnhancedProcessor) buildHeaderParagraph(hdr document.Header, text string, fontName string, fontSize float64, underline bool, alignment string) {
 	hdr.Clear()
 	para := hdr.AddParagraph()
 
-	// 仅当 rules 明确指定对齐方式时才设置
+	// 🔒 LOCKED: 对齐方式 — 模板页眉 jc=both，空值时默认 both
 	switch alignment {
 	case "center":
 		para.Properties().SetAlignment(wml.ST_JcCenter)
@@ -2294,19 +2566,26 @@ func (p *EnhancedProcessor) buildHeaderParagraph(hdr document.Header, text strin
 		para.Properties().SetAlignment(wml.ST_JcLeft)
 	case "right":
 		para.Properties().SetAlignment(wml.ST_JcRight)
-	case "justify":
+	case "justify", "both":
 		para.Properties().SetAlignment(wml.ST_JcBoth)
+	default:
+		// 🔒 LOCKED: 默认分散对齐，匹配模板 a9 样式 jc=both
+		para.Properties().SetAlignment(wml.ST_JcBoth)
+	}
+
+	// 🔒 LOCKED: 默认字体 宋体 10.5pt（五号），匹配模板 Char5 字符样式
+	if fontName == "" {
+		fontName = "宋体"
+	}
+	if fontSize <= 0 {
+		fontSize = 10.5 // 五号 = 10.5pt = sz=21 half-pt
 	}
 
 	run := para.AddRun()
 	run.AddText(text)
+	p.setRunFont(run, fontName, fontSize, false)
 
-	// 仅当 fontName 或 fontSize 明确设置时才写 font 属性
-	if fontName != "" || fontSize > 0 {
-		p.setRunFont(run, fontName, fontSize, false)
-	}
-
-	// run 级下划线（模板使用 w:u w:val="single"，而非段落级 pBdr）
+	// 🔒 LOCKED: run 级下划线 — 模板使用 w:u w:val="single"
 	if underline {
 		rPr := run.X().RPr
 		if rPr == nil {
@@ -2402,11 +2681,13 @@ func (p *EnhancedProcessor) enableEvenOddHeaders(doc *document.Document) {
 
 // setupFooterWithPageNumber 设置页脚（含页码）
 // applyHeaderFooter 会先清除 sectPr.EG_HdrFtrReferences，所以这里直接创建新页脚
+// 🔒 LOCKED: 页脚格式匹配模板 a8 样式 — Times New Roman 10.5pt 纯 PAGE 域
 func (p *EnhancedProcessor) setupFooterWithPageNumber(doc *document.Document, section document.Section, pageNumRules map[string]interface{}) {
-	fontName := "宋体"
-	fontSize := 10.5 // 五号
+	// 🔒 LOCKED: 默认字体 Times New Roman 10.5pt（五号），匹配模板 a8 样式
+	fontName := "Times New Roman"
+	fontSize := 10.5 // 五号 = 10.5pt = sz=21 half-pt
 	position := "bottom_center"
-	format := "-PAGE-"
+	format := "PAGE" // 🔒 LOCKED: 模板仅使用纯 PAGE 域，无"第/页/共"装饰
 
 	if pageNumRules != nil {
 		if fn, ok := pageNumRules["font_name"].(string); ok {
@@ -2669,6 +2950,55 @@ func (p *EnhancedProcessor) parseMargin(margin string) float64 {
 	}
 
 	return 0
+}
+
+// 🔒 LOCKED: applyCoverFormatting - 封面段落格式（居中、无缩进、黑体标题/宋体字段）
+// 封面段落由 classifyParagraphs 分类为 "cover"，在此统一处理格式。
+// 规则：cover_title 段（含"毕业论文/设计"）用黑体36pt加粗居中；其余用宋体24pt居中固定行距。
+func (p *EnhancedProcessor) applyCoverFormatting(paragraphs []document.Paragraph, rules map[string]interface{}) {
+	// 封面规则：从 rules 中读取，无则使用默认 spec
+	coverRules, ok := rules["cover"].(map[string]interface{})
+	if !ok {
+		coverRules = map[string]interface{}{
+			"font_name":         "宋体",
+			"font_name_ascii":   "Times New Roman",
+			"font_size":         "12pt",
+			"alignment":         "center",
+			"line_space":        "20pt",
+			"first_line_indent": "0",
+			"line_spacing_rule": "exact",
+		}
+	}
+
+	// 封面主标题规则（"本科毕业论文/设计" 等标识行）
+	coverTitleRules, ok := rules["cover_title"].(map[string]interface{})
+	if !ok {
+		coverTitleRules = map[string]interface{}{
+			"font_name":       "黑体",
+			"font_name_ascii": "Times New Roman",
+			"font_size":       "18pt",
+			"alignment":       "center",
+			"bold":            true,
+		}
+	}
+
+	for _, para := range paragraphs {
+		text := strings.TrimSpace(p.extractParagraphText(para))
+		// 判断是否为封面主标题行（含"毕业论文"、"毕业设计"关键词）
+		isCoverTitle := strings.Contains(text, "毕业论文") ||
+			strings.Contains(text, "毕业设计") ||
+			strings.Contains(text, "学士学位") ||
+			strings.Contains(text, "硕士学位") ||
+			strings.Contains(text, "博士学位")
+
+		if isCoverTitle {
+			log.Printf("[封面] 主标题段: %q → 黑体 36pt 居中 加粗", text[:min(30, len([]rune(text)))])
+			p.applyParagraphFormatting(para, coverTitleRules)
+		} else {
+			p.applyParagraphFormatting(para, coverRules)
+		}
+	}
+	p.runParagraphFormattingSelfCheck("applyCoverFormatting", paragraphs, coverRules)
 }
 
 // applyTitleFormatting 应用标题格式（区分正标题和副标题）

@@ -233,6 +233,46 @@ func compileStyleProfiles(profile *templateprofile.Profile) []StyleProfile {
 			},
 		})
 	}
+	// Inject transplanter consumer keys: alias profile.Styles keys to transplanter-expected names.
+	aliasMap := map[string]string{
+		"abstract_cn": "abstract_title",
+		"keywords_cn": "keywords_title",
+		"abstract_en": "en_abstract_title",
+		"keywords_en": "en_keywords_title",
+	}
+	for _, p := range profiles {
+		if dst, ok := aliasMap[p.Name]; ok {
+			clone := p
+			clone.Name = dst
+			clone.StyleProfileID = styleProfileID(dst)
+			profiles = append(profiles, clone)
+		}
+	}
+
+	// Synthesize entries for keys not extracted by classifier but needed by transplanter.
+	profiles = append(profiles,
+		StyleProfile{
+			StyleProfileID: styleProfileID("toc_entry"),
+			Name:           "toc_entry",
+			BasedOn:        "Normal",
+			Properties: StyleProperties{
+				FontSizeHalfPoints: 20,
+				LineTwips:          240,
+				EastAsiaFont:       "宋体",
+				ASCIIFont:          "宋体",
+			},
+		},
+		StyleProfile{
+			StyleProfileID: styleProfileID("table_caption"),
+			Name:           "table_caption",
+			BasedOn:        "Normal",
+			Properties: StyleProperties{
+				FontSizeHalfPoints: 21,
+				LineTwips:          300,
+				Alignment:          "center",
+			},
+		},
+	)
 	return profiles
 }
 
