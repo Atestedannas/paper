@@ -3,16 +3,20 @@ package fileprocessor
 import (
 	"encoding/xml"
 	"log"
+	"strconv"
 	"strings"
 
 	"gitee.com/greatmusicians/unioffice/document"
+	sharedTypes "gitee.com/greatmusicians/unioffice/schema/soo/ofc/sharedTypes"
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
+
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
 // V2TemplateFormat 从模板提取的完整XML格式（零损耗）
 type V2TemplateFormat struct {
-	PPr     *wml.CT_PPr // 段落属性完整XML节点
-	RPr     *wml.CT_RPr // 运行属性完整XML节点（主文本格式）
+	PPr      *wml.CT_PPr // 段落属性完整XML节点
+	RPr      *wml.CT_RPr // 运行属性完整XML节点（主文本格式）
 	LabelRPr *wml.CT_RPr // 标签格式（如"摘要：""关键词："的格式，可为nil）
 }
 
@@ -273,16 +277,16 @@ func applyPPrSelective(paraX *wml.CT_P, newPPr *wml.CT_PPr) {
 // getFallbackType 回退类型映射（当模板缺少某种类型时尝试用相近类型替代）
 func getFallbackType(t string) string {
 	fallbacks := map[string]string{
-		V2Heading4:             V2Heading3,
-		V2FigureCaption:        V2Body,
-		V2TableCaption:         V2Body,
-		V2Acknowledgements:     V2Body,
-		V2Appendix:             V2Body,
-		V2Notes:                V2References,
+		V2Heading4:              V2Heading3,
+		V2FigureCaption:         V2Body,
+		V2TableCaption:          V2Body,
+		V2Acknowledgements:      V2Body,
+		V2Appendix:              V2Body,
+		V2Notes:                 V2References,
 		V2AcknowledgementsTitle: V2Heading1,
-		V2AppendixTitle:        V2Heading1,
-		V2NotesTitle:           V2Heading1,
-		V2ThesisSubtitle:       V2ThesisTitle,
+		V2AppendixTitle:         V2Heading1,
+		V2NotesTitle:            V2Heading1,
+		V2ThesisSubtitle:        V2ThesisTitle,
 	}
 	return fallbacks[t]
 }
@@ -381,4 +385,71 @@ func CloneStyles(templateDoc, studentDoc *document.Document) {
 		}
 		log.Printf("[V2] 已复制/覆盖 %d 个命名样式", copied)
 	}
+}
+
+// ApplyProfilePageMargins 将 Profile.PageSetup 的页边距应用到学生文档。
+// 在 CloneSectionProperties 拷贝模板边距后调用，确保 Profile 指定的边距覆盖模板值。
+func ApplyProfilePageMargins(studentDoc *document.Document, profile *templateprofile.Profile) {
+	if profile == nil {
+		return
+	}
+	body := studentDoc.X().Body
+	if body == nil || body.SectPr == nil {
+		return
+	}
+	pgMar := body.SectPr.PgMar
+	if pgMar == nil {
+		pgMar = wml.NewCT_PageMar()
+		body.SectPr.PgMar = pgMar
+	}
+
+	setUnsigned := func(field *sharedTypes.ST_TwipsMeasure, twipsStr string) {
+		if twipsStr == "" {
+			return
+		}
+		v, err := strconv.ParseUint(twipsStr, 10, 64)
+		if err != nil {
+			log.Printf("[V2] 页边距解析失败(%s): %v", twipsStr, err)
+			return
+		}
+		field.ST_UnsignedDecimalNumber = &v
+	}
+
+	setSigned := func(field *wml.ST_SignedTwipsMeasure, twipsStr string) {
+		if twipsStr == "" {
+			return
+		}
+		v, err := strconv.ParseInt(twipsStr, 10, 64)
+		if err != nil {
+			log.Printf("[V2] 页边距解析失败(%s): %v", twipsStr, err)
+			return
+		}
+		field.Int64 = &v
+	}
+
+	applyPgMar := func(pm *wml.CT_PageMar) {
+		setSigned(&pm.TopAttr, profile.PageSetup.MarginTopTwips)
+		setUnsigned(&pm.RightAttr, profile.PageSetup.MarginRightTwips)
+		setSigned(&pm.BottomAttr, profile.PageSetup.MarginBottomTwips)
+		setUnsigned(&pm.LeftAttr, profile.PageSetup.MarginLeftTwips)
+		setUnsigned(&pm.HeaderAttr, profile.PageSetup.HeaderMarginTwips)
+		setUnsigned(&pm.FooterAttr, profile.PageSetup.FooterMarginTwips)
+	}
+
+	// 更新文档级 sectPr（最后一个 section）
+	applyPgMar(pgMar)
+
+	// 同时更新所有段落级 sectPr 的 PgMar，确保分节断点的边距也被覆盖
+	for _, p := range studentDoc.Paragraphs() {
+		ppr := p.Properties().X()
+		if ppr == nil || ppr.SectPr == nil || ppr.SectPr.PgMar == nil {
+			continue
+		}
+		applyPgMar(ppr.SectPr.PgMar)
+	}
+
+	log.Printf("[V2] 已应用 Profile 页边距: top=%s right=%s bottom=%s left=%s header=%s footer=%s",
+		profile.PageSetup.MarginTopTwips, profile.PageSetup.MarginRightTwips,
+		profile.PageSetup.MarginBottomTwips, profile.PageSetup.MarginLeftTwips,
+		profile.PageSetup.HeaderMarginTwips, profile.PageSetup.FooterMarginTwips)
 }

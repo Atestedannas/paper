@@ -86,6 +86,10 @@ func (p *EnhancedProcessor) applyStandardMargins(doc *document.Document) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 func (p *EnhancedProcessor) buildDoubleLineHeaderParagraph(hdr document.Header, text string, fontName string, fontSize float64) {
+	p.buildDoubleLineHeaderParagraphEx(hdr, text, fontName, fontSize, false)
+}
+
+func (p *EnhancedProcessor) buildDoubleLineHeaderParagraphEx(hdr document.Header, text string, fontName string, fontSize float64, underline bool) {
 	hdr.Clear()
 	para := hdr.AddParagraph()
 	para.Properties().SetAlignment(wml.ST_JcCenter)
@@ -109,6 +113,10 @@ func (p *EnhancedProcessor) buildDoubleLineHeaderParagraph(hdr document.Header, 
 	run := para.AddRun()
 	run.AddText(text)
 	p.setRunFont(run, fontName, fontSize, false)
+
+	if underline {
+		p.setRunUnderline(run)
+	}
 }
 
 // applySchoolHeader 旧路径硬编码页眉（双线下划线、宋体 9pt）。

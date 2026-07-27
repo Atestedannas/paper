@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
-const debugLogPath = "/opt/paper/debug-740bb1.log"
+var debugLogPath = filepath.Join(os.TempDir(), "paper-debug-740bb1.log")
 
 func debugLog(location, message string, data map[string]interface{}) {
 	entry := map[string]interface{}{

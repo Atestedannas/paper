@@ -33,6 +33,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/pkg/aiclassifier"
+	"github.com/paper-format-checker/backend/pkg/fileprocessor"
 	"gorm.io/gorm"
 )
 
@@ -333,6 +334,13 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 }
 
 func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uuid.UUID) (*WorkflowJobView, error) {
+	// 诊断日志：追踪模板解析 → 移植 → 样式覆盖 → 页眉页脚 完整数据流
+	if err := fileprocessor.InitDiagLog("D:\\workpace\\diag_output.log"); err != nil {
+		log.Printf("[DIAG] 初始化诊断日志失败（继续执行）: %v", err)
+	} else {
+		defer fileprocessor.CloseDiagLog()
+	}
+
 	if err := s.validateReady(ctx); err != nil {
 		return nil, err
 	}
@@ -359,6 +367,12 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	profile, err := templateprofile.Parse(job.CompiledTemplate.StyleProfilesJSON)
 	if err != nil {
 		return nil, err
+	}
+	fileprocessor.DiagPrintf("========== [Node 1] Template Profile Parsed ==========\n")
+	if profile != nil {
+		if data, err := json.MarshalIndent(profile, "", "  "); err == nil {
+			fileprocessor.DiagPrintf("%s\n", string(data))
+		}
 	}
 	ast, err := paperast.Extract(job.Paper.FilePath)
 	if err != nil {
@@ -406,6 +420,17 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	if !transplantEnabled {
 		if _, err := cqrwst.FixDOCXWithTemplateProfileAndSemanticAI(ctx, outputPath, profile, newDeepSeekSemanticBlockClient()); err != nil {
 			return nil, err
+		}
+		fileprocessor.DiagPrintf("========== [Node 4a] CQRWST Full Fix (incl. Header/Footer) Applied ==========\n")
+		if profile != nil {
+			fileprocessor.DiagPrintf("Header: Exists=%v Text=%s FontEastAsia=%s FontSizeHalfPt=%s\n",
+				profile.Header.Exists, profile.Header.Text, profile.Header.FontEastAsia, profile.Header.FontSizeHalfPt)
+			fileprocessor.DiagPrintf("Footer: Exists=%v Text=%s HasPageField=%v HasNumPages=%v\n",
+				profile.Footer.Exists, profile.Footer.Text, profile.Footer.HasPageField, profile.Footer.HasNumPages)
+			fileprocessor.DiagPrintf("RulePack: HeaderPolicy=%s PageNumbering=%s FrontPageFormat=%s BodyPageFormat=%s BodyPageStart=%d BodyPageWrapper=%s\n",
+				profile.RulePack.HeaderPolicy, profile.RulePack.PageNumbering,
+				profile.RulePack.FrontPageFormat, profile.RulePack.BodyPageFormat,
+				profile.RulePack.BodyPageStart, profile.RulePack.BodyPageWrapper)
 		}
 	}
 
@@ -471,6 +496,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	}
 	if result.Status != workflow.StatusVerifiedPass && !transplantEnabled {
 		if _, fixErr := cqrwst.FixDOCXWithTemplateProfileAndSemanticAI(ctx, outputPath, profile, newDeepSeekSemanticBlockClient()); fixErr == nil {
+			fileprocessor.DiagPrintf("========== [Node 4b] CQRWST Re-repair (incl. Header/Footer) Applied ==========\n")
 			result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
 			if err != nil {
 				return nil, err
@@ -1247,6 +1273,14 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 	}); err != nil {
 		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("generate final paper from template skeleton: %w", err))
 	}
+	fileprocessor.DiagPrintf("========== [Node 2] Transplant Generate Complete ==========\nOutputPath=%s\n", outputPath)
+	if profile != nil && profile.Styles != nil {
+		fileprocessor.DiagPrintf("StyleProfiles count=%d\n", len(profile.Styles))
+		for k, v := range profile.Styles {
+			fileprocessor.DiagPrintf("  Style[%s]: FontEastAsia=%s FontASCII=%s FontSizeHalfPt=%s Bold=%v Alignment=%s Line=%s LineRule=%s BeforeLines=%s AfterLines=%s\n",
+				k, v.FontEastAsia, v.FontASCII, v.FontSizeHalfPt, v.Bold, v.Alignment, v.Line, v.LineRule, v.BeforeLines, v.AfterLines)
+		}
+	}
 	if err := preserveSourceDrawingGroups(sourcePath, outputPath); err != nil {
 		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("preserve source drawings: %w", err))
 	}
@@ -1256,6 +1290,14 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 	if !transplant.UsesCQRWSTNormalizers(templatePath) {
 		if _, err := cqrwst.ApplyTemplateProfileStylesAndPageSetup(ctx, outputPath, profile); err != nil {
 			return profile, fmt.Errorf("apply selected template profile to generated paper: %w", err)
+		}
+		fileprocessor.DiagPrintf("========== [Node 3] CQRWST Styles & PageSetup Applied ==========\n")
+		if profile != nil {
+			fileprocessor.DiagPrintf("PageSetup: Width=%s Height=%s Orientation=%s MarginTop=%s MarginRight=%s MarginBottom=%s MarginLeft=%s HeaderMargin=%s FooterMargin=%s\n",
+				profile.PageSetup.PageWidthTwips, profile.PageSetup.PageHeightTwips, profile.PageSetup.Orientation,
+				profile.PageSetup.MarginTopTwips, profile.PageSetup.MarginRightTwips,
+				profile.PageSetup.MarginBottomTwips, profile.PageSetup.MarginLeftTwips,
+				profile.PageSetup.HeaderMarginTwips, profile.PageSetup.FooterMarginTwips)
 		}
 	}
 

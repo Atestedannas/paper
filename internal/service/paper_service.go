@@ -219,6 +219,13 @@ func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (stri
 		return "", ErrLegacyWritePathDisabled
 	}
 
+	// 初始化诊断日志文件写入器
+	if err := fileprocessor.InitDiagLog("D:\\workpace\\diag_output.log"); err != nil {
+		log.Printf("[QuickV2Fix] 诊断日志初始化失败，继续执行: %v", err)
+	} else {
+		defer fileprocessor.CloseDiagLog()
+	}
+
 	start := time.Now()
 
 	var template model.FormatTemplate

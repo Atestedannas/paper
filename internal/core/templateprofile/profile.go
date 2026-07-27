@@ -56,7 +56,7 @@ const templateProfileAIPromptTemplate = `你是“本科毕业论文 DOCX 模板
   "header": {
     "exists": true,
     "text": "页眉文本",
-    "font_east_asia": "宋体",
+    "font_east_asia": "[请根据实际模板填写，示例仅供参考]",
     "font_size_half_pt": "18",
     "has_double_line": true
   },
@@ -67,9 +67,9 @@ const templateProfileAIPromptTemplate = `你是“本科毕业论文 DOCX 模板
     "text": "第页 共页"
   },
   "styles": {
-    "heading_1": {"font_east_asia":"宋体","font_size_half_pt":"32","bold":true,"alignment":"left","line":"360","before_lines":"100","after_lines":"100"},
-    "body": {"font_east_asia":"宋体","font_ascii":"Times New Roman","font_size_half_pt":"24","alignment":"both","first_line_chars":"200","line":"360"},
-    "references": {"font_east_asia":"宋体","font_ascii":"Times New Roman","font_size_half_pt":"21","first_line_chars":"0","line":"360"}
+    "heading_1": {"font_east_asia":"[根据本地解析填入]","font_size_half_pt":"[解析值]","bold":true,"alignment":"left","line":"360"},
+    "body": {"font_east_asia":"[根据本地解析填入]","font_ascii":"[根据本地解析填入]","font_size_half_pt":"[解析值]","alignment":"both","first_line_chars":"200","line":"360"},
+    "references": {"font_east_asia":"[根据本地解析填入]","font_size_half_pt":"[解析值]","first_line_chars":"0","line":"360"}
   },
   "confidence": 0.88
 }
@@ -219,7 +219,9 @@ var (
 	outlinePattern               = regexp.MustCompile(`<w:outlineLvl\b[^>]*/>`)
 	styleElementPattern          = regexp.MustCompile(`(?s)<w:style\b[^>]*>.*?</w:style>`)
 	styleIDPattern               = regexp.MustCompile(`<w:style\b[^>]*\bw:styleId="([^"]+)"`)
+	styleNamePattern             = regexp.MustCompile(`<w:name\b[^>]*\bw:val="([^"]+)"`)
 	basedOnPattern               = regexp.MustCompile(`<w:basedOn\b[^>]*\bw:val="([^"]+)"`)
+	docDefaultsPattern           = regexp.MustCompile(`(?s)<w:docDefaults\b[^>]*>(.*?)</w:docDefaults>`)
 	paragraphStyleIDPattern      = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
 	jcPattern                    = regexp.MustCompile(`<w:jc\b[^>]*/>`)
 	sectPrPattern                = regexp.MustCompile(`(?s)<w:sectPr\b[^>]*>.*?</w:sectPr>|<w:sectPr\b[^>]*/>`)
@@ -281,8 +283,9 @@ func Extract(templatePath string) (*Profile, error) {
 	}
 	paras := collectParagraphs(string(documentXML))
 	styleDefinitions := map[string]StyleRule{}
+	styleNameToID := map[string]string{}
 	if stylesXML, ok := pkg.Get("word/styles.xml"); ok {
-		styleDefinitions = extractStyleDefinitions(string(stylesXML))
+		styleDefinitions, styleNameToID = extractStyleDefinitions(string(stylesXML))
 	}
 	profile.RulePack = extractLocalRulePack(paras)
 	extractHeaderFooterVariants(profile, pkg, string(documentXML))
@@ -330,6 +333,79 @@ func Extract(templatePath string) (*Profile, error) {
 	for key, samples := range styleSamples {
 		profile.Styles[key] = aggregateStyleRules(key, samples)
 	}
+
+	// Override paragraph-sampled values with resolved style definitions for key styles.
+	// This fixes A1-A8: paragraph sampling error — we now use the styles.xml basedOn→docDefaults
+	// inheritance chain for font_east_asia, font_ascii, fontSize, firstLine, alignment, etc.
+	keyToStyleName := map[string]string{
+		"heading_1":        "heading1",
+		"heading_2":        "heading2",
+		"heading_3":        "heading3",
+		"heading_4":        "heading4",
+		"body":             "normal",
+		"references_title": "normal", // references title inherits body font/size
+	}
+	for profileKey, styleName := range keyToStyleName {
+		if existing, ok := profile.Styles[profileKey]; !ok {
+			continue
+		} else {
+			styleID := styleNameToID[styleName]
+			if styleID == "" {
+				// A4 fix: case-insensitive fallback for style name normalization.
+				// Templates may have "Normal" (capital N) instead of "normal".
+				lowerName := strings.ToLower(styleName)
+				for altName, altID := range styleNameToID {
+					if strings.EqualFold(altName, lowerName) {
+						styleID = altID
+						break
+					}
+				}
+			}
+			if styleID == "" {
+				continue
+			}
+			def, ok := styleDefinitions[styleID]
+			if !ok {
+				continue
+			}
+			// Resolved definition values take precedence over paragraph-sampled values.
+			override := StyleRule{Label: existing.Label}
+			override.BoldSet = true // explicit override
+			override.Bold = def.Bold
+			if def.FontEastAsia != "" {
+				override.FontEastAsia = def.FontEastAsia
+			}
+			if def.FontASCII != "" {
+				override.FontASCII = def.FontASCII
+			}
+			if def.FontSizeHalfPt != "" {
+				override.FontSizeHalfPt = def.FontSizeHalfPt
+			}
+			if def.Alignment != "" {
+				override.Alignment = def.Alignment
+			}
+			if def.Line != "" {
+				override.Line = def.Line
+			}
+			if def.LineRule != "" {
+				override.LineRule = def.LineRule
+			}
+			if def.FirstLineTwips != "" {
+				override.FirstLineTwips = def.FirstLineTwips
+			}
+			if def.FirstLineChars != "" {
+				override.FirstLineChars = def.FirstLineChars
+			}
+			if def.BeforeTwips != "" {
+				override.BeforeTwips = def.BeforeTwips
+			}
+			if def.AfterTwips != "" {
+				override.AfterTwips = def.AfterTwips
+			}
+			profile.Styles[profileKey] = mergeExtractedStyle(existing, override, "")
+		}
+	}
+
 	return profile, nil
 }
 
@@ -459,6 +535,17 @@ func mergeAISummary(profile *Profile, raw map[string]interface{}) {
 		} else if exists {
 			merged.Bold = local.Bold
 		}
+		if aiWins && jsonStyleFieldPresent(data, key, "italic") {
+			merged.Italic = style.Italic
+			merged.ItalicSet = true
+		} else if exists {
+			merged.Italic = local.Italic
+			merged.ItalicSet = local.ItalicSet
+		}
+		if aiWins && !jsonStyleFieldPresent(data, key, "italic") && belongsToBodyFamily(key) {
+			merged.Italic = false
+			merged.ItalicSet = true
+		}
 		profile.Styles[key] = merged
 	}
 	profile.PageSetup = mergePageSetupRule(summary.PageSetup, profile.PageSetup)
@@ -477,6 +564,14 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func belongsToBodyFamily(key string) bool {
+	switch key {
+	case "body", "abstract_cn", "abstract_en", "body_cn", "body_en":
+		return true
+	}
+	return false
+}
+
 func mergeStyleRule(base StyleRule, override StyleRule) StyleRule {
 	if override.Label != "" {
 		base.Label = override.Label
@@ -492,6 +587,10 @@ func mergeStyleRule(base StyleRule, override StyleRule) StyleRule {
 	}
 	if override.Bold {
 		base.Bold = true
+	}
+	if override.ItalicSet {
+		base.ItalicSet = true
+		base.Italic = override.Italic
 	}
 	if override.Alignment != "" {
 		base.Alignment = override.Alignment
@@ -539,8 +638,27 @@ func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
 	style.FontSizeHalfPt = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontSizeHalfPt })
 	style.ComplexSizeHalfPt = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.ComplexSizeHalfPt })
 	style.Alignment = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.Alignment })
-	style.Line = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.Line })
-	style.LineRule = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.LineRule })
+	// BugFix: Filter outlier line values (>1200 in auto mode) before aggregating.
+	// This prevents extreme values like 4800 (20x spacing) from winning the mode.
+	lineSamples := make([]StyleRule, 0, len(samples))
+	lineRuleSamples := make([]StyleRule, 0, len(samples))
+	for _, sample := range samples {
+		useForLine := true
+		if (sample.LineRule == "auto" || sample.LineRule == "") && sample.Line != "" {
+			if lineVal, err := strconv.Atoi(sample.Line); err == nil && lineVal > 1200 {
+				useForLine = false
+			}
+		}
+		if useForLine {
+			lineSamples = append(lineSamples, sample)
+		}
+		lineRuleSamples = append(lineRuleSamples, sample)
+	}
+	style.Line = mostCommonStyleValue(lineSamples, func(sample StyleRule) string { return sample.Line })
+	if style.Line == "" {
+		style.Line = "360" // default 1.5x line spacing
+	}
+	style.LineRule = mostCommonStyleValue(lineRuleSamples, func(sample StyleRule) string { return sample.LineRule })
 	style.BeforeTwips = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.BeforeTwips })
 	style.AfterTwips = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.AfterTwips })
 	style.BeforeLines = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.BeforeLines })
@@ -575,6 +693,13 @@ func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
 	}
 	style.ItalicSet = italicSamples > 0
 	style.Italic = italicSamples > 0 && italicCount*5 > italicSamples*3
+	// BugFix: If font_ascii was copied from font_east_asia (common template author mistake),
+	// correct it to Times New Roman for body/references/heading styles.
+	if style.FontEastAsia != "" && style.FontASCII == style.FontEastAsia {
+		if isChineseFont(style.FontEastAsia) {
+			style.FontASCII = "Times New Roman"
+		}
+	}
 	return style
 }
 
@@ -991,10 +1116,14 @@ func Parse(data string) (*Profile, error) {
 }
 
 func extractPageSetup(documentXML string) PageSetupRule {
-	section := sectPrPattern.FindString(documentXML)
-	if section == "" {
+	// B1-B2 fix: use the last sectPr in the document (body-level section properties),
+	// not the first one (which may be an intermediate section break with different margins).
+	// Template has first sectPr top=1134/left=1134 but the body uses last sectPr top=1418/left=1418.
+	sections := sectPrPattern.FindAllString(documentXML, -1)
+	if len(sections) == 0 {
 		return PageSetupRule{}
 	}
+	section := sections[len(sections)-1]
 	rule := PageSetupRule{}
 	if pgSz := pgSzPattern.FindString(section); pgSz != "" {
 		attrs := attrs(pgSz)
@@ -1147,6 +1276,15 @@ func extractStyle(label string, raw string) StyleRule {
 		attrs := attrs(spacing)
 		style.Line = attrs["w:line"]
 		style.LineRule = attrs["w:lineRule"]
+		// BugFix: Validate line value for auto mode to reject outliers (e.g., 4800 = 20x line spacing).
+		// Normal auto range is 240~600 (1.0x~2.5x). Exact/atLeast modes are not validated.
+		if (style.LineRule == "auto" || style.LineRule == "") && style.Line != "" {
+			if lineVal, err := strconv.Atoi(style.Line); err == nil {
+				if lineVal > 1200 || lineVal < 60 {
+					style.Line = ""
+				}
+			}
+		}
 		style.BeforeTwips = attrs["w:before"]
 		style.AfterTwips = attrs["w:after"]
 		style.BeforeLines = attrs["w:beforeLines"]
@@ -1177,13 +1315,47 @@ func extractStyleWithDefinitions(label, paragraphXML string, definitions map[str
 	return mergeExtractedStyle(base, direct, paragraphXML)
 }
 
-func extractStyleDefinitions(stylesXML string) map[string]StyleRule {
+func extractStyleDefinitions(stylesXML string) (map[string]StyleRule, map[string]string) {
+	// Parse docDefaults as the ultimate style inheritance base.
+	docDefaults := StyleRule{}
+	if ddMatch := docDefaultsPattern.FindStringSubmatch(stylesXML); len(ddMatch) == 2 {
+		docDefaults = extractStyle("docDefaults", ddMatch[1])
+	}
+
 	rawByID := map[string]string{}
+	nameToID := map[string]string{}
 	for _, element := range styleElementPattern.FindAllString(stylesXML, -1) {
 		if match := styleIDPattern.FindStringSubmatch(element); len(match) == 2 {
-			rawByID[match[1]] = element
+			id := match[1]
+			rawByID[id] = element
+			if nmMatch := styleNamePattern.FindStringSubmatch(element); len(nmMatch) == 2 {
+				nameToID[normalizeLabel(nmMatch[1])] = id
+			}
 		}
 	}
+
+	// Apply docDefaults font to the "Normal" style entry if Normal doesn't have its own font.
+	// A4 fix: case-insensitive lookup — templates may have name="Normal" (capital N).
+	normalID := ""
+	for name, id := range nameToID {
+		if strings.EqualFold(name, "normal") {
+			normalID = id
+			break
+		}
+	}
+	if normalID != "" {
+		if normalRaw, ok := rawByID[normalID]; ok {
+			style := extractStyle("Normal", normalRaw)
+			if style.FontEastAsia == "" {
+				style.FontEastAsia = docDefaults.FontEastAsia
+			}
+			if style.FontASCII == "" {
+				style.FontASCII = docDefaults.FontASCII
+			}
+			rawByID[normalID] = rebuildStyleRaw(rawByID[normalID], style)
+		}
+	}
+
 	resolved := map[string]StyleRule{}
 	var resolve func(string, map[string]bool, int) StyleRule
 	resolve = func(id string, seen map[string]bool, depth int) StyleRule {
@@ -1200,13 +1372,51 @@ func extractStyleDefinitions(stylesXML string) map[string]StyleRule {
 			style = resolve(match[1], seen, depth+1)
 		}
 		style = mergeExtractedStyle(style, extractStyle(id, raw), raw)
+
+		// docDefaults fallback: fill gaps with docDefaults values.
+		if style.FontEastAsia == "" && docDefaults.FontEastAsia != "" {
+			style.FontEastAsia = docDefaults.FontEastAsia
+		}
+		if style.FontASCII == "" && docDefaults.FontASCII != "" {
+			style.FontASCII = docDefaults.FontASCII
+		}
+		if style.FontSizeHalfPt == "" && docDefaults.FontSizeHalfPt != "" {
+			style.FontSizeHalfPt = docDefaults.FontSizeHalfPt
+		}
+
 		resolved[id] = style
 		return style
 	}
 	for id := range rawByID {
 		resolve(id, map[string]bool{}, 0)
 	}
-	return resolved
+	return resolved, nameToID
+}
+
+// rebuildStyleRaw inserts font attributes from style into the raw XML for downstream parsing.
+func rebuildStyleRaw(raw string, style StyleRule) string {
+	if style.FontEastAsia == "" && style.FontASCII == "" {
+		return raw
+	}
+	fontTag := `<w:rFonts`
+	if style.FontEastAsia != "" {
+		fontTag += fmt.Sprintf(` w:eastAsia="%s"`, style.FontEastAsia)
+	}
+	if style.FontASCII != "" {
+		fontTag += fmt.Sprintf(` w:ascii="%s"`, style.FontASCII)
+	}
+	fontTag += `/>`
+	// Insert into rPr if it exists, otherwise append before </w:style>
+	rPrIndex := strings.Index(raw, "<w:rPr")
+	if rPrIndex >= 0 {
+		rPrEnd := strings.Index(raw[rPrIndex:], ">") + rPrIndex + 1
+		return raw[:rPrEnd] + fontTag + raw[rPrEnd:]
+	}
+	styleClose := strings.LastIndex(raw, "</w:style>")
+	if styleClose >= 0 {
+		return raw[:styleClose] + "<w:rPr>" + fontTag + "</w:rPr>" + raw[styleClose:]
+	}
+	return raw
 }
 
 func mergeExtractedStyle(base, override StyleRule, _ string) StyleRule {
@@ -1439,4 +1649,22 @@ func trimJSONResponse(response string) string {
 	s = strings.TrimPrefix(s, "```")
 	s = strings.TrimSuffix(s, "```")
 	return strings.TrimSpace(s)
+}
+
+// isChineseFont returns true if the font name is a commonly used Chinese font
+// where the ASCII slot is often incorrectly set to the same Chinese font name
+// instead of a Latin font like Times New Roman.
+func isChineseFont(name string) bool {
+	chineseFonts := []string{
+		"宋体", "黑体", "楷体", "仿宋", "微软雅黑",
+		"华文宋体", "华文黑体", "华文楷体", "华文仿宋",
+		"方正书宋", "方正黑体", "方正楷体", "方正仿宋",
+		"思源宋体", "思源黑体", "标宋", "报宋",
+	}
+	for _, f := range chineseFonts {
+		if name == f {
+			return true
+		}
+	}
+	return false
 }

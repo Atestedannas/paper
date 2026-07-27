@@ -55,24 +55,24 @@ const (
 )
 
 var (
-	reHeading1Num    = regexp.MustCompile(`^(\d+)\s`)
-	reHeading1NumCN  = regexp.MustCompile(`^([1-9])\p{Han}`)
-	reHeading1Ch     = regexp.MustCompile(`^第[一二三四五六七八九十百]+章`)
-	reHeading2       = regexp.MustCompile(`^(\d+)[.．](\d+)\s*[^.．\d]`)
-	reHeading3       = regexp.MustCompile(`^(\d+)[.．](\d+)[.．](\d+)`)
-	reHeading4       = regexp.MustCompile(`^(\d+)[.．](\d+)[.．](\d+)[.．](\d+)`)
-	reRefItem        = regexp.MustCompile(`^\[?\d+\]`)
-	reTOCDots        = regexp.MustCompile(`[．\.…]{2,}`)
-	reFigureCaption  = regexp.MustCompile(`^图\s*\d+`)
-	reTableCaption   = regexp.MustCompile(`^表\s*\d+`)
+	reHeading1Num   = regexp.MustCompile(`^(\d+)\s`)
+	reHeading1NumCN = regexp.MustCompile(`^([1-9])\p{Han}`)
+	reHeading1Ch    = regexp.MustCompile(`^第[一二三四五六七八九十百]+章`)
+	reHeading2      = regexp.MustCompile(`^(\d+)[.．](\d+)\s*[^.．\d]`)
+	reHeading3      = regexp.MustCompile(`^(\d+)[.．](\d+)[.．](\d+)`)
+	reHeading4      = regexp.MustCompile(`^(\d+)[.．](\d+)[.．](\d+)[.．](\d+)`)
+	reRefItem       = regexp.MustCompile(`^\[?\d+\]`)
+	reTOCDots       = regexp.MustCompile(`[．\.…]{2,}`)
+	reFigureCaption = regexp.MustCompile(`^图\s*\d+`)
+	reTableCaption  = regexp.MustCompile(`^表\s*\d+`)
 )
 
 // V2ClassifiedPara 分类结果
 type V2ClassifiedPara struct {
-	Para     document.Paragraph
-	Text     string
-	Type     string
-	ParaIdx  int
+	Para    document.Paragraph
+	Text    string
+	Type    string
+	ParaIdx int
 }
 
 // V2DeterministicClassifier 确定性段落分类器
@@ -263,6 +263,9 @@ func (c *V2DeterministicClassifier) assignTypes(paras []V2ClassifiedPara) {
 		}
 	}
 
+	// 后处理：封面段落重分类 — 在 zone=Cover 期间未正确识别为 cover 的标签段落重新标记
+	reclassifyCoverLabels(paras)
+
 	// 统计日志
 	dist := make(map[string]int)
 	for _, p := range paras {
@@ -313,11 +316,11 @@ func (c *V2DeterministicClassifier) assignTypes(paras []V2ClassifiedPara) {
 			}
 		}
 		debugLog("v2_classifier.go:postClassify", "H3_ZONE_ANALYSIS", map[string]interface{}{
-			"hypothesisId":     "H3",
-			"distribution":     dist,
-			"ackAfterTitle":    ackSamples,
-			"enAbstractKW":     enSamples,
-			"heading1_all":     h1Samples,
+			"hypothesisId":  "H3",
+			"distribution":  dist,
+			"ackAfterTitle": ackSamples,
+			"enAbstractKW":  enSamples,
+			"heading1_all":  h1Samples,
 		})
 	}
 	// #endregion
@@ -346,6 +349,43 @@ func (c *V2DeterministicClassifier) assignTypes(paras []V2ClassifiedPara) {
 }
 
 // ── 关键词匹配函数 ──
+
+// reclassifyCoverLabels 将封面区内被误分为 body 的封面标签段落（题目/学院/专业等）重新标记为 V2Cover。
+// 从文档开始扫描到第一个"摘要"或 heading_1，在此范围内的 body 段落若匹配封面标签则重分类。
+func reclassifyCoverLabels(paras []V2ClassifiedPara) {
+	// 找到封面区域的结束位置：第一个摘要标题、英文摘要、TOC 标题或 heading_1
+	endIdx := len(paras)
+	for i, p := range paras {
+		normalized := normalizeSpaces(strings.TrimSpace(p.Text))
+		if isAbstractTitleKW(normalized) || isEnAbstractTitleKW(normalized) ||
+			isTOCTitleKW(normalized) || isHeading1(normalized) ||
+			isAbstractStartKW(normalized) || isEnAbstractStartKW(normalized) {
+			endIdx = i
+			break
+		}
+	}
+
+	// 封面标签关键词集合 — 精确匹配（整个文本就是该标签）或包含该标签
+	coverLabels := []string{"题目", "学院", "专业", "班级", "学号", "姓名", "指导教师", "日期", "年级"}
+
+	for i := 0; i < endIdx; i++ {
+		if paras[i].Type != V2Body {
+			continue
+		}
+		normalized := normalizeSpaces(strings.TrimSpace(paras[i].Text))
+		// 已经是其他特殊类型（thesis_title / subtitle / heading）的跳过
+		if paras[i].Type == V2ThesisTitle || paras[i].Type == V2ThesisSubtitle ||
+			paras[i].Type == V2Heading1 || paras[i].Type == V2Cover {
+			continue
+		}
+		for _, label := range coverLabels {
+			if strings.Contains(normalized, label) && len([]rune(normalized)) <= 10 {
+				paras[i].Type = V2Cover
+				break
+			}
+		}
+	}
+}
 
 func normalizeSpaces(s string) string {
 	var b strings.Builder

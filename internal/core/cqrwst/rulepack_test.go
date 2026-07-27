@@ -246,7 +246,7 @@ func TestFixDOCXAppliesCQRWSTParagraphAndRunStyles(t *testing.T) {
 		`w:firstLineChars="200"`,
 	})
 	assertParagraphHas(t, documentXML, "1 绪论", []string{
-		`w:eastAsia="宋体"`,
+		`w:eastAsia="黑体"`,
 		`w:sz w:val="32"`,
 		`<w:b/>`,
 		`w:before="240"`,
@@ -254,7 +254,7 @@ func TestFixDOCXAppliesCQRWSTParagraphAndRunStyles(t *testing.T) {
 		`w:jc w:val="center"`,
 	})
 	assertParagraphHas(t, documentXML, "1.1 研究背景", []string{
-		`w:eastAsia="宋体"`,
+		`w:eastAsia="黑体"`,
 		`w:sz w:val="30"`,
 		`<w:b/>`,
 		`w:jc w:val="left"`,
@@ -314,7 +314,7 @@ func TestFixDOCXAppliesCQRWSTSectionHeaderAndFooter(t *testing.T) {
 	}
 
 	headerXML := readCQRWSTEntry(t, docxPath, "word/header1.xml")
-	for _, want := range []string{"重庆人文科技学院", "本科毕业论文", `w:val="center"`, `w:sz w:val="18"`} {
+	for _, want := range []string{"重庆人文科技学院", "本科毕业论文", `w:val="center"`, `w:sz w:val="21"`} {
 		if !strings.Contains(headerXML, want) {
 			t.Fatalf("header XML missing %q: %s", want, headerXML)
 		}

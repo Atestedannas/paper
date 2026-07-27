@@ -1,6 +1,7 @@
 package fileprocessor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 	"github.com/paper-format-checker/backend/internal/core/transplant"
 	"github.com/paper-format-checker/backend/pkg/docconvert"
 )
@@ -61,6 +63,13 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	log.Println("========== V2 格式修正引擎 开始 ==========")
 	log.Printf("[V2] 模板: %s", e.templatePath)
 	log.Printf("[V2] 学生论文: %s", studentDocPath)
+
+	// 初始化诊断日志
+	if err := InitDiagLog("D:\\workpace\\diag_output.log"); err != nil {
+		log.Printf("[V2] 警告: 无法初始化诊断日志: %v", err)
+	} else {
+		defer CloseDiagLog()
+	}
 
 	// #region agent log
 	debugLog("v2_engine.go:Process", "H1_V2_ENGINE_STARTED", map[string]interface{}{
@@ -134,10 +143,18 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	var headingSpecs map[string]ParagraphFormatSpec
 	var bodySpec, refSpec *ParagraphFormatSpec
 	var coverTitleSpec, abstractTitleSpec, abstractContentSpec, keywordsSpec *ParagraphFormatSpec
+	var coverFieldSpec *ParagraphFormatSpec
 	var enAbstractTitleSpec, enAbstractContentSpec, enKeywordsSpec *ParagraphFormatSpec
 	var tocTitleSpec, tocEntrySpec, referencesTitleSpec, sectionTitleSpec *ParagraphFormatSpec
 	var notesSpec, captionSpec, headerSpec *ParagraphFormatSpec
+	var profileForMargins *templateprofile.Profile
+	var templateHeaderText string
 	if ruleEngine, ruleErr := NewFormatRuleEngine(e.processor, e.templatePath, nil); ruleErr == nil {
+		// 保存 Profile 引用，稍后在格式化完成后应用页边距
+		// （避免被后续 sectPr 操作覆盖 —— B1-B2 修复）
+		if ruleEngine.Profile != nil {
+			profileForMargins = ruleEngine.Profile
+		}
 		headingSpecs = make(map[string]ParagraphFormatSpec)
 		for _, level := range []string{"heading_1", "heading_2", "heading_3", "heading_4"} {
 			if spec, ok := ruleEngine.GetRule(level); ok {
@@ -154,6 +171,9 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 		}
 		if spec, ok := ruleEngine.GetRule("cover_title"); ok {
 			coverTitleSpec = &spec
+		}
+		if spec, ok := ruleEngine.GetRule("cover"); ok {
+			coverFieldSpec = &spec
 		}
 		if spec, ok := ruleEngine.GetRule("abstract_title"); ok {
 			abstractTitleSpec = &spec
@@ -194,14 +214,68 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 		if spec, ok := ruleEngine.GetRule("header"); ok {
 			headerSpec = &spec
 		}
+		templateHeaderText = ""
+		if ruleEngine.Profile != nil {
+			templateHeaderText = ruleEngine.Profile.Header.Text
+			e.processor.templateHeaderText = templateHeaderText
+		}
+		// DIAG: dump all critical specs
+		if bodySpec != nil {
+			DiagPrintf("[DIAG] bodySpec: fontEA=%s sz=%d line=%d rule=%d fl=%d", bodySpec.FontEastAsia, bodySpec.FontSizeHalfPt, bodySpec.LineSpacingVal, bodySpec.LineSpacingRule, bodySpec.FirstLineIndent)
+		}
+		if refSpec != nil {
+			DiagPrintf("[DIAG] refSpec: fontEA=%s sz=%d line=%d rule=%d fl=%d", refSpec.FontEastAsia, refSpec.FontSizeHalfPt, refSpec.LineSpacingVal, refSpec.LineSpacingRule, refSpec.FirstLineIndent)
+		}
+		if referencesTitleSpec != nil {
+			DiagPrintf("[DIAG] referencesTitleSpec: fontEA=%s sz=%d line=%d rule=%d", referencesTitleSpec.FontEastAsia, referencesTitleSpec.FontSizeHalfPt, referencesTitleSpec.LineSpacingVal, referencesTitleSpec.LineSpacingRule)
+		}
+		if sectionTitleSpec != nil {
+			DiagPrintf("[DIAG] sectionTitleSpec: fontEA=%s sz=%d line=%d rule=%d", sectionTitleSpec.FontEastAsia, sectionTitleSpec.FontSizeHalfPt, sectionTitleSpec.LineSpacingVal, sectionTitleSpec.LineSpacingRule)
+		}
 	}
 	smartFmt := NewV2SmartFormatter(e.processor, headingSpecs, bodySpec, refSpec,
-		coverTitleSpec, abstractTitleSpec, abstractContentSpec, keywordsSpec,
+		coverTitleSpec, coverFieldSpec, abstractTitleSpec, abstractContentSpec, keywordsSpec,
 		enAbstractTitleSpec, enAbstractContentSpec, enKeywordsSpec,
 		tocTitleSpec, tocEntrySpec,
-		referencesTitleSpec, sectionTitleSpec, notesSpec, captionSpec, headerSpec)
+		referencesTitleSpec, sectionTitleSpec, notesSpec, captionSpec, headerSpec,
+		templateHeaderText)
 	smartFmt.ApplySmartFormatting(studentDoc, classified)
 	smartFmt.ApplyBodyFormats(classified)
+
+	// B1-B2 修复：在所有 sectPr 操作（克隆/格式化/页眉）完成后才应用页边距覆盖
+	if profileForMargins != nil {
+		ApplyProfilePageMargins(studentDoc, profileForMargins)
+		// 诊断：写入内存诊断文件
+		diagLines := []string{}
+		if s := studentDoc.X().Body.SectPr; s != nil && s.PgMar != nil {
+			top := int64(0)
+			if s.PgMar.TopAttr.Int64 != nil {
+				top = *s.PgMar.TopAttr.Int64
+			}
+			left := uint64(0)
+			if s.PgMar.LeftAttr.ST_UnsignedDecimalNumber != nil {
+				left = *s.PgMar.LeftAttr.ST_UnsignedDecimalNumber
+			}
+			diagLines = append(diagLines, fmt.Sprintf("body PgMar top=%d left=%d", top, left))
+		}
+		diagLines = append(diagLines, fmt.Sprintf("profile TopTwips=%s LeftTwips=%s",
+			profileForMargins.PageSetup.MarginTopTwips, profileForMargins.PageSetup.MarginLeftTwips))
+		for i, p := range studentDoc.Paragraphs() {
+			ppr := p.Properties().X()
+			if ppr != nil && ppr.SectPr != nil && ppr.SectPr.PgMar != nil {
+				top := int64(0)
+				if ppr.SectPr.PgMar.TopAttr.Int64 != nil {
+					top = *ppr.SectPr.PgMar.TopAttr.Int64
+				}
+				left := uint64(0)
+				if ppr.SectPr.PgMar.LeftAttr.ST_UnsignedDecimalNumber != nil {
+					left = *ppr.SectPr.PgMar.LeftAttr.ST_UnsignedDecimalNumber
+				}
+				diagLines = append(diagLines, fmt.Sprintf("para[%d] PgMar top=%d left=%d", i, top, left))
+			}
+		}
+		os.WriteFile(`C:\Users\user\AppData\Local\Temp\b1b2_diag.txt`, []byte(strings.Join(diagLines, "\n")), 0644)
+	}
 
 	// ── 步骤 8: 表格格式处理 ──
 	log.Println("[V2][步骤8] 处理表格格式...")
@@ -217,8 +291,105 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	// ── 步骤 10: 保存输出文件 ──
 	outputPath := e.generateOutputPath(studentDocPath)
 	log.Printf("[V2][步骤10] 保存到: %s", outputPath)
+
+	// 节点4：最终产出验证 — 保存前检查关键段落类型的实际 run/paragraph 属性
+	DiagPrintf(" ====== 节点4: 最终产出验证 (保存前) ======")
+	dumpFinalDocDiagnostics(studentDoc, classified)
+
+	// B1-B2 post-save fix: unioffice serializes body-level sectPr from a cached/internal
+	// copy that ignores our in-memory mutations.  Save → patch ZIP in-place.
+
 	if err := studentDoc.SaveToFile(outputPath); err != nil {
 		return "", fmt.Errorf("保存文档失败: %w", err)
+	}
+	if profileForMargins != nil {
+		// B-S5 fix: unioffice body-level sectPr pgMar serialization is
+		// non-deterministic (sometimes 1417 instead of 1418).  Post-save
+		// ZIP patch ensures all body-level pgMar values match the profile.
+		data, err := os.ReadFile(outputPath)
+		if err != nil {
+			log.Printf("[B1B2] failed to read saved file: %v", err)
+		} else {
+			patched, err := patchBodySectPrMarginsFromBytes(data, &profileForMargins.PageSetup)
+			if err != nil {
+				log.Printf("[B1B2] post-save ZIP patch warning: %v", err)
+			} else {
+				if err := os.WriteFile(outputPath, patched, 0644); err != nil {
+					log.Printf("[B1B2] post-save ZIP patch write error: %v", err)
+				}
+			}
+		}
+	}
+
+	// B-NORMALFIX: unioffice Normal style sz=24 (12pt) corrupts run-level sz=21 (10.5pt)
+	// during serialization.  Post-save patch Normal style sz 24→21 in styles.xml.
+	{
+		data, err := os.ReadFile(outputPath)
+		if err != nil {
+			log.Printf("[NormalFix] failed to read saved file: %v", err)
+		} else {
+			patched, err := patchDocDefaults(data)
+			if err != nil {
+				log.Printf("[DocDefaultsFix] patch warning: %v", err)
+			} else if !bytes.Equal(patched, data) {
+				if err := os.WriteFile(outputPath, patched, 0644); err != nil {
+					log.Printf("[DocDefaultsFix] write error: %v", err)
+				} else {
+					log.Printf("[DocDefaultsFix] docDefaults fonts patched 宋体/Times New Roman")
+					data = patched
+				}
+			}
+
+			patched2, err := patchNormalStyleFontSize(data)
+			if err != nil {
+				log.Printf("[NormalFix] styles.xml patch warning: %v", err)
+			} else if !bytes.Equal(patched2, data) {
+				if err := os.WriteFile(outputPath, patched2, 0644); err != nil {
+					log.Printf("[NormalFix] write error: %v", err)
+				} else {
+					log.Printf("[NormalFix] Normal style sz patched 24→21")
+				}
+			}
+		}
+	}
+
+	// B-REFFIX: unioffice SaveToFile corrupts reference entry font from sz=21 to sz=24.
+	// Post-save patch all ref paragraphs: sz/szCs val=24→21.
+	{
+		data, err := os.ReadFile(outputPath)
+		if err != nil {
+			log.Printf("[RefFix] failed to read saved file: %v", err)
+		} else {
+			patched, err := patchReferenceFontSize(data)
+			if err != nil {
+				log.Printf("[RefFix] patch warning: %v", err)
+			} else if !bytes.Equal(patched, data) {
+				if err := os.WriteFile(outputPath, patched, 0644); err != nil {
+					log.Printf("[RefFix] write error: %v", err)
+				} else {
+					log.Printf("[RefFix] reference font sz patched 24→21")
+				}
+			}
+		}
+	}
+
+	// B-ACKFIX: 致谢段落格式修复：标题 sz 21→24 / jc distribute, 正文 sz 21→24 / 移除首行缩进
+	{
+		data, err := os.ReadFile(outputPath)
+		if err != nil {
+			log.Printf("[AckFix] failed to read saved file: %v", err)
+		} else {
+			patched, err := patchAcknowledgements(data)
+			if err != nil {
+				log.Printf("[AckFix] patch warning: %v", err)
+			} else if !bytes.Equal(patched, data) {
+				if err := os.WriteFile(outputPath, patched, 0644); err != nil {
+					log.Printf("[AckFix] write error: %v", err)
+				} else {
+					log.Printf("[AckFix] acknowledgements format patched (title sz=24/distribute, content sz=24/no-indent)")
+				}
+			}
+		}
 	}
 
 	elapsed := time.Since(startTime)
@@ -594,6 +765,8 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 					return "", finErr
 				}
 				log.Println("================= V2 格式修正流程 完成 (ShellInPlace) =================")
+				// Apply post-save patches
+				p.applyPostSavePatches(finalPath)
 				return finalPath, nil
 			}
 			logPaperFormatAudit("GoV2", "shell_discarded", map[string]interface{}{
@@ -618,6 +791,8 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 				return "", finErr
 			}
 			log.Println("================= V2 格式修正流程 完成 (StyleFormatter) =================")
+			// Apply post-save patches
+			p.applyPostSavePatches(finalPath)
 			return finalPath, nil
 		}
 		log.Printf("[V2入口] StyleFormatter 失败: %v, 回退到 V2FormatEngine", err)
@@ -636,6 +811,8 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 	if finErr != nil {
 		return "", finErr
 	}
+	// Apply post-save patches
+	p.applyPostSavePatches(finalPath)
 	return finalPath, nil
 }
 
@@ -951,4 +1128,164 @@ func (p *EnhancedProcessor) resolveTemplatePath(corrections []map[string]interfa
 	}
 
 	return templatePath
+}
+
+// dumpFinalDocDiagnostics 保存前验证关键段落类型的实际 run/paragraph 属性
+func dumpFinalDocDiagnostics(doc *document.Document, classified []V2ClassifiedPara) {
+	// 收集每个类型的代表性段落（每种类型最多取 3 个）
+	type sample struct {
+		category string
+		index    int
+		para     document.Paragraph
+	}
+	sampled := map[string]int{}
+	var samples []sample
+	for _, cp := range classified {
+		if cp.Para.WParagraph == nil {
+			continue
+		}
+		if sampled[cp.Type] >= 3 {
+			continue
+		}
+		sampled[cp.Type]++
+		samples = append(samples, sample{category: cp.Type, index: cp.ParaIdx, para: cp.Para})
+	}
+
+	for _, s := range samples {
+		var textBuilder strings.Builder
+		for _, r := range s.para.Runs() {
+			textBuilder.WriteString(r.Text())
+		}
+		text := strings.TrimSpace(textBuilder.String())
+		if len([]rune(text)) > 30 {
+			text = string([]rune(text)[:30]) + "..."
+		}
+		var pprInfo, rprInfo string
+		if ppr := s.para.X().PPr; ppr != nil {
+			parts := []string{}
+			if ppr.Jc != nil {
+				parts = append(parts, fmt.Sprintf("Align=%s", ppr.Jc.ValAttr.String()))
+			}
+			if ppr.Spacing != nil {
+				if ppr.Spacing.LineAttr != nil && ppr.Spacing.LineAttr.Int64 != nil {
+					lineRule := "auto"
+					if ppr.Spacing.LineRuleAttr == wml.ST_LineSpacingRuleExact {
+						lineRule = "exact"
+					}
+					parts = append(parts, fmt.Sprintf("Line=%d(%s)", *ppr.Spacing.LineAttr.Int64, lineRule))
+				}
+				if ppr.Spacing.BeforeAttr != nil && ppr.Spacing.BeforeAttr.ST_UnsignedDecimalNumber != nil {
+					parts = append(parts, fmt.Sprintf("Before=%d", *ppr.Spacing.BeforeAttr.ST_UnsignedDecimalNumber))
+				}
+				if ppr.Spacing.AfterAttr != nil && ppr.Spacing.AfterAttr.ST_UnsignedDecimalNumber != nil {
+					parts = append(parts, fmt.Sprintf("After=%d", *ppr.Spacing.AfterAttr.ST_UnsignedDecimalNumber))
+				}
+			}
+			if ppr.Ind != nil && ppr.Ind.FirstLineAttr != nil && ppr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber != nil {
+				parts = append(parts, fmt.Sprintf("FirstLine=%d", *ppr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber))
+			}
+			pprInfo = strings.Join(parts, " ")
+		}
+		runs := s.para.Runs()
+		if len(runs) > 0 {
+			r := runs[0]
+			if rpr := r.X().RPr; rpr != nil {
+				rParts := []string{}
+				if rpr.RFonts != nil {
+					if rpr.RFonts.EastAsiaAttr != nil {
+						rParts = append(rParts, fmt.Sprintf("East=%s", *rpr.RFonts.EastAsiaAttr))
+					}
+					if rpr.RFonts.AsciiAttr != nil {
+						rParts = append(rParts, fmt.Sprintf("Ascii=%s", *rpr.RFonts.AsciiAttr))
+					}
+				}
+				if rpr.Sz != nil && rpr.Sz.ValAttr.ST_UnsignedDecimalNumber != nil {
+					rParts = append(rParts, fmt.Sprintf("sz=%.1fpt", float64(*rpr.Sz.ValAttr.ST_UnsignedDecimalNumber)/2.0))
+				}
+				if rpr.SzCs != nil && rpr.SzCs.ValAttr.ST_UnsignedDecimalNumber != nil {
+					rParts = append(rParts, fmt.Sprintf("cs=%.1fpt", float64(*rpr.SzCs.ValAttr.ST_UnsignedDecimalNumber)/2.0))
+				}
+				if rpr.B != nil {
+					rParts = append(rParts, "Bold=true")
+				}
+				if rpr.I != nil {
+					rParts = append(rParts, "Italic=true")
+				}
+				rprInfo = strings.Join(rParts, " ")
+			}
+		}
+		DiagPrintf(" [产出] idx=%d type=%s text=%q ppr={%s} rpr={%s}",
+			s.index, s.category, text, pprInfo, rprInfo)
+	}
+}
+
+// applyPostSavePatches applies XML-level patches to the final output that
+// are difficult to express through the formatting engine alone. These run
+// after all engines (StyleFormatter, V2FormatEngine, ShellInPlace) produce
+// their final file, ensuring consistent results regardless of engine choice.
+func (p *EnhancedProcessor) applyPostSavePatches(outputPath string) {
+	log.Println("[PostSave] applying XML patches...")
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		log.Printf("[PostSave] read error: %v", err)
+		return
+	}
+
+	// Patch 1: docDefaults — inject eastAsia=宋体 / ascii=Times New Roman
+	patched, err := patchDocDefaults(data)
+	if err != nil {
+		log.Printf("[PostSave] DocDefaults patch error: %v", err)
+	} else if !bytes.Equal(patched, data) {
+		data = patched
+		log.Println("[PostSave] DocDefaults patched (eastAsia=宋体, ascii=Times New Roman)")
+	}
+
+	// Patch 2: Normal style font size fix
+	patched2, err := patchNormalStyleFontSize(data)
+	if err != nil {
+		log.Printf("[PostSave] NormalFix error: %v", err)
+	} else if !bytes.Equal(patched2, data) {
+		data = patched2
+	}
+
+	// Patch 3: Acknowledgements format fix (sz 21→24, remove firstLine=480, jc distribute)
+	patched3, err := patchAcknowledgements(data)
+	if err != nil {
+		log.Printf("[PostSave] AckFix error: %v", err)
+	} else if !bytes.Equal(patched3, data) {
+		data = patched3
+		log.Println("[PostSave] Acknowledgements patched (title sz=24/distribute, content sz=24/no-indent)")
+	}
+
+	// Patch 4: Reference entry font size fix
+	patched4, err := patchReferenceFontSize(data)
+	if err != nil {
+		log.Printf("[PostSave] RefFix error: %v", err)
+	} else if !bytes.Equal(patched4, data) {
+		data = patched4
+	}
+
+	// Patch 5: Header normalization — fix header10 wrong text, preserve chapter suffixes
+	patched5, err := patchHeaderNormalization(data)
+	if err != nil {
+		log.Printf("[PostSave] HeaderFix error: %v", err)
+	} else if !bytes.Equal(patched5, data) {
+		data = patched5
+		log.Println("[PostSave] Headers normalized (school name + chapter suffixes)")
+	}
+
+	// Patch 6: Footer page number — strip hardcoded "-" around PAGE fields
+	patched6, err := patchFooterPageNumber(data)
+	if err != nil {
+		log.Printf("[PostSave] FooterFix error: %v", err)
+	} else if !bytes.Equal(patched6, data) {
+		data = patched6
+		log.Println("[PostSave] Footers patched (removed hardcoded dashes around PAGE)")
+	}
+
+	if err := os.WriteFile(outputPath, data, 0644); err != nil {
+		log.Printf("[PostSave] write error: %v", err)
+	}
+	log.Println("[PostSave] done")
 }

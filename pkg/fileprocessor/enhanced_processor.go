@@ -23,6 +23,7 @@ type EnhancedProcessor struct {
 	fontNameMap         map[string]*string            // 缓存字体名，避免悬空指针
 	smartClassifier     *aiclassifier.SmartClassifier // 智能段落分类器（三级路由）
 	templatePath        string                        // 黄金模板路径（由 SetTemplatePath 设置）
+	templateHeaderText  string                        // 模板页眉原文（从 templateprofile 提取）
 	lastDiffReport      *DocDiffReport                // 最近一次格式修正的差异报告
 	lastStrongVerify    *StrongVerifyResult           // 最近一次强校验摘要（供接口返回）
 	formatSelfCheckHook func(FormattingSelfCheckResult)
@@ -581,6 +582,15 @@ func getSchoolIDFromCorrectionsList(corrections []map[string]interface{}) string
 // applyTemplateFormatting 新方案：直接从模板OOXML格式规范应用格式
 // 步骤：页面设置/页眉页脚（保留JSON规则）→ AI分类 → 直接应用模板格式规范 → 表格格式
 func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rules map[string]interface{}, specs map[string]ParagraphFormatSpec) (*FormatLockManager, error) {
+	// 节点3b：enhanced_processor 路径 — 打印 rules 和 specs
+	DiagPrintf("====== 节点3b: enhanced_processor 路径 — applyTemplateFormatting =====")
+	DiagPrintf("[enhanced] rules count=%d specs count=%d", len(rules), len(specs))
+	for key, spec := range specs {
+		DiagPrintf("[enhanced] specs[%s]: %s", key, formatSpecCompact(spec))
+	}
+	for key, rule := range rules {
+		DiagPrintf("[enhanced] rules[%s]: %+v", key, rule)
+	}
 	// 模板模式下也需要设置 docDefaults 和命名样式（Heading1-3 等），
 	// 为 TOC/导航窗格等依赖样式定义的功能提供正确的格式基础。
 	// AIFormatApplier 随后会在 run-level 写入显式 rPr，覆盖样式级默认值，
@@ -989,17 +999,15 @@ func (p *EnhancedProcessor) applyDocDefaults(styles *wml.Styles, bodyRules map[s
 	}
 	rPr := dd.RPrDefault.RPr
 
-	if fontName, ok := bodyRules["font_name"].(string); ok {
-		if rPr.RFonts == nil {
-			rPr.RFonts = wml.NewCT_Fonts()
-		}
-		ptr := p.getCachedFontName(fontName)
-		rPr.RFonts.EastAsiaAttr = ptr
-		rPr.RFonts.AsciiAttr = ptr
-		rPr.RFonts.HAnsiAttr = ptr
-		rPr.RFonts.CsAttr = ptr
-		log.Printf("[样式修改] docDefaults 字体 → %s", fontName)
+	// Always set East Asia / Latin fonts in docDefaults for proper inheritance
+	if rPr.RFonts == nil {
+		rPr.RFonts = wml.NewCT_Fonts()
 	}
+	rPr.RFonts.EastAsiaAttr = p.getCachedFontName("宋体")
+	rPr.RFonts.CsAttr = p.getCachedFontName("宋体")
+	rPr.RFonts.AsciiAttr = p.getCachedFontName("Times New Roman")
+	rPr.RFonts.HAnsiAttr = p.getCachedFontName("Times New Roman")
+	log.Printf("[样式修改] docDefaults 字体 → eastAsia=宋体, ascii=Times New Roman")
 
 	fontSizePt := p.resolveActualFontSizePt(bodyRules)
 	if fontSizePt > 0 {
@@ -2075,7 +2083,7 @@ func min(a, b int) int {
 func (p *EnhancedProcessor) applyPageSetup(doc *document.Document, rules map[string]interface{}) error {
 	// 解析页边距，默认按重庆工程学院等通用规范 2.5cm
 	var marginTop, marginBottom, marginLeft, marginRight float64 = 2.5, 2.5, 2.5, 2.5
-	var headerDistance, footerDistance float64 = 1.6, 2.1
+	var headerDistance, footerDistance float64 = 1.5, 1.75
 	var gutter float64 = 0
 
 	pageSetupRules, hasRules := rules["page_setup"].(map[string]interface{})
@@ -2227,9 +2235,19 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 
 	section := doc.BodySection()
 
+	// 🔒 LOCKED: Do NOT clear EG_HdrFtrReferences here — formatSmartHeader already
+	// set per-section headers. Only clear footer refs (setupFooterWithPageNumber
+	// will add new ones). Header refs must be preserved.
 	sectPr := section.X()
 	if sectPr != nil {
-		sectPr.EG_HdrFtrReferences = nil
+		// Remove only footer references, keep header references
+		var kept []*wml.EG_HdrFtrReferences
+		for _, ref := range sectPr.EG_HdrFtrReferences {
+			if ref.HeaderReference != nil {
+				kept = append(kept, ref)
+			}
+		}
+		sectPr.EG_HdrFtrReferences = kept
 	}
 
 	// ── 页眉 ──
@@ -2276,8 +2294,7 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 	if _, hasContent := headerRules["content"]; !hasContent || headerRules["content"] == "" {
 		// 规则中无页眉内容时，用封面信息自动构建完整页眉
 		major, _ := coverInfo["专业"]
-		// 学校名固定为重庆人文科技学院，不使用封面中"学院"字段（该字段是系/二级学院名称）
-		college := "重庆人文科技学院"
+		college := "重庆工程学院"
 		if major != "" {
 			headerText := college
 			if gradeYear != "" {
@@ -2315,7 +2332,9 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 		}
 		headerRules["content"] = content
 	}
-	p.setupHeader(doc, section, headerRules)
+	// 🔒 Per-section headers are now handled by formatSmartHeader (v2_smart_format.go).
+	// Skip setupHeader to avoid overwriting per-section headers without suffixes.
+	// p.setupHeader(doc, section, headerRules)  // DISABLED: formatSmartHeader already sets per-section headers
 
 	// ── 页脚 & 页码 ──
 	// 优先从 page_setup 取，其次从顶层取
@@ -2346,6 +2365,7 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 
 	// 🔒 LOCKED: 将页眉页脚引用传播到所有分节段落（applySectionBreaksForPageNumbering 创建的段落级 sectPr）
 	// 模板每个 sectPr 都有独立的 headerReference/footerReference，新输出仅 body section 有
+	// Headers are now per-section (created by formatSmartHeader). Only propagate footer refs.
 	p.propagateHdrFtrToAllSections(doc)
 
 	return nil
@@ -2372,7 +2392,7 @@ func (p *EnhancedProcessor) propagateHdrFtrToAllSections(doc *document.Document)
 		}
 	}
 
-	if len(hdrRefs) == 0 && len(ftrRefs) == 0 {
+	if len(ftrRefs) == 0 {
 		return
 	}
 
@@ -2384,25 +2404,12 @@ func (p *EnhancedProcessor) propagateHdrFtrToAllSections(doc *document.Document)
 		}
 		paraSectPr := pPr.SectPr
 
-		// 避免重复添加：如果已有引用则跳过
-		hasHdr := false
+		// Only propagate footer references — headers are per-section (set by formatSmartHeader).
+		// Check if footer already set
 		hasFtr := false
 		for _, ref := range paraSectPr.EG_HdrFtrReferences {
-			if ref.HeaderReference != nil {
-				hasHdr = true
-			}
 			if ref.FooterReference != nil {
 				hasFtr = true
-			}
-		}
-
-		if !hasHdr {
-			for _, hdrRef := range hdrRefs {
-				newRef := wml.NewEG_HdrFtrReferences()
-				newRef.HeaderReference = wml.NewCT_HdrFtrRef()
-				newRef.HeaderReference.TypeAttr = hdrRef.TypeAttr
-				newRef.HeaderReference.IdAttr = hdrRef.IdAttr
-				paraSectPr.EG_HdrFtrReferences = append(paraSectPr.EG_HdrFtrReferences, newRef)
 			}
 		}
 
@@ -2416,7 +2423,7 @@ func (p *EnhancedProcessor) propagateHdrFtrToAllSections(doc *document.Document)
 			}
 		}
 
-		if !hasHdr || !hasFtr {
+		if !hasFtr {
 			count++
 		}
 	}
@@ -2701,9 +2708,7 @@ func (p *EnhancedProcessor) setupFooterWithPageNumber(doc *document.Document, se
 		if pos, ok := pageNumRules["position"].(string); ok {
 			position = pos
 		}
-		if f, ok := pageNumRules["format"].(string); ok && f != "" {
-			format = f
-		}
+		// format intentionally ignored — template uses pure PAGE field only
 	}
 
 	ftr := doc.AddFooter()
@@ -2910,6 +2915,19 @@ func (p *EnhancedProcessor) setRunFont(run document.Run, fontName string, fontSi
 	if bold {
 		rPr.B = wml.NewCT_OnOff()
 	}
+}
+
+// setRunUnderline 为 run 添加单下划线
+func (p *EnhancedProcessor) setRunUnderline(run document.Run) {
+	rPr := run.X().RPr
+	if rPr == nil {
+		rPr = wml.NewCT_RPr()
+		run.X().RPr = rPr
+	}
+	if rPr.U == nil {
+		rPr.U = wml.NewCT_Underline()
+	}
+	rPr.U.ValAttr = wml.ST_UnderlineSingle
 }
 
 // parseCmValue 解析可能是 float64 或 string ("2.5cm", "2.5") 的值，返回 cm 单位的浮点数

@@ -256,10 +256,22 @@ func mergeFormatSpec(base, override ParagraphFormatSpec) ParagraphFormatSpec {
 	if override.FontSizeCSHalfPt > 0 {
 		base.FontSizeCSHalfPt = override.FontSizeCSHalfPt
 	}
-	base.Bold = override.Bold
-	base.Italic = override.Italic
-	base.Underline = override.Underline
-	if override.AlignmentSet {
+	// Bool fields: only apply override when true, to avoid zero-value (false) overwriting
+	// namedStyles/defaults non-zero values. This fixes B3-B6: heading_2/3 Bold丢失,
+	// body alignment覆盖等问题。
+	if override.Bold {
+		base.Bold = true
+	}
+	if override.Italic {
+		base.Italic = true
+	}
+	if override.Underline {
+		base.Underline = true
+	}
+	// B6 fix: only apply compiled alignment when namedStyles/base doesn't already have one.
+	// compiled from paragraph sampling often picks up incidental alignment that should not
+	// override the named style's explicit alignment.
+	if override.AlignmentSet && override.Alignment != 0 && base.Alignment == 0 {
 		base.AlignmentSet = true
 		base.Alignment = override.Alignment
 	}
@@ -273,7 +285,12 @@ func mergeFormatSpec(base, override ParagraphFormatSpec) ParagraphFormatSpec {
 	if override.SpaceAfter != 0 {
 		base.SpaceAfter = override.SpaceAfter
 	}
-	if override.FirstLineIndent != 0 {
+	// B10+B-H3FL fix: namedStyles FirstLineIndent always takes priority.
+	// Apply override only when base has no value OR when override value is >= base
+	// (i.e., compiled sampling should never downgrade an existing namedStyles value).
+	// This handles both: compiled→namedStyles (base=0 → fill) and
+	// namedStyles→compiled (base=480, override=512 → allow upgrade).
+	if override.FirstLineIndent != 0 && (base.FirstLineIndent == 0 || override.FirstLineIndent > base.FirstLineIndent || override.FirstLineIndent == base.FirstLineIndent) {
 		base.FirstLineIndent = override.FirstLineIndent
 	}
 	if override.IndentLeft != 0 {
@@ -288,9 +305,15 @@ func mergeFormatSpec(base, override ParagraphFormatSpec) ParagraphFormatSpec {
 	if override.OutlineLevel != 0 {
 		base.OutlineLevel = override.OutlineLevel
 	}
-	base.PageBreak = override.PageBreak
-	base.KeepWithNext = override.KeepWithNext
-	base.KeepLines = override.KeepLines
+	if override.PageBreak {
+		base.PageBreak = true
+	}
+	if override.KeepWithNext {
+		base.KeepWithNext = true
+	}
+	if override.KeepLines {
+		base.KeepLines = true
+	}
 	if override.SampleCount > 0 {
 		base.SampleCount = override.SampleCount
 	}

@@ -123,6 +123,108 @@ type paragraphStyle struct {
 	alignment      string
 }
 
+// rulePackProfile is the template Profile injected by callers who want
+// CQRWST to use template-extracted values instead of hardcoded defaults.
+// Set via SetRulePackProfile before invoking FixDOCX / CheckDOCX.
+var rulePackProfile *templateprofile.Profile
+
+// SetRulePackProfile injects a template Profile so that all style functions
+// (abstract, headings, body, references, header/footer, page setup) will
+// prefer values extracted from the template DOCX.  Pass nil to revert to
+// pure hardcoded defaults.
+func SetRulePackProfile(p *templateprofile.Profile) {
+	rulePackProfile = p
+}
+
+// getStyleFromProfile returns the StyleRule for key from the injected Profile,
+// or nil when no Profile is set or the key is absent.
+func getStyleFromProfile(key string) *templateprofile.StyleRule {
+	if rulePackProfile == nil || rulePackProfile.Styles == nil {
+		return nil
+	}
+	if sr, ok := rulePackProfile.Styles[key]; ok {
+		return &sr
+	}
+	return nil
+}
+
+// getPageSetupFromProfile returns the PageSetupRule from the injected Profile,
+// or an empty rule when no Profile is set.
+func getPageSetupFromProfile() templateprofile.PageSetupRule {
+	if rulePackProfile == nil {
+		return templateprofile.PageSetupRule{}
+	}
+	return rulePackProfile.PageSetup
+}
+
+// getHeaderFromProfile returns the header rule from the injected Profile.
+func getHeaderFromProfile() templateprofile.HeaderFooterRule {
+	if rulePackProfile == nil {
+		return templateprofile.HeaderFooterRule{}
+	}
+	return rulePackProfile.Header
+}
+
+// getFooterFromProfile returns the footer rule from the injected Profile.
+func getFooterFromProfile() templateprofile.HeaderFooterRule {
+	if rulePackProfile == nil {
+		return templateprofile.HeaderFooterRule{}
+	}
+	return rulePackProfile.Footer
+}
+
+// profileRuleToParagraphStyle converts a templateprofile.StyleRule into a
+// cqrwst paragraphStyle, filling missing fields from the provided defaults.
+func profileRuleToParagraphStyle(pr *templateprofile.StyleRule, defaults paragraphStyle) paragraphStyle {
+	ps := defaults
+	if pr.FontEastAsia != "" {
+		ps.eastAsiaFont = pr.FontEastAsia
+	}
+	if pr.FontASCII != "" {
+		ps.asciiFont = pr.FontASCII
+	}
+	if pr.FontSizeHalfPt != "" {
+		ps.fontSize = pr.FontSizeHalfPt
+	}
+	if pr.BoldSet {
+		ps.bold = pr.Bold
+	}
+	if pr.Alignment != "" {
+		ps.alignment = pr.Alignment
+	}
+	if pr.Line != "" {
+		ps.line = pr.Line
+	}
+	if pr.LineRule != "" {
+		ps.lineRule = pr.LineRule
+	}
+	if pr.BeforeTwips != "" {
+		ps.beforeTwips = parseStyleInt(pr.BeforeTwips)
+	}
+	if pr.AfterTwips != "" {
+		ps.afterTwips = parseStyleInt(pr.AfterTwips)
+	}
+	if pr.BeforeLines != "" {
+		ps.beforeLines = parseStyleInt(pr.BeforeLines)
+	}
+	if pr.AfterLines != "" {
+		ps.afterLines = parseStyleInt(pr.AfterLines)
+	}
+	if pr.FirstLineChars != "" {
+		ps.firstLineChars = parseStyleInt(pr.FirstLineChars)
+	}
+	return ps
+}
+
+// parseStyleInt parses a string to int and returns a pointer, or nil on failure.
+func parseStyleInt(s string) *int {
+	v, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return nil
+	}
+	return &v
+}
+
 // FixDOCX 鏄?CQRWST 瑙勫垯鍖呯殑鈥滆嚜鍔ㄤ慨澶嶅叆鍙ｂ€濄€?//
 // 杩欎釜鍑芥暟鍙礋璐ｅ鐞嗕竴涓凡缁忓瓨鍦ㄧ殑 docx 鏂囦欢锛?// 1. 鎵撳紑 docx 鍘嬬缉鍖咃紱
 // 2. 鍙栧嚭 word/document.xml锛屼篃灏辨槸姝ｆ枃 OOXML锛?// 3. 渚濇鎵ц鏂囨湰瑙勫垯銆佹钀芥牱寮忚鍒欍€佸垎鑺傝鍒欙紱
@@ -1471,12 +1573,43 @@ func cqrwstHeaderReference() string {
 }
 
 func cqrwstPageSettings() string {
-	return `<w:pgSz w:w="11906" w:h="16838"/>` +
-		`<w:pgMar w:top="1418" w:right="1418" w:bottom="1418" w:left="1418" w:header="851" w:footer="992" w:gutter="0"/>`
+	// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
+	ps := getPageSetupFromProfile()
+	top := ps.MarginTopTwips
+	right := ps.MarginRightTwips
+	bottom := ps.MarginBottomTwips
+	left := ps.MarginLeftTwips
+	header := ps.HeaderMarginTwips
+	footer := ps.FooterMarginTwips
+	if top == "" {
+		top = "1418"
+	}
+	if right == "" {
+		right = "1134"
+	}
+	if bottom == "" {
+		bottom = "1134"
+	}
+	if left == "" {
+		left = "1418"
+	}
+	if header == "" {
+		header = "851"
+	}
+	if footer == "" {
+		footer = "992"
+	}
+	return fmt.Sprintf(`<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="%s" w:right="%s" w:bottom="%s" w:left="%s" w:header="%s" w:footer="%s" w:gutter="0"/>`,
+		top, right, bottom, left, header, footer)
 }
 
 func cqrwstPageNumber(format string) string {
 	return fmt.Sprintf(`<w:pgNumType w:start="1" w:fmt="%s"/>`, format)
+}
+
+// cqrwstPageNumberContinued 生成无 start=1 的 pgNumType，用于参考文献/致谢等需继承正文页码的节
+func cqrwstPageNumberContinued(format string) string {
+	return fmt.Sprintf(`<w:pgNumType w:fmt="%s"/>`, format)
 }
 
 func ensureHeaderFooterParts(pkg *ooxmlpkg.DocxPackage, documentXML string) Result {
@@ -1633,7 +1766,16 @@ func cqrwstHeaderXML(header string) string {
 	if header == "" {
 		header = defaultHeaderText()
 	}
-	return `<?xml version="1.0" encoding="UTF-8"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/><w:pBdr><w:bottom w:val="double" w:sz="4" w:space="0" w:color="000000"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="` + fontSimSun() + `"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr><w:t>` + html.EscapeString(header) + `</w:t></w:r></w:p></w:hdr>`
+	// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
+	fontEA := fontSimSun()
+	sz := "21"
+	if hf := getHeaderFromProfile(); hf.FontEastAsia != "" {
+		fontEA = hf.FontEastAsia
+	}
+	if hf := getHeaderFromProfile(); hf.FontSizeHalfPt != "" {
+		sz = hf.FontSizeHalfPt
+	}
+	return `<?xml version="1.0" encoding="UTF-8"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/><w:pBdr><w:bottom w:val="double" w:sz="4" w:space="0" w:color="000000"/></w:pBdr></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="` + fontEA + `"/><w:sz w:val="` + sz + `"/><w:szCs w:val="` + sz + `"/></w:rPr><w:t>` + html.EscapeString(header) + `</w:t></w:r></w:p></w:hdr>`
 }
 
 func normalizeCQRWSTHeaderText(header string) string {
@@ -1647,7 +1789,16 @@ func normalizeCQRWSTHeaderText(header string) string {
 }
 
 func cqrwstFooterXML() string {
-	return `<?xml version="1.0" encoding="UTF-8"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="` + fontSimSun() + `"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr><w:t>` + textPagePrefix() + `</w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t>` + textPageMiddle() + `</w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> NUMPAGES </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t>` + textPageSuffix() + `</w:t></w:r></w:p></w:ftr>`
+	// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
+	fontEA := fontSimSun()
+	sz := "18"
+	if hf := getFooterFromProfile(); hf.FontEastAsia != "" {
+		fontEA = hf.FontEastAsia
+	}
+	if hf := getFooterFromProfile(); hf.FontSizeHalfPt != "" {
+		sz = hf.FontSizeHalfPt
+	}
+	return `<?xml version="1.0" encoding="UTF-8"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="` + fontEA + `"/><w:sz w:val="` + sz + `"/><w:szCs w:val="` + sz + `"/></w:rPr><w:t>` + textPagePrefix() + `</w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t>` + textPageMiddle() + `</w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> NUMPAGES </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t>` + textPageSuffix() + `</w:t></w:r></w:p></w:ftr>`
 }
 
 func fontSimSun() string { return "\u5b8b\u4f53" }
@@ -1844,23 +1995,63 @@ func styleForParagraph(text string, section *string) (paragraphStyle, bool) {
 	}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func abstractCNTitleStyle() paragraphStyle {
+	defaults := defaultAbstractCNTitleStyle()
+	if pr := getStyleFromProfile("abstract_cn"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultAbstractCNTitleStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-abstract-cn-title-style", message: "Chinese abstract title style", eastAsiaFont: "\u9ed1\u4f53", asciiFont: "Times New Roman", fontSize: "32", bold: true, line: "360", alignment: "center"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func abstractCNLabelStyle() paragraphStyle {
+	defaults := defaultAbstractCNLabelStyle()
+	if pr := getStyleFromProfile("abstract_cn"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultAbstractCNLabelStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-abstract-cn-label-style", message: "Chinese abstract label style", eastAsiaFont: "\u9ed1\u4f53", asciiFont: "Times New Roman", fontSize: "30", bold: true, firstLineChars: intPtr(200), afterLines: intPtr(200), line: "360"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func abstractCNBodyStyle() paragraphStyle {
+	defaults := defaultAbstractCNBodyStyle()
+	if pr := getStyleFromProfile("abstract_cn"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultAbstractCNBodyStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-abstract-cn-body-style", message: "Chinese abstract body style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "24", firstLineChars: intPtr(200), afterLines: intPtr(200), line: "360", alignment: "both"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func keywordCNLabelStyle() paragraphStyle {
+	defaults := defaultKeywordCNLabelStyle()
+	if pr := getStyleFromProfile("keywords_cn"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultKeywordCNLabelStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-keyword-cn-label-style", message: "Chinese keywords label style", eastAsiaFont: "\u9ed1\u4f53", asciiFont: "Times New Roman", fontSize: "24", bold: true}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func keywordCNBodyStyle() paragraphStyle {
+	defaults := defaultKeywordCNBodyStyle()
+	if pr := getStyleFromProfile("keywords_cn"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultKeywordCNBodyStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-keyword-cn-body-style", message: "Chinese keywords body style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "24"}
 }
 
@@ -1868,55 +2059,163 @@ func keywordParagraphStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-keyword-paragraph-style", message: "Keywords paragraph style", line: "360", alignment: "both"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func abstractENTitleStyle() paragraphStyle {
+	defaults := defaultAbstractENTitleStyle()
+	if pr := getStyleFromProfile("abstract_en"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultAbstractENTitleStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-abstract-en-title-style", message: "English abstract title style", eastAsiaFont: "Times New Roman", asciiFont: "Times New Roman", fontSize: "30", bold: true, line: "360", alignment: "center"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func abstractENLabelStyle() paragraphStyle {
+	defaults := defaultAbstractENLabelStyle()
+	if pr := getStyleFromProfile("abstract_en"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultAbstractENLabelStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-abstract-en-label-style", message: "English abstract label style", eastAsiaFont: "Times New Roman", asciiFont: "Times New Roman", fontSize: "30", bold: true, firstLineChars: intPtr(200), afterLines: intPtr(200), line: "360"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func keywordENLabelStyle() paragraphStyle {
+	defaults := defaultKeywordENLabelStyle()
+	if pr := getStyleFromProfile("keywords_en"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultKeywordENLabelStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-keyword-en-label-style", message: "English keywords label style", eastAsiaFont: "Times New Roman", asciiFont: "Times New Roman", fontSize: "24", bold: true}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func keywordENBodyStyle() paragraphStyle {
+	defaults := defaultKeywordENBodyStyle()
+	if pr := getStyleFromProfile("keywords_en"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultKeywordENBodyStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-keyword-en-body-style", message: "English keywords body style", eastAsiaFont: "Times New Roman", asciiFont: "Times New Roman", fontSize: "24"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func abstractENBodyStyle() paragraphStyle {
+	defaults := defaultAbstractENBodyStyle()
+	if pr := getStyleFromProfile("abstract_en"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultAbstractENBodyStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-abstract-en-body-style", message: "English abstract body style", eastAsiaFont: "Times New Roman", asciiFont: "Times New Roman", fontSize: "24", afterLines: intPtr(200), line: "360", alignment: "both"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func heading1Style() paragraphStyle {
-	return paragraphStyle{ruleID: "cqrwst-heading1-style", message: "Heading 1 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "32", bold: true, beforeTwips: intPtr(240), afterTwips: intPtr(240), line: "360", alignment: "center"}
+	defaults := defaultHeading1Style()
+	if pr := getStyleFromProfile("heading_1"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultHeading1Style() paragraphStyle {
+	// 🔒 LOCKED: 一级标题 eastAsiaFont 黑体
+	return paragraphStyle{ruleID: "cqrwst-heading1-style", message: "Heading 1 style", eastAsiaFont: "\u9ed1\u4f53", asciiFont: "Times New Roman", fontSize: "32", bold: true, beforeTwips: intPtr(240), afterTwips: intPtr(240), line: "360", alignment: "center"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func heading2Style() paragraphStyle {
-	return paragraphStyle{ruleID: "cqrwst-heading2-style", message: "Heading 2 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "30", bold: true, line: "360", alignment: "left"}
+	defaults := defaultHeading2Style()
+	if pr := getStyleFromProfile("heading_2"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultHeading2Style() paragraphStyle {
+	// 🔒 LOCKED: 二级标题 eastAsiaFont 黑体
+	return paragraphStyle{ruleID: "cqrwst-heading2-style", message: "Heading 2 style", eastAsiaFont: "\u9ed1\u4f53", asciiFont: "Times New Roman", fontSize: "30", bold: true, line: "360", alignment: "left"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func heading3Style() paragraphStyle {
-	return paragraphStyle{ruleID: "cqrwst-heading3-style", message: "Heading 3 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "28", bold: true, line: "360", alignment: "left"}
+	defaults := defaultHeading3Style()
+	if pr := getStyleFromProfile("heading_3"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultHeading3Style() paragraphStyle {
+	// 🔒 LOCKED: 三级标题 eastAsiaFont 黑体
+	return paragraphStyle{ruleID: "cqrwst-heading3-style", message: "Heading 3 style", eastAsiaFont: "\u9ed1\u4f53", asciiFont: "Times New Roman", fontSize: "28", bold: true, line: "360", alignment: "left"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func heading4Style() paragraphStyle {
+	defaults := defaultHeading4Style()
+	if pr := getStyleFromProfile("heading_4"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultHeading4Style() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-heading4-style", message: "Heading 4 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "28", line: "360", alignment: "left"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func bodyStyle() paragraphStyle {
+	defaults := defaultBodyStyle()
+	if pr := getStyleFromProfile("body"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultBodyStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-body-style", message: "Body style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "24", firstLineChars: intPtr(200), line: "360", alignment: "both"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func referenceStyle() paragraphStyle {
+	defaults := defaultReferenceStyle()
+	if pr := getStyleFromProfile("references"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultReferenceStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-reference-style", message: "Reference entry style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "21", firstLineChars: intPtr(0), line: "360"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func referencesTitleStyle() paragraphStyle {
-	return paragraphStyle{ruleID: "cqrwst-references-title-style", message: "References title style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "28", bold: true, line: "360", alignment: "center"}
+	defaults := defaultReferencesTitleStyle()
+	if pr := getStyleFromProfile("references_title"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultReferencesTitleStyle() paragraphStyle {
+	// 🔒 LOCKED: 参考文献标题 eastAsiaFont 黑体
+	return paragraphStyle{ruleID: "cqrwst-references-title-style", message: "References title style", eastAsiaFont: "\u9ed1\u4f53", asciiFont: "Times New Roman", fontSize: "28", bold: true, line: "360", alignment: "center"}
 }
 
+// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func captionStyle() paragraphStyle {
+	defaults := defaultCaptionStyle()
+	if pr := getStyleFromProfile("caption"); pr != nil {
+		return profileRuleToParagraphStyle(pr, defaults)
+	}
+	return defaults
+}
+func defaultCaptionStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-figure-table-caption-style", message: "Figure and table caption style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "21", firstLineChars: intPtr(0), line: "360", alignment: "center"}
 }
 

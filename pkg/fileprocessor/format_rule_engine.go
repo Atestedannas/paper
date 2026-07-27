@@ -18,6 +18,7 @@ type FormatRuleEngine struct {
 	compiled      map[string]ParagraphFormatSpec
 	namedStyles   map[string]ParagraphFormatSpec
 	defaults      map[string]ParagraphFormatSpec
+	Profile       *templateprofile.Profile
 }
 
 func NewFormatRuleEngine(processor *EnhancedProcessor, templatePath string, userOverrides map[string]interface{}) (*FormatRuleEngine, error) {
@@ -41,6 +42,32 @@ func NewFormatRuleEngine(processor *EnhancedProcessor, templatePath string, user
 	// 🔒 LOCKED: 标题格式全部从模板提取 — templateprofile.Extract() 优先于硬编码
 	profile, profileErr := templateprofile.Extract(templatePath)
 	if profileErr == nil {
+		engine.Profile = profile
+		// 节点1：模板解析 — 打印 Profile 中所有格式信息
+		DiagPrintf("====== 节点1: 模板解析 (templateprofile.Extract) =====")
+		DiagPrintf("template_path=%s", templatePath)
+		DiagPrintf("--- 页面设置 ---")
+		DiagPrintf("PageWidthTwips=%s PageHeightTwips=%s", profile.PageSetup.PageWidthTwips, profile.PageSetup.PageHeightTwips)
+		DiagPrintf("MarginTop=%s MarginRight=%s MarginBottom=%s MarginLeft=%s",
+			profile.PageSetup.MarginTopTwips, profile.PageSetup.MarginRightTwips,
+			profile.PageSetup.MarginBottomTwips, profile.PageSetup.MarginLeftTwips)
+		DiagPrintf("HeaderMargin=%s FooterMargin=%s Orientation=%s",
+			profile.PageSetup.HeaderMarginTwips, profile.PageSetup.FooterMarginTwips, profile.PageSetup.Orientation)
+		DiagPrintf("--- 页眉 ---")
+		DiagPrintf("Exists=%v FontEastAsia=%s FontAscii=%s FontSizeHalfPt=%s HasDoubleLine=%v HasUnderline=%v Text=%q",
+			profile.Header.Exists, profile.Header.FontEastAsia, profile.Header.FontAscii,
+			profile.Header.FontSizeHalfPt, profile.Header.HasDoubleLine, profile.Header.HasUnderline, profile.Header.Text)
+		DiagPrintf("--- 页脚 ---")
+		DiagPrintf("Exists=%v FontEastAsia=%s FontAscii=%s FontSizeHalfPt=%s HasPageField=%v HasNumPages=%v Text=%q",
+			profile.Footer.Exists, profile.Footer.FontEastAsia, profile.Footer.FontAscii,
+			profile.Footer.FontSizeHalfPt, profile.Footer.HasPageField, profile.Footer.HasNumPages, profile.Footer.Text)
+		DiagPrintf("--- 样式画像 (Styles) ---")
+		for styleKey, style := range profile.Styles {
+			DiagPrintf("Styles[%s]: font_east_asia=%s font_ascii=%s font_size_half_pt=%s bold=%v alignment=%s line=%s line_rule=%s before_twips=%s after_twips=%s first_line_chars=%s first_line_twips=%s",
+				styleKey, style.FontEastAsia, style.FontASCII, style.FontSizeHalfPt,
+				style.Bold, style.Alignment, style.Line, style.LineRule,
+				style.BeforeTwips, style.AfterTwips, style.FirstLineChars, style.FirstLineTwips)
+		}
 		if header, ok := headerFooterFormatSpec(profile.Header); ok {
 			engine.compiled["header"] = header
 		}
@@ -69,10 +96,39 @@ func NewFormatRuleEngine(processor *EnhancedProcessor, templatePath string, user
 				}
 			}
 		}
+		// 🔒 LOCKED: 标题中文字体黑体修正 — 当模板采样为宋体(继承Normal)，但默认规范要求黑体时
+		// 优先信任默认规范，因为模板的 Normal 默认字体通常是宋体
+		for _, level := range []string{"heading_1", "heading_2", "heading_3"} {
+			if compiled, exists := engine.compiled[level]; exists {
+				if def, defExists := engine.defaults[level]; defExists &&
+					def.FontEastAsia == "黑体" && compiled.FontEastAsia == "宋体" {
+					compiled.FontEastAsia = "黑体"
+					engine.compiled[level] = compiled
+				}
+			}
+		}
 	}
 	if len(engine.compiled) == 0 && len(engine.namedStyles) == 0 {
 		return nil, fmt.Errorf("template contains no usable paragraph rules")
 	}
+
+	// 节点2：规则编译 — 打印编译后的所有 ParagraphFormatSpec
+	DiagPrintf("====== 节点2: 规则编译 (NewFormatRuleEngine) =====")
+	DiagPrintf("compiled count=%d namedStyles count=%d defaults count=%d",
+		len(engine.compiled), len(engine.namedStyles), len(engine.defaults))
+	DiagPrintf("--- compiled (模板采样 + templateprofile 注入) ---")
+	for key, spec := range engine.compiled {
+		DiagPrintf("compiled[%s]: %s", key, formatSpecCompact(spec))
+	}
+	DiagPrintf("--- namedStyles (模板 Named Style 提取) ---")
+	for key, spec := range engine.namedStyles {
+		DiagPrintf("namedStyles[%s]: %s", key, formatSpecCompact(spec))
+	}
+	DiagPrintf("--- defaults (硬编码兜底) ---")
+	for key, spec := range engine.defaults {
+		DiagPrintf("defaults[%s]: %s", key, formatSpecCompact(spec))
+	}
+	engine.dumpAllRules()
 	return engine, nil
 }
 
@@ -294,6 +350,15 @@ func styleRuleToFormatSpec(style templateprofile.StyleRule) (ParagraphFormatSpec
 	if v, err := strconv.ParseUint(style.AfterTwips, 10, 64); err == nil && v > 0 {
 		spec.SpaceAfter = v
 	}
+	// B-H3FL: 从 templateprofile.StyleRule 提取首行缩进。
+	// 优先级：FirstLineTwips（模板 styles.xml 的 w:ind@w:firstLine）> FirstLineChars
+	if v, err := strconv.ParseUint(style.FirstLineTwips, 10, 64); err == nil && v > 0 {
+		spec.FirstLineIndent = v
+	} else if v, err := strconv.ParseUint(style.FirstLineChars, 10, 64); err == nil && v > 0 {
+		// FirstLineChars 是 1/100 字符数，转为 twips 需结合字号，
+		// 但这里仅做兜底：直接保留原始值（大多数模板使用 twips）
+		spec.FirstLineIndent = v
+	}
 	return spec, !spec.IsEmpty()
 }
 
@@ -500,5 +565,65 @@ func parseAlignment(value string) (wml.ST_Jc, bool) {
 		return wml.ST_JcBoth, true
 	default:
 		return wml.ST_JcLeft, false
+	}
+}
+
+// formatSpecCompact 紧凑格式化 ParagraphFormatSpec 用于诊断日志
+func formatSpecCompact(spec ParagraphFormatSpec) string {
+	parts := []string{}
+	if spec.FontEastAsia != "" {
+		parts = append(parts, fmt.Sprintf("East=%s", spec.FontEastAsia))
+	}
+	if spec.FontAscii != "" {
+		parts = append(parts, fmt.Sprintf("Ascii=%s", spec.FontAscii))
+	}
+	if spec.FontSizeHalfPt > 0 {
+		parts = append(parts, fmt.Sprintf("sz=%.1fpt", spec.FontSizePt()))
+	}
+	if spec.FontSizeCSHalfPt > 0 {
+		parts = append(parts, fmt.Sprintf("cs=%.1fpt", float64(spec.FontSizeCSHalfPt)/2.0))
+	}
+	if spec.Bold {
+		parts = append(parts, "Bold=true")
+	}
+	if spec.Italic {
+		parts = append(parts, "Italic=true")
+	}
+	if spec.AlignmentSet {
+		parts = append(parts, fmt.Sprintf("Align=%s", spec.Alignment.String()))
+	}
+	if spec.LineSpacingVal > 0 {
+		rule := "auto"
+		if spec.LineSpacingRule == wml.ST_LineSpacingRuleExact {
+			rule = "exact"
+		}
+		parts = append(parts, fmt.Sprintf("Line=%d(%s)", spec.LineSpacingVal, rule))
+	}
+	if spec.SpaceBefore > 0 {
+		parts = append(parts, fmt.Sprintf("Before=%d", spec.SpaceBefore))
+	}
+	if spec.SpaceAfter > 0 {
+		parts = append(parts, fmt.Sprintf("After=%d", spec.SpaceAfter))
+	}
+	if spec.FirstLineIndent > 0 {
+		parts = append(parts, fmt.Sprintf("FirstLine=%d", spec.FirstLineIndent))
+	}
+	if spec.OutlineLevel > 0 {
+		parts = append(parts, fmt.Sprintf("Level=%d", spec.OutlineLevel))
+	}
+	if spec.Underline {
+		parts = append(parts, "Underline=true")
+	}
+	if spec.PageBreak {
+		parts = append(parts, "PageBreak=true")
+	}
+	return strings.Join(parts, " ")
+}
+
+// dumpAllRules 打印 GetRule 融合后的最终规则（四级优先级合并结果）
+func (e *FormatRuleEngine) dumpAllRules() {
+	DiagPrintf("--- 最终融合规则 (defaults→namedStyles→compiled→overrides) ---")
+	for key, spec := range e.Rules() {
+		DiagPrintf("Rule[%s]: %s", key, formatSpecCompact(spec))
 	}
 }

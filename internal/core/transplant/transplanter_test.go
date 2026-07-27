@@ -1579,7 +1579,7 @@ func TestNormalizeCQRWSTMainHeaderBuildsTextFromTemplateHeaderAndCoverFields(t *
 	normalizeCQRWSTMainHeader(pkg, map[string]string{
 		"\u4e13\u4e1a":             "\u62a4\u7406\u5b66",
 		"\u5b8c\u6210\u65e5\u671f": "2026\u5e745\u6708",
-	})
+	}, nil)
 
 	header, ok := pkg.Get("word/header1.xml")
 	if !ok {

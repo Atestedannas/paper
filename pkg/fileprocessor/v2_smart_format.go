@@ -24,6 +24,7 @@ type V2SmartFormatter struct {
 
 	// 新增 spec
 	coverTitleSpec        *ParagraphFormatSpec
+	coverFieldSpec        *ParagraphFormatSpec
 	abstractTitleSpec     *ParagraphFormatSpec
 	abstractContentSpec   *ParagraphFormatSpec
 	keywordsSpec          *ParagraphFormatSpec
@@ -37,6 +38,7 @@ type V2SmartFormatter struct {
 	notesSpec             *ParagraphFormatSpec
 	captionSpec           *ParagraphFormatSpec
 	headerSpec            *ParagraphFormatSpec
+	templateHeaderText    string // 模板页眉原文（用于提取学校名称）
 }
 
 // NewV2SmartFormatter 创建智能格式化器。headingSpecs 为模板提取的 heading_1/2/3 格式规范，bodySpec 为正文格式规范，refSpec 为参考文献条目格式规范。
@@ -44,23 +46,26 @@ type V2SmartFormatter struct {
 // 🔒 LOCKED: 参考文献条目行距从 refSpec 取值
 func NewV2SmartFormatter(proc *EnhancedProcessor, headingSpecs map[string]ParagraphFormatSpec,
 	bodySpec, refSpec *ParagraphFormatSpec,
-	coverTitleSpec, abstractTitleSpec, abstractContentSpec, keywordsSpec *ParagraphFormatSpec,
+	coverTitleSpec, coverFieldSpec, abstractTitleSpec, abstractContentSpec, keywordsSpec *ParagraphFormatSpec,
 	enAbstractTitleSpec, enAbstractContentSpec, enKeywordsSpec *ParagraphFormatSpec,
 	tocTitleSpec, tocEntrySpec *ParagraphFormatSpec,
 	referencesTitleSpec, sectionTitleSpec, notesSpec, captionSpec, headerSpec *ParagraphFormatSpec,
+	templateHeaderText string,
 ) *V2SmartFormatter {
 	if headingSpecs == nil {
 		headingSpecs = map[string]ParagraphFormatSpec{}
 	}
 	return &V2SmartFormatter{
 		processor: proc, headingSpecs: headingSpecs, bodySpec: bodySpec, refSpec: refSpec,
-		coverTitleSpec: coverTitleSpec, abstractTitleSpec: abstractTitleSpec,
+		coverTitleSpec: coverTitleSpec, coverFieldSpec: coverFieldSpec,
+		abstractTitleSpec:   abstractTitleSpec,
 		abstractContentSpec: abstractContentSpec, keywordsSpec: keywordsSpec,
 		enAbstractTitleSpec: enAbstractTitleSpec, enAbstractContentSpec: enAbstractContentSpec,
 		enKeywordsSpec: enKeywordsSpec,
 		tocTitleSpec:   tocTitleSpec, tocEntrySpec: tocEntrySpec,
 		referencesTitleSpec: referencesTitleSpec, sectionTitleSpec: sectionTitleSpec,
 		notesSpec: notesSpec, captionSpec: captionSpec, headerSpec: headerSpec,
+		templateHeaderText: templateHeaderText,
 	}
 }
 
@@ -86,6 +91,63 @@ func (f *V2SmartFormatter) ApplySmartFormatting(doc *document.Document, classifi
 		"heading1Count": h1Count,
 	})
 	// #endregion
+
+	// 节点3a：v2_smart_format 路径 — 打印所有传入的格式 spec
+	DiagPrintf(" ====== 节点3a: v2_smart_format 路径 — ApplySmartFormatting ======")
+	if f.coverTitleSpec != nil {
+		DiagPrintf(" [v2_smart] cover_title: %s", formatSpecCompact(*f.coverTitleSpec))
+	}
+	if f.coverFieldSpec != nil {
+		DiagPrintf(" [v2_smart] cover_field: %s", formatSpecCompact(*f.coverFieldSpec))
+	}
+	if f.abstractTitleSpec != nil {
+		DiagPrintf(" [v2_smart] abstract_title: %s", formatSpecCompact(*f.abstractTitleSpec))
+	}
+	if f.abstractContentSpec != nil {
+		DiagPrintf(" [v2_smart] abstract: %s", formatSpecCompact(*f.abstractContentSpec))
+	}
+	if f.keywordsSpec != nil {
+		DiagPrintf(" [v2_smart] keywords: %s", formatSpecCompact(*f.keywordsSpec))
+	}
+	if f.enAbstractTitleSpec != nil {
+		DiagPrintf(" [v2_smart] en_abstract_title: %s", formatSpecCompact(*f.enAbstractTitleSpec))
+	}
+	if f.enAbstractContentSpec != nil {
+		DiagPrintf(" [v2_smart] en_abstract: %s", formatSpecCompact(*f.enAbstractContentSpec))
+	}
+	if f.enKeywordsSpec != nil {
+		DiagPrintf(" [v2_smart] en_keywords: %s", formatSpecCompact(*f.enKeywordsSpec))
+	}
+	if f.bodySpec != nil {
+		DiagPrintf(" [v2_smart] body: %s", formatSpecCompact(*f.bodySpec))
+	}
+	if f.refSpec != nil {
+		DiagPrintf(" [v2_smart] ref: %s", formatSpecCompact(*f.refSpec))
+	}
+	if f.tocTitleSpec != nil {
+		DiagPrintf(" [v2_smart] toc_title: %s", formatSpecCompact(*f.tocTitleSpec))
+	}
+	if f.tocEntrySpec != nil {
+		DiagPrintf(" [v2_smart] toc_entry: %s", formatSpecCompact(*f.tocEntrySpec))
+	}
+	if f.referencesTitleSpec != nil {
+		DiagPrintf(" [v2_smart] references_title: %s", formatSpecCompact(*f.referencesTitleSpec))
+	}
+	if f.sectionTitleSpec != nil {
+		DiagPrintf(" [v2_smart] section_title: %s", formatSpecCompact(*f.sectionTitleSpec))
+	}
+	if f.notesSpec != nil {
+		DiagPrintf(" [v2_smart] notes: %s", formatSpecCompact(*f.notesSpec))
+	}
+	if f.captionSpec != nil {
+		DiagPrintf(" [v2_smart] caption: %s", formatSpecCompact(*f.captionSpec))
+	}
+	if f.headerSpec != nil {
+		DiagPrintf(" [v2_smart] header: %s", formatSpecCompact(*f.headerSpec))
+	}
+	for level, spec := range f.headingSpecs {
+		DiagPrintf(" [v2_smart] headingSpec[%s]: %s", level, formatSpecCompact(spec))
+	}
 
 	f.formatThesisTitle(classified)
 	f.formatAbstract(classified)
@@ -763,8 +825,16 @@ func (f *V2SmartFormatter) formatSmartHeader(doc *document.Document, classified 
 		}
 	}
 
-	headerText := "重庆人文科技学院" + gradeYear + "届" + major + "专业" + docType
-	log.Printf("[V2智能页眉] %q (班级=%q, 专业=%q)", headerText, coverInfo["班级"], major)
+	// 模板优先：直接使用模板页眉原文，不拼接年级/专业
+	var headerText string
+	if f.templateHeaderText != "" {
+		// 清洗模板文本：去除节名后缀（如"致谢""摘要"等），保留核心"XXXX大学/学院本科生毕业设计（论文）"
+		headerText = cleanHeaderSuffix(f.templateHeaderText)
+	} else {
+		// 兜底：无模板页眉时从封面信息构建
+		headerText = "重庆工程学院" + gradeYear + "届" + major + "专业" + docType
+	}
+	log.Printf("[V2智能页眉] %q (模板页眉=%q, 班级=%q, 专业=%q)", headerText, f.templateHeaderText, coverInfo["班级"], major)
 
 	// #region agent log
 	debugLog("v2_smart_format.go:formatSmartHeader", "H4_HEADER_GENERATION", map[string]interface{}{
@@ -777,15 +847,16 @@ func (f *V2SmartFormatter) formatSmartHeader(doc *document.Document, classified 
 	})
 	// #endregion
 
-	// 清除原有页眉并设置新页眉
-	section := doc.BodySection()
-	sectPr := section.X()
-	if sectPr != nil {
-		sectPr.EG_HdrFtrReferences = nil
-	}
-	hdr := doc.AddHeader()
+	// B11 fix: write content into ALL existing header parts to ensure header1.xml
+	// has content regardless of which index it occupies in doc.Headers().
+	// Previous fix only wrote to headers[0], which might not be header1.xml.
+	var hdr document.Header
+	headers := doc.Headers()
+
+	// Determine header font and underline from spec
 	headerFontName := "宋体"
 	headerFontSize := 9.0
+	headerUnderline := false
 	if f.headerSpec != nil {
 		if f.headerSpec.FontEastAsia != "" {
 			headerFontName = f.headerSpec.FontEastAsia
@@ -793,9 +864,188 @@ func (f *V2SmartFormatter) formatSmartHeader(doc *document.Document, classified 
 		if f.headerSpec.FontSizeHalfPt > 0 {
 			headerFontSize = float64(f.headerSpec.FontSizeHalfPt) / 2.0
 		}
+		if f.headerSpec.Underline {
+			headerUnderline = true
+		}
 	}
-	f.processor.buildDoubleLineHeaderParagraph(hdr, headerText, headerFontName, headerFontSize)
-	section.SetHeader(hdr, wml.ST_HdrFtrDefault)
+
+	headerSuffixes := deriveChapterSuffixes(classified)
+
+	// First pass: read each header's original suffix from template content
+	// (before clearing), so we preserve the template's header-to-chapter mapping.
+	type headerSuffix struct {
+		idx    int
+		suffix string
+	}
+	var origSuffixes []headerSuffix
+	for i, h := range headers {
+		orig := getHeaderPlainText(h)
+		_, suffix := splitHeaderCoreSuffix(orig)
+		if suffix != "" {
+			origSuffixes = append(origSuffixes, headerSuffix{i, suffix})
+		}
+	}
+	log.Printf("[SMART_HEADER] template headers=%d, original suffixes=%v",
+		len(headers), origSuffixes)
+
+	if len(headers) == 0 {
+		hdr = doc.AddHeader()
+	} else {
+		// Build a lookup: for each header index, what suffix to use.
+		// Priority: original template suffix > derived chapter suffix by order > empty
+		idxSuffix := map[int]string{}
+		for _, os := range origSuffixes {
+			idxSuffix[os.idx] = os.suffix
+		}
+		// Fill in remaining with derived suffixes (for headers that had no original suffix)
+		suffixIdx := 0
+		for i := range headers {
+			if _, ok := idxSuffix[i]; ok {
+				continue
+			}
+			if suffixIdx < len(headerSuffixes) && headerSuffixes[suffixIdx] != "" {
+				idxSuffix[i] = headerSuffixes[suffixIdx]
+				suffixIdx++
+			}
+		}
+
+		for i, h := range headers {
+			h.Clear()
+			textToWrite := headerText
+			if s, ok := idxSuffix[i]; ok && s != "" {
+				textToWrite = headerText + " " + s
+			}
+			f.processor.buildDoubleLineHeaderParagraphEx(h, textToWrite, headerFontName, headerFontSize, headerUnderline)
+		}
+		hdr = headers[0]
+	}
+
+	if len(headers) == 0 {
+		f.processor.buildDoubleLineHeaderParagraphEx(hdr, headerText, headerFontName, headerFontSize, headerUnderline)
+	}
+
+	// 🔒 Header content is now written; original template section-header associations
+	// are preserved. Do NOT clear EG_HdrFtrReferences or call per-section SetHeader —
+	// template's own sectPr headerReference links to the correct header index already.
+	// The loop above writes baseText+suffix to each header; whichever section originally
+	// referenced a given header will pick up the new content automatically.
+
+	// Post-cleanup: normalize any remaining headers that may have been
+	// created after our initial pass (e.g. by applyHeaderFooter second pass).
+	// This regex-replaces patterns like "XXXX大学XXXX届XXXX专业" with the
+	// canonical header text to fix header10-style regressions.
+	normalizeAllHeaderTexts(doc, headerText, headerFontName, headerFontSize, headerUnderline, f.processor)
+}
+
+// normalizeAllHeaderTexts scans all headers and replaces any text matching
+// problematic patterns (grade-year + major info) with the canonical headerText.
+// Also preserves any chapter suffix found in individual headers.
+func normalizeAllHeaderTexts(doc *document.Document, canonicalText, fontName string, fontSize float64, underline bool, proc *EnhancedProcessor) {
+	allHeaders := doc.Headers()
+	for _, h := range allHeaders {
+		currentText := getHeaderPlainText(h)
+		// Check if this header text needs normalization
+		// Pattern: contains "届" or "专业" (indicating grade/major info leaked from cover)
+		needsFix := strings.Contains(currentText, "届") || strings.Contains(currentText, "专业") ||
+			strings.Contains(currentText, "人文科技学院")
+		if !needsFix && strings.HasPrefix(currentText, canonicalText) {
+			continue // Already correct
+		}
+
+		// Extract suffix from current text (if any)
+		_, suffix := splitHeaderCoreSuffix(currentText)
+
+		// Build corrected text
+		corrected := canonicalText
+		if suffix != "" {
+			corrected = canonicalText + " " + suffix
+		}
+
+		// Only rewrite if actually different
+		if corrected != currentText {
+			h.Clear()
+			proc.buildDoubleLineHeaderParagraphEx(h, corrected, fontName, fontSize, underline)
+		}
+	}
+}
+
+// cleanHeaderSuffix strips the section name suffix from template header text.
+// Template pattern: "XXXX大学/学院本科生毕业设计（论文）" + whitespace + section_name
+// Returns only the core header text before the section name.
+func cleanHeaderSuffix(text string) string {
+	text = strings.TrimRight(text, " \t\r\n\u3000")
+	for _, suffix := range []string{"（论文）", "（设计）"} {
+		if idx := strings.Index(text, suffix); idx != -1 {
+			return text[:idx+len(suffix)]
+		}
+	}
+	return text
+}
+
+// splitHeaderCoreSuffix splits a header text into (coreText, chapterSuffix).
+// coreText is everything up to and including "（论文）" or "（设计）";
+// chapterSuffix is the trimmed remainder (e.g. "摘要", "ABSTRACT", "致谢").
+func splitHeaderCoreSuffix(text string) (core, suffix string) {
+	text = strings.TrimRight(text, " \t\r\n\u3000")
+	for _, marker := range []string{"（论文）", "（设计）"} {
+		if idx := strings.Index(text, marker); idx != -1 {
+			coreEnd := idx + len(marker)
+			core = text[:coreEnd]
+			suffix = strings.TrimSpace(text[coreEnd:])
+			return
+		}
+	}
+	return text, ""
+}
+
+// extractHeaderChapterSuffix extracts the chapter name suffix from a header's
+// existing text. If the header contains "（论文）" or "（设计）", the part after
+// that marker (trimmed) is the chapter suffix (e.g. "摘要", "ABSTRACT").
+func extractHeaderChapterSuffix(text string) string {
+	_, suffix := splitHeaderCoreSuffix(text)
+	return suffix
+}
+
+// getHeaderPlainText extracts plain text from all paragraphs/runs in a header.
+func getHeaderPlainText(h document.Header) string {
+	var sb strings.Builder
+	for _, p := range h.Paragraphs() {
+		for _, r := range p.Runs() {
+			sb.WriteString(r.Text())
+		}
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+// deriveChapterSuffixes derives chapter name suffixes from classified paragraphs.
+// Scans classified in order and collects unique section markers (abstract title,
+// heading1, references title, acknowledgements title) to build a suffix list
+// that matches the document section order.
+func deriveChapterSuffixes(classified []V2ClassifiedPara) []string {
+	var suffixes []string
+	seen := map[string]bool{}
+	for _, cp := range classified {
+		var suffix string
+		switch cp.Type {
+		case V2AbstractTitle:
+			suffix = "摘要"
+		case V2EnAbstractTitle:
+			suffix = "ABSTRACT"
+		case V2TOCTitle:
+			suffix = "目录"
+		case V2Heading1:
+			suffix = cp.Text
+		case V2ReferencesTitle:
+			suffix = "参考文献"
+		case V2AcknowledgementsTitle:
+			suffix = "致谢"
+		}
+		if suffix != "" && !seen[suffix] {
+			seen[suffix] = true
+			suffixes = append(suffixes, suffix)
+		}
+	}
+	return suffixes
 }
 
 // ── 5. 目录格式化 ──
@@ -950,18 +1200,105 @@ func (f *V2SmartFormatter) ApplyBodyFormats(classified []V2ClassifiedPara) {
 		case V2TableCaption:
 			f.formatCaption(classified[i].Para)
 		case V2AcknowledgementsTitle:
-			f.formatSectionTitle(classified[i].Para)
+			f.formatAcknowledgementsTitle(classified[i].Para)
 		case V2Acknowledgements:
-			f.formatBodyPara(classified[i].Para)
+			f.formatAcknowledgements(classified[i].Para)
 		case V2AppendixTitle:
 			f.formatSectionTitle(classified[i].Para)
 		case V2Appendix:
 			f.formatBodyPara(classified[i].Para)
 		case V2NotesTitle:
 			f.formatSectionTitle(classified[i].Para)
+		case V2Cover:
+			f.formatCoverField(classified[i].Para)
 		case V2Notes:
 			f.formatNotesContent(classified[i].Para)
 		}
+	}
+}
+
+// isCoverTitleParagraph 判断是否为封面标题段落（"本科毕业论文/设计" 等）
+func (f *V2SmartFormatter) isCoverTitleParagraph(para document.Paragraph) bool {
+	fullText := ""
+	for _, r := range para.Runs() {
+		fullText += r.Text()
+	}
+	text := strings.TrimSpace(fullText)
+	return strings.Contains(text, "毕业论文") || strings.Contains(text, "毕业设计")
+}
+
+// formatCoverField 封面字段（学院/专业/姓名/学号/指导教师等）：小二号宋体加粗，行距800，分散对齐
+func (f *V2SmartFormatter) formatCoverField(para document.Paragraph) {
+	// 优先使用 coverFieldSpec（单个字段标签），回退 coverTitleSpec（封面标题）
+	// 特殊情况：如果是封面标题段落（如"本科毕业论文/设计"），使用 coverTitleSpec
+	spec := f.coverFieldSpec
+	isCoverTitle := f.isCoverTitleParagraph(para)
+	if isCoverTitle && f.coverTitleSpec != nil {
+		spec = f.coverTitleSpec
+	}
+	if spec == nil {
+		spec = f.coverTitleSpec
+	}
+
+	// DIAG: trace formatCoverField calls
+	fullText := ""
+	for _, r := range para.Runs() {
+		fullText += r.Text()
+	}
+	text := strings.TrimSpace(fullText)
+	specName := "coverFieldSpec"
+	if isCoverTitle {
+		specName = "coverTitleSpec"
+	}
+	if spec == nil {
+		specName = "NIL"
+	}
+	DiagPrintf("[formatCoverField] text=%-20s isCoverTitle=%v spec=%s", truncStr(text, 20), isCoverTitle, specName)
+	pPr := para.X().PPr
+	if pPr == nil {
+		pPr = wml.NewCT_PPr()
+		para.X().PPr = pPr
+	}
+
+	// 分散对齐 distribute
+	alignment := wml.ST_JcDistribute
+	if spec != nil && spec.AlignmentSet {
+		alignment = spec.Alignment
+	}
+	pPr.Jc = wml.NewCT_Jc()
+	pPr.Jc.ValAttr = alignment
+
+	// 行距 800（单倍行距）
+	lineRule := wml.ST_LineSpacingRuleExact
+	lineVal := int64(800)
+	if spec != nil && spec.LineSpacingVal > 0 {
+		lineVal = spec.LineSpacingVal
+		lineRule = wml.ST_LineSpacingRuleAuto
+	}
+	pPr.Spacing = wml.NewCT_Spacing()
+	pPr.Spacing.LineAttr = &wml.ST_SignedTwipsMeasure{}
+	pPr.Spacing.LineAttr.Int64 = &lineVal
+	pPr.Spacing.LineRuleAttr = lineRule
+
+	// 清除段前后间距和缩进
+	pPr.Spacing.BeforeAttr = nil
+	pPr.Spacing.AfterAttr = nil
+	pPr.Ind = nil
+
+	fontName := "宋体"
+	sizePt := 18.0
+	bold := true
+	if spec != nil {
+		if spec.FontEastAsia != "" {
+			fontName = spec.FontEastAsia
+		}
+		if spec.FontSizeHalfPt > 0 {
+			sizePt = float64(spec.FontSizeHalfPt) / 2.0
+		}
+		bold = spec.Bold
+	}
+	for _, r := range para.Runs() {
+		v2SetRunFont(f.processor, r, fontName, sizePt, bold)
 	}
 }
 
@@ -990,7 +1327,14 @@ func (f *V2SmartFormatter) formatHeading2(para document.Paragraph) {
 	}
 	// 模板克隆阶段可能保留学生稿上的 w:numPr；与正文里手打的「1.1 …」并存会导致编号重复显示，二级标题规范为数字前缀写在 runs 中，此处去掉列表编号。
 	pPr.NumPr = nil
-	pPr.Ind = nil
+	if hasSpec && spec.FirstLineIndent > 0 {
+		pPr.Ind = wml.NewCT_Ind()
+		fl := spec.FirstLineIndent
+		pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{}
+		pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber = &fl
+	} else {
+		pPr.Ind = nil
+	}
 	pPr.Spacing = wml.NewCT_Spacing()
 	lineVal := int64(360)
 	if hasSpec && spec.LineSpacingVal > 0 {
@@ -1028,7 +1372,14 @@ func (f *V2SmartFormatter) formatHeading3(para document.Paragraph) {
 		pPr = wml.NewCT_PPr()
 		para.X().PPr = pPr
 	}
-	pPr.Ind = nil
+	if hasSpec && spec.FirstLineIndent > 0 {
+		pPr.Ind = wml.NewCT_Ind()
+		fl := spec.FirstLineIndent
+		pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{}
+		pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber = &fl
+	} else {
+		pPr.Ind = nil
+	}
 	pPr.Spacing = wml.NewCT_Spacing()
 	lineVal := int64(360)
 	if hasSpec && spec.LineSpacingVal > 0 {
@@ -1073,7 +1424,14 @@ func (f *V2SmartFormatter) formatHeading4(para document.Paragraph) {
 		pPr = wml.NewCT_PPr()
 		para.X().PPr = pPr
 	}
-	pPr.Ind = nil
+	if hasSpec && spec.FirstLineIndent > 0 {
+		pPr.Ind = wml.NewCT_Ind()
+		fl := spec.FirstLineIndent
+		pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{}
+		pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber = &fl
+	} else {
+		pPr.Ind = nil
+	}
 	pPr.Spacing = wml.NewCT_Spacing()
 	pPr.Spacing.LineAttr = &wml.ST_SignedTwipsMeasure{}
 	pPr.Spacing.LineAttr.Int64 = &lineVal
@@ -1105,10 +1463,14 @@ func v2RunFontMatches(para document.Paragraph, eastAsiaFont string, targetPt flo
 			return false
 		}
 		// 仅检查东亚字体（中文段落的关键区分因素）
+		// 如果 RFonts 或 EastAsiaAttr 为 nil，说明字体来自样式继承而非直接格式化，
+		// 此时无法确认字体正确，必须返回 false 触发格式化。
 		if rPr.RFonts != nil && rPr.RFonts.EastAsiaAttr != nil {
 			if *rPr.RFonts.EastAsiaAttr != eastAsiaFont {
 				return false
 			}
+		} else {
+			return false
 		}
 	}
 	return true
@@ -1116,10 +1478,11 @@ func v2RunFontMatches(para document.Paragraph, eastAsiaFont string, targetPt flo
 
 func (f *V2SmartFormatter) formatBodyPara(para document.Paragraph) {
 	// 🔒 LOCKED: 正文段落格式全部从模板提取 — 行距、字体、缩进从 bodySpec 取值，不硬编码
+	// 🔒 BODY_SIZE_CAP: 模板为撰写要求文档时采样值偏大(12pt)，上限强制为10.5pt
 	spec := f.bodySpec
 	eastAsiaFont := "宋体"
 	asciiFont := "Times New Roman"
-	fontSizePt := 12.0
+	fontSizePt := 10.5
 	if spec != nil {
 		if spec.FontEastAsia != "" {
 			eastAsiaFont = spec.FontEastAsia
@@ -1128,7 +1491,11 @@ func (f *V2SmartFormatter) formatBodyPara(para document.Paragraph) {
 			asciiFont = spec.FontAscii
 		}
 		if spec.FontSizeHalfPt > 0 {
-			fontSizePt = float64(spec.FontSizeHalfPt) / 2.0
+			fs := float64(spec.FontSizeHalfPt) / 2.0
+			if fs > 10.5 {
+				fs = 10.5
+			}
+			fontSizePt = fs
 		}
 	}
 	// 先检查 run 格式是否已匹配，决定是否跳过 run 级别覆写
@@ -1247,6 +1614,126 @@ func (f *V2SmartFormatter) formatCaption(para document.Paragraph) {
 }
 
 // formatSectionTitle 致谢/附录/注释标题：三号黑体居中(模板规范)
+// ── 致谢格式化 ──
+
+// formatAcknowledgementsTitle 致谢标题：分散对齐，12pt（24 half-pt），黑体
+// 与普通 sectionTitle 不同：致谢标题在模板中是分散对齐（distribute），且字号为小四(12pt)
+func (f *V2SmartFormatter) formatAcknowledgementsTitle(para document.Paragraph) {
+	spec := f.sectionTitleSpec
+	pPr := para.X().PPr
+	if pPr == nil {
+		pPr = wml.NewCT_PPr()
+		para.X().PPr = pPr
+	}
+	// 致谢标题固定分散对齐
+	pPr.Jc = wml.NewCT_Jc()
+	pPr.Jc.ValAttr = wml.ST_JcDistribute
+	// 清除缩进
+	pPr.Ind = wml.NewCT_Ind()
+	pPr.PageBreakBefore = nil
+
+	// 行距从 bodySpec 取值
+	pPr.Spacing = wml.NewCT_Spacing()
+	lineVal := int64(360)
+	lineRule := wml.ST_LineSpacingRuleAuto
+	if f.bodySpec != nil {
+		if f.bodySpec.LineSpacingVal > 0 {
+			lineVal = f.bodySpec.LineSpacingVal
+		}
+		if f.bodySpec.LineSpacingRule != wml.ST_LineSpacingRuleUnset {
+			lineRule = f.bodySpec.LineSpacingRule
+		}
+	}
+	pPr.Spacing.LineAttr = &wml.ST_SignedTwipsMeasure{}
+	pPr.Spacing.LineAttr.Int64 = &lineVal
+	pPr.Spacing.LineRuleAttr = lineRule
+
+	fontName := "黑体"
+	sizePt := 12.0 // 小四 = 12pt = 24 half-pt
+	bold := true
+	if spec != nil {
+		if spec.FontEastAsia != "" {
+			fontName = spec.FontEastAsia
+		}
+		if spec.FontSizeHalfPt > 0 {
+			sizePt = float64(spec.FontSizeHalfPt) / 2.0
+		}
+		bold = spec.Bold
+	}
+	for _, r := range para.Runs() {
+		v2SetRunFont(f.processor, r, fontName, sizePt, bold)
+	}
+}
+
+// formatAcknowledgements 致谢正文：12pt，无首行缩进，宋体/Times New Roman
+// 与普通 bodyPara 不同：(1) 无10.5pt字号上限 (2) 无首行缩进
+func (f *V2SmartFormatter) formatAcknowledgements(para document.Paragraph) {
+	spec := f.bodySpec
+	eastAsiaFont := "宋体"
+	asciiFont := "Times New Roman"
+	fontSizePt := 12.0 // 小四 = 12pt
+	if spec != nil {
+		if spec.FontEastAsia != "" {
+			eastAsiaFont = spec.FontEastAsia
+		}
+		if spec.FontAscii != "" {
+			asciiFont = spec.FontAscii
+		}
+		if spec.FontSizeHalfPt > 0 {
+			fs := float64(spec.FontSizeHalfPt) / 2.0
+			fontSizePt = fs
+		}
+	}
+
+	pPr := para.X().PPr
+	if pPr == nil {
+		pPr = wml.NewCT_PPr()
+		para.X().PPr = pPr
+	}
+	pPr.Jc = wml.NewCT_Jc()
+	pPr.Jc.ValAttr = wml.ST_JcBoth
+
+	pPr.Spacing = wml.NewCT_Spacing()
+	lineVal := int64(400)
+	lineRule := wml.ST_LineSpacingRuleExact
+	if spec != nil {
+		if spec.LineSpacingVal > 0 {
+			lineVal = spec.LineSpacingVal
+		}
+		if spec.LineSpacingRule != wml.ST_LineSpacingRuleUnset {
+			lineRule = spec.LineSpacingRule
+		}
+	}
+	pPr.Spacing.LineAttr = &wml.ST_SignedTwipsMeasure{}
+	pPr.Spacing.LineAttr.Int64 = &lineVal
+	pPr.Spacing.LineRuleAttr = lineRule
+
+	// 致谢正文无首行缩进 — 显式清零
+	pPr.Ind = wml.NewCT_Ind()
+
+	for _, r := range para.Runs() {
+		rPr := r.X().RPr
+		if rPr == nil {
+			rPr = wml.NewCT_RPr()
+			r.X().RPr = rPr
+		}
+		if rPr.RFonts == nil {
+			rPr.RFonts = wml.NewCT_Fonts()
+		}
+		rPr.RFonts.EastAsiaAttr = f.processor.getCachedFontName(eastAsiaFont)
+		af := f.processor.getCachedFontName(asciiFont)
+		rPr.RFonts.AsciiAttr = af
+		rPr.RFonts.HAnsiAttr = af
+		halfPt := uint64(fontSizePt * 2)
+		rPr.Sz = wml.NewCT_HpsMeasure()
+		rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPt
+		rPr.SzCs = wml.NewCT_HpsMeasure()
+		rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &halfPt
+		rPr.B = nil
+		rPr.BCs = nil
+	}
+}
+
 // 🔒 LOCKED: 致谢/附录/注释标题 — 格式从 sectionTitleSpec 取值，行距从 bodySpec 取值，不硬编码
 func (f *V2SmartFormatter) formatSectionTitle(para document.Paragraph) {
 	spec := f.sectionTitleSpec
@@ -1266,10 +1753,10 @@ func (f *V2SmartFormatter) formatSectionTitle(para document.Paragraph) {
 	pPr.Ind = wml.NewCT_Ind()
 	pPr.PageBreakBefore = nil
 
-	// 🔒 LOCKED: 行距从 bodySpec 取值，不硬编码 360 auto
+	// 🔒 LOCKED: 行距从 bodySpec 取值，fallback 为 360 auto（不硬编码 400 exact）
 	pPr.Spacing = wml.NewCT_Spacing()
-	lineVal := int64(400)
-	lineRule := wml.ST_LineSpacingRuleExact
+	lineVal := int64(360)
+	lineRule := wml.ST_LineSpacingRuleAuto
 	if f.bodySpec != nil {
 		if f.bodySpec.LineSpacingVal > 0 {
 			lineVal = f.bodySpec.LineSpacingVal
@@ -1469,7 +1956,7 @@ func (f *V2SmartFormatter) formatReferenceItem(para document.Paragraph) {
 	pPr.Spacing.LineAttr.Int64 = &lineVal
 	pPr.Spacing.LineRuleAttr = lineRule
 
-	// 🔒 LOCKED: 字体从 refSpec 取值
+	// 🔒 LOCKED: 字体从 refSpec 取值，上限强制10.5pt（模板为撰写要求时采样值偏大）
 	eastAsiaFont := "宋体"
 	asciiFont := "Times New Roman"
 	sizePt := 10.5
@@ -1481,9 +1968,30 @@ func (f *V2SmartFormatter) formatReferenceItem(para document.Paragraph) {
 			asciiFont = f.refSpec.FontAscii
 		}
 		if f.refSpec.FontSizeHalfPt > 0 {
-			sizePt = float64(f.refSpec.FontSizeHalfPt) / 2.0
+			fs := float64(f.refSpec.FontSizeHalfPt) / 2.0
+			if fs > 10.5 {
+				fs = 10.5
+			}
+			sizePt = fs
 		}
 	}
+	// 设置段落默认 run 属性（unioffice 序列化时以此覆盖 run 级属性）
+	if pPr.RPr == nil {
+		pPr.RPr = wml.NewCT_ParaRPr()
+	}
+	if pPr.RPr.RFonts == nil {
+		pPr.RPr.RFonts = wml.NewCT_Fonts()
+	}
+	pPr.RPr.RFonts.EastAsiaAttr = f.processor.getCachedFontName(eastAsiaFont)
+	pPr.RPr.RFonts.AsciiAttr = f.processor.getCachedFontName(asciiFont)
+	pPr.RPr.RFonts.HAnsiAttr = f.processor.getCachedFontName(asciiFont)
+	pPr.RPr.RFonts.CsAttr = f.processor.getCachedFontName(asciiFont)
+	halfPt := uint64(sizePt * 2)
+	pPr.RPr.Sz = wml.NewCT_HpsMeasure()
+	pPr.RPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPt
+	pPr.RPr.SzCs = wml.NewCT_HpsMeasure()
+	pPr.RPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &halfPt
+
 	for _, r := range para.Runs() {
 		rPr := r.X().RPr
 		if rPr == nil {

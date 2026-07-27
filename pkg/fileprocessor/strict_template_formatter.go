@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+
 	"os"
 	"path/filepath"
 	"regexp"
@@ -384,6 +385,20 @@ func applyStrictRuleFallbacks(rules *strictTemplateBlockRules) {
 				rules.Inline[strictBlockAbstractEN] = rule
 			}
 		}
+	}
+
+	// 节点3c：transplanter 路径 — applyStrictRuleFallbacks 后的完整规则
+	DiagPrintf(" ====== 节点3c: transplanter 路径 — applyStrictRuleFallbacks ======")
+	DiagPrintf(" [transplanter] CoverTitleValue: %s", formatSpecCompact(rules.CoverTitleValue))
+	DiagPrintf(" [transplanter] CoverTitleLabel: %s", formatSpecCompact(rules.CoverTitleLabel))
+	DiagPrintf(" [transplanter] CoverInfoValue: %s", formatSpecCompact(rules.CoverInfoValue))
+	DiagPrintf(" [transplanter] CoverInfoLabel: %s", formatSpecCompact(rules.CoverInfoLabel))
+	for kind, spec := range rules.Paragraph {
+		DiagPrintf(" [transplanter] Paragraph[%s]: %s", kind, formatSpecCompact(spec))
+	}
+	for kind, block := range rules.Inline {
+		DiagPrintf(" [transplanter] Inline[%s]: label=%s body=%s",
+			kind, formatSpecCompact(block.LabelSpec), formatSpecCompact(block.BodySpec))
 	}
 }
 

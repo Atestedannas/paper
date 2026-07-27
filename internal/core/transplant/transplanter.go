@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -87,6 +88,62 @@ type replacementSet struct {
 	fallbackThanks     string
 }
 
+// transplantProfile is the template Profile injected by Generate.  Leaf
+// functions that produce header/footer XML or fallback paragraph styles
+// will prefer values from this Profile when available.
+var transplantProfile *templateprofile.Profile
+
+// SetTransplantProfile injects a template Profile.  Called automatically
+// by Generate; external callers should not need this.
+func SetTransplantProfile(p *templateprofile.Profile) {
+	transplantProfile = p
+}
+
+func getTransplantStyle(key string) *templateprofile.StyleRule {
+	if transplantProfile == nil || transplantProfile.Styles == nil {
+		return nil
+	}
+	if sr, ok := transplantProfile.Styles[key]; ok {
+		return &sr
+	}
+	return nil
+}
+
+func profileStyleToParagraphStyle(pr *templateprofile.StyleRule, defaults paragraphStyle) paragraphStyle {
+	ps := defaults
+	if pr.FontEastAsia != "" {
+		ps.EastAsiaFont = pr.FontEastAsia
+	}
+	if pr.FontASCII != "" {
+		ps.AsciiFont = pr.FontASCII
+	}
+	if pr.FontSizeHalfPt != "" {
+		val, err := strconv.Atoi(strings.TrimSpace(pr.FontSizeHalfPt))
+		if err == nil {
+			ps.Size = val
+		}
+	}
+	if pr.BoldSet {
+		ps.Bold = pr.Bold
+	}
+	if pr.Alignment != "" {
+		ps.Alignment = pr.Alignment
+	}
+	if pr.Line != "" {
+		line, err := strconv.Atoi(strings.TrimSpace(pr.Line))
+		if err == nil {
+			ps.Line = line
+		}
+	}
+	if pr.FirstLineChars != "" {
+		fc, err := strconv.Atoi(strings.TrimSpace(pr.FirstLineChars))
+		if err == nil {
+			ps.FirstLineChars = fc
+		}
+	}
+	return ps
+}
+
 func NewTransplanter() *Transplanter {
 	return &Transplanter{}
 }
@@ -101,6 +158,7 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 	if err := validateInput(input); err != nil {
 		return err
 	}
+	SetTransplantProfile(input.TemplateProfile)
 	log.Printf("component=transplant stage=start targets=%d bindings=%d", len(input.CompiledTemplate.PatchTargets), len(input.Mapping.Bindings))
 
 	pkg, err := ooxmlpkg.Open(input.CompiledTemplate.SkeletonPath)
@@ -159,13 +217,17 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 		return err
 	}
 	if usesCQRWSTNormalizers {
-		if input.TemplateProfile == nil || !input.TemplateProfile.Header.Exists {
-			normalizeCQRWSTMainHeader(pkg, coverFields)
-		} else {
-			materializeCQRWSTMainHeader(pkg, coverFields)
+		templateHeaders, templateFooters, extractErr := extractTemplateParts(input.CompiledTemplate.SkeletonSource)
+		if extractErr != nil {
+			log.Printf("component=transplant warning=template_header_footer_extract_failed err=%v", extractErr)
 		}
-		normalizeCQRWSTFrontFooter(pkg)
-		normalizeCQRWSTMainFooter(pkg)
+		if input.TemplateProfile == nil || !input.TemplateProfile.Header.Exists {
+			normalizeCQRWSTMainHeader(pkg, coverFields, templateHeaders)
+		} else {
+			materializeCQRWSTMainHeader(pkg, coverFields, templateHeaders)
+		}
+		normalizeCQRWSTFrontFooter(pkg, templateFooters)
+		normalizeCQRWSTMainFooter(pkg, templateFooters)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -788,18 +850,36 @@ func renderStyledPayloadWithPolicy(text string, allowContentRewrite bool, profil
 			style.HeadingLevel = minHeadingLevel(level, 9)
 			return paragraphWithStyle(normalized, style)
 		}
+		// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 		if level <= 1 {
-			return paragraphWithStyle(normalized, paragraphStyle{Size: 32, Bold: true, Line: 360, Before: 312, BeforeLines: 100, After: 312, AfterLines: 100, Alignment: "left", HeadingLevel: 1, SnapToGridOff: true, AdjustRightIndZero: true, AsciiFont: "宋体", EastAsiaFont: "宋体"})
+			defaults := paragraphStyle{Size: 32, Bold: true, Line: 360, Before: 312, BeforeLines: 100, After: 312, AfterLines: 100, Alignment: "left", HeadingLevel: 1, SnapToGridOff: true, AdjustRightIndZero: true, AsciiFont: "宋体", EastAsiaFont: "宋体"}
+			if pr := getTransplantStyle("heading_1"); pr != nil {
+				return paragraphWithStyle(normalized, profileStyleToParagraphStyle(pr, defaults))
+			}
+			return paragraphWithStyle(normalized, defaults)
 		}
 		if level == 2 {
-			return paragraphWithStyle(normalized, paragraphStyle{Size: 30, Bold: true, Line: 360, HeadingLevel: 2, AsciiFont: "宋体", EastAsiaFont: "宋体"})
+			defaults := paragraphStyle{Size: 30, Bold: true, Line: 360, HeadingLevel: 2, AsciiFont: "宋体", EastAsiaFont: "宋体"}
+			if pr := getTransplantStyle("heading_2"); pr != nil {
+				return paragraphWithStyle(normalized, profileStyleToParagraphStyle(pr, defaults))
+			}
+			return paragraphWithStyle(normalized, defaults)
 		}
-		return paragraphWithStyle(normalized, paragraphStyle{Size: 28, Bold: true, Line: 360, HeadingLevel: minHeadingLevel(level, 9), AsciiFont: "宋体", EastAsiaFont: "宋体"})
+		defaults := paragraphStyle{Size: 28, Bold: true, Line: 360, HeadingLevel: minHeadingLevel(level, 9), AsciiFont: "宋体", EastAsiaFont: "宋体"}
+		if pr := getTransplantStyle("heading_3"); pr != nil {
+			return paragraphWithStyle(normalized, profileStyleToParagraphStyle(pr, defaults))
+		}
+		return paragraphWithStyle(normalized, defaults)
 	default:
 		if style, ok := compiledParagraphStyle(profiles, "body"); ok {
 			return paragraphWithStyle(normalized, style)
 		}
-		return paragraphWithStyle(normalized, paragraphStyle{Size: 24, FirstLine: 480, FirstLineChars: 200, Line: 360, AsciiFont: "宋体", EastAsiaFont: "宋体"})
+		// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
+		defaults := paragraphStyle{Size: 24, FirstLine: 480, FirstLineChars: 200, Line: 360, AsciiFont: "宋体", EastAsiaFont: "宋体"}
+		if pr := getTransplantStyle("body"); pr != nil {
+			return paragraphWithStyle(normalized, profileStyleToParagraphStyle(pr, defaults))
+		}
+		return paragraphWithStyle(normalized, defaults)
 	}
 }
 
@@ -2648,10 +2728,40 @@ func isASCIILetter(b byte) bool {
 	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
-func normalizeCQRWSTMainFooter(pkg *ooxmlpkg.DocxPackage) {
+// 🔒 LOCKED: 修复空页脚与缺失动态页码问题
+// 1. 页脚内容为空（仅空 <w:p>）→ 视为需要重写
+// 2. 内容不为空但不含 PAGE/SECTIONPAGES → 也重写
+func normalizeCQRWSTMainFooter(pkg *ooxmlpkg.DocxPackage, templateFooters map[string]string) {
 	if pkg == nil {
 		return
 	}
+
+	// Phase 1: Try template footer first
+	if len(templateFooters) > 0 {
+		var templateXML string
+		for _, content := range templateFooters {
+			templateXML = content
+			break
+		}
+		if templateXML != "" && !isFooterEffectivelyEmpty(templateXML) && footerHasPageAndSectionPages(templateXML) {
+			document, ok := pkg.Get(defaultPatchTarget)
+			if !ok {
+				return
+			}
+			footerID := mainBodyFooterReferenceID(string(document))
+			if footerID == "" {
+				return
+			}
+			footerTarget := relationshipTarget(pkg, footerID)
+			if footerTarget == "" {
+				return
+			}
+			pkg.Set(footerTarget, []byte(templateXML))
+			ensureBodySectPrFooterReferences(pkg, string(document), footerID)
+			return
+		}
+	}
+
 	document, ok := pkg.Get(defaultPatchTarget)
 	if !ok {
 		return
@@ -2664,16 +2774,54 @@ func normalizeCQRWSTMainFooter(pkg *ooxmlpkg.DocxPackage) {
 	if footerTarget == "" {
 		return
 	}
-	if content, ok := pkg.Get(footerTarget); ok && footerHasPageAndSectionPages(string(content)) {
-		return
+	needsRewrite := false
+	if content, ok := pkg.Get(footerTarget); ok {
+		xmlContent := string(content)
+		if isFooterEffectivelyEmpty(xmlContent) {
+			needsRewrite = true
+		} else if !footerHasPageAndSectionPages(xmlContent) {
+			needsRewrite = true
+		}
+	} else {
+		needsRewrite = true
 	}
-	pkg.Set(footerTarget, []byte(renderCQRWSTMainFooterXML()))
+	if needsRewrite {
+		pkg.Set(footerTarget, []byte(renderCQRWSTMainFooterXML()))
+	}
+	// 确保所有 body sectPr 正确关联 footerReference
+	ensureBodySectPrFooterReferences(pkg, string(document), footerID)
 }
 
-func normalizeCQRWSTFrontFooter(pkg *ooxmlpkg.DocxPackage) {
+func normalizeCQRWSTFrontFooter(pkg *ooxmlpkg.DocxPackage, templateFooters map[string]string) {
 	if pkg == nil {
 		return
 	}
+
+	// Phase 1: Try template footer first
+	if len(templateFooters) > 0 {
+		var templateXML string
+		for _, content := range templateFooters {
+			templateXML = content
+			break
+		}
+		if templateXML != "" && !isFooterEffectivelyEmpty(templateXML) && strings.Contains(templateXML, " PAGE ") {
+			document, ok := pkg.Get(defaultPatchTarget)
+			if !ok {
+				return
+			}
+			footerID := frontMatterFooterReferenceID(string(document))
+			if footerID == "" {
+				return
+			}
+			footerTarget := relationshipTarget(pkg, footerID)
+			if footerTarget == "" {
+				return
+			}
+			pkg.Set(footerTarget, []byte(templateXML))
+			return
+		}
+	}
+
 	document, ok := pkg.Get(defaultPatchTarget)
 	if !ok {
 		return
@@ -2696,10 +2844,108 @@ func footerHasPageAndSectionPages(footerXML string) bool {
 	return strings.Contains(footerXML, " PAGE ") && strings.Contains(footerXML, " SECTIONPAGES ")
 }
 
-func normalizeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]string) {
+// isFooterEffectivelyEmpty 检测页脚 XML 是否仅含空壳（无实际文本内容）
+func isFooterEffectivelyEmpty(footerXML string) bool {
+	cleaned := regexp.MustCompile(`<\?xml[^?]*\?>`).ReplaceAllString(footerXML, "")
+	cleaned = regexp.MustCompile(`<w:ftr[^>]*>`).ReplaceAllString(cleaned, "")
+	cleaned = regexp.MustCompile(`</w:ftr>`).ReplaceAllString(cleaned, "")
+	cleaned = regexp.MustCompile(`<w:p[^>]*>[\s]*</w:p>`).ReplaceAllString(cleaned, "")
+	cleaned = regexp.MustCompile(`<w:pPr[^>]*>[\s]*</w:pPr>`).ReplaceAllString(cleaned, "")
+	cleaned = strings.TrimSpace(cleaned)
+	return cleaned == ""
+}
+
+// extractTemplateParts opens the template DOCX and extracts all non-empty
+// header and footer XML parts keyed by target path (e.g., word/header1.xml).
+func extractTemplateParts(templatePath string) (headers map[string]string, footers map[string]string, err error) {
+	headers = make(map[string]string)
+	footers = make(map[string]string)
+
+	if templatePath == "" {
+		return headers, footers, nil
+	}
+
+	pkg, err := ooxmlpkg.Open(templatePath)
+	if err != nil {
+		return headers, footers, fmt.Errorf("open template for header/footer extraction: %w", err)
+	}
+
+	documentXML, ok := pkg.Get("word/document.xml")
+	if !ok {
+		return headers, footers, fmt.Errorf("word/document.xml not found in template")
+	}
+
+	for _, match := range headerReferenceIDPattern.FindAllStringSubmatch(string(documentXML), -1) {
+		target := relationshipTarget(pkg, match[1])
+		if target == "" {
+			continue
+		}
+		content, ok := pkg.Get(target)
+		if !ok {
+			continue
+		}
+		if isFooterEffectivelyEmpty(string(content)) {
+			continue
+		}
+		headers[target] = string(content)
+	}
+
+	for _, match := range footerReferenceIDPattern.FindAllStringSubmatch(string(documentXML), -1) {
+		target := relationshipTarget(pkg, match[1])
+		if target == "" {
+			continue
+		}
+		content, ok := pkg.Get(target)
+		if !ok {
+			continue
+		}
+		if isFooterEffectivelyEmpty(string(content)) {
+			continue
+		}
+		footers[target] = string(content)
+	}
+
+	return headers, footers, nil
+}
+
+// ensureBodySectPrFooterReferences 确保所有正文分节 sectPr 都包含正确的 footerReference
+func ensureBodySectPrFooterReferences(pkg *ooxmlpkg.DocxPackage, documentXML string, footerID string) {
+	if pkg == nil || footerID == "" {
+		return
+	}
+	footerRefTag := regexp.MustCompile(`<w:footerReference\b[^>]*/>`).FindString(documentXML)
+	if footerRefTag == "" {
+		return
+	}
+	// 对每个 body sectPr (含 w:pgNumType fmt="decimal")，确保 footerReference 存在
+	updated := finalSectPrPattern.ReplaceAllStringFunc(documentXML, func(sectPr string) string {
+		if !strings.Contains(sectPr, `w:fmt="decimal"`) {
+			return sectPr
+		}
+		if strings.Contains(sectPr, "<w:footerReference") {
+			return sectPr
+		}
+		if idx := strings.Index(sectPr, ">"); idx >= 0 {
+			return sectPr[:idx+1] + footerRefTag + sectPr[idx+1:]
+		}
+		return sectPr
+	})
+	if updated != documentXML {
+		pkg.Set(defaultPatchTarget, []byte(updated))
+	}
+}
+
+func normalizeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]string, templateHeaders map[string]string) {
 	if pkg == nil || len(fields) == 0 {
 		return
 	}
+
+	// Phase 1: Try template header first (same path as materialize)
+	if len(templateHeaders) > 0 {
+		materializeCQRWSTMainHeader(pkg, fields, templateHeaders)
+		return
+	}
+
 	document, ok := pkg.Get(defaultPatchTarget)
 	if !ok {
 		return
@@ -2721,7 +2967,7 @@ func normalizeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]stri
 	}
 }
 
-func materializeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]string) {
+func materializeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]string, templateHeaders map[string]string) {
 	if pkg == nil || len(fields) == 0 {
 		return
 	}
@@ -2729,6 +2975,49 @@ func materializeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]st
 	if !ok {
 		return
 	}
+
+	// Phase 1: Use template header as base if available
+	if len(templateHeaders) > 0 {
+		var templateXML string
+		for _, content := range templateHeaders {
+			templateXML = content
+			break
+		}
+		if templateXML != "" {
+			year := coverYear(fields)
+			major := cqrwstCoverMajor(fields)
+			docType := cqrwstHeaderDocumentType(fields, xmlText(templateXML))
+
+			processed := templateXML
+			processed = regexp.MustCompile(`>(\d{4})\u5c4a<`).ReplaceAllString(processed, ">"+year+"\u5c4a<")
+			if major != "" && major != "XXX" {
+				processed = strings.ReplaceAll(processed, ">XXX<", ">"+html.EscapeString(major)+"<")
+			}
+			switch docType {
+			case "\u8bba\u6587":
+				processed = strings.ReplaceAll(processed, "\u6bd5\u4e1a\u8bba\u6587/\u8bbe\u8ba1", "\u6bd5\u4e1a\u8bba\u6587")
+				processed = removeCQRWSTHeaderDesignSuffix(processed)
+			case "\u8bbe\u8ba1":
+				processed = strings.ReplaceAll(processed, "\u6bd5\u4e1a\u8bba\u6587/\u8bbe\u8ba1", "\u6bd5\u4e1a\u8bbe\u8ba1")
+				processed = removeCQRWSTHeaderDesignSuffix(processed)
+			}
+
+			for _, headerTarget := range referencedHeaderTargets(pkg, string(document)) {
+				content, ok := pkg.Get(headerTarget)
+				if !ok {
+					continue
+				}
+				headerXML := string(content)
+				if !containsCQRWSTMarker(headerXML) && !containsCQRWSTMarker(xmlText(headerXML)) {
+					continue
+				}
+				pkg.Set(headerTarget, []byte(processed))
+			}
+			return
+		}
+	}
+
+	// Phase 2: Fallback to string replacement on skeleton headers
 	for _, headerTarget := range referencedHeaderTargets(pkg, string(document)) {
 		content, ok := pkg.Get(headerTarget)
 		if !ok {
@@ -2874,10 +3163,23 @@ func referencedHeaderTargets(pkg *ooxmlpkg.DocxPackage, documentXML string) []st
 
 func renderCQRWSTMainHeaderXML(fields map[string]string, templateHeader string) string {
 	text := cqrwstMainHeaderText(fields, templateHeader)
+	// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
+	fontEA := "宋体"
+	fontSize := 18
+	if transplantProfile != nil {
+		if transplantProfile.Header.FontEastAsia != "" {
+			fontEA = transplantProfile.Header.FontEastAsia
+		}
+		if transplantProfile.Header.FontSizeHalfPt != "" {
+			if v, err := strconv.Atoi(strings.TrimSpace(transplantProfile.Header.FontSizeHalfPt)); err == nil {
+				fontSize = v
+			}
+		}
+	}
 	return strings.Replace(ooxmlpatch.BuildHeaderXML(text, ooxmlpatch.HeaderFooterPolicySpec{
 		HeaderLine:   "double",
-		FontEastAsia: "宋体",
-		FontSizeHalf: 18,
+		FontEastAsia: fontEA,
+		FontSizeHalf: fontSize,
 	}), `<?xml version="1.0" encoding="UTF-8"?>`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`, 1)
 }
 
@@ -2885,7 +3187,8 @@ func cqrwstMainHeaderText(fields map[string]string, templateHeader string) strin
 	year := coverYear(fields)
 	major := cqrwstCoverMajor(fields)
 	docType := cqrwstHeaderDocumentType(fields, templateHeader)
-	return "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662" + year + "\u5c4a" + major + "\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a" + docType
+	college := "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662" // 重庆人文科技学院
+	return college + year + "\u5c4a" + major + "\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a" + docType
 }
 
 func cqrwstCoverMajor(fields map[string]string) string {
@@ -2941,7 +3244,13 @@ func renderCQRWSTMainFooterXML() string {
 }
 
 func renderCQRWSTFrontFooterXML() string {
-	rPr := `<w:rPr><w:rFonts w:ascii="Times New Roman" w:eastAsia="宋体" w:hAnsi="Times New Roman"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr>`
+	// 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
+	sz := "21"
+	if transplantProfile != nil && transplantProfile.Footer.FontSizeHalfPt != "" {
+		sz = transplantProfile.Footer.FontSizeHalfPt
+	}
+	// 🔒 LOCKED: 前导页页脚 — 动态 PAGE 域 + 小五号(21) Times New Roman
+	rPr := `<w:rPr><w:rFonts w:ascii="Times New Roman" w:eastAsia="Times New Roman" w:hAnsi="Times New Roman"/><w:sz w:val="` + sz + `"/><w:szCs w:val="` + sz + `"/></w:rPr>`
 	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/>` + rPr + `</w:pPr><w:r>` + rPr + `<w:fldChar w:fldCharType="begin"/></w:r><w:r>` + rPr + `<w:instrText xml:space="preserve"> PAGE \* MERGEFORMAT </w:instrText></w:r><w:r>` + rPr + `<w:fldChar w:fldCharType="end"/></w:r></w:p></w:ftr>`
 }
 
