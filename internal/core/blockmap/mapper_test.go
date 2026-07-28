@@ -208,6 +208,7 @@ func TestMapContentBlocksPreservesSourceOrder(t *testing.T) {
 		},
 	}
 	paper := &paperparse.ParsedPaper{
+		HasTOC: true,
 		ContentBlocks: []paperparse.ContentBlock{
 			{Kind: "heading", Level: 1, Text: "1 Introduction"},
 			{Kind: "body", Text: "First body paragraph"},
@@ -227,6 +228,9 @@ func TestMapContentBlocksPreservesSourceOrder(t *testing.T) {
 	want := []string{"1 Introduction", "First body paragraph", "1.1 Background"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("content block payloads = %v, want %v", got, want)
+	}
+	if !result.HasTOC {
+		t.Fatal("HasTOC = false, want parser TOC signal preserved separately from content bindings")
 	}
 }
 

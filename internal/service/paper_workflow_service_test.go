@@ -463,12 +463,12 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 	}
 	assertWorkflowParagraphHasStyle(t, paragraphs[3], workflowParagraphStyle{Font: "\u5b8b\u4f53", Size: "44", Bold: true, Center: true})
 	assertWorkflowParagraphHasStyle(t, paragraphs[5], workflowParagraphStyle{Font: "\u5b8b\u4f53", Size: "44", Bold: true, Center: true})
-	assertWorkflowParagraphHasStyle(t, paragraphs[21], workflowParagraphStyle{Font: "\u9ed1\u4f53", Size: "30", Bold: true, Line: "360", FirstLineChars: "200", AfterLines: "200"})
-	assertWorkflowParagraphHasStyle(t, paragraphs[21], workflowParagraphStyle{Font: "\u5b8b\u4f53", Size: "24", Line: "360", FirstLineChars: "200", AfterLines: "200"})
-	assertWorkflowParagraphHasStyle(t, paragraphs[22], workflowParagraphStyle{Font: "\u9ed1\u4f53", Size: "30", Bold: true, Line: "360", FirstLineChars: "200", AfterLines: "200"})
-	assertWorkflowParagraphHasStyle(t, paragraphs[22], workflowParagraphStyle{Font: "\u5b8b\u4f53", Size: "24", Line: "360", FirstLineChars: "200", AfterLines: "200"})
-	assertWorkflowParagraphHasStyle(t, paragraphs[23], workflowParagraphStyle{Font: "Times New Roman", Size: "30", Bold: true, Line: "360", FirstLineChars: "200", AfterLines: "200"})
-	assertWorkflowParagraphHasStyle(t, paragraphs[23], workflowParagraphStyle{Font: "Times New Roman", Size: "24", Line: "360", FirstLineChars: "200", AfterLines: "200"})
+	assertWorkflowParagraphHasStyle(t, paragraphs[21], workflowParagraphStyle{Font: "\u9ed1\u4f53", Size: "30", Bold: true, Line: "360", FirstLineChars: "200", After: "624"})
+	assertWorkflowParagraphHasStyle(t, paragraphs[21], workflowParagraphStyle{Font: "\u5b8b\u4f53", Size: "24", Line: "360", FirstLineChars: "200", After: "624"})
+	assertWorkflowParagraphHasStyle(t, paragraphs[22], workflowParagraphStyle{Font: "\u9ed1\u4f53", Size: "30", Bold: true, Line: "360", FirstLineChars: "200", After: "624"})
+	assertWorkflowParagraphHasStyle(t, paragraphs[22], workflowParagraphStyle{Font: "\u5b8b\u4f53", Size: "24", Line: "360", FirstLineChars: "200", After: "624"})
+	assertWorkflowParagraphHasStyle(t, paragraphs[23], workflowParagraphStyle{Font: "Times New Roman", Size: "30", Bold: true, Line: "360", FirstLineChars: "200", After: "624"})
+	assertWorkflowParagraphHasStyle(t, paragraphs[23], workflowParagraphStyle{Font: "Times New Roman", Size: "24", Line: "360", FirstLineChars: "200", After: "624"})
 	cnKeywordsText := workflowDocumentText(paragraphs[22])
 	cnKeywordsPrefix := "\u5173\u952e\u8bcd\uff1a"
 	if !strings.HasPrefix(cnKeywordsText, cnKeywordsPrefix) {
@@ -491,8 +491,8 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 	if enKeywords == "" {
 		t.Fatalf("generated output missing English keywords paragraph: %s", documentXML)
 	}
-	assertWorkflowParagraphHasStyle(t, enKeywords, workflowParagraphStyle{Font: "Times New Roman", Size: "30", Bold: true, Line: "360", FirstLineChars: "200", AfterLines: "200"})
-	assertWorkflowParagraphHasStyle(t, enKeywords, workflowParagraphStyle{Font: "Times New Roman", Size: "24", Line: "360", FirstLineChars: "200", AfterLines: "200"})
+	assertWorkflowParagraphHasStyle(t, enKeywords, workflowParagraphStyle{Font: "Times New Roman", Size: "30", Bold: true, Line: "360", FirstLineChars: "200", After: "624"})
+	assertWorkflowParagraphHasStyle(t, enKeywords, workflowParagraphStyle{Font: "Times New Roman", Size: "24", Line: "360", FirstLineChars: "200", After: "624"})
 	enKeywordsText := workflowDocumentText(enKeywords)
 	enKeywordBody := strings.TrimSpace(strings.TrimPrefix(enKeywordsText, "Key words:"))
 	if strings.Contains(enKeywordBody, ";") || strings.Contains(enKeywordBody, ", ") && !strings.Contains(enKeywordBody, ",  ") {
@@ -523,10 +523,9 @@ func TestPaperWorkflowServiceRunJobUsesDefaultTemplateForRealFixture(t *testing.
 	if got := strings.Count(documentXML, `TOC \o "1-3" \h \z \u`); got != 1 {
 		t.Fatalf("generated output should contain exactly one dynamic TOC field, got %d: %s", got, documentXML)
 	}
-	assertWorkflowTOCCacheHasRealPageNumbers(t, documentXML)
 	settingsXML := readWorkflowDocxEntry(t, outputPath, "word/settings.xml")
 	if !strings.Contains(settingsXML, `<w:updateFields w:val="true"/>`) {
-		t.Fatalf("generated output should ask Word/LibreOffice to refresh fields on open: %s", settingsXML)
+		t.Fatalf("generated output should ask the DOCX client to refresh fields on open: %s", settingsXML)
 	}
 	contentTypesXML := readWorkflowDocxEntry(t, outputPath, "[Content_Types].xml")
 	relsXML := readWorkflowDocxEntry(t, outputPath, "word/_rels/document.xml.rels")
@@ -1193,7 +1192,10 @@ func TestPaperWorkflowServiceRunJobPersistsTemplateProfile(t *testing.T) {
 	if err := json.Unmarshal([]byte(compiled.MappingContractJSON), &contract); err != nil {
 		t.Fatalf("mapping_contract_json should contain repair contract JSON: %v\n%s", err, compiled.MappingContractJSON)
 	}
-	if contract.Version != repaircontract.Version || !workflowTestHasContractStep(contract, "verify_before_download") || !workflowTestHasContractStep(contract, "render_and_regression_gate") {
+	if contract.Version != repaircontract.Version ||
+		!workflowTestHasContractStep(contract, "validate_go_template_rules") ||
+		!workflowTestHasContractStep(contract, "validate_openxml_schema") ||
+		!workflowTestHasContractStep(contract, "validate_content_preservation") {
 		t.Fatalf("repair contract not persisted correctly: %#v", contract)
 	}
 	var paper model.Paper
@@ -1762,7 +1764,7 @@ type workflowParagraphStyle struct {
 	Center         bool
 	Line           string
 	FirstLineChars string
-	AfterLines     string
+	After          string
 }
 
 func assertWorkflowParagraphHasStyle(t *testing.T, paragraph string, style workflowParagraphStyle) {
@@ -1785,8 +1787,8 @@ func assertWorkflowParagraphHasStyle(t *testing.T, paragraph string, style workf
 	if style.FirstLineChars != "" && !strings.Contains(paragraph, `w:firstLineChars="`+style.FirstLineChars+`"`) {
 		t.Fatalf("paragraph missing first-line indent %s chars: %s", style.FirstLineChars, paragraph)
 	}
-	if style.AfterLines != "" && !strings.Contains(paragraph, `w:afterLines="`+style.AfterLines+`"`) {
-		t.Fatalf("paragraph missing after spacing %s lines: %s", style.AfterLines, paragraph)
+	if style.After != "" && !strings.Contains(paragraph, `w:after="`+style.After+`"`) {
+		t.Fatalf("paragraph missing after spacing %s twips: %s", style.After, paragraph)
 	}
 }
 
@@ -1827,22 +1829,6 @@ func assertWorkflowRenderedTOCHasPageNumbers(t *testing.T, pageTexts []string) {
 		return
 	}
 	t.Fatalf("rendered PDF missing TOC page: %#v", pageTexts)
-}
-
-func assertWorkflowTOCCacheHasRealPageNumbers(t *testing.T, documentXML string) {
-	start := strings.Index(documentXML, `TOC \o "1-3" \h \z \u`)
-	if start < 0 {
-		t.Fatal("document XML missing TOC field")
-	}
-	endOffset := strings.Index(documentXML[start:], `w:fldCharType="end"`)
-	if endOffset < 0 {
-		t.Fatal("document XML missing TOC field end")
-	}
-	cache := documentXML[start : start+endOffset]
-	pageRuns := regexp.MustCompile(`(?s)<w:tab/></w:r>\s*<w:r>.*?<w:t>([1-9]\d*)</w:t>`).FindAllStringSubmatch(cache, -1)
-	if len(pageRuns) == 0 || strings.Contains(cache, `<w:t>0</w:t>`) {
-		t.Fatalf("TOC cache should contain materialized non-zero page numbers: %s", cache)
-	}
 }
 
 func assertWorkflowRenderedHeadingsAreNotDoubleNumbered(t *testing.T, pageTexts []string) {

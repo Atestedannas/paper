@@ -58,8 +58,14 @@ func TestNormalizeFinalDOCXRemovesWhiteShadingAndPaginationArtifacts(t *testing.
 	writeTestDocx(t, path, map[string]string{
 		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
 			`<w:p><w:pPr><w:shd w:val="clear" w:fill="FFFFFF"/><w:pageBreakBefore/><w:keepLines/></w:pPr><w:r><w:t>正文</w:t></w:r></w:p>` +
+			`<mc:Fallback xmlns:mc="mc" mc:Ignorable="w10" mc:Ignorable="w10"><w:pict/></mc:Fallback>` +
+			`<w:p><w:pPr><w:jc w:val="start"/></w:pPr><w:r><w:sym w:font="Symbol" w:char="63"/></w:r></w:p>` +
+			`<w:pict><v:shape id="shape_0"/><v:shape id="shape_0"/></w:pict>` +
 			`<w:p><w:pPr><w:shd w:val="clear" w:fill="D9EAD3"/></w:pPr><w:r><w:t>保留底纹</w:t></w:r></w:p>` +
+			`<w:sectPr><w:pgMar w:gutter=""/></w:sectPr>` +
 			`</w:body></w:document>`,
+		"word/numbering.xml": `<w:numbering><w:abstractNum><w:lvl><w:lvlJc w:val="start"/></w:lvl></w:abstractNum></w:numbering>`,
+		"word/fontTable.xml": `<w:fonts><w:font><w:charset w:val="00" w:characterSet="windows-1252"/></w:font></w:fonts>`,
 	})
 
 	changed, err := NormalizeFinalDOCX(path)
@@ -77,6 +83,23 @@ func TestNormalizeFinalDOCXRemovesWhiteShadingAndPaginationArtifacts(t *testing.
 	}
 	if !strings.Contains(documentXML, `w:fill="D9EAD3"`) {
 		t.Fatalf("non-white shading was removed: %s", documentXML)
+	}
+	if strings.Count(documentXML, `mc:Ignorable=`) != 1 {
+		t.Fatalf("duplicate fallback attributes were not removed: %s", documentXML)
+	}
+	for _, forbidden := range []string{`w:val="start"`, `w:char="63"`, `w:gutter=""`} {
+		if strings.Contains(documentXML, forbidden) {
+			t.Fatalf("document.xml still contains invalid value %q: %s", forbidden, documentXML)
+		}
+	}
+	if !strings.Contains(documentXML, `w:char="0063"`) || !strings.Contains(documentXML, `id="shape_0_2"`) {
+		t.Fatalf("symbol character or duplicate VML ID was not normalized: %s", documentXML)
+	}
+	if numberingXML := readDocxEntry(t, path, "word/numbering.xml"); !strings.Contains(numberingXML, `w:val="left"`) {
+		t.Fatalf("logical numbering alignment was not normalized: %s", numberingXML)
+	}
+	if fontTableXML := readDocxEntry(t, path, "word/fontTable.xml"); strings.Contains(fontTableXML, "w:characterSet") {
+		t.Fatalf("redundant charset attribute was not removed: %s", fontTableXML)
 	}
 	settingsXML := readDocxEntry(t, path, "word/settings.xml")
 	if !strings.Contains(settingsXML, `<w:updateFields w:val="true"/>`) {
@@ -599,6 +622,44 @@ func TestGenerateDropsSourceTableOfContentsAndBuildsCleanTOC(t *testing.T) {
 		t.Fatalf("settings.xml should request field updates on open: %s", settings)
 	}
 }
+
+func TestGenerateBuildsCleanTOCFromMappingSignal(t *testing.T) {
+	tmpDir := t.TempDir()
+	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
+	writeTestDocx(t, skeletonPath, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>{{content_blocks}}</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	err := NewTransplanter().Generate(context.Background(), GenerateInput{
+		CompiledTemplate: &templatecompile.CompiledTemplatePackage{SkeletonPath: skeletonPath},
+		Mapping: &blockmap.MappingResult{
+			HasTOC: true,
+			Bindings: []blockmap.Binding{
+				{BlockID: "content_blocks", Payload: "1 绪论"},
+				{BlockID: "content_blocks", Payload: "1.2研究目的"},
+			},
+		},
+		OutputPath: outputPath,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	document := readDocxEntry(t, outputPath, "word/document.xml")
+	if strings.Count(document, "目      录") != 1 {
+		t.Fatalf("generated TOC title count = %d, want 1", strings.Count(document, "目      录"))
+	}
+	if strings.Contains(document, "1.2研究目的1") {
+		t.Fatalf("source TOC page-number text leaked into generated document: %s", document)
+	}
+	for _, want := range []string{`TOC \o "1-3" \h \z \u`, "1.2 研究目的"} {
+		if !strings.Contains(document, want) {
+			t.Fatalf("generated document missing %q: %s", want, document)
+		}
+	}
+}
+
 func TestGenerateAppliesTemplateTypographySpacing(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
@@ -961,6 +1022,25 @@ func TestRenderParagraphsUsesCompiledTemplateStyle(t *testing.T) {
 		if !strings.Contains(xml, want) {
 			t.Fatalf("rendered body missing %s: %s", want, xml)
 		}
+	}
+}
+
+func TestRenderLeadLabelParagraphUsesBodySizeForContent(t *testing.T) {
+	xml := renderLeadLabelParagraph(
+		"关键词：社区糖尿病；认知水平",
+		"关键词：",
+		"keywords_title",
+		"Times New Roman",
+		"黑体",
+		templatecompile.StyleProfile{Name: "keywords_title", Properties: templatecompile.StyleProperties{FontSizeHalfPoints: 30}},
+		templatecompile.StyleProfile{Name: "body", Properties: templatecompile.StyleProperties{FontSizeHalfPoints: 24}},
+	)
+	if !strings.Contains(xml, `<w:t>关键词：</w:t>`) || !strings.Contains(xml, `<w:sz w:val="30"/>`) {
+		t.Fatalf("keyword label style missing: %s", xml)
+	}
+	content := paragraphContainingText(t, xml, "社区糖尿病")
+	if !strings.Contains(content, `<w:sz w:val="24"/>`) {
+		t.Fatalf("keyword content must use template body size: %s", content)
 	}
 }
 
@@ -1512,9 +1592,15 @@ func TestGenerateRebuildsCQRWSTBodyWithMainFooterSection(t *testing.T) {
 	if !strings.Contains(footerXML, "SECTIONPAGES") || strings.Contains(footerXML, "NUMPAGES") || strings.Contains(footerXML, ">12<") {
 		t.Fatalf("main footer should use dynamic page fields instead of stale template text: %s", footerXML)
 	}
+	if !strings.Contains(footerXML, `<w:jc w:val="center"`) {
+		t.Fatalf("main footer should be centered: %s", footerXML)
+	}
 	frontFooterXML := readDocxEntry(t, outputPath, "word/footer1.xml")
 	if strings.Contains(frontFooterXML, "<w:pict") || !strings.Contains(frontFooterXML, " PAGE ") || strings.Contains(frontFooterXML, "NUMPAGES") {
 		t.Fatalf("front-matter footer should use one plain Roman PAGE field without VML text boxes: %s", frontFooterXML)
+	}
+	if !strings.Contains(frontFooterXML, `<w:jc w:val="center"`) {
+		t.Fatalf("front-matter footer should be centered: %s", frontFooterXML)
 	}
 }
 func TestGenerateReplacesDocumentTotalWithBodySectionTotal(t *testing.T) {
@@ -1561,6 +1647,44 @@ func TestGenerateReplacesDocumentTotalWithBodySectionTotal(t *testing.T) {
 		t.Fatalf("footer should not be rewritten to dash page style: %s", footerXML)
 	}
 }
+func TestCQRWSTMainHeaderTextUsesTemplateCollege(t *testing.T) {
+	got := cqrwstMainHeaderText(map[string]string{
+		"专业":   "护理学",
+		"完成日期": "2026年5月",
+	}, "重庆工程学院本科生毕业设计（论文）")
+	want := "重庆工程学院2026届护理学专业本科毕业论文"
+	if got != want {
+		t.Fatalf("cqrwstMainHeaderText() = %q, want %q", got, want)
+	}
+}
+
+func TestMaterializeCQRWSTMainHeaderReplacesTemplateYear(t *testing.T) {
+	tmpDir := t.TempDir()
+	docxPath := filepath.Join(tmpDir, "input.docx")
+	writeTestDocx(t, docxPath, map[string]string{
+		"word/document.xml":            `<w:document><w:body><w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId8"/></w:sectPr></w:pPr></w:p></w:body></w:document>`,
+		"word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId8" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>`,
+		"word/header1.xml":             `<w:hdr><w:p/></w:hdr>`,
+	})
+	pkg := openTestPackage(t, docxPath)
+
+	materializeCQRWSTMainHeader(pkg, map[string]string{
+		"专业":   "护理学",
+		"完成日期": "2026年5月",
+	}, map[string]string{
+		"word/header1.xml": `<w:hdr><w:p><w:r><w:t>重庆工程学院</w:t></w:r><w:r><w:t>2022届</w:t></w:r><w:r><w:t>XXX</w:t></w:r><w:r><w:t>专业本科毕业论文</w:t></w:r></w:p></w:hdr>`,
+	})
+
+	header, ok := pkg.Get("word/header1.xml")
+	if !ok {
+		t.Fatal("header1.xml missing")
+	}
+	text := xmlText(string(header))
+	if !strings.Contains(text, "重庆工程学院2026届护理学专业本科毕业论文") {
+		t.Fatalf("template header year was not replaced: %q", text)
+	}
+}
+
 func TestNormalizeCQRWSTMainHeaderBuildsTextFromTemplateHeaderAndCoverFields(t *testing.T) {
 	tmpDir := t.TempDir()
 	docxPath := filepath.Join(tmpDir, "input.docx")

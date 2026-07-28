@@ -83,10 +83,13 @@ func TestApplySettingsPropertiesWritesEvenOddHeaderSwitch(t *testing.T) {
 	if !strings.Contains(updated, `<w:updateFields w:val="true"/>`) {
 		t.Fatalf("updated settings missing updateFields:\n%s", updated)
 	}
+	if strings.Index(updated, "<w:evenAndOddHeaders") > strings.Index(updated, "<w:updateFields") {
+		t.Fatalf("evenAndOddHeaders must precede updateFields in CT_Settings order:\n%s", updated)
+	}
 }
 
 func TestApplySettingsPropertiesPreservesExistingSwitches(t *testing.T) {
-	settings := `<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:evenAndOddHeaders/></w:settings>`
+	settings := `<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:evenAndOddHeaders/><w:compat/><w:docVars/></w:settings>`
 
 	updated, changed := ApplySettingsProperties(settings, SettingsPropertiesSpec{UpdateFieldsOnOpen: true})
 
@@ -98,6 +101,9 @@ func TestApplySettingsPropertiesPreservesExistingSwitches(t *testing.T) {
 	}
 	if !strings.Contains(updated, `<w:updateFields w:val="true"/>`) {
 		t.Fatalf("updated settings missing updateFields:\n%s", updated)
+	}
+	if strings.Index(updated, "<w:updateFields") > strings.Index(updated, "<w:compat") {
+		t.Fatalf("updateFields must precede compat in CT_Settings order:\n%s", updated)
 	}
 }
 

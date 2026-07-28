@@ -13,6 +13,7 @@ type Binding struct {
 type MappingResult struct {
 	Bindings        []Binding         `json:"bindings"`
 	CoverFields     map[string]string `json:"cover_fields,omitempty"`
+	HasTOC          bool              `json:"has_toc,omitempty"`
 	GeneratedBlocks []string          `json:"generated_blocks"`
 	UnmappedBlocks  []string          `json:"unmapped_blocks"`
 	AmbiguousBlocks []string          `json:"ambiguous_blocks"`

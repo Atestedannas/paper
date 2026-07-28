@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 )
 
 var (
@@ -147,6 +149,9 @@ func ApplySectionPropertiesAt(documentXML string, sectionIndex int, spec Section
 	index := indexes[sectionIndex]
 	sectPr := documentXML[index[0]:index[1]]
 	updated := replaceElementBody(sectPr, updateSectionPropertiesBody(elementBody(sectPr), spec), "w:sectPr")
+	if ordered, _, err := ooxmlpkg.RepairPropertyBlock([]byte(updated), "sectPr"); err == nil {
+		updated = string(ordered)
+	}
 	if updated == sectPr {
 		return documentXML, false
 	}
@@ -157,13 +162,50 @@ func ApplySettingsProperties(settingsXML string, spec SettingsPropertiesSpec) (s
 	updated := settingsXML
 	if spec.EvenAndOddHeaders {
 		updated = evenAndOddHeadersElement.ReplaceAllString(updated, "")
-		updated = insertBeforeClosingTag(updated, "w:settings", `<w:evenAndOddHeaders/>`)
+		updated = insertEvenAndOddHeadersInSchemaOrder(updated)
 	}
 	if spec.UpdateFieldsOnOpen {
 		updated = updateFieldsElement.ReplaceAllString(updated, "")
-		updated = insertBeforeClosingTag(updated, "w:settings", `<w:updateFields w:val="true"/>`)
+		updated = insertUpdateFieldsInSchemaOrder(updated)
 	}
 	return updated, updated != settingsXML
+}
+
+func insertEvenAndOddHeadersInSchemaOrder(settingsXML string) string {
+	element := `<w:evenAndOddHeaders/>`
+	for _, later := range []string{
+		"<w:bookFoldRevPrinting", "<w:bookFoldPrinting", "<w:bookFoldPrintingSheets",
+		"<w:drawingGridHorizontalSpacing", "<w:drawingGridVerticalSpacing",
+		"<w:displayHorizontalDrawingGridEvery", "<w:displayVerticalDrawingGridEvery",
+		"<w:doNotUseMarginsForDrawingGridOrigin", "<w:drawingGridHorizontalOrigin",
+		"<w:drawingGridVerticalOrigin", "<w:doNotShadeFormData", "<w:noPunctuationKerning",
+		"<w:characterSpacingControl", "<w:printTwoOnOne", "<w:strictFirstAndLastChars",
+		"<w:noLineBreaksAfter", "<w:noLineBreaksBefore", "<w:savePreviewPicture",
+		"<w:doNotValidateAgainstSchema", "<w:saveInvalidXml", "<w:ignoreMixedContent",
+		"<w:alwaysShowPlaceholderText", "<w:doNotDemarcateInvalidXml", "<w:saveXmlDataOnly",
+		"<w:useXSLTWhenSaving", "<w:saveThroughXslt", "<w:showXMLTags", "<w:alwaysMergeEmptyNamespace",
+		"<w:updateFields", "<w:hdrShapeDefaults", "<w:footnotePr", "<w:endnotePr",
+		"<w:compat", "<w:docVars", "<w:rsids", "<m:mathPr",
+	} {
+		if index := strings.Index(settingsXML, later); index >= 0 {
+			return settingsXML[:index] + element + settingsXML[index:]
+		}
+	}
+	return insertBeforeClosingTag(settingsXML, "w:settings", element)
+}
+
+func insertUpdateFieldsInSchemaOrder(settingsXML string) string {
+	element := `<w:updateFields w:val="true"/>`
+	for _, later := range []string{
+		"<w:hdrShapeDefaults", "<w:footnotePr", "<w:endnotePr", "<w:compat",
+		"<w:docVars", "<w:rsids", "<m:mathPr", "<w:attachedSchema",
+		"<w:themeFontLang", "<w:clrSchemeMapping",
+	} {
+		if index := strings.Index(settingsXML, later); index >= 0 {
+			return settingsXML[:index] + element + settingsXML[index:]
+		}
+	}
+	return insertBeforeClosingTag(settingsXML, "w:settings", element)
 }
 
 func ApplyParagraphProperties(paragraphXML string, spec ParagraphPropertiesSpec) (string, bool) {
@@ -172,6 +214,9 @@ func ApplyParagraphProperties(paragraphXML string, spec ParagraphPropertiesSpec)
 		pPr = `<w:pPr/>`
 	}
 	updatedPPr := replaceElementBody(pPr, updateParagraphPropertiesBody(elementBody(pPr), spec), "w:pPr")
+	if ordered, _, err := ooxmlpkg.RepairPropertyBlock([]byte(updatedPPr), "pPr"); err == nil {
+		updatedPPr = string(ordered)
+	}
 	if pPr == updatedPPr && strings.Contains(paragraphXML, pPr) {
 		return paragraphXML, false
 	}
@@ -190,6 +235,9 @@ func ApplyRunProperties(runXML string, spec RunPropertiesSpec) (string, bool) {
 		rPr = `<w:rPr/>`
 	}
 	updatedRPr := replaceElementBody(rPr, updateRunPropertiesBody(elementBody(rPr), spec), "w:rPr")
+	if ordered, _, err := ooxmlpkg.RepairPropertyBlock([]byte(updatedRPr), "rPr"); err == nil {
+		updatedRPr = string(ordered)
+	}
 	if rPr == updatedRPr && strings.Contains(runXML, rPr) {
 		return runXML, false
 	}
@@ -360,12 +408,6 @@ func buildRunPropertiesBody(spec RunPropertiesSpec) string {
 		}
 		builder.WriteString(`/>`)
 	}
-	if spec.FontSizeHalfPoints > 0 {
-		builder.WriteString(fmt.Sprintf(`<w:sz w:val="%d"/>`, spec.FontSizeHalfPoints))
-	}
-	if spec.ComplexSizeHalfPts > 0 {
-		builder.WriteString(fmt.Sprintf(`<w:szCs w:val="%d"/>`, spec.ComplexSizeHalfPts))
-	}
 	if spec.Bold {
 		builder.WriteString(`<w:b/>`)
 		builder.WriteString(`<w:bCs/>`)
@@ -375,6 +417,12 @@ func buildRunPropertiesBody(spec RunPropertiesSpec) string {
 	}
 	if spec.Color != "" {
 		builder.WriteString(fmt.Sprintf(`<w:color w:val="%s"/>`, spec.Color))
+	}
+	if spec.FontSizeHalfPoints > 0 {
+		builder.WriteString(fmt.Sprintf(`<w:sz w:val="%d"/>`, spec.FontSizeHalfPoints))
+	}
+	if spec.ComplexSizeHalfPts > 0 {
+		builder.WriteString(fmt.Sprintf(`<w:szCs w:val="%d"/>`, spec.ComplexSizeHalfPts))
 	}
 	if spec.VerticalAlign != "" {
 		builder.WriteString(fmt.Sprintf(`<w:vertAlign w:val="%s"/>`, spec.VerticalAlign))

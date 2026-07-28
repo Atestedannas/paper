@@ -54,6 +54,9 @@ func (e *TemplateStyleExtractor) ExtractFromTemplate(templatePath string) (map[s
 		names    []string
 		category string
 	}{
+		{[]string{"heading 4", "heading4", "标题 4", "标题4"}, "heading_4"},
+		{[]string{"references", "reference", "bibliography", "reference text", "参考文献"}, "references"},
+		{[]string{"acknowledgement", "acknowledgements", "acknowledgment", "致谢"}, "acknowledgements"},
 		{[]string{"normal", "正文", "default", "body text", "bodytext"}, "body"},
 		{[]string{"heading 1", "标题 1", "标题1", "heading1"}, "heading_1"},
 		{[]string{"heading 2", "标题 2", "标题2", "heading2"}, "heading_2"},
@@ -79,9 +82,15 @@ func (e *TemplateStyleExtractor) ExtractFromTemplate(templatePath string) (map[s
 			continue
 		}
 
-		spec := e.extractWithInheritance(found, byID, byName, 0)
+		spec := e.extractWithInheritance(found, byID, byName, map[*wml.CT_Style]bool{})
 		if !spec.IsEmpty() {
 			specs[m.category] = spec
+			if m.category == "references" {
+				specs["reference"] = spec
+			}
+			if m.category == "acknowledgements" {
+				specs["acknowledgement"] = spec
+			}
 			log.Printf("[样式提取] ✓ %s: font=%q ascii=%q size=%.1fpt bold=%v lineSpacing=%d firstLine=%d",
 				m.category, spec.FontEastAsia, spec.FontAscii,
 				spec.FontSizePt(), spec.Bold, spec.LineSpacingVal, spec.FirstLineIndent)
@@ -99,11 +108,13 @@ func (e *TemplateStyleExtractor) extractWithInheritance(
 	style *wml.CT_Style,
 	byID map[string]*wml.CT_Style,
 	byName map[string]*wml.CT_Style,
-	depth int,
+	seen map[*wml.CT_Style]bool,
 ) ParagraphFormatSpec {
-	if depth > 5 || style == nil {
+	if style == nil || seen[style] {
 		return ParagraphFormatSpec{}
 	}
+	seen[style] = true
+	defer delete(seen, style)
 
 	spec := ParagraphFormatSpec{}
 
@@ -111,9 +122,9 @@ func (e *TemplateStyleExtractor) extractWithInheritance(
 	if style.BasedOn != nil && style.BasedOn.ValAttr != "" {
 		parentKey := strings.ToLower(style.BasedOn.ValAttr)
 		if parentStyle, ok := byID[parentKey]; ok {
-			spec = e.extractWithInheritance(parentStyle, byID, byName, depth+1)
+			spec = e.extractWithInheritance(parentStyle, byID, byName, seen)
 		} else if parentStyle, ok := byName[parentKey]; ok {
-			spec = e.extractWithInheritance(parentStyle, byID, byName, depth+1)
+			spec = e.extractWithInheritance(parentStyle, byID, byName, seen)
 		}
 	}
 
@@ -134,7 +145,22 @@ func (e *TemplateStyleExtractor) extractWithInheritance(
 		if rPr.SzCs != nil && rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber != nil {
 			spec.FontSizeCSHalfPt = *rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber
 		}
-		spec.Bold = rPr.B != nil
+		if rPr.B != nil {
+			spec.Bold = styleOnOffEnabled(rPr.B)
+		} else if rPr.BCs != nil {
+			spec.Bold = styleOnOffEnabled(rPr.BCs)
+		}
+		if rPr.I != nil {
+			spec.Italic = styleOnOffEnabled(rPr.I)
+		} else if rPr.ICs != nil {
+			spec.Italic = styleOnOffEnabled(rPr.ICs)
+		}
+		if rPr.U != nil {
+			spec.Underline = rPr.U.ValAttr != wml.ST_UnderlineNone
+		}
+		if rPr.Color != nil && rPr.Color.ValAttr.ST_HexColorRGB != nil {
+			spec.ColorHex = *rPr.Color.ValAttr.ST_HexColorRGB
+		}
 	}
 
 	// 用本层段落属性覆盖
@@ -180,4 +206,11 @@ func (e *TemplateStyleExtractor) extractWithInheritance(
 	}
 
 	return spec
+}
+
+func styleOnOffEnabled(value *wml.CT_OnOff) bool {
+	if value == nil || value.ValAttr == nil {
+		return value != nil
+	}
+	return value.ValAttr.String() != "off" && value.ValAttr.String() != "false"
 }

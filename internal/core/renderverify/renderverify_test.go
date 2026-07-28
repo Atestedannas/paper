@@ -3,9 +3,7 @@ package renderverify
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -161,27 +159,6 @@ func TestParsePythonPDFTextOutput(t *testing.T) {
 	}
 	if len(pages) != 2 || pages[1] != "正文 第1页 共24页" {
 		t.Fatalf("pages = %#v", pages)
-	}
-}
-
-func TestLibreOfficeUserInstallationArg(t *testing.T) {
-	arg := libreOfficeUserInstallationArg(filepath.Join("tmp", "lo profile"))
-	if !strings.HasPrefix(arg, "-env:UserInstallation=file:") || !strings.Contains(arg, "lo%20profile") {
-		t.Fatalf("libreOfficeUserInstallationArg() = %q", arg)
-	}
-}
-
-func TestCreateLibreOfficeProfileDirCleanup(t *testing.T) {
-	profileDir, cleanup, err := createLibreOfficeProfileDir(t.TempDir())
-	if err != nil {
-		t.Fatalf("createLibreOfficeProfileDir() error = %v", err)
-	}
-	if _, err := os.Stat(profileDir); err != nil {
-		t.Fatalf("profile dir should exist before cleanup: %v", err)
-	}
-	cleanup()
-	if _, err := os.Stat(profileDir); !os.IsNotExist(err) {
-		t.Fatalf("profile dir should be removed after cleanup, stat error = %v", err)
 	}
 }
 

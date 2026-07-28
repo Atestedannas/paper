@@ -37,6 +37,8 @@ var verifyHeaderReferenceIDPattern = regexp.MustCompile(`<w:headerReference\b[^>
 var verifyFooterReferenceIDPattern = regexp.MustCompile(`<w:footerReference\b[^>]*\br:id="([^"]+)"[^>]*/>`)
 var verifyRelationshipPattern = regexp.MustCompile(`<Relationship\b[^>]*/>`)
 var verifyTablePattern = regexp.MustCompile(`(?s)<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
+var verifyTablePropertiesPattern = regexp.MustCompile(`(?s)<w:tblPr(?:\s[^>]*)?>.*?</w:tblPr>`)
+var verifyTableWidthPattern = regexp.MustCompile(`<w:tblW\b[^>]*/>`)
 var verifyTableRowPattern = regexp.MustCompile(`(?s)<w:tr(?:\s[^>]*)?>.*?</w:tr>`)
 var verifyTableCellPattern = regexp.MustCompile(`(?s)<w:tc(?:\s[^>]*)?>.*?</w:tc>`)
 var verifyAttributePattern = regexp.MustCompile(`\b([A-Za-z0-9_:.]+)="([^"]*)"`)
@@ -95,7 +97,6 @@ func NewVerifierWithTemplateProfileAndClosure(profile *templateprofile.Profile, 
 			RepairContract: contract,
 		},
 	}
-	verifier.configureRenderGateFromEnv()
 	return verifier
 }
 
@@ -203,12 +204,13 @@ func (v *Verifier) Verify(ctx context.Context, docxPath string) (Result, error) 
 	addFieldShadingDisplayWarning(pkg, &result)
 	addManualCaptionWarning(document, &result)
 	addCaptionNumberingIssues(document, &result)
-	addSectionHeaderFooterIssues(document, &result)
+	addSectionHeaderFooterIssues(document, &result, v.templateProfile)
 	addPageNumberingIssues(pkg, document, &result)
 	addTableFormattingIssues(document, &result, v.templateProfile)
 	addImageFormulaReferenceIssues(document, &result, v.templateProfile)
 	addFieldUpdateIssues(pkg, &result)
 	v.checkClosureArtifacts(&result)
+	addOpenXMLSchemaIssues(ctx, docxPath, &result)
 	v.checkRenderedOutput(ctx, docxPath, &result)
 
 	result.Passed = len(result.FatalIssues) == 0 && len(result.RepairableIssues) == 0
@@ -393,7 +395,7 @@ func parseCaptionNumber(label string, number string) (captionNumber, bool) {
 	}, true
 }
 
-func addSectionHeaderFooterIssues(document string, result *Result) {
+func addSectionHeaderFooterIssues(document string, result *Result, profiles ...*templateprofile.Profile) {
 	if result == nil {
 		return
 	}
@@ -439,7 +441,8 @@ func addSectionHeaderFooterIssues(document string, result *Result) {
 		previousHadFooter = previousHadFooter || len(footerIDs) > 0
 	}
 
-	if inherited {
+	templateDriven := len(profiles) > 0 && profiles[0] != nil
+	if inherited && !templateDriven {
 		appendRepairableIssueOnce(result, "section_header_footer_inherited", "one or more sections do not define their own header/footer references and may inherit content from the previous section; break header/footer links before setting chapter-specific text or page numbers.", documentTarget)
 	}
 	if linked {
@@ -479,7 +482,7 @@ func addPageNumberingIssues(pkg *ooxmlpkg.DocxPackage, document string, result *
 
 	frontIndex, bodyIndex := pageNumberSectionIndexes(sections)
 	for index := 0; index < frontIndex; index++ {
-		if strings.Contains(sections[index], "<w:footerReference") || strings.Contains(sections[index], "<w:pgNumType") {
+		if strings.Contains(sections[index], "<w:pgNumType") || sectionHasVisiblePageFooter(pkg, sections[index]) {
 			appendRepairableIssueOnce(result, "cover_page_number_present", "cover section contains page-number/footer settings; cover pages should not display page numbers.", documentTarget)
 			break
 		}
@@ -519,6 +522,24 @@ func addPageNumberingIssues(pkg *ooxmlpkg.DocxPackage, document string, result *
 			}
 		}
 	}
+}
+
+func sectionHasVisiblePageFooter(pkg *ooxmlpkg.DocxPackage, section string) bool {
+	targets := footerTargetsByRelationshipID(pkg)
+	for _, match := range verifyFooterReferenceIDPattern.FindAllStringSubmatch(section, -1) {
+		if len(match) != 2 {
+			continue
+		}
+		content, ok := pkg.Get(targets[match[1]])
+		if !ok {
+			continue
+		}
+		footer := string(content)
+		if footerHasDynamicPageField(footer) || footerHasVisibleManualPageNumber(footer) {
+			return true
+		}
+	}
+	return false
 }
 
 func pageNumberSectionIndexes(sections []string) (int, int) {
@@ -606,7 +627,9 @@ func footerHasVisibleManualPageNumber(footerXML string) bool {
 }
 
 func footerPageNumberCentered(footerXML string) bool {
-	return strings.Contains(footerXML, `<w:jc w:val="center"`)
+	return strings.Contains(footerXML, `<w:jc w:val="center"`) ||
+		strings.Contains(footerXML, "<wp:align>center</wp:align>") ||
+		strings.Contains(footerXML, "mso-position-horizontal:center")
 }
 
 func addTableFormattingIssues(document string, result *Result, profiles ...*templateprofile.Profile) {
@@ -685,10 +708,12 @@ func tableLayoutIsStable(table string) bool {
 	if strings.Contains(table, "<w:tblpPr") || strings.Contains(table, "<w:tblOverlap") {
 		return false
 	}
-	if !strings.Contains(table, `<w:jc w:val="center"`) {
+	properties := verifyTablePropertiesPattern.FindString(table)
+	if !strings.Contains(properties, `<w:jc w:val="center"`) {
 		return false
 	}
-	if strings.Contains(table, `w:type="auto"`) || strings.Contains(table, `w:w="0"`) {
+	width := verifyTableWidthPattern.FindString(properties)
+	if width == "" || strings.Contains(width, `w:type="auto"`) || strings.Contains(width, `w:w="0"`) {
 		return false
 	}
 	return true
@@ -910,7 +935,12 @@ func addFieldUpdateIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
 	}
 	document, _ := pkg.Get(documentTarget)
 	if unmaterializedTOCPagePattern.Match(document) {
-		appendRepairableIssueOnce(result, "toc_page_numbers_not_materialized", "table of contents still contains placeholder page numbers; render and write the real page numbers into the TOC cache.", documentTarget)
+		result.Warnings = append(result.Warnings, Issue{
+			Kind:     "toc_page_numbers_update_on_open",
+			Severity: "warning",
+			Message:  "table of contents page-number cache is not materialized; the marked TOC field will update when opened in Word/WPS.",
+			Target:   documentTarget,
+		})
 	}
 }
 
@@ -1179,7 +1209,7 @@ func addNumberingReferenceIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
 			continue
 		}
 		for _, match := range regexp.MustCompile(`<w:numId\b[^>]*\bw:val="([^"]+)"`).FindAllStringSubmatch(string(content), -1) {
-			if len(match) == 2 && (!hasNumbering || numToAbstract[match[1]] == "") {
+			if len(match) == 2 && match[1] != "0" && (!hasNumbering || numToAbstract[match[1]] == "") {
 				appendRepairableIssueOnce(result, "numbering_reference_missing", "Word XML references a numId that is not defined in numbering.xml: "+match[1], name)
 			}
 		}
@@ -1402,7 +1432,7 @@ func addWordXMLStructureIssues(name string, content string, result *Result) {
 				textBoxDepth++
 			case "r":
 				if runDepth > 0 && textBoxDepth == 0 {
-					appendFatalIssueOnce(result, "nested_word_run", "Word XML contains a run nested inside another run, which can break Word/LibreOffice compatibility.", name)
+					appendFatalIssueOnce(result, "nested_word_run", "WordprocessingML contains a run nested inside another run, which violates the document structure.", name)
 				}
 				runDepth++
 			case "rPr":

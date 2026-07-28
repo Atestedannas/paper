@@ -108,6 +108,59 @@ func TestParserPreservesOrderedContentBlocks(t *testing.T) {
 	}
 }
 
+func TestParserExcludesSourceTOCFromBodyContent(t *testing.T) {
+	docPath := filepath.Join(t.TempDir(), "toc-and-body.docx")
+	documentXML := `<?xml version="1.0" encoding="UTF-8"?>` +
+		`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+		`<w:p><w:r><w:t>目      录</w:t></w:r></w:p>` +
+		`<w:p><w:pPr><w:pStyle w:val="TOC1"/></w:pPr><w:r><w:t>1 绪论1</w:t></w:r></w:p>` +
+		`<w:p><w:pPr><w:pStyle w:val="TOC2"/></w:pPr><w:r><w:t>1.2研究目的1</w:t></w:r></w:p>` +
+		`<w:p><w:pPr><w:pageBreakBefore/></w:pPr></w:p>` +
+		`<w:p><w:r><w:t>1 绪论</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>1.2研究目的</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>正文内容</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	createTestDocxWithDocumentXML(t, docPath, documentXML)
+
+	paper, err := NewParser().Parse(context.Background(), docPath)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	want := []ContentBlock{
+		{Kind: "heading", Level: 1, Text: "1 绪论"},
+		{Kind: "heading", Level: 2, Text: "1.2研究目的"},
+		{Kind: "body", Text: "正文内容"},
+	}
+	if !reflect.DeepEqual(paper.ContentBlocks, want) {
+		t.Fatalf("ContentBlocks = %#v, want %#v", paper.ContentBlocks, want)
+	}
+	if len(paper.Headings) != 2 {
+		t.Fatalf("Headings = %#v, want only the two body headings", paper.Headings)
+	}
+	if !paper.HasTOC {
+		t.Fatal("HasTOC = false, want independent TOC presence signal")
+	}
+}
+
+func TestParserExitsTOCAtUnnumberedBodyHeading(t *testing.T) {
+	elements := []bodyElement{
+		{kind: "p", text: "目录"},
+		{kind: "p", text: "1 绪论1", xml: `<w:p><w:pPr><w:pStyle w:val="TOC1"/></w:pPr></w:p>`},
+		{kind: "p", text: "1 绪论"},
+		{kind: "p", text: "正文内容"},
+	}
+
+	paper := parseElements(elements)
+	want := []ContentBlock{
+		{Kind: "heading", Level: 1, Text: "1 绪论"},
+		{Kind: "body", Text: "正文内容"},
+	}
+	if !reflect.DeepEqual(paper.ContentBlocks, want) {
+		t.Fatalf("ContentBlocks = %#v, want %#v", paper.ContentBlocks, want)
+	}
+}
+
 func TestParserRecognizesChineseHeadingNumbering(t *testing.T) {
 	paper := parseParagraphs([]string{"第一章 绪论", "正文", "一、研究背景"})
 	want := []Heading{{Level: 1, Text: "绪论"}, {Level: 1, Text: "研究背景"}}

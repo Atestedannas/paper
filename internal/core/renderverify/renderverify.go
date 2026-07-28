@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,7 +128,7 @@ func Check(ctx context.Context, docxPath string, options Options) (Result, error
 
 	renderer := options.Renderer
 	if renderer == nil {
-		renderer = LibreOfficeRenderer{}
+		return Result{}, fmt.Errorf("renderer is required")
 	}
 	extractor := options.TextExtractor
 	if extractor == nil {
@@ -198,47 +197,6 @@ func Check(ctx context.Context, docxPath string, options Options) (Result, error
 	validateRenderedText(&result, options)
 	result.Passed = !hasBlockingIssues(result.Issues)
 	return result, nil
-}
-
-type LibreOfficeRenderer struct {
-	Binary string
-}
-
-func (r LibreOfficeRenderer) RenderPDF(ctx context.Context, docxPath string, outputDir string) (PDFArtifact, error) {
-	soffice, err := r.resolveBinary()
-	if err != nil {
-		return PDFArtifact{}, err
-	}
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return PDFArtifact{}, fmt.Errorf("create output dir: %w", err)
-	}
-	absDocx, err := filepath.Abs(docxPath)
-	if err != nil {
-		return PDFArtifact{}, fmt.Errorf("resolve docx path: %w", err)
-	}
-	base := strings.TrimSuffix(filepath.Base(absDocx), filepath.Ext(absDocx))
-	expected := filepath.Join(outputDir, base+".pdf")
-	_ = os.Remove(expected)
-	profileDir, cleanupProfile, err := createLibreOfficeProfileDir(outputDir)
-	if err != nil {
-		return PDFArtifact{}, err
-	}
-	defer cleanupProfile()
-
-	cmd := exec.CommandContext(ctx, soffice, "--headless", "--norestore", "--invisible", libreOfficeUserInstallationArg(profileDir), "--convert-to", "pdf", "--outdir", outputDir, absDocx)
-	if runtime.GOOS != "windows" {
-		cmd.Env = append(os.Environ(), "HOME=/tmp")
-	} else {
-		cmd.Env = os.Environ()
-	}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return PDFArtifact{}, fmt.Errorf("soffice convert: %w, output: %s", err, strings.TrimSpace(string(output)))
-	}
-	if _, err := os.Stat(expected); err != nil {
-		return PDFArtifact{}, fmt.Errorf("soffice output missing at %s: %w, output: %s", expected, err, strings.TrimSpace(string(output)))
-	}
-	return PDFArtifact{Path: expected}, nil
 }
 
 type PopplerRasterizer struct {
@@ -336,53 +294,6 @@ func mustGlob(pattern string) []string {
 		return nil
 	}
 	return paths
-}
-
-func createLibreOfficeProfileDir(outputDir string) (string, func(), error) {
-	profileDir, err := os.MkdirTemp(outputDir, "lo-profile-")
-	if err != nil {
-		return "", nil, fmt.Errorf("create libreoffice profile dir: %w", err)
-	}
-	return profileDir, func() { _ = os.RemoveAll(profileDir) }, nil
-}
-
-func libreOfficeUserInstallationArg(profileDir string) string {
-	path := filepath.ToSlash(profileDir)
-	if runtime.GOOS == "windows" && !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	return "-env:UserInstallation=" + (&url.URL{Scheme: "file", Path: path}).String()
-}
-
-func (r LibreOfficeRenderer) resolveBinary() (string, error) {
-	if strings.TrimSpace(r.Binary) != "" {
-		if _, err := os.Stat(r.Binary); err == nil {
-			return r.Binary, nil
-		}
-		return "", fmt.Errorf("configured soffice binary missing: %s", r.Binary)
-	}
-	for _, envName := range []string{"SOFFICE_BIN", "SOFFICE_PATH"} {
-		if custom := strings.TrimSpace(os.Getenv(envName)); custom != "" {
-			if _, err := os.Stat(custom); err == nil {
-				return custom, nil
-			}
-			return "", fmt.Errorf("%s set but file missing: %s", envName, custom)
-		}
-	}
-	for _, candidate := range []string{"soffice", "soffice.exe"} {
-		if path, err := exec.LookPath(candidate); err == nil {
-			return path, nil
-		}
-	}
-	for _, candidate := range []string{
-		`C:\Program Files\LibreOffice\program\soffice.exe`,
-		`C:\Program Files (x86)\LibreOffice\program\soffice.exe`,
-	} {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("soffice not found")
 }
 
 type RscPDFTextExtractor struct{}

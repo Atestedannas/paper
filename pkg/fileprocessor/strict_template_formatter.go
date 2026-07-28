@@ -6,11 +6,12 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gitee.com/greatmusicians/unioffice/document"
@@ -763,7 +764,12 @@ func isTOCEntryLikeText(text string) bool {
 	if !regexp.MustCompile(`\d+\s*$`).MatchString(normalized) {
 		return false
 	}
-	return strings.Contains(normalized, "．．") || strings.Contains(normalized, "...") || isHeading1Text(normalized) || strings.Contains(normalized, "参考文献") || strings.Contains(normalized, "致谢")
+	return regexp.MustCompile(`[．.…]{2,}`).MatchString(normalized) ||
+		isHeading1Text(normalized) ||
+		isHeading2Text(normalized) ||
+		isHeading3Text(normalized) ||
+		strings.Contains(normalized, "参考文献") ||
+		strings.Contains(normalized, "致谢")
 }
 
 func isHeading1Text(text string) bool {
@@ -771,7 +777,7 @@ func isHeading1Text(text string) bool {
 	if len([]rune(normalized)) == 0 || len([]rune(normalized)) > 40 {
 		return false
 	}
-	return regexp.MustCompile(`^\d+\s*[^\d\.\s]`).MatchString(normalized) && !regexp.MustCompile(`^\d+\.\d`).MatchString(normalized)
+	return isHeading1(normalizeSpaces(normalized))
 }
 
 func isHeading2Text(text string) bool {
@@ -884,7 +890,24 @@ func stripAllSpaces(text string) string {
 
 func extractStrictTemplateSpecs(templateDoc *document.Document, processor *EnhancedProcessor) map[string]ParagraphFormatSpec {
 	specs := make(map[string]ParagraphFormatSpec)
-	classified := NewV2DeterministicClassifier(processor).Classify(BodyLevelParagraphsOnly(templateDoc))
+	paragraphs := BodyLevelParagraphsOnly(templateDoc)
+	sampleStart := 0
+	sampleEnd := len(paragraphs)
+	foundSample := false
+	for index, paragraph := range paragraphs {
+		text := normalizeVisibleText(processor.extractParagraphText(paragraph))
+		if regexp.MustCompile(`^\d+\s*[-－]\s*\d+.*范本$`).MatchString(text) {
+			if !foundSample {
+				sampleStart = index + 1
+				foundSample = true
+			} else {
+				sampleEnd = index
+				break
+			}
+		}
+	}
+	paragraphs = paragraphs[sampleStart:sampleEnd]
+	classified := NewV2DeterministicClassifier(processor).Classify(paragraphs)
 	type candidate struct {
 		spec  ParagraphFormatSpec
 		score int
@@ -907,7 +930,124 @@ func extractStrictTemplateSpecs(templateDoc *document.Document, processor *Enhan
 	for paraType, picked := range best {
 		specs[paraType] = picked.spec
 	}
+
+	// 范本文本可能沿用 TOC 样式，状态分类器会把真实标题继续留在目录区。
+	// 对标题和正文按文本结构直接取首个真实样本，避免目录样式污染模板规则。
+	seenHeading := false
+	directPicked := make(map[string]bool)
+	for _, paragraph := range paragraphs {
+		text := normalizeVisibleText(processor.extractParagraphText(paragraph))
+		if text == "" || isTemplateInstructionText(text) || isTOCEntryLikeText(text) {
+			continue
+		}
+		paraType := ""
+		switch {
+		case isHeading3Text(text):
+			paraType = V2Heading3
+			seenHeading = true
+		case isHeading2Text(text):
+			paraType = V2Heading2
+			seenHeading = true
+		case isHeading1Text(text):
+			paraType = V2Heading1
+			seenHeading = true
+		case seenHeading && isDirectBodySampleText(text):
+			paraType = V2Body
+		}
+		if paraType == "" {
+			continue
+		}
+		if directPicked[paraType] {
+			continue
+		}
+		spec := sanitizeParagraphFormatSpec(extractParaFormatSpec(paragraph))
+		if !spec.IsEmpty() {
+			specs[paraType] = spec
+			directPicked[paraType] = true
+		}
+	}
 	return specs
+}
+
+func extractInstructionTemplateSpecs(templateDoc *document.Document, processor *EnhancedProcessor) map[string]ParagraphFormatSpec {
+	specs := make(map[string]ParagraphFormatSpec)
+	for _, paragraph := range BodyLevelParagraphsOnly(templateDoc) {
+		text := normalizeVisibleText(processor.extractParagraphText(paragraph))
+		if regexp.MustCompile(`^\d+\s*[-－]\s*\d+.*范本$`).MatchString(text) {
+			break
+		}
+		spec := instructionParagraphFormatSpec(text)
+		switch {
+		case strings.Contains(text, "字体与间距"):
+			specs[V2Body] = spec
+		case strings.Contains(text, "中文摘要") && strings.Contains(text, "用"):
+			specs[V2Abstract] = spec
+		case strings.Contains(text, "目次页") && strings.Contains(text, "字体用"):
+			specs[V2TOC] = spec
+			specs["toc_entry"] = spec
+		case strings.Contains(text, "参考文献") && strings.Contains(text, "用") && strings.Contains(text, "编写"):
+			specs[V2References] = spec
+		case strings.Contains(text, "表序、表题") && strings.Contains(text, "字体均为"):
+			specs[V2TableCaption] = spec
+			specs["caption"] = spec
+		case strings.Contains(text, "图序、图题") && strings.Contains(text, "字体均为"):
+			specs[V2FigureCaption] = spec
+			specs["caption"] = spec
+		case strings.Contains(text, "页眉字号为"):
+			specs["header"] = spec
+		}
+	}
+	return specs
+}
+
+func instructionParagraphFormatSpec(text string) ParagraphFormatSpec {
+	spec := ParagraphFormatSpec{}
+	for _, font := range []string{"Times New Roman", "仿宋", "楷体", "黑体", "宋体"} {
+		if strings.Contains(text, font) {
+			if font == "Times New Roman" {
+				spec.FontAscii = font
+			} else {
+				spec.FontEastAsia = font
+			}
+			break
+		}
+	}
+	for _, size := range []struct {
+		name   string
+		halfPt uint64
+	}{
+		{"小四号", 24}, {"小四", 24},
+		{"小五号", 18}, {"小五", 18},
+		{"五号", 21}, {"5号", 21},
+	} {
+		if strings.Contains(text, size.name) {
+			spec.FontSizeHalfPt = size.halfPt
+			spec.FontSizeCSHalfPt = size.halfPt
+			break
+		}
+	}
+	if match := regexp.MustCompile(`固定值\s*(\d+(?:\.\d+)?)\s*磅`).FindStringSubmatch(text); len(match) == 2 {
+		if points, err := strconv.ParseFloat(match[1], 64); err == nil {
+			spec.LineSpacingVal = int64(math.Round(points * 20))
+			spec.LineSpacingRule = wml.ST_LineSpacingRuleExact
+		}
+	}
+	return spec
+}
+
+func isDirectBodySampleText(text string) bool {
+	normalized := normalizeVisibleText(text)
+	if len([]rune(normalized)) < 10 {
+		return false
+	}
+	return !isHeading1Text(normalized) &&
+		!isHeading2Text(normalized) &&
+		!isHeading3Text(normalized) &&
+		!isReferenceItemText(normalized) &&
+		!isReferencesTitleText(normalized) &&
+		!isAcknowledgementsTitleText(normalized) &&
+		!isMainTextTableCaption(normalized) &&
+		!isMainTextFigureCaption(normalized)
 }
 
 func resolveStrictTemplateSpec(specs map[string]ParagraphFormatSpec, paraType string) (ParagraphFormatSpec, bool) {
@@ -1832,10 +1972,151 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 	})
 
 	mergeContentTypes(outputEntries, templateEntries)
-	mergeDocumentRelationships(outputEntries, templateEntries)
-	mergeDocumentSectionHeaderFooterRefs(outputEntries, templateEntries)
+	relationshipIDs := mergeDocumentRelationships(outputEntries, templateEntries)
+	mergeDocumentSectionHeaderFooterRefs(outputEntries, templateEntries, relationshipIDs)
 
 	return writeDocxEntries(outputPath, outputEntries)
+}
+
+func copyAndMaterializeTemplateHeaderFooter(templatePath, outputPath string, coverInfo map[string]string) error {
+	if err := copyTemplateHeaderFooterPackage(templatePath, outputPath); err != nil {
+		return err
+	}
+	if len(coverInfo) == 0 {
+		return nil
+	}
+
+	entries, err := readDocxEntries(outputPath)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for name, content := range entries {
+		if !strings.HasPrefix(name, "word/header") || !strings.HasSuffix(name, ".xml") {
+			continue
+		}
+		xmlText := string(content)
+		texts := extractDocxTextNodes(xmlText)
+		if len(texts) == 0 {
+			continue
+		}
+		visible := strings.Join(texts, "")
+		materialized := materializeTemplateHeaderText(visible, coverInfo)
+		if materialized == visible {
+			continue
+		}
+		entries[name] = []byte(replaceDocxTextNodes(xmlText, distributeHeaderText(texts, materialized)))
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return writeDocxEntries(outputPath, entries)
+}
+
+func verifyCopiedHeaderFooterStructure(templatePath, outputPath string) (int, int, bool) {
+	templateEntries, err := readDocxEntries(templatePath)
+	if err != nil {
+		return 0, 0, false
+	}
+	outputEntries, err := readDocxEntries(outputPath)
+	if err != nil {
+		return 0, 0, false
+	}
+	headerCount, footerCount := 0, 0
+	for name, expected := range templateEntries {
+		actual, ok := outputEntries[name]
+		if !ok {
+			if strings.HasPrefix(name, "word/header") || strings.HasPrefix(name, "word/footer") {
+				return 0, 0, false
+			}
+			continue
+		}
+		switch {
+		case strings.HasPrefix(name, "word/header") && strings.HasSuffix(name, ".xml"):
+			headerCount++
+			blank := func(xmlText string) string {
+				return replaceDocxTextNodes(xmlText, make([]string, len(extractDocxTextNodes(xmlText))))
+			}
+			if blank(string(expected)) != blank(string(actual)) {
+				return 0, 0, false
+			}
+		case strings.HasPrefix(name, "word/footer") && strings.HasSuffix(name, ".xml"):
+			footerCount++
+			if string(expected) != string(actual) {
+				return 0, 0, false
+			}
+		case strings.HasPrefix(name, "word/_rels/header"), strings.HasPrefix(name, "word/_rels/footer"):
+			if string(expected) != string(actual) {
+				return 0, 0, false
+			}
+		}
+	}
+	return headerCount, footerCount, true
+}
+
+func materializeTemplateHeaderText(text string, coverInfo map[string]string) string {
+	replacements := []string{}
+	if college := strings.TrimSpace(coverInfo["学院"]); college != "" {
+		replacements = append(replacements, "{学院}", college)
+	}
+	if title := strings.TrimSpace(coverInfo["题目"]); title != "" {
+		replacements = append(replacements, "{题目}", title)
+	}
+	major := strings.TrimSpace(coverInfo["专业"])
+	if major != "" {
+		replacements = append(replacements,
+			"XXX专业", major+"专业",
+			"XX专业", major+"专业",
+			"xx专业", major+"专业",
+			"{专业}", major,
+		)
+	}
+	if year := graduationYear(coverInfo["班级"]); year != "" {
+		replacements = append(replacements,
+			"XXX届", year+"届",
+			"XX届", year+"届",
+			"xx届", year+"届",
+			"{届}", year+"届",
+		)
+	}
+	if len(replacements) == 0 {
+		return text
+	}
+	return strings.NewReplacer(replacements...).Replace(text)
+}
+
+func graduationYear(className string) string {
+	match := regexp.MustCompile(`20\d{2}`).FindString(className)
+	if match == "" {
+		return ""
+	}
+	if strings.Contains(className, "届") {
+		return match
+	}
+	year, err := strconv.Atoi(match)
+	if err != nil {
+		return ""
+	}
+	return strconv.Itoa(year + 4)
+}
+
+func distributeHeaderText(original []string, text string) []string {
+	result := make([]string, len(original))
+	remaining := []rune(text)
+	for index := range original {
+		if index == len(original)-1 {
+			result[index] = string(remaining)
+			break
+		}
+		width := len([]rune(original[index]))
+		if width > len(remaining) {
+			width = len(remaining)
+		}
+		result[index] = string(remaining[:width])
+		remaining = remaining[width:]
+	}
+	return result
 }
 
 func postProcessStrictOutput(outputPath string) error {
@@ -1984,13 +2265,13 @@ func mergeContentTypes(outputEntries, templateEntries map[string][]byte) {
 	outputXML := string(outputContent)
 	templateXML := string(templateContent)
 	for _, needle := range extractSelfClosingTags(templateXML, "<Default ", "/>") {
-		if !strings.Contains(outputXML, needle) {
+		if !hasContentTypeIdentity(outputXML, needle) {
 			outputXML = strings.Replace(outputXML, "</Types>", needle+"</Types>", 1)
 		}
 	}
 	for _, needle := range extractSelfClosingTags(templateXML, "<Override ", "/>") {
 		if strings.Contains(needle, "/word/header") || strings.Contains(needle, "/word/footer") {
-			if !strings.Contains(outputXML, needle) {
+			if !hasContentTypeIdentity(outputXML, needle) {
 				outputXML = strings.Replace(outputXML, "</Types>", needle+"</Types>", 1)
 			}
 		}
@@ -1998,31 +2279,55 @@ func mergeContentTypes(outputEntries, templateEntries map[string][]byte) {
 	outputEntries["[Content_Types].xml"] = []byte(outputXML)
 }
 
-func mergeDocumentRelationships(outputEntries, templateEntries map[string][]byte) {
+func hasContentTypeIdentity(contentTypesXML, tag string) bool {
+	for _, match := range strictXMLAttributePattern.FindAllStringSubmatch(tag, -1) {
+		if len(match) < 5 || (match[1] != "PartName" && match[1] != "Extension") {
+			continue
+		}
+		value := match[3]
+		if value == "" {
+			value = match[4]
+		}
+		return strings.Contains(contentTypesXML, match[1]+`="`+value+`"`) ||
+			strings.Contains(contentTypesXML, match[1]+`='`+value+`'`)
+	}
+	return strings.Contains(contentTypesXML, tag)
+}
+
+func mergeDocumentRelationships(outputEntries, templateEntries map[string][]byte) map[string]string {
+	idMap := map[string]string{}
 	outputContent, ok := outputEntries["word/_rels/document.xml.rels"]
 	if !ok {
-		return
+		return idMap
 	}
 	templateContent, ok := templateEntries["word/_rels/document.xml.rels"]
 	if !ok {
-		return
+		return idMap
 	}
 
 	var outputRels strictRelationshipSet
 	var templateRels strictRelationshipSet
 	if xml.Unmarshal(outputContent, &outputRels) != nil || xml.Unmarshal(templateContent, &templateRels) != nil {
-		return
+		return idMap
 	}
 
 	filtered := make([]strictRelationshipPart, 0, len(outputRels.Relationships))
+	usedIDs := map[string]bool{}
 	for _, rel := range outputRels.Relationships {
 		if isHeaderFooterRelationship(rel) {
 			continue
 		}
 		filtered = append(filtered, rel)
+		usedIDs[rel.ID] = true
 	}
 	for _, rel := range templateRels.Relationships {
 		if isHeaderFooterRelationship(rel) {
+			originalID := rel.ID
+			if usedIDs[rel.ID] {
+				rel.ID = nextFreeRelationshipID(usedIDs)
+			}
+			usedIDs[rel.ID] = true
+			idMap[originalID] = rel.ID
 			filtered = append(filtered, rel)
 		}
 	}
@@ -2030,9 +2335,19 @@ func mergeDocumentRelationships(outputEntries, templateEntries map[string][]byte
 
 	merged, err := xml.Marshal(outputRels)
 	if err != nil {
-		return
+		return map[string]string{}
 	}
 	outputEntries["word/_rels/document.xml.rels"] = merged
+	return idMap
+}
+
+func nextFreeRelationshipID(used map[string]bool) string {
+	for number := 1; ; number++ {
+		candidate := "rId" + strconv.Itoa(number)
+		if !used[candidate] {
+			return candidate
+		}
+	}
 }
 
 func isHeaderFooterRelationship(rel strictRelationshipPart) bool {
@@ -2042,7 +2357,11 @@ func isHeaderFooterRelationship(rel strictRelationshipPart) bool {
 		strings.HasPrefix(rel.Target, "footer")
 }
 
-func mergeDocumentSectionHeaderFooterRefs(outputEntries, templateEntries map[string][]byte) {
+func mergeDocumentSectionHeaderFooterRefs(outputEntries, templateEntries map[string][]byte, relationshipIDMaps ...map[string]string) {
+	relationshipIDs := map[string]string{}
+	if len(relationshipIDMaps) > 0 {
+		relationshipIDs = relationshipIDMaps[0]
+	}
 	outputContent, ok := outputEntries["word/document.xml"]
 	if !ok {
 		return
@@ -2066,10 +2385,21 @@ func mergeDocumentSectionHeaderFooterRefs(outputEntries, templateEntries map[str
 		if templateIdx >= len(templateSectPrBlocks) {
 			templateIdx = len(templateSectPrBlocks) - 1
 		}
-		replacement := templateSectPrBlocks[templateIdx]
+		replacement := remapRelationshipIDs(templateSectPrBlocks[templateIdx], relationshipIDs)
 		outputXML = strings.Replace(outputXML, sectPr, replacement, 1)
 	}
 	outputEntries["word/document.xml"] = []byte(outputXML)
+}
+
+func remapRelationshipIDs(xmlText string, relationshipIDs map[string]string) string {
+	for oldID, newID := range relationshipIDs {
+		if oldID == newID {
+			continue
+		}
+		xmlText = strings.ReplaceAll(xmlText, `r:id="`+oldID+`"`, `r:id="`+newID+`"`)
+		xmlText = strings.ReplaceAll(xmlText, `r:id='`+oldID+`'`, `r:id='`+newID+`'`)
+	}
+	return xmlText
 }
 
 func lastSectPrBlock(docXML string) string {

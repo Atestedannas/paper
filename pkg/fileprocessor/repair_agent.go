@@ -103,6 +103,46 @@ func (a *RepairAgent) Run(doc *document.Document, specs map[string]ParagraphForm
 	return result
 }
 
+func (a *RepairAgent) RunClassified(classified map[string][]document.Paragraph, specs map[string]ParagraphFormatSpec) RepairResult {
+	verifier := NewFormatVerifier(a.processor, nil)
+	applier := NewAIFormatApplier(a.processor)
+	result := RepairResult{}
+	previousDiffs := -1
+
+	for round := 1; round <= a.maxRounds; round++ {
+		diffs := verifier.compareAllWithSpecs(classified, specs)
+		a.lockVerifiedTypes(classified, specs, diffs)
+		diffs = a.unlockedDiffs(classified, diffs)
+		if round == 1 {
+			result.InitialDiffs = len(diffs)
+		}
+		result.FinalDiffs = len(diffs)
+		if len(diffs) == 0 {
+			return result
+		}
+		if previousDiffs >= 0 && len(diffs) >= previousDiffs {
+			result.NeedsManualReview = true
+			result.Regressed = len(diffs) > previousDiffs
+			result.Diagnostics = a.diagnosticAgent.Diagnose(round, diffs)
+			return result
+		}
+		result.Rounds = round
+		fixes := verifier.autoFixDiffsWithSpecs(classified, diffs, specs, applier)
+		result.TotalFixes += fixes
+		previousDiffs = len(diffs)
+		if fixes == 0 {
+			result.NeedsManualReview = true
+			result.Diagnostics = a.diagnosticAgent.Diagnose(round, diffs)
+			return result
+		}
+	}
+
+	result.FinalDiffs = len(verifier.compareAllWithSpecs(classified, specs))
+	result.NeedsManualReview = result.FinalDiffs > 0
+	result.Regressed = result.FinalDiffs > result.InitialDiffs
+	return result
+}
+
 func (a *RepairAgent) lockVerifiedTypes(classified map[string][]document.Paragraph, specs map[string]ParagraphFormatSpec, diffs []FormatDiff) {
 	failed := map[string]bool{}
 	for _, diff := range diffs {

@@ -6,8 +6,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -124,21 +122,9 @@ func (h *PaperHandler) extractTextFromDOC(filePath string) (string, error) {
 		return text, nil
 	}
 
-	// 方案 2：PowerShell COM 自动化 — 调用 WPS/Word 提取文本（Windows，最可靠）
-	if text := h.tryComDocToText(filePath); text != "" {
-		log.Printf("[DOC提取] 方案2成功: COM (WPS/Word), %d 字符", len([]rune(text)))
-		return text, nil
-	}
-
 	// 方案 3：使用 doc2txt 库解析 OLE2 .doc
 	if text := h.tryDoc2txt(filePath); text != "" {
 		log.Printf("[DOC提取] 方案3成功: doc2txt, %d 字符", len([]rune(text)))
-		return text, nil
-	}
-
-	// 方案 4：LibreOffice soffice 命令行转换
-	if text := h.trySofficeConvert(filePath); text != "" {
-		log.Printf("[DOC提取] 方案4成功: soffice, %d 字符", len([]rune(text)))
 		return text, nil
 	}
 
@@ -178,110 +164,6 @@ func (h *PaperHandler) tryDoc2txt(filePath string) string {
 
 	if chineseCount < 30 {
 		log.Println("[DOC提取] doc2txt 结果质量不佳，尝试其他方案")
-		return ""
-	}
-	return text
-}
-
-// tryComDocToText 使用 PowerShell COM 自动化 (WPS / Word) 提取 .doc 纯文本
-func (h *PaperHandler) tryComDocToText(filePath string) string {
-	absPath, err := filepath.Abs(filePath)
-	if err != nil {
-		return ""
-	}
-	absPath = strings.ReplaceAll(absPath, `/`, `\`)
-	escapedPath := strings.ReplaceAll(absPath, `'`, `''`)
-
-	// PowerShell 脚本：尝试多个 COM ProgID，通过 stdout 输出文本
-	psScript := fmt.Sprintf(`
-[Console]::OutputEncoding = [Text.Encoding]::UTF8
-$ErrorActionPreference = 'Stop'
-$path = '%s'
-$app = $null
-$ids = @('Word.Application','KWps.Application','wps.Application','KWPS.Application')
-foreach ($id in $ids) {
-  try { $app = New-Object -ComObject $id; break } catch {}
-}
-if (-not $app) { exit 1 }
-$app.Visible = $false
-$app.DisplayAlerts = 0
-try {
-  $doc = $app.Documents.Open($path)
-  [Console]::Out.Write($doc.Content.Text)
-  $doc.Close([ref]$false)
-} finally {
-  $app.Quit()
-}
-`, escapedPath)
-
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.Env = os.Environ()
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("[DOC提取] COM 失败: %v (output: %.200s)", err, string(output))
-		return ""
-	}
-
-	text := strings.TrimSpace(string(output))
-	chineseCount := countChinese(text)
-	log.Printf("[DOC提取] COM (WPS/Word) 结果: %d 字符, 中文 %d 个", len([]rune(text)), chineseCount)
-
-	if chineseCount < 10 {
-		return ""
-	}
-	return text
-}
-
-// trySofficeConvert 尝试使用 LibreOffice soffice 将 .doc 转为 .txt
-func (h *PaperHandler) trySofficeConvert(filePath string) string {
-	sofficePaths := []string{
-		"soffice",
-		`C:\Program Files\LibreOffice\program\soffice.exe`,
-		`C:\Program Files (x86)\LibreOffice\program\soffice.exe`,
-		"/usr/bin/soffice",
-		"/usr/local/bin/soffice",
-	}
-
-	var sofficeBin string
-	for _, p := range sofficePaths {
-		if _, err := exec.LookPath(p); err == nil {
-			sofficeBin = p
-			break
-		}
-	}
-	if sofficeBin == "" {
-		log.Println("[DOC提取] LibreOffice 未找到，跳过")
-		return ""
-	}
-
-	absPath, _ := filepath.Abs(filePath)
-	outDir := filepath.Dir(absPath)
-	baseName := strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
-	txtPath := filepath.Join(outDir, baseName+".txt")
-	defer os.Remove(txtPath)
-
-	cmd := exec.Command(sofficeBin,
-		"--headless", "--convert-to", "txt:Text (encoded):UTF8",
-		"--outdir", outDir, absPath,
-	)
-	cmd.Env = append(os.Environ(), "HOME="+os.TempDir())
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("[DOC提取] soffice 转换失败: %v, output: %s", err, string(output))
-		return ""
-	}
-
-	textBytes, err := os.ReadFile(txtPath)
-	if err != nil {
-		return ""
-	}
-
-	text := strings.TrimSpace(string(textBytes))
-	chineseCount := countChinese(text)
-	log.Printf("[DOC提取] soffice 成功: %d 字符, 中文 %d 个", len([]rune(text)), chineseCount)
-	if chineseCount < 10 {
 		return ""
 	}
 	return text

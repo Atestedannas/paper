@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -22,7 +21,6 @@ import (
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/paperast"
 	"github.com/paper-format-checker/backend/internal/core/paperparse"
-	"github.com/paper-format-checker/backend/internal/core/renderverify"
 	"github.com/paper-format-checker/backend/internal/core/repaircontract"
 	"github.com/paper-format-checker/backend/internal/core/templatecompile"
 	"github.com/paper-format-checker/backend/internal/core/templatecontract"
@@ -404,10 +402,6 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		}
 		return s.GetJobForUser(id, userID)
 	}
-	contractBaseline, err := paperast.Extract(outputPath)
-	if err != nil {
-		return nil, err
-	}
 	contractBackup := outputPath + ".contract-backup"
 	if contract.Blocks("visible_content_rewrite") {
 		if err := copyFile(outputPath, contractBackup); err != nil {
@@ -435,23 +429,12 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	}
 
 	verifier := verify.NewVerifierWithTemplateProfileAndClosure(profile, rules, ast, contract)
-	if workflowNeedsTOCMaterialization(outputPath) {
-		verifier.WithRenderGate(renderverify.Options{Enabled: true, Strict: false, CheckPageFooter: true, TextExtractor: workflowPDFTextExtractor()}, "")
-	}
 	if transplantEnabled {
 		verifier.WithoutCQRWSTRules()
 	}
 	result, err := workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
 	if err != nil {
 		return nil, err
-	}
-	if repaired, repairErr := repairRenderedPageFooterTotal(outputPath, result.VerifyResult); repairErr != nil {
-		return nil, repairErr
-	} else if repaired {
-		result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
-		if err != nil {
-			return nil, err
-		}
 	}
 	if repaired, repairErr := repairManualCaptionFields(outputPath, result.VerifyResult); repairErr != nil {
 		return nil, repairErr
@@ -477,23 +460,6 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			return nil, err
 		}
 	}
-	if repaired, repairErr := repairRenderedPageFooterTotal(outputPath, result.VerifyResult); repairErr != nil {
-		return nil, repairErr
-	} else if repaired {
-		result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
-		if err != nil {
-			return nil, err
-		}
-	}
-	if repaired, repairErr := repairRenderedTOCPageNumbers(outputPath, result.VerifyResult); repairErr != nil {
-		return nil, repairErr
-	} else if repaired {
-		verifier.WithoutRenderGate()
-		result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
-		if err != nil {
-			return nil, err
-		}
-	}
 	if result.Status != workflow.StatusVerifiedPass && !transplantEnabled {
 		if _, fixErr := cqrwst.FixDOCXWithTemplateProfileAndSemanticAI(ctx, outputPath, profile, newDeepSeekSemanticBlockClient()); fixErr == nil {
 			fileprocessor.DiagPrintf("========== [Node 4b] CQRWST Re-repair (incl. Header/Footer) Applied ==========\n")
@@ -511,7 +477,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			}
 			return nil, extractErr
 		}
-		if issues := repaircontract.ValidateVisibleContentPreserved(contractBaseline, finalAST); len(issues) > 0 {
+		if issues := repaircontract.ValidateVisibleContentPreserved(ast, finalAST); len(issues) > 0 {
 			if restoreErr := copyFile(contractBackup, outputPath); restoreErr != nil {
 				return nil, fmt.Errorf("repair contract violation: %s; restore backup: %w", issues[0].Message, restoreErr)
 			}
@@ -529,36 +495,6 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	}
 
 	return s.GetJobForUser(id, userID)
-}
-
-func workflowNeedsTOCMaterialization(outputPath string) bool {
-	pkg, err := ooxmlpkg.Open(outputPath)
-	if err != nil {
-		return false
-	}
-	document, ok := pkg.Get("word/document.xml")
-	return ok && strings.Contains(string(document), `TOC \o "1-3"`) && strings.Contains(string(document), `<w:t>0</w:t>`)
-}
-
-func workflowPDFTextExtractor() renderverify.TextExtractor {
-	candidates := []string{strings.TrimSpace(os.Getenv("PDF_TEXT_PYTHON"))}
-	for _, name := range []string{"python3", "python"} {
-		if binary, err := exec.LookPath(name); err == nil {
-			candidates = append(candidates, binary)
-		}
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "python", "python.exe"))
-	}
-	for _, binary := range candidates {
-		if binary == "" {
-			continue
-		}
-		if err := exec.Command(binary, "-c", "import pdfplumber").Run(); err == nil {
-			return renderverify.PythonPDFTextExtractor{Binary: binary}
-		}
-	}
-	return nil
 }
 
 func (s *paperWorkflowService) persistWorkflowContracts(ctx context.Context, job model.PaperWorkflowJob, profile *templateprofile.Profile, rules templatecontract.RuleSet, ast paperast.Snapshot, contract repaircontract.Contract) error {

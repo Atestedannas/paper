@@ -85,20 +85,28 @@ func Build(rules templatecontract.RuleSet, ast paperast.Snapshot) Contract {
 				Policy:      "style_first_no_content_rewrite",
 			},
 			{
-				ID:          "verify_before_download",
+				ID:          "validate_go_template_rules",
 				Engine:      "workflow-verifier",
 				Determinism: "required",
 				Inputs:      []string{"final_docx", "template_rule_json"},
-				Outputs:     []string{"verify_result"},
-				Policy:      "no_download_unless_verified_pass",
+				Outputs:     []string{"go_rule_validation_result"},
+				Policy:      "template_rule_failure_blocks_download",
 			},
 			{
-				ID:          "render_and_regression_gate",
-				Engine:      "libreoffice-renderer+golden-regression",
-				Determinism: "required_when_enabled",
-				Inputs:      []string{"final_docx", "golden_template_docx", "paper_ast_snapshot"},
-				Outputs:     []string{"render_result", "golden_regression_result"},
-				Policy:      "rendered layout drift blocks compliance when render verification is enabled",
+				ID:          "validate_openxml_schema",
+				Engine:      "microsoft-openxml-sdk",
+				Determinism: "required",
+				Inputs:      []string{"final_docx"},
+				Outputs:     []string{"openxml_schema_validation_result"},
+				Policy:      "schema_failure_blocks_download",
+			},
+			{
+				ID:          "validate_content_preservation",
+				Engine:      "paper-ast-content-guard",
+				Determinism: "required",
+				Inputs:      []string{"source_paper_ast", "final_paper_ast"},
+				Outputs:     []string{"content_preservation_result"},
+				Policy:      "visible_content_change_blocks_download",
 			},
 		},
 		Blocked: []BlockedAction{
@@ -115,8 +123,6 @@ func Build(rules templatecontract.RuleSet, ast paperast.Snapshot) Contract {
 			"template_rule_json",
 			"paper_ast_snapshot",
 			"repair_contract",
-			"render_result",
-			"golden_regression_result",
 			"verify_result",
 		},
 		Stats: map[string]interface{}{
@@ -210,16 +216,19 @@ func Validate(contract Contract) []ValidationIssue {
 	if contract.Mode != "template_driven_deterministic" {
 		issues = append(issues, ValidationIssue{Kind: "repair_contract_mode", Message: "repair contract must use template-driven deterministic mode"})
 	}
-	for _, artifact := range []string{"template_rule_json", "paper_ast_snapshot", "repair_contract", "render_result", "golden_regression_result", "verify_result"} {
+	for _, artifact := range []string{"template_rule_json", "paper_ast_snapshot", "repair_contract", "verify_result"} {
 		if !containsString(contract.Artifacts, artifact) {
 			issues = append(issues, ValidationIssue{Kind: "repair_contract_artifacts", Message: "repair contract artifact is missing: " + artifact})
 		}
 	}
-	if !hasStep(contract, "verify_before_download") {
-		issues = append(issues, ValidationIssue{Kind: "repair_contract_verification_gate", Message: "repair contract must include verify_before_download step"})
+	if !hasStep(contract, "validate_go_template_rules") {
+		issues = append(issues, ValidationIssue{Kind: "repair_contract_go_validation_gate", Message: "repair contract must include validate_go_template_rules step"})
 	}
-	if !hasStep(contract, "render_and_regression_gate") {
-		issues = append(issues, ValidationIssue{Kind: "repair_contract_render_gate", Message: "repair contract must include render_and_regression_gate step"})
+	if !hasStep(contract, "validate_openxml_schema") {
+		issues = append(issues, ValidationIssue{Kind: "repair_contract_schema_gate", Message: "repair contract must include validate_openxml_schema step"})
+	}
+	if !hasStep(contract, "validate_content_preservation") {
+		issues = append(issues, ValidationIssue{Kind: "repair_contract_content_validation_gate", Message: "repair contract must include validate_content_preservation step"})
 	}
 	if !contentNormalizationEnabled() && !hasBlockedAction(contract, "visible_content_rewrite") {
 		issues = append(issues, ValidationIssue{Kind: "repair_contract_content_guard", Message: "visible content rewrite must be blocked unless explicitly enabled"})

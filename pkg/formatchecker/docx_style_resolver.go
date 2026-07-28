@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"gitee.com/greatmusicians/unioffice/document"
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
 // ─── 数据结构 ───────────────────────────────────────────────────────────────
@@ -44,16 +45,16 @@ type docxStyleCache struct {
 // ─── 解析 ────────────────────────────────────────────────────────────────────
 
 var (
-	reStyleBlock   = regexp.MustCompile(`(?s)<w:style\b[^>]*>(.*?)</w:style>`)
-	reStyleID      = regexp.MustCompile(`w:styleId="([^"]+)"`)
-	reStyleName    = regexp.MustCompile(`<w:name\s+w:val="([^"]+)"`)
-	reBasedOn      = regexp.MustCompile(`<w:basedOn\s+w:val="([^"]+)"`)
-	reEastAsia     = regexp.MustCompile(`w:eastAsia="([^"]+)"`)
-	reAsciiFont    = regexp.MustCompile(`w:ascii="([^"]+)"`)
-	reFontSize     = regexp.MustCompile(`<w:sz\b[^/]*w:val="(\d+)"`)
-	reLineSpacing  = regexp.MustCompile(`<w:spacing\b[^>]*w:line="(\d+)"`)
-	reBold         = regexp.MustCompile(`<w:b(?:\s|/>|>)`)
-	reDocDefaults  = regexp.MustCompile(`(?s)<w:docDefaults>(.*?)</w:docDefaults>`)
+	reStyleBlock  = regexp.MustCompile(`(?s)<w:style\b[^>]*>(.*?)</w:style>`)
+	reStyleID     = regexp.MustCompile(`w:styleId="([^"]+)"`)
+	reStyleName   = regexp.MustCompile(`<w:name\s+w:val="([^"]+)"`)
+	reBasedOn     = regexp.MustCompile(`<w:basedOn\s+w:val="([^"]+)"`)
+	reEastAsia    = regexp.MustCompile(`w:eastAsia="([^"]+)"`)
+	reAsciiFont   = regexp.MustCompile(`w:ascii="([^"]+)"`)
+	reFontSize    = regexp.MustCompile(`<w:sz\b[^/]*w:val="(\d+)"`)
+	reLineSpacing = regexp.MustCompile(`<w:spacing\b[^>]*w:line="(\d+)"`)
+	reBold        = regexp.MustCompile(`<w:b(?:\s|/>|>)`)
+	reDocDefaults = regexp.MustCompile(`(?s)<w:docDefaults>(.*?)</w:docDefaults>`)
 )
 
 // parseStyleBlock 从单个 <w:style> XML 块解析属性
@@ -199,6 +200,29 @@ func loadDocxStyleCache(docPath string) *docxStyleCache {
 		return buildStyleCache(content)
 	}
 	return &docxStyleCache{styles: make(map[string]*styleProps), nameToID: make(map[string]string)}
+}
+
+// loadNumberingProfile reads word/numbering.xml from the DOCX zip and extracts
+// heading numbering definitions (lvlText, numFmt, pStyle mappings per level).
+// Returns nil when numbering.xml is absent or empty.
+func loadNumberingProfile(docPath string) *templateprofile.NumberingProfile {
+	zr, err := zip.OpenReader(docPath)
+	if err != nil {
+		return nil
+	}
+	defer zr.Close()
+
+	for _, f := range zr.File {
+		if strings.ToLower(f.Name) != "word/numbering.xml" {
+			continue
+		}
+		content, err := readZipFileAsString(f)
+		if err != nil {
+			return nil
+		}
+		return templateprofile.ParseNumberingFromRawXML(content)
+	}
+	return nil
 }
 
 // ─── DOCXChecker 解析方法 ──────────────────────────────────────────────────────

@@ -552,9 +552,16 @@ func (v *FormatVerifier) compareAllWithSpecs(classified map[string][]document.Pa
 			if text == "" {
 				continue
 			}
-			actual := v.extractActualFormat(para)
-			diffs := v.compareWithSpec(category, i, text, actual, spec)
-			allDiffs = append(allDiffs, diffs...)
+			for _, diff := range DiffSpecExact(spec, extractParaFormatSpec(para)) {
+				allDiffs = append(allDiffs, FormatDiff{
+					Category: category,
+					ParaIdx:  i,
+					TextSnip: truncText(text, 25),
+					Property: diff.Field,
+					Expected: diff.Expected,
+					Actual:   diff.Actual,
+				})
+			}
 		}
 	}
 	return allDiffs

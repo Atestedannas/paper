@@ -245,6 +245,66 @@ func TestCopyTemplateHeaderFooterPackageCopiesHeaderMediaAndContentTypes(t *test
 	}
 }
 
+func TestCopyAndMaterializeTemplateHeaderFooterPreservesStructure(t *testing.T) {
+	tmpDir := t.TempDir()
+	templatePath := filepath.Join(tmpDir, "template.docx")
+	outputPath := filepath.Join(tmpDir, "output.docx")
+	headerXML := `<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:tabs><w:tab w:val="center" w:pos="4252"/></w:tabs><w:pBdr><w:bottom w:val="single" w:sz="6"/></w:pBdr></w:pPr><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>重庆工程学院</w:t></w:r><w:r><w:t>XXX届</w:t><w:tab/></w:r><w:r><w:t>XXX专业</w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t>本科毕业论文</w:t></w:r></w:p></w:hdr>`
+	footerXML := `<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> NUMPAGES </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:ftr>`
+	templateEntries := map[string][]byte{
+		"[Content_Types].xml":          []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/></Types>`),
+		"word/document.xml":            []byte(`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:sectPr><w:headerReference w:type="default" r:id="rId8"/><w:footerReference w:type="default" r:id="rId9"/></w:sectPr></w:body></w:document>`),
+		"word/_rels/document.xml.rels": []byte(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId8" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>`),
+		"word/header1.xml":             []byte(headerXML),
+		"word/footer1.xml":             []byte(footerXML),
+	}
+	outputEntries := map[string][]byte{
+		"[Content_Types].xml":          []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml" PartName="/word/header1.xml"/></Types>`),
+		"word/document.xml":            []byte(`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:sectPr/></w:body></w:document>`),
+		"word/_rels/document.xml.rels": []byte(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId8" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`),
+	}
+	if err := writeDocxEntries(templatePath, templateEntries); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeDocxEntries(outputPath, outputEntries); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyAndMaterializeTemplateHeaderFooter(templatePath, outputPath, map[string]string{
+		"专业": "护理学",
+		"班级": "2022级护理学1班",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	gotHeader := readDocxEntry(t, outputPath, "word/header1.xml")
+	if strings.Join(extractDocxTextNodes(gotHeader), "") != "重庆工程学院2026届护理学专业本科毕业论文" {
+		t.Fatalf("unexpected materialized header text: %s", gotHeader)
+	}
+	blank := func(xmlText string) string {
+		return replaceDocxTextNodes(xmlText, make([]string, len(extractDocxTextNodes(xmlText))))
+	}
+	if blank(gotHeader) != blank(headerXML) {
+		t.Fatalf("header structure changed\nwant: %s\ngot:  %s", blank(headerXML), blank(gotHeader))
+	}
+	if gotFooter := readDocxEntry(t, outputPath, "word/footer1.xml"); gotFooter != footerXML {
+		t.Fatalf("footer structure changed\nwant: %s\ngot:  %s", footerXML, gotFooter)
+	}
+	if contentTypes := readDocxEntry(t, outputPath, "[Content_Types].xml"); strings.Count(contentTypes, `PartName="/word/header1.xml"`) != 1 {
+		t.Fatalf("header content type must not be duplicated: %s", contentTypes)
+	}
+	rels := readDocxEntry(t, outputPath, "word/_rels/document.xml.rels")
+	if strings.Count(rels, `Id="rId8"`) != 1 || !strings.Contains(rels, `Target="styles.xml"`) {
+		t.Fatalf("existing relationship must remain unique: %s", rels)
+	}
+	if documentXML := readDocxEntry(t, outputPath, "word/document.xml"); strings.Contains(documentXML, `<w:headerReference w:type="default" r:id="rId8"/>`) {
+		t.Fatalf("template header reference must be remapped away from an existing relationship: %s", documentXML)
+	}
+	if headerCount, footerCount, ok := verifyCopiedHeaderFooterStructure(templatePath, outputPath); !ok || headerCount != 1 || footerCount != 1 {
+		t.Fatalf("copied header/footer did not verify: headers=%d footers=%d ok=%v", headerCount, footerCount, ok)
+	}
+}
+
 func TestStrictTemplateFormatterPreservesTemplateHeaderAssetsInSyntheticDoc(t *testing.T) {
 	tmpDir := t.TempDir()
 	userPath := filepath.Join(tmpDir, "user.docx")

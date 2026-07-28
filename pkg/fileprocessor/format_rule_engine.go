@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"gitee.com/greatmusicians/unioffice/document"
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
@@ -32,6 +33,10 @@ func NewFormatRuleEngine(processor *EnhancedProcessor, templatePath string, user
 	if templatePath == "" {
 		return engine, nil
 	}
+	if processor != nil {
+		processor.templateHeaderText = ""
+		processor.templateProfile = nil
+	}
 
 	if sampled, sampledErr := NewTemplateFormatLoader(processor).LoadSampledFromFile(templatePath); sampledErr == nil {
 		engine.compiled = sampled
@@ -43,6 +48,10 @@ func NewFormatRuleEngine(processor *EnhancedProcessor, templatePath string, user
 	profile, profileErr := templateprofile.Extract(templatePath)
 	if profileErr == nil {
 		engine.Profile = profile
+		if processor != nil {
+			processor.templateHeaderText = profile.Header.Text
+			processor.templateProfile = profile
+		}
 		// 节点1：模板解析 — 打印 Profile 中所有格式信息
 		DiagPrintf("====== 节点1: 模板解析 (templateprofile.Extract) =====")
 		DiagPrintf("template_path=%s", templatePath)
@@ -74,39 +83,37 @@ func NewFormatRuleEngine(processor *EnhancedProcessor, templatePath string, user
 		if footer, ok := headerFooterFormatSpec(profile.Footer); ok {
 			engine.compiled["footer"] = footer
 		}
-		// 🔒 LOCKED: 模板 Styles → compiled heading specs (hardcode fallback only when template missing)
-		for _, level := range []string{"heading_1", "heading_2", "heading_3"} {
-			if style, ok := profile.Styles[level]; ok && style.FontEastAsia != "" {
-				if spec, ok := styleRuleToFormatSpec(style); ok {
-					if existing, exists := engine.compiled[level]; exists {
-						engine.compiled[level] = mergeFormatSpec(existing, spec)
-					} else {
-						engine.compiled[level] = spec
-					}
+		// 将模板画像中的全部语义样式注入统一规则引擎。
+		// 硬编码默认值只在模板没有对应属性时兜底，不能反向覆盖模板。
+		for key, style := range profile.Styles {
+			if spec, ok := styleRuleToFormatSpec(style); ok {
+				engine.compiled[key] = spec
+			}
+		}
+	}
+	if templateDoc, openErr := document.Open(templatePath); openErr == nil {
+		strictSpecs := extractStrictTemplateSpecs(templateDoc, processor)
+		for key, spec := range strictSpecs {
+			engine.compiled[key] = overlayTemplateFormatSpec(engine.compiled[key], spec)
+		}
+		for source, targets := range map[string][]string{
+			V2ThesisTitle:      {"cover_title"},
+			V2TOCTitle:         {"toc_title"},
+			V2TOC:              {"toc_entry"},
+			V2Acknowledgements: {"acknowledgements", "notes"},
+			V2FigureCaption:    {"caption"},
+			V2TableCaption:     {"caption"},
+		} {
+			if spec, ok := strictSpecs[source]; ok {
+				for _, target := range targets {
+					engine.compiled[target] = overlayTemplateFormatSpec(engine.compiled[target], spec)
 				}
 			}
 		}
-		// 🔒 LOCKED: 正文段落 — 模板 Styles["body"] 注入 compiled，优先于硬编码
-		if bodyStyle, ok := profile.Styles["body"]; ok && bodyStyle.FontEastAsia != "" {
-			if bodySpec, ok := styleRuleToFormatSpec(bodyStyle); ok {
-				if existing, exists := engine.compiled["body"]; exists {
-					engine.compiled["body"] = mergeFormatSpec(existing, bodySpec)
-				} else {
-					engine.compiled["body"] = bodySpec
-				}
-			}
+		for key, spec := range extractInstructionTemplateSpecs(templateDoc, processor) {
+			engine.compiled[key] = overlayTemplateFormatSpec(engine.compiled[key], spec)
 		}
-		// 🔒 LOCKED: 标题中文字体黑体修正 — 当模板采样为宋体(继承Normal)，但默认规范要求黑体时
-		// 优先信任默认规范，因为模板的 Normal 默认字体通常是宋体
-		for _, level := range []string{"heading_1", "heading_2", "heading_3"} {
-			if compiled, exists := engine.compiled[level]; exists {
-				if def, defExists := engine.defaults[level]; defExists &&
-					def.FontEastAsia == "黑体" && compiled.FontEastAsia == "宋体" {
-					compiled.FontEastAsia = "黑体"
-					engine.compiled[level] = compiled
-				}
-			}
-		}
+		templateDoc.Close()
 	}
 	if len(engine.compiled) == 0 && len(engine.namedStyles) == 0 {
 		return nil, fmt.Errorf("template contains no usable paragraph rules")
@@ -132,21 +139,99 @@ func NewFormatRuleEngine(processor *EnhancedProcessor, templatePath string, user
 	return engine, nil
 }
 
+func overlayTemplateFormatSpec(base, explicit ParagraphFormatSpec) ParagraphFormatSpec {
+	if explicit.FontEastAsia != "" {
+		base.FontEastAsia = explicit.FontEastAsia
+	}
+	if explicit.FontAscii != "" {
+		base.FontAscii = explicit.FontAscii
+	}
+	if explicit.FontSizeHalfPt > 0 {
+		base.FontSizeHalfPt = explicit.FontSizeHalfPt
+	}
+	if explicit.FontSizeCSHalfPt > 0 {
+		base.FontSizeCSHalfPt = explicit.FontSizeCSHalfPt
+	}
+	if !explicit.IsEmpty() {
+		base.Bold = explicit.Bold
+		base.Italic = explicit.Italic
+	}
+	if explicit.AlignmentSet {
+		base.AlignmentSet = true
+		base.Alignment = explicit.Alignment
+	}
+	if explicit.LineSpacingVal > 0 {
+		base.LineSpacingVal = explicit.LineSpacingVal
+		base.LineSpacingRule = explicit.LineSpacingRule
+	}
+	if explicit.SpaceBefore > 0 {
+		base.SpaceBefore = explicit.SpaceBefore
+	}
+	if explicit.SpaceAfter > 0 {
+		base.SpaceAfter = explicit.SpaceAfter
+	}
+	if explicit.FirstLineIndent > 0 {
+		base.FirstLineIndent = explicit.FirstLineIndent
+	}
+	if explicit.IndentLeft > 0 {
+		base.IndentLeft = explicit.IndentLeft
+	}
+	if explicit.IndentRight > 0 {
+		base.IndentRight = explicit.IndentRight
+	}
+	if explicit.ColorHex != "" {
+		base.ColorHex = explicit.ColorHex
+	}
+	if explicit.OutlineLevel > 0 {
+		base.OutlineLevel = explicit.OutlineLevel
+	}
+	base.PageBreak = base.PageBreak || explicit.PageBreak
+	base.KeepWithNext = base.KeepWithNext || explicit.KeepWithNext
+	base.KeepLines = base.KeepLines || explicit.KeepLines
+	base.Underline = base.Underline || explicit.Underline
+	return base
+}
+
 func (e *FormatRuleEngine) GetRule(paragraphType string) (ParagraphFormatSpec, bool) {
-	spec, found := e.defaults[paragraphType]
-	if named, ok := e.namedStyles[paragraphType]; ok {
-		spec = mergeFormatSpec(spec, named)
+	spec, found := ParagraphFormatSpec{}, false
+	if namedStyleAuthoritative(paragraphType) {
+		if named, ok := e.namedStyles[paragraphType]; ok {
+			spec = named
+			found = true
+		} else if compiled, ok := e.compiled[paragraphType]; ok {
+			spec = compiled
+			found = true
+		}
+	} else if compiled, ok := e.compiled[paragraphType]; ok {
+		spec = compiled
+		found = true
+	} else if named, ok := e.namedStyles[paragraphType]; ok {
+		spec = named
 		found = true
 	}
-	if compiled, ok := e.compiled[paragraphType]; ok {
-		spec = mergeFormatSpec(spec, compiled)
-		found = true
+	if !found {
+		if fallback, ok := e.defaults[paragraphType]; ok {
+			spec = fallback
+			found = true
+		}
 	}
 	if override := e.overrideFor(paragraphType); override != nil {
 		spec = e.applyUserOverride(spec, override)
 		found = true
 	}
 	return spec, found && !spec.IsEmpty()
+}
+
+func namedStyleAuthoritative(paragraphType string) bool {
+	switch paragraphType {
+	case "body",
+		"heading_1", "heading_2", "heading_3", "heading_4",
+		"reference", "references",
+		"acknowledgement", "acknowledgements":
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *FormatRuleEngine) Rules() map[string]ParagraphFormatSpec {
@@ -328,6 +413,7 @@ func styleRuleToFormatSpec(style templateprofile.StyleRule) (ParagraphFormatSpec
 		FontEastAsia: style.FontEastAsia,
 		FontAscii:    style.FontASCII,
 		Bold:         style.Bold,
+		Italic:       style.Italic,
 		SampleCount:  1,
 	}
 	if v, err := strconv.ParseUint(style.FontSizeHalfPt, 10, 64); err == nil {
@@ -336,25 +422,35 @@ func styleRuleToFormatSpec(style templateprofile.StyleRule) (ParagraphFormatSpec
 	} else {
 		return spec, false
 	}
+	if v, err := strconv.ParseUint(style.ComplexSizeHalfPt, 10, 64); err == nil {
+		spec.FontSizeCSHalfPt = v
+	}
 	if alignment, valid := parseAlignment(style.Alignment); valid {
 		spec.AlignmentSet = true
 		spec.Alignment = alignment
 	}
 	if v, err := strconv.ParseInt(style.Line, 10, 64); err == nil && v > 0 {
 		spec.LineSpacingVal = v
-		spec.LineSpacingRule = wml.ST_LineSpacingRuleAuto
+		switch strings.ToLower(strings.TrimSpace(style.LineRule)) {
+		case "exact":
+			spec.LineSpacingRule = wml.ST_LineSpacingRuleExact
+		case "atleast", "at_least", "at-least":
+			spec.LineSpacingRule = wml.ST_LineSpacingRuleAtLeast
+		default:
+			spec.LineSpacingRule = wml.ST_LineSpacingRuleAuto
+		}
 	}
-	if v, err := strconv.ParseUint(style.BeforeTwips, 10, 64); err == nil && v > 0 {
+	if v, err := strconv.ParseUint(style.BeforeTwips, 10, 64); err == nil {
 		spec.SpaceBefore = v
 	}
-	if v, err := strconv.ParseUint(style.AfterTwips, 10, 64); err == nil && v > 0 {
+	if v, err := strconv.ParseUint(style.AfterTwips, 10, 64); err == nil {
 		spec.SpaceAfter = v
 	}
 	// B-H3FL: 从 templateprofile.StyleRule 提取首行缩进。
 	// 优先级：FirstLineTwips（模板 styles.xml 的 w:ind@w:firstLine）> FirstLineChars
-	if v, err := strconv.ParseUint(style.FirstLineTwips, 10, 64); err == nil && v > 0 {
+	if v, err := strconv.ParseUint(style.FirstLineTwips, 10, 64); err == nil {
 		spec.FirstLineIndent = v
-	} else if v, err := strconv.ParseUint(style.FirstLineChars, 10, 64); err == nil && v > 0 {
+	} else if v, err := strconv.ParseUint(style.FirstLineChars, 10, 64); err == nil {
 		// FirstLineChars 是 1/100 字符数，转为 twips 需结合字号，
 		// 但这里仅做兜底：直接保留原始值（大多数模板使用 twips）
 		spec.FirstLineIndent = v
@@ -622,7 +718,7 @@ func formatSpecCompact(spec ParagraphFormatSpec) string {
 
 // dumpAllRules 打印 GetRule 融合后的最终规则（四级优先级合并结果）
 func (e *FormatRuleEngine) dumpAllRules() {
-	DiagPrintf("--- 最终融合规则 (defaults→namedStyles→compiled→overrides) ---")
+	DiagPrintf("--- 最终融合规则 (核心类型 defaults→compiled→namedStyles→overrides) ---")
 	for key, spec := range e.Rules() {
 		DiagPrintf("Rule[%s]: %s", key, formatSpecCompact(spec))
 	}

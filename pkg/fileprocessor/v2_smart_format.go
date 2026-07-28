@@ -3,6 +3,7 @@ package fileprocessor
 import (
 	"log"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"gitee.com/greatmusicians/unioffice/measurement"
 	"gitee.com/greatmusicians/unioffice/schema/soo/ofc/sharedTypes"
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
 // V2SmartFormatter 智能格式化器：处理需要特殊逻辑的段落（题目、摘要、页眉等）
@@ -153,7 +155,9 @@ func (f *V2SmartFormatter) ApplySmartFormatting(doc *document.Document, classifi
 	f.formatAbstract(classified)
 	f.formatHeading1(classified)
 	f.formatTOC(classified)
-	f.formatSmartHeader(doc, classified)
+	if f.processor == nil || strings.TrimSpace(f.processor.templatePath) == "" {
+		f.formatSmartHeader(doc, classified)
+	}
 	log.Println("[V2智能格式] 特殊段落格式化完成")
 }
 
@@ -825,15 +829,8 @@ func (f *V2SmartFormatter) formatSmartHeader(doc *document.Document, classified 
 		}
 	}
 
-	// 模板优先：直接使用模板页眉原文，不拼接年级/专业
-	var headerText string
-	if f.templateHeaderText != "" {
-		// 清洗模板文本：去除节名后缀（如"致谢""摘要"等），保留核心"XXXX大学/学院本科生毕业设计（论文）"
-		headerText = cleanHeaderSuffix(f.templateHeaderText)
-	} else {
-		// 兜底：无模板页眉时从封面信息构建
-		headerText = "重庆工程学院" + gradeYear + "届" + major + "专业" + docType
-	}
+	college := templateprofile.ExtractCollegeName(f.templateHeaderText, "重庆工程学院")
+	headerText := college + gradeYear + "届" + major + "专业" + docType
 	log.Printf("[V2智能页眉] %q (模板页眉=%q, 班级=%q, 专业=%q)", headerText, f.templateHeaderText, coverInfo["班级"], major)
 
 	// #region agent log
@@ -870,19 +867,22 @@ func (f *V2SmartFormatter) formatSmartHeader(doc *document.Document, classified 
 	}
 
 	headerSuffixes := deriveChapterSuffixes(classified)
+	log.Printf("[SMART_HEADER] derived chapter suffixes (count=%d): %v", len(headerSuffixes), headerSuffixes)
 
 	// First pass: read each header's original suffix from template content
 	// (before clearing), so we preserve the template's header-to-chapter mapping.
 	type headerSuffix struct {
 		idx    int
+		hdrIdx int // Header.Index() value
 		suffix string
 	}
 	var origSuffixes []headerSuffix
 	for i, h := range headers {
 		orig := getHeaderPlainText(h)
 		_, suffix := splitHeaderCoreSuffix(orig)
+		log.Printf("[SMART_HEADER_DEBUG] header[%d] orig=%q suffix=%q", i, orig, suffix)
 		if suffix != "" {
-			origSuffixes = append(origSuffixes, headerSuffix{i, suffix})
+			origSuffixes = append(origSuffixes, headerSuffix{i, h.Index(), suffix})
 		}
 	}
 	log.Printf("[SMART_HEADER] template headers=%d, original suffixes=%v",
@@ -890,13 +890,23 @@ func (f *V2SmartFormatter) formatSmartHeader(doc *document.Document, classified 
 
 	if len(headers) == 0 {
 		hdr = doc.AddHeader()
+		doc.BodySection().SetHeader(hdr, wml.ST_HdrFtrDefault)
 	} else {
-		// Build a lookup: for each header index, what suffix to use.
+		// Build a lookup: for each header index in doc.Headers(), what suffix to use.
 		// Priority: original template suffix > derived chapter suffix by order > empty
 		idxSuffix := map[int]string{}
 		for _, os := range origSuffixes {
 			idxSuffix[os.idx] = os.suffix
 		}
+
+		// Dump header indices for debugging
+		var hdrIdxList []int
+		for _, h := range headers {
+			hdrIdxList = append(hdrIdxList, h.Index())
+		}
+		log.Printf("[SMART_HEADER] Header.Index() order: %v, derived suffixes: %v",
+			hdrIdxList, headerSuffixes)
+
 		// Fill in remaining with derived suffixes (for headers that had no original suffix)
 		suffixIdx := 0
 		for i := range headers {
@@ -913,7 +923,7 @@ func (f *V2SmartFormatter) formatSmartHeader(doc *document.Document, classified 
 			h.Clear()
 			textToWrite := headerText
 			if s, ok := idxSuffix[i]; ok && s != "" {
-				textToWrite = headerText + " " + s
+				textToWrite = headerText + "\t" + s
 			}
 			f.processor.buildDoubleLineHeaderParagraphEx(h, textToWrite, headerFontName, headerFontSize, headerUnderline)
 		}
@@ -922,6 +932,7 @@ func (f *V2SmartFormatter) formatSmartHeader(doc *document.Document, classified 
 
 	if len(headers) == 0 {
 		f.processor.buildDoubleLineHeaderParagraphEx(hdr, headerText, headerFontName, headerFontSize, headerUnderline)
+		f.processor.propagateHdrFtrToAllSections(doc)
 	}
 
 	// 🔒 Header content is now written; original template section-header associations
@@ -944,12 +955,15 @@ func normalizeAllHeaderTexts(doc *document.Document, canonicalText, fontName str
 	allHeaders := doc.Headers()
 	for _, h := range allHeaders {
 		currentText := getHeaderPlainText(h)
+		if strings.HasPrefix(currentText, canonicalText) {
+			continue
+		}
 		// Check if this header text needs normalization
 		// Pattern: contains "届" or "专业" (indicating grade/major info leaked from cover)
 		needsFix := strings.Contains(currentText, "届") || strings.Contains(currentText, "专业") ||
 			strings.Contains(currentText, "人文科技学院")
-		if !needsFix && strings.HasPrefix(currentText, canonicalText) {
-			continue // Already correct
+		if !needsFix {
+			continue
 		}
 
 		// Extract suffix from current text (if any)
@@ -958,7 +972,7 @@ func normalizeAllHeaderTexts(doc *document.Document, canonicalText, fontName str
 		// Build corrected text
 		corrected := canonicalText
 		if suffix != "" {
-			corrected = canonicalText + " " + suffix
+			corrected = canonicalText + "\t" + suffix
 		}
 
 		// Only rewrite if actually different
@@ -967,19 +981,6 @@ func normalizeAllHeaderTexts(doc *document.Document, canonicalText, fontName str
 			proc.buildDoubleLineHeaderParagraphEx(h, corrected, fontName, fontSize, underline)
 		}
 	}
-}
-
-// cleanHeaderSuffix strips the section name suffix from template header text.
-// Template pattern: "XXXX大学/学院本科生毕业设计（论文）" + whitespace + section_name
-// Returns only the core header text before the section name.
-func cleanHeaderSuffix(text string) string {
-	text = strings.TrimRight(text, " \t\r\n\u3000")
-	for _, suffix := range []string{"（论文）", "（设计）"} {
-		if idx := strings.Index(text, suffix); idx != -1 {
-			return text[:idx+len(suffix)]
-		}
-	}
-	return text
 }
 
 // splitHeaderCoreSuffix splits a header text into (coreText, chapterSuffix).
@@ -1024,26 +1025,45 @@ func getHeaderPlainText(h document.Header) string {
 func deriveChapterSuffixes(classified []V2ClassifiedPara) []string {
 	var suffixes []string
 	seen := map[string]bool{}
+
+	// First pass: collect all suffixes with their type for prioritization
+	type typedSuffix struct {
+		text     string
+		priority int // 1=abstract, 2=enAbstract, 3=toc, 4=heading1, 5=references, 6=acknowledgements
+	}
+	var collected []typedSuffix
+
 	for _, cp := range classified {
-		var suffix string
+		var ts typedSuffix
 		switch cp.Type {
 		case V2AbstractTitle:
-			suffix = "摘要"
+			ts = typedSuffix{"摘要", 1}
 		case V2EnAbstractTitle:
-			suffix = "ABSTRACT"
+			ts = typedSuffix{"ABSTRACT", 2}
 		case V2TOCTitle:
-			suffix = "目录"
+			ts = typedSuffix{"目录", 3}
 		case V2Heading1:
-			suffix = cp.Text
+			ts = typedSuffix{cp.Text, 4}
 		case V2ReferencesTitle:
-			suffix = "参考文献"
+			ts = typedSuffix{"参考文献", 5}
 		case V2AcknowledgementsTitle:
-			suffix = "致谢"
+			ts = typedSuffix{"致谢", 6}
+		default:
+			continue
 		}
-		if suffix != "" && !seen[suffix] {
-			seen[suffix] = true
-			suffixes = append(suffixes, suffix)
+		if ts.text != "" && !seen[ts.text] {
+			seen[ts.text] = true
+			collected = append(collected, ts)
 		}
+	}
+
+	// Sort by priority: lower number = comes first
+	sort.Slice(collected, func(i, j int) bool {
+		return collected[i].priority < collected[j].priority
+	})
+
+	for _, ts := range collected {
+		suffixes = append(suffixes, ts.text)
 	}
 	return suffixes
 }
@@ -1204,11 +1224,13 @@ func (f *V2SmartFormatter) ApplyBodyFormats(classified []V2ClassifiedPara) {
 		case V2Acknowledgements:
 			f.formatAcknowledgements(classified[i].Para)
 		case V2AppendixTitle:
-			f.formatSectionTitle(classified[i].Para)
+			f.formatSectionTitle(classified[i].Para, V2AppendixTitle)
 		case V2Appendix:
-			f.formatBodyPara(classified[i].Para)
+			if !f.applyExactCategorySpec(classified[i].Para, V2Appendix) {
+				f.formatBodyPara(classified[i].Para)
+			}
 		case V2NotesTitle:
-			f.formatSectionTitle(classified[i].Para)
+			f.formatSectionTitle(classified[i].Para, V2NotesTitle)
 		case V2Cover:
 			f.formatCoverField(classified[i].Para)
 		case V2Notes:
@@ -1619,6 +1641,9 @@ func (f *V2SmartFormatter) formatCaption(para document.Paragraph) {
 // formatAcknowledgementsTitle 致谢标题：分散对齐，12pt（24 half-pt），黑体
 // 与普通 sectionTitle 不同：致谢标题在模板中是分散对齐（distribute），且字号为小四(12pt)
 func (f *V2SmartFormatter) formatAcknowledgementsTitle(para document.Paragraph) {
+	if f.applyExactCategorySpec(para, V2AcknowledgementsTitle) {
+		return
+	}
 	spec := f.sectionTitleSpec
 	pPr := para.X().PPr
 	if pPr == nil {
@@ -1668,6 +1693,9 @@ func (f *V2SmartFormatter) formatAcknowledgementsTitle(para document.Paragraph) 
 // formatAcknowledgements 致谢正文：12pt，无首行缩进，宋体/Times New Roman
 // 与普通 bodyPara 不同：(1) 无10.5pt字号上限 (2) 无首行缩进
 func (f *V2SmartFormatter) formatAcknowledgements(para document.Paragraph) {
+	if f.applyExactCategorySpec(para, V2Acknowledgements) {
+		return
+	}
 	spec := f.bodySpec
 	eastAsiaFont := "宋体"
 	asciiFont := "Times New Roman"
@@ -1735,7 +1763,10 @@ func (f *V2SmartFormatter) formatAcknowledgements(para document.Paragraph) {
 }
 
 // 🔒 LOCKED: 致谢/附录/注释标题 — 格式从 sectionTitleSpec 取值，行距从 bodySpec 取值，不硬编码
-func (f *V2SmartFormatter) formatSectionTitle(para document.Paragraph) {
+func (f *V2SmartFormatter) formatSectionTitle(para document.Paragraph, category string) {
+	if f.applyExactCategorySpec(para, category) {
+		return
+	}
 	spec := f.sectionTitleSpec
 	pPr := para.X().PPr
 	if pPr == nil {
@@ -1798,6 +1829,15 @@ func (f *V2SmartFormatter) formatSectionTitle(para document.Paragraph) {
 	for _, r := range para.Runs() {
 		v2SetRunFont(f.processor, r, fontName, sizePt, bold)
 	}
+}
+
+func (f *V2SmartFormatter) applyExactCategorySpec(para document.Paragraph, category string) bool {
+	spec, ok := f.headingSpecs[category]
+	if !ok || spec.IsEmpty() {
+		return false
+	}
+	NewAIFormatApplier(f.processor).ApplySpecToPara(para, spec)
+	return true
 }
 
 // formatNotesContent 注释内容：宋体五号，顶格，1.5倍行距

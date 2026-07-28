@@ -14,6 +14,42 @@ type fakeChatClient struct {
 	prompt   string
 }
 
+func TestExtractCollegeName(t *testing.T) {
+	for _, test := range []struct {
+		header   string
+		fallback string
+		want     string
+	}{
+		{"重庆工程学院本科生毕业设计（论文）", "重庆人文科技学院", "重庆工程学院"},
+		{"页眉：重庆人文科技学院2026届护理学专业本科毕业论文", "重庆工程学院", "重庆人文科技学院"},
+		{"Undergraduate Thesis", "重庆工程学院", "重庆工程学院"},
+	} {
+		if got := ExtractCollegeName(test.header, test.fallback); got != test.want {
+			t.Fatalf("ExtractCollegeName(%q) = %q, want %q", test.header, got, test.want)
+		}
+	}
+}
+
+func TestExtractLeadingLabelRunStyleOverridesParagraphDefault(t *testing.T) {
+	paragraph := `<w:p><w:pPr><w:rPr><w:rFonts w:eastAsia="宋体"/><w:sz w:val="24"/></w:rPr><w:spacing w:after="624"/></w:pPr>` +
+		`<w:r><w:rPr><w:rFonts w:eastAsia="黑体"/><w:sz w:val="30"/><w:b/></w:rPr><w:t>摘要：</w:t></w:r>` +
+		`<w:r><w:rPr><w:rFonts w:eastAsia="宋体"/><w:sz w:val="24"/></w:rPr><w:t>正文</w:t></w:r></w:p>`
+	base := extractStyle("abstract_cn", paragraph)
+	got := extractLeadingLabelRunStyle("abstract_cn", paragraph, base)
+	if got.FontEastAsia != "黑体" || got.FontSizeHalfPt != "30" || !got.Bold || got.AfterTwips != "624" {
+		t.Fatalf("leading label run style not extracted: %#v", got)
+	}
+}
+
+func TestExtractStyleReadsNamedStyleRunProperties(t *testing.T) {
+	styleXML := `<w:style w:type="paragraph" w:styleId="1"><w:name w:val="heading 1"/>` +
+		`<w:pPr><w:jc w:val="left"/></w:pPr><w:rPr><w:b/><w:i/><w:sz w:val="32"/></w:rPr></w:style>`
+	got := extractStyle("heading_1", styleXML)
+	if !got.BoldSet || !got.Bold || !got.ItalicSet || !got.Italic || got.FontSizeHalfPt != "32" {
+		t.Fatalf("named style run properties not extracted: %#v", got)
+	}
+}
+
 func (f *fakeChatClient) ChatCompletion(prompt string) (string, error) {
 	f.prompt = prompt
 	return f.response, nil

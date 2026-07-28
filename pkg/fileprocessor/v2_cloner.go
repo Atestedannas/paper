@@ -394,13 +394,11 @@ func ApplyProfilePageMargins(studentDoc *document.Document, profile *templatepro
 		return
 	}
 	body := studentDoc.X().Body
-	if body == nil || body.SectPr == nil {
+	if body == nil {
 		return
 	}
-	pgMar := body.SectPr.PgMar
-	if pgMar == nil {
-		pgMar = wml.NewCT_PageMar()
-		body.SectPr.PgMar = pgMar
+	if body.SectPr == nil {
+		body.SectPr = wml.NewCT_SectPr()
 	}
 
 	setUnsigned := func(field *sharedTypes.ST_TwipsMeasure, twipsStr string) {
@@ -427,7 +425,26 @@ func ApplyProfilePageMargins(studentDoc *document.Document, profile *templatepro
 		field.Int64 = &v
 	}
 
-	applyPgMar := func(pm *wml.CT_PageMar) {
+	applySection := func(sectPr *wml.CT_SectPr) {
+		if sectPr.PgSz == nil {
+			sectPr.PgSz = wml.NewCT_PageSz()
+		}
+		if width, err := strconv.ParseUint(profile.PageSetup.PageWidthTwips, 10, 64); err == nil && width > 0 {
+			sectPr.PgSz.WAttr = &sharedTypes.ST_TwipsMeasure{ST_UnsignedDecimalNumber: &width}
+		}
+		if height, err := strconv.ParseUint(profile.PageSetup.PageHeightTwips, 10, 64); err == nil && height > 0 {
+			sectPr.PgSz.HAttr = &sharedTypes.ST_TwipsMeasure{ST_UnsignedDecimalNumber: &height}
+		}
+		switch strings.ToLower(profile.PageSetup.Orientation) {
+		case "landscape":
+			sectPr.PgSz.OrientAttr = wml.ST_PageOrientationLandscape
+		case "portrait":
+			sectPr.PgSz.OrientAttr = wml.ST_PageOrientationPortrait
+		}
+		if sectPr.PgMar == nil {
+			sectPr.PgMar = wml.NewCT_PageMar()
+		}
+		pm := sectPr.PgMar
 		setSigned(&pm.TopAttr, profile.PageSetup.MarginTopTwips)
 		setUnsigned(&pm.RightAttr, profile.PageSetup.MarginRightTwips)
 		setSigned(&pm.BottomAttr, profile.PageSetup.MarginBottomTwips)
@@ -437,15 +454,15 @@ func ApplyProfilePageMargins(studentDoc *document.Document, profile *templatepro
 	}
 
 	// 更新文档级 sectPr（最后一个 section）
-	applyPgMar(pgMar)
+	applySection(body.SectPr)
 
 	// 同时更新所有段落级 sectPr 的 PgMar，确保分节断点的边距也被覆盖
 	for _, p := range studentDoc.Paragraphs() {
 		ppr := p.Properties().X()
-		if ppr == nil || ppr.SectPr == nil || ppr.SectPr.PgMar == nil {
+		if ppr == nil || ppr.SectPr == nil {
 			continue
 		}
-		applyPgMar(ppr.SectPr.PgMar)
+		applySection(ppr.SectPr)
 	}
 
 	log.Printf("[V2] 已应用 Profile 页边距: top=%s right=%s bottom=%s left=%s header=%s footer=%s",

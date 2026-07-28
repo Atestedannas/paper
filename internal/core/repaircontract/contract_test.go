@@ -25,10 +25,12 @@ func TestBuildCreatesDeterministicRepairContract(t *testing.T) {
 	if contract.Version != Version {
 		t.Fatalf("Version = %s, want %s", contract.Version, Version)
 	}
-	if len(contract.Steps) != 5 {
-		t.Fatalf("Steps len = %d, want 5", len(contract.Steps))
+	if len(contract.Steps) != 6 {
+		t.Fatalf("Steps len = %d, want 6", len(contract.Steps))
 	}
-	if !hasStep(contract, "verify_before_download") || !hasStep(contract, "render_and_regression_gate") {
+	if !hasStep(contract, "validate_go_template_rules") ||
+		!hasStep(contract, "validate_openxml_schema") ||
+		!hasStep(contract, "validate_content_preservation") {
 		t.Fatalf("verification gate missing: %#v", contract.Steps)
 	}
 	if !hasBlockedActionForTest(contract, "visible_content_rewrite") {

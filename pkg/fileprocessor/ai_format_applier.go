@@ -83,7 +83,7 @@ func (a *AIFormatApplier) Apply(
 
 func isProtectedFormatCategory(category string) bool {
 	switch category {
-	case aiclassifier.TypeTOCTitle, aiclassifier.TypeTOC, aiclassifier.TypeReferencesTitle:
+	case aiclassifier.TypeTOCTitle, aiclassifier.TypeTOC:
 		return true
 	default:
 		return false
@@ -104,6 +104,11 @@ func (a *AIFormatApplier) ApplySpecToPara(para document.Paragraph, spec Paragrap
 	}
 
 	paraProps := para.Properties()
+	pPr := para.X().PPr
+	if pPr == nil {
+		pPr = wml.NewCT_PPr()
+		para.X().PPr = pPr
+	}
 
 	// 1. 对齐方式
 	if spec.AlignmentSet {
@@ -112,11 +117,6 @@ func (a *AIFormatApplier) ApplySpecToPara(para document.Paragraph, spec Paragrap
 
 	// 2. 行距（直接操作XML，高层API行距设置有已知问题）
 	if spec.LineSpacingVal > 0 {
-		pPr := para.X().PPr
-		if pPr == nil {
-			pPr = wml.NewCT_PPr()
-			para.X().PPr = pPr
-		}
 		if pPr.Spacing == nil {
 			pPr.Spacing = wml.NewCT_Spacing()
 		}
@@ -126,38 +126,50 @@ func (a *AIFormatApplier) ApplySpecToPara(para document.Paragraph, spec Paragrap
 		}
 		pPr.Spacing.LineAttr.Int64 = &lv
 		pPr.Spacing.LineRuleAttr = spec.LineSpacingRule
+	} else if pPr.Spacing != nil {
+		pPr.Spacing.LineAttr = nil
 	}
 
 	// 3. 段前段后间距
 	if spec.SpaceBefore > 0 {
 		paraProps.Spacing().SetBefore(measurement.Distance(spec.SpaceBefore) * measurement.Twips)
+	} else if pPr.Spacing != nil {
+		pPr.Spacing.BeforeAttr = nil
+		pPr.Spacing.BeforeLinesAttr = nil
 	}
 	if spec.SpaceAfter > 0 {
 		paraProps.Spacing().SetAfter(measurement.Distance(spec.SpaceAfter) * measurement.Twips)
+	} else if pPr.Spacing != nil {
+		pPr.Spacing.AfterAttr = nil
+		pPr.Spacing.AfterLinesAttr = nil
 	}
 
 	// 4. 首行缩进（twips → measurement.Distance）
 	if spec.FirstLineIndent > 0 {
 		paraProps.SetFirstLineIndent(measurement.Distance(spec.FirstLineIndent) * measurement.Twips)
+	} else if pPr.Ind != nil {
+		pPr.Ind.FirstLineAttr = nil
+		pPr.Ind.FirstLineCharsAttr = nil
+		pPr.Ind.HangingAttr = nil
+		pPr.Ind.HangingCharsAttr = nil
 	}
 
 	// 4b. 左右缩进（twips）
-	if spec.IndentLeft > 0 || spec.IndentRight > 0 {
-		pPr := para.X().PPr
-		if pPr == nil {
-			pPr = wml.NewCT_PPr()
-			para.X().PPr = pPr
-		}
+	if spec.IndentLeft > 0 || spec.IndentRight > 0 || pPr.Ind != nil {
 		if pPr.Ind == nil {
 			pPr.Ind = wml.NewCT_Ind()
 		}
 		if spec.IndentLeft > 0 {
 			left := int64(spec.IndentLeft)
 			pPr.Ind.LeftAttr = &wml.ST_SignedTwipsMeasure{Int64: &left}
+		} else {
+			pPr.Ind.LeftAttr = nil
 		}
 		if spec.IndentRight > 0 {
 			right := int64(spec.IndentRight)
 			pPr.Ind.RightAttr = &wml.ST_SignedTwipsMeasure{Int64: &right}
+		} else {
+			pPr.Ind.RightAttr = nil
 		}
 	}
 
@@ -187,11 +199,6 @@ func (a *AIFormatApplier) ApplySpecToPara(para document.Paragraph, spec Paragrap
 
 	// 6. 段落级默认Run属性（pPr/rPr）：字体/字号/加粗
 	{
-		pPr := para.X().PPr
-		if pPr == nil {
-			pPr = wml.NewCT_PPr()
-			para.X().PPr = pPr
-		}
 		if pPr.RPr == nil {
 			pPr.RPr = wml.NewCT_ParaRPr()
 		}
@@ -268,7 +275,10 @@ func (a *AIFormatApplier) applySpecToRun(run document.Run, spec ParagraphFormatS
 			rPr.RFonts = wml.NewCT_Fonts()
 		}
 		eastAsiaPtr := a.processor.getCachedFontName(spec.FontEastAsia)
-		englishName := getEnglishFontName(spec.FontEastAsia)
+		englishName := spec.FontAscii
+		if englishName == "" {
+			englishName = getEnglishFontName(spec.FontEastAsia)
+		}
 		asciiPtr := a.processor.getCachedFontName(englishName)
 		rPr.RFonts.EastAsiaAttr = eastAsiaPtr
 		rPr.RFonts.AsciiAttr = asciiPtr

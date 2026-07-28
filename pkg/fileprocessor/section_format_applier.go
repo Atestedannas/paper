@@ -3,13 +3,13 @@ package fileprocessor
 import (
 	"fmt"
 	"log"
-	"os/exec"
 	"strings"
 
 	"gitee.com/greatmusicians/unioffice/document"
 	"gitee.com/greatmusicians/unioffice/measurement"
 	"gitee.com/greatmusicians/unioffice/schema/soo/ofc/sharedTypes"
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
 // 🔒 LOCKED: 默认页边距常量（非模板路径兜底，模板路径由 applyPageSetup 从 rules 覆盖）
@@ -92,7 +92,13 @@ func (p *EnhancedProcessor) buildDoubleLineHeaderParagraph(hdr document.Header, 
 func (p *EnhancedProcessor) buildDoubleLineHeaderParagraphEx(hdr document.Header, text string, fontName string, fontSize float64, underline bool) {
 	hdr.Clear()
 	para := hdr.AddParagraph()
-	para.Properties().SetAlignment(wml.ST_JcCenter)
+	leftText, rightText, split := strings.Cut(text, "\t")
+	if split {
+		para.Properties().SetAlignment(wml.ST_JcLeft)
+		para.Properties().AddTabStop(headerRightTabPosition(hdr), wml.ST_TabJcRight, wml.ST_TabTlcNone)
+	} else {
+		para.Properties().SetAlignment(wml.ST_JcCenter)
+	}
 
 	pPr := para.X().PPr
 	if pPr == nil {
@@ -110,13 +116,42 @@ func (p *EnhancedProcessor) buildDoubleLineHeaderParagraphEx(hdr document.Header
 	*pPr.PBdr.Bottom.SpaceAttr = 1
 	pPr.PBdr.Bottom.ColorAttr = &wml.ST_HexColor{ST_HexColorAuto: wml.ST_HexColorAutoAuto}
 
-	run := para.AddRun()
-	run.AddText(text)
-	p.setRunFont(run, fontName, fontSize, false)
-
-	if underline {
-		p.setRunUnderline(run)
+	addTextRun := func(value string) {
+		run := para.AddRun()
+		run.AddText(value)
+		p.setRunFont(run, fontName, fontSize, false)
+		if underline {
+			p.setRunUnderline(run)
+		}
 	}
+	addTextRun(leftText)
+	if split {
+		tabRun := para.AddRun()
+		tabRun.AddTab()
+		p.setRunFont(tabRun, fontName, fontSize, false)
+		addTextRun(strings.TrimSpace(rightText))
+	}
+}
+
+func headerRightTabPosition(hdr document.Header) measurement.Distance {
+	const defaultTextWidthTwips uint64 = 9070
+	if hdr.Document == nil {
+		return measurement.Distance(defaultTextWidthTwips) * measurement.Twips
+	}
+	sectPr := hdr.Document.BodySection().X()
+	if sectPr == nil || sectPr.PgSz == nil || sectPr.PgSz.WAttr == nil ||
+		sectPr.PgSz.WAttr.ST_UnsignedDecimalNumber == nil || sectPr.PgMar == nil ||
+		sectPr.PgMar.LeftAttr.ST_UnsignedDecimalNumber == nil ||
+		sectPr.PgMar.RightAttr.ST_UnsignedDecimalNumber == nil {
+		return measurement.Distance(defaultTextWidthTwips) * measurement.Twips
+	}
+	width := *sectPr.PgSz.WAttr.ST_UnsignedDecimalNumber
+	left := *sectPr.PgMar.LeftAttr.ST_UnsignedDecimalNumber
+	right := *sectPr.PgMar.RightAttr.ST_UnsignedDecimalNumber
+	if width <= left+right {
+		return measurement.Distance(defaultTextWidthTwips) * measurement.Twips
+	}
+	return measurement.Distance(width-left-right) * measurement.Twips
 }
 
 // applySchoolHeader 旧路径硬编码页眉（双线下划线、宋体 9pt）。
@@ -161,7 +196,8 @@ func (p *EnhancedProcessor) applySchoolHeader(doc *document.Document) {
 		gradeYear = "XX"
 	}
 
-	headerText := "重庆人文科技学院" + gradeYear + "届" + major + "专业本科毕业论文"
+	college := templateprofile.ExtractCollegeName(p.templateHeaderText, "重庆人文科技学院")
+	headerText := college + gradeYear + "届" + major + "专业本科毕业论文"
 	log.Printf("[页眉] 自动生成页眉: %q", headerText)
 
 	hdr := doc.AddHeader()
@@ -407,38 +443,6 @@ func isCitationOrAnnotation(text string) bool {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 6. 目录页码更新（通过 soffice 宏命令）
-// ──────────────────────────────────────────────────────────────────────────────
-
-func (p *EnhancedProcessor) updateTOCViaLibreOffice(docxPath string) error {
-	sofficePath, err := resolveSofficeBinaryFromProcessor()
-	if err != nil {
-		log.Printf("[目录更新] soffice 不可用，跳过目录更新: %v", err)
-		return nil
-	}
-
-	log.Printf("[目录更新] 使用 soffice 更新目录域代码: %s", docxPath)
-	macro := "macro:///Standard.Module1.UpdateTOC"
-	_ = sofficePath
-	_ = macro
-	// soffice macro execution requires specific setup; for now we use
-	// the --headless approach that triggers field update on open+save.
-	// This is best-effort since some environments don't have the macro.
-	log.Println("[目录更新] 目录更新需要在 Word/LibreOffice 中打开文档后手动更新域代码")
-	return nil
-}
-
-func resolveSofficeBinaryFromProcessor() (string, error) {
-	candidates := []string{"soffice", "soffice.exe"}
-	for _, c := range candidates {
-		if p, err := exec.LookPath(c); err == nil {
-			return p, nil
-		}
-	}
-	return "", nil
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
 // 7. Master entry point: apply all section-level formatting
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -463,8 +467,8 @@ func (p *EnhancedProcessor) applySectionLevelFormatting(doc *document.Document, 
 
 	var errs []string
 
-	// 1. A4 纸张
-	{
+	// 1. 非模板兜底路径才强制 A4；模板路径的纸张尺寸由模板 Profile 写入。
+	if strings.TrimSpace(p.templatePath) == "" {
 		p.applyA4PageSize(doc)
 		sectPr := section.X()
 		if sectPr == nil || sectPr.PgSz == nil ||

@@ -33,6 +33,21 @@ var paragraphPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
 var finalSectPrPattern = regexp.MustCompile(`(?s)<w:sectPr(?:\s[^>]*)?>.*?</w:sectPr>`)
 var tablePattern = regexp.MustCompile(`(?s)<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
 var bracketCitationPattern = regexp.MustCompile(`\[\d+(?:-\d+)?\]`)
+var fallbackStartTagPattern = regexp.MustCompile(`<mc:Fallback\b[^>]*>`)
+var startTagAttributePattern = regexp.MustCompile(`\s+([A-Za-z_][A-Za-z0-9_.:-]*)\s*=\s*("[^"]*"|'[^']*')`)
+var levelJustificationStartPattern = regexp.MustCompile(`(<w:lvlJc\b[^>]*\bw:val=")start("[^>]*/>)`)
+var charsetCharacterSetPattern = regexp.MustCompile(`(<w:charset\b[^>]*)\s+w:characterSet=("[^"]*"|'[^']*')`)
+var logicalJustificationPattern = regexp.MustCompile(`(<w:jc\b[^>]*\bw:val=")(start|end)("[^>]*/>)`)
+var shortSymbolCharacterPattern = regexp.MustCompile(`<w:sym\b[^>]*\bw:char="[0-9A-Fa-f]{1,3}"[^>]*/>`)
+var symbolCharacterAttributePattern = regexp.MustCompile(`w:char="([0-9A-Fa-f]+)"`)
+var emptyGutterPattern = regexp.MustCompile(`\s+w:gutter=""`)
+var vmlElementIDPattern = regexp.MustCompile(`<v:[A-Za-z][A-Za-z0-9]*\b[^>]*\bid="([^"]+)"[^>]*>`)
+var unqualifiedIDAttributePattern = regexp.MustCompile(`\bid="([^"]+)"`)
+var styleDefinitionPattern = regexp.MustCompile(`<w:style\b[^>]*\bw:styleId="([^"]+)"`)
+var styleReferencePattern = regexp.MustCompile(`<w:(?:pStyle|rStyle|tblStyle)\b[^>]*\bw:val="([^"]+)"[^>]*/>`)
+var pageSizePattern = regexp.MustCompile(`<w:pgSz\b[^>]*/>`)
+var pageMarginPattern = regexp.MustCompile(`<w:pgMar\b[^>]*/>`)
+var drawingExtentPattern = regexp.MustCompile(`<wp:extent\b[^>]*\bcx="([0-9]+)"[^>]*\bcy="([0-9]+)"[^>]*/>`)
 var tableStartPattern = regexp.MustCompile(`<w:tbl(?:\s[^>]*)?>`)
 var tablePropertyStartPattern = regexp.MustCompile(`(?s)<w:tblPr(?:\s[^>]*)?>`)
 var tablePropertyPattern = regexp.MustCompile(`(?s)<w:tblPr(?:\s[^>]*)?>.*?</w:tblPr>`)
@@ -47,6 +62,7 @@ var tableGridColWidthPattern = regexp.MustCompile(`<w:gridCol\b[^>]*\bw:w="([0-9
 var tableCellWidthPattern = regexp.MustCompile(`<w:tcW\b[^>]*\bw:w="([0-9]+)"[^>]*/>`)
 var tableParagraphIndentPattern = regexp.MustCompile(`<w:ind\b[^>]*/>`)
 var tableJustifyBothPattern = regexp.MustCompile(`<w:jc\b[^>]*\bw:val="both"[^>]*/>`)
+var tableJustificationPattern = regexp.MustCompile(`<w:jc\b[^>]*/>`)
 var tableAnyFontSizePattern = regexp.MustCompile(`<w:sz(Cs)?\b[^>]*/>`)
 var tableFontSize24Pattern = regexp.MustCompile(`<w:sz(Cs)? w:val="24"/>`)
 var tableRowHeightPattern = regexp.MustCompile(`<w:trHeight\b[^>]*/>`)
@@ -168,7 +184,7 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 	usesCQRWSTNormalizers := packageUsesCQRWSTNormalizers(pkg)
 
 	allowContentRewrite := input.RepairContract == nil || !input.RepairContract.Blocks("visible_content_rewrite")
-	replacements := buildReplacements(input.Mapping.Bindings, input.CompiledTemplate.MappingContract, input.CompiledTemplate.StyleProfiles, allowContentRewrite)
+	replacements := buildReplacements(input.Mapping.Bindings, input.Mapping.HasTOC, input.CompiledTemplate.MappingContract, input.CompiledTemplate.StyleProfiles, allowContentRewrite)
 	coverFields := input.Mapping.CoverFields
 	for _, target := range patchTargets(input.CompiledTemplate.PatchTargets) {
 		log.Printf("component=transplant stage=patch target=%q", target)
@@ -288,7 +304,12 @@ func ensureUpdateFieldsOnOpen(pkg *ooxmlpkg.DocxPackage) {
 	if content, ok := pkg.Get("word/settings.xml"); ok && strings.TrimSpace(string(content)) != "" {
 		settingsXML = string(content)
 	}
-	if updated, ok := ooxmlpatch.ApplySettingsProperties(settingsXML, ooxmlpatch.SettingsPropertiesSpec{UpdateFieldsOnOpen: true}); ok {
+	document, _ := pkg.Get(defaultPatchTarget)
+	spec := ooxmlpatch.SettingsPropertiesSpec{
+		UpdateFieldsOnOpen: true,
+		EvenAndOddHeaders:  strings.Contains(string(document), `w:type="even"`),
+	}
+	if updated, ok := ooxmlpatch.ApplySettingsProperties(settingsXML, spec); ok {
 		pkg.Set("word/settings.xml", []byte(updated))
 	}
 	ooxmlpatch.EnsurePartRelationship(pkg, "word/settings.xml", ooxmlpatch.SettingsRelationshipType, ooxmlpatch.SettingsContentType)
@@ -302,6 +323,8 @@ func NormalizeFinalDOCX(path string) (int, error) {
 		return 0, err
 	}
 	changed := 0
+	changed += ooxmlpatch.FinalizeReviewMarkup(pkg)
+	changed += removeDanglingStyleReferences(pkg)
 	for _, name := range pkg.Names() {
 		if !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") {
 			continue
@@ -312,8 +335,30 @@ func NormalizeFinalDOCX(path string) (int, error) {
 		}
 		updated := removeWhiteDocumentBackground(string(content))
 		updated = removeWhiteShading(updated)
+		updated = logicalJustificationPattern.ReplaceAllStringFunc(updated, normalizeLogicalJustification)
+		updated = shortSymbolCharacterPattern.ReplaceAllStringFunc(updated, normalizeSymbolCharacter)
+		updated = emptyGutterPattern.ReplaceAllString(updated, "")
+		updated = deduplicateVMLIDs(updated)
 		if name == defaultPatchTarget {
 			updated = normalizeParagraphPaginationControls(updated)
+			updated = fallbackStartTagPattern.ReplaceAllStringFunc(updated, deduplicateStartTagAttributes)
+			updated = normalizeContentTablesStructurally(updated)
+			updated = constrainOversizedDrawings(updated)
+		}
+		if strings.HasPrefix(name, "word/footer") && strings.Contains(updated, "PAGE") {
+			updated = paragraphPattern.ReplaceAllStringFunc(updated, func(paragraph string) string {
+				if !strings.Contains(paragraph, "PAGE") {
+					return paragraph
+				}
+				centered, _ := ooxmlpatch.ApplyParagraphProperties(paragraph, ooxmlpatch.ParagraphPropertiesSpec{Alignment: "center"})
+				return centered
+			})
+		}
+		if name == "word/numbering.xml" {
+			updated = levelJustificationStartPattern.ReplaceAllString(updated, `${1}left${2}`)
+		}
+		if name == "word/fontTable.xml" {
+			updated = charsetCharacterSetPattern.ReplaceAllString(updated, `${1}`)
 		}
 		if updated != string(content) {
 			pkg.Set(name, []byte(updated))
@@ -330,6 +375,217 @@ func NormalizeFinalDOCX(path string) (int, error) {
 		return 0, nil
 	}
 	return changed, pkg.Write(path)
+}
+
+type xmlElementSpan struct {
+	start, end int
+	hasNested  bool
+}
+
+func normalizeContentTablesStructurally(content string) string {
+	spans, err := leafElementSpans(content, "tbl")
+	if err != nil {
+		return content
+	}
+	updated := content
+	for index := len(spans) - 1; index >= 0; index-- {
+		span := spans[index]
+		table := updated[span.start:span.end]
+		if isCoverLayoutTableXML(table) {
+			continue
+		}
+		replacement := floatingTablePropertyPattern.ReplaceAllString(table, "")
+		replacement = tableOverlapPropertyPattern.ReplaceAllString(replacement, "")
+		replacement = normalizeAutoTableWidths(replacement)
+		replacement = ensureTableHasStableLayout(replacement)
+		replacement = allowTableRowsToSplitAndRepeatHeader(replacement)
+		updated = updated[:span.start] + replacement + updated[span.end:]
+	}
+	return updated
+}
+
+func leafElementSpans(content string, localName string) ([]xmlElementSpan, error) {
+	decoder := xml.NewDecoder(strings.NewReader(content))
+	var stack []xmlElementSpan
+	var spans []xmlElementSpan
+	for {
+		start := int(decoder.InputOffset())
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return spans, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		switch typed := token.(type) {
+		case xml.StartElement:
+			if typed.Name.Local == localName {
+				if len(stack) > 0 {
+					stack[len(stack)-1].hasNested = true
+				}
+				stack = append(stack, xmlElementSpan{start: start})
+			}
+		case xml.EndElement:
+			if typed.Name.Local != localName || len(stack) == 0 {
+				continue
+			}
+			span := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			span.end = int(decoder.InputOffset())
+			if !span.hasNested {
+				spans = append(spans, span)
+			}
+		}
+	}
+}
+
+func isCoverLayoutTableXML(table string) bool {
+	text := xmlText(table)
+	matches := 0
+	for _, marker := range []string{"题目", "学院", "专业", "班级", "学号", "姓名", "指导教师"} {
+		if strings.Contains(text, marker) {
+			matches++
+		}
+	}
+	return matches >= 2 || strings.Contains(text, "题目")
+}
+
+func removeDanglingStyleReferences(pkg *ooxmlpkg.DocxPackage) int {
+	styles, ok := pkg.Get("word/styles.xml")
+	if !ok {
+		return 0
+	}
+	defined := make(map[string]bool)
+	for _, match := range styleDefinitionPattern.FindAllStringSubmatch(string(styles), -1) {
+		defined[match[1]] = true
+	}
+	changed := 0
+	for _, name := range pkg.Names() {
+		if !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") || name == "word/styles.xml" {
+			continue
+		}
+		content, ok := pkg.Get(name)
+		if !ok {
+			continue
+		}
+		updated := styleReferencePattern.ReplaceAllStringFunc(string(content), func(reference string) string {
+			match := styleReferencePattern.FindStringSubmatch(reference)
+			if len(match) == 2 && !defined[match[1]] {
+				return ""
+			}
+			return reference
+		})
+		if updated != string(content) {
+			pkg.Set(name, []byte(updated))
+			changed++
+		}
+	}
+	return changed
+}
+
+func constrainOversizedDrawings(content string) string {
+	maxWidth := documentTextWidthTwips(content) * 635
+	if maxWidth <= 0 {
+		return content
+	}
+	return paragraphPattern.ReplaceAllStringFunc(content, func(paragraph string) string {
+		match := drawingExtentPattern.FindStringSubmatch(paragraph)
+		if len(match) != 3 {
+			return paragraph
+		}
+		width, widthErr := strconv.ParseInt(match[1], 10, 64)
+		height, heightErr := strconv.ParseInt(match[2], 10, 64)
+		if widthErr != nil || heightErr != nil || width <= int64(maxWidth) || width <= 0 {
+			return paragraph
+		}
+		newWidth := int64(maxWidth)
+		newHeight := height * newWidth / width
+		oldPair := fmt.Sprintf(`cx="%d" cy="%d"`, width, height)
+		newPair := fmt.Sprintf(`cx="%d" cy="%d"`, newWidth, newHeight)
+		return strings.ReplaceAll(paragraph, oldPair, newPair)
+	})
+}
+
+func documentTextWidthTwips(content string) int {
+	width := 0
+	for _, section := range finalSectPrPattern.FindAllString(content, -1) {
+		size := xmlAttributes(pageSizePattern.FindString(section))
+		margin := xmlAttributes(pageMarginPattern.FindString(section))
+		pageWidth, _ := strconv.Atoi(size["w:w"])
+		left, _ := strconv.Atoi(margin["w:left"])
+		right, _ := strconv.Atoi(margin["w:right"])
+		textWidth := pageWidth - left - right
+		if textWidth > 0 && (width == 0 || textWidth < width) {
+			width = textWidth
+		}
+	}
+	return width
+}
+
+func normalizeLogicalJustification(tag string) string {
+	if strings.Contains(tag, `w:val="start"`) {
+		return strings.Replace(tag, `w:val="start"`, `w:val="left"`, 1)
+	}
+	return strings.Replace(tag, `w:val="end"`, `w:val="right"`, 1)
+}
+
+func normalizeSymbolCharacter(tag string) string {
+	return symbolCharacterAttributePattern.ReplaceAllStringFunc(tag, func(attribute string) string {
+		match := symbolCharacterAttributePattern.FindStringSubmatch(attribute)
+		return `w:char="` + strings.Repeat("0", 4-len(match[1])) + match[1] + `"`
+	})
+}
+
+func deduplicateVMLIDs(content string) string {
+	seen := make(map[string]int)
+	used := make(map[string]bool)
+	for _, match := range vmlElementIDPattern.FindAllStringSubmatch(content, -1) {
+		used[match[1]] = true
+	}
+	return vmlElementIDPattern.ReplaceAllStringFunc(content, func(tag string) string {
+		match := unqualifiedIDAttributePattern.FindStringSubmatch(tag)
+		if len(match) < 2 {
+			return tag
+		}
+		id := match[1]
+		seen[id]++
+		if seen[id] == 1 {
+			return tag
+		}
+		suffix := seen[id]
+		replacement := fmt.Sprintf("%s_%d", id, suffix)
+		for used[replacement] {
+			suffix++
+			replacement = fmt.Sprintf("%s_%d", id, suffix)
+		}
+		used[replacement] = true
+		return unqualifiedIDAttributePattern.ReplaceAllString(tag, `id="`+replacement+`"`)
+	})
+}
+
+func deduplicateStartTagAttributes(tag string) string {
+	closeToken := ">"
+	if strings.HasSuffix(tag, "/>") {
+		closeToken = "/>"
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(tag, "<"), closeToken)
+	nameEnd := strings.IndexAny(inner, " \t\r\n")
+	if nameEnd < 0 {
+		return tag
+	}
+	var builder strings.Builder
+	builder.WriteString("<")
+	builder.WriteString(inner[:nameEnd])
+	seen := make(map[string]bool)
+	for _, match := range startTagAttributePattern.FindAllStringSubmatch(inner[nameEnd:], -1) {
+		if len(match) < 2 || seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		builder.WriteString(match[0])
+	}
+	builder.WriteString(closeToken)
+	return builder.String()
 }
 
 func isCQRWSTDetectionPart(name string) bool {
@@ -375,7 +631,7 @@ func patchTargets(targets []string) []string {
 	return targets
 }
 
-func buildReplacements(bindings []blockmap.Binding, contract templatecompile.MappingContract, profiles []templatecompile.StyleProfile, allowContentRewrite ...bool) replacementSet {
+func buildReplacements(bindings []blockmap.Binding, hasTOC bool, contract templatecompile.MappingContract, profiles []templatecompile.StyleProfile, allowContentRewrite ...bool) replacementSet {
 	canRewrite := len(allowContentRewrite) == 0 || allowContentRewrite[0]
 	grouped := make(map[string][]blockmap.Binding)
 	for _, binding := range bindings {
@@ -393,11 +649,11 @@ func buildReplacements(bindings []blockmap.Binding, contract templatecompile.Map
 		if token := strings.TrimSpace(contract.BlockBindings[blockID]); token != "" {
 			replacements.inline[token] = replacement
 			if blockID == "content_blocks" {
-				replacements.paragraph[token] = renderBindings(blockBindings, canRewrite, profiles...)
+				replacements.paragraph[token] = renderBindings(blockBindings, hasTOC, canRewrite, profiles...)
 			}
 		}
 		if blockID == "content_blocks" {
-			paragraphs := renderBindings(blockBindings, canRewrite, profiles...)
+			paragraphs := renderBindings(blockBindings, hasTOC, canRewrite, profiles...)
 			replacements.paragraph["{{"+blockID+"}}"] = paragraphs
 			replacements.fallbackParagraphs = paragraphs
 		}
@@ -419,14 +675,14 @@ func bindingPayloads(bindings []blockmap.Binding) []string {
 	return payloads
 }
 
-func renderBindings(bindings []blockmap.Binding, allowContentRewrite bool, profiles ...templatecompile.StyleProfile) string {
+func renderBindings(bindings []blockmap.Binding, hasTOC bool, allowContentRewrite bool, profiles ...templatecompile.StyleProfile) string {
 	metadata := make(map[string]blockmap.Binding, len(bindings))
 	for _, binding := range bindings {
 		if binding.PayloadKind != "" {
 			metadata[strings.TrimSpace(binding.Payload)] = binding
 		}
 	}
-	return renderParagraphsWithMetadata(bindingPayloads(bindings), metadata, allowContentRewrite, profiles...)
+	return renderParagraphsWithMetadata(bindingPayloads(bindings), metadata, hasTOC, allowContentRewrite, profiles...)
 }
 
 func escapePayloads(payloads []string) []string {
@@ -442,12 +698,13 @@ func renderParagraphs(payloads []string, profiles ...templatecompile.StyleProfil
 }
 
 func renderParagraphsWithPolicy(payloads []string, allowContentRewrite bool, profiles ...templatecompile.StyleProfile) string {
-	return renderParagraphsWithMetadata(payloads, nil, allowContentRewrite, profiles...)
+	return renderParagraphsWithMetadata(payloads, nil, false, allowContentRewrite, profiles...)
 }
 
-func renderParagraphsWithMetadata(payloads []string, metadata map[string]blockmap.Binding, allowContentRewrite bool, profiles ...templatecompile.StyleProfile) string {
+func renderParagraphsWithMetadata(payloads []string, metadata map[string]blockmap.Binding, forceTOC bool, allowContentRewrite bool, profiles ...templatecompile.StyleProfile) string {
 	payloads = coalesceFragmentedTextPayloads(payloads)
 	payloads, hadSourceTOC := removeSourceTOCPayloads(payloads)
+	hadSourceTOC = hadSourceTOC || forceTOC
 	var builder strings.Builder
 	generatedTOCWritten := false
 	lastTableNumber := ""
@@ -630,7 +887,11 @@ func renderAcknowledgements(payloads []string, profiles ...templatecompile.Style
 func renderLeadLabelParagraph(text string, label string, profileKey string, asciiFont string, eastAsiaFont string, profiles ...templatecompile.StyleProfile) string {
 	style, ok := compiledParagraphStyle(profiles, profileKey)
 	if !ok {
-		style = paragraphStyle{Size: 24, FirstLine: 480, FirstLineChars: 200, Line: 360, After: 624, AfterLines: 200}
+		style = paragraphStyle{Size: 30, FirstLine: 480, FirstLineChars: 200, Line: 360, After: 624, AfterLines: 200}
+	}
+	contentSize := 24
+	if contentStyle, found := compiledParagraphStyle(profiles, "body"); found && contentStyle.Size > 0 {
+		contentSize = contentStyle.Size
 	}
 	remainder := strings.TrimPrefix(text, label)
 	paragraphXML, _ := ooxmlpatch.ApplyParagraphProperties(`<w:p></w:p>`, transplantParagraphSpec(text, style, true))
@@ -640,9 +901,9 @@ func renderLeadLabelParagraph(text string, label string, profileKey string, asci
 	}
 	var builder strings.Builder
 	builder.WriteString(paragraphXML[:insertAt])
-	builder.WriteString(runXMLWithFonts(label, 30, true, asciiFont, eastAsiaFont))
+	builder.WriteString(runXMLWithFonts(label, style.Size, true, asciiFont, eastAsiaFont))
 	if strings.TrimSpace(remainder) != "" {
-		builder.WriteString(runXMLPreservingText(remainder, style.Size, false))
+		builder.WriteString(runXMLPreservingText(remainder, contentSize, false))
 	}
 	builder.WriteString(paragraphXML[insertAt:])
 	return builder.String()
@@ -1214,6 +1475,8 @@ func ensureTableHasStableLayout(tableXML string) string {
 		})
 	}
 	tableProperties := tablePropertyPattern.FindString(tableXML)
+	tableProperties = tableJustificationPattern.ReplaceAllString(tableProperties, `<w:jc w:val="center"/>`)
+	tableXML = tablePropertyPattern.ReplaceAllString(tableXML, tableProperties)
 	tableXML = tablePropertyStartPattern.ReplaceAllStringFunc(tableXML, func(tblPrStart string) string {
 		insert := ""
 		if !strings.Contains(tableProperties, "<w:tblLayout") {
@@ -2740,10 +3003,12 @@ func normalizeCQRWSTMainFooter(pkg *ooxmlpkg.DocxPackage, templateFooters map[st
 	if len(templateFooters) > 0 {
 		var templateXML string
 		for _, content := range templateFooters {
-			templateXML = content
-			break
+			if !isFooterEffectivelyEmpty(content) && footerHasPageAndSectionPages(content) && footerIsCentered(content) {
+				templateXML = content
+				break
+			}
 		}
-		if templateXML != "" && !isFooterEffectivelyEmpty(templateXML) && footerHasPageAndSectionPages(templateXML) {
+		if templateXML != "" {
 			document, ok := pkg.Get(defaultPatchTarget)
 			if !ok {
 				return
@@ -2779,7 +3044,7 @@ func normalizeCQRWSTMainFooter(pkg *ooxmlpkg.DocxPackage, templateFooters map[st
 		xmlContent := string(content)
 		if isFooterEffectivelyEmpty(xmlContent) {
 			needsRewrite = true
-		} else if !footerHasPageAndSectionPages(xmlContent) {
+		} else if !footerHasPageAndSectionPages(xmlContent) || !footerIsCentered(xmlContent) {
 			needsRewrite = true
 		}
 	} else {
@@ -2801,10 +3066,15 @@ func normalizeCQRWSTFrontFooter(pkg *ooxmlpkg.DocxPackage, templateFooters map[s
 	if len(templateFooters) > 0 {
 		var templateXML string
 		for _, content := range templateFooters {
-			templateXML = content
-			break
+			if !isFooterEffectivelyEmpty(content) && strings.Contains(content, " PAGE ") &&
+				!strings.Contains(content, "SECTIONPAGES") && !strings.Contains(content, "NUMPAGES") &&
+				!strings.Contains(content, "<w:pict") &&
+				footerIsCentered(content) {
+				templateXML = content
+				break
+			}
 		}
-		if templateXML != "" && !isFooterEffectivelyEmpty(templateXML) && strings.Contains(templateXML, " PAGE ") {
+		if templateXML != "" {
 			document, ok := pkg.Get(defaultPatchTarget)
 			if !ok {
 				return
@@ -2834,7 +3104,9 @@ func normalizeCQRWSTFrontFooter(pkg *ooxmlpkg.DocxPackage, templateFooters map[s
 	if footerTarget == "" {
 		return
 	}
-	if content, ok := pkg.Get(footerTarget); ok && strings.Contains(string(content), " PAGE ") && !strings.Contains(string(content), "<w:pict") && !strings.Contains(string(content), "NUMPAGES") {
+	if content, ok := pkg.Get(footerTarget); ok && strings.Contains(string(content), " PAGE ") &&
+		!strings.Contains(string(content), "<w:pict") && !strings.Contains(string(content), "NUMPAGES") &&
+		footerIsCentered(string(content)) {
 		return
 	}
 	pkg.Set(footerTarget, []byte(renderCQRWSTFrontFooterXML()))
@@ -2842,6 +3114,10 @@ func normalizeCQRWSTFrontFooter(pkg *ooxmlpkg.DocxPackage, templateFooters map[s
 
 func footerHasPageAndSectionPages(footerXML string) bool {
 	return strings.Contains(footerXML, " PAGE ") && strings.Contains(footerXML, " SECTIONPAGES ")
+}
+
+func footerIsCentered(footerXML string) bool {
+	return strings.Contains(footerXML, `<w:jc w:val="center"`)
 }
 
 // isFooterEffectivelyEmpty 检测页脚 XML 是否仅含空壳（无实际文本内容）
@@ -2853,6 +3129,12 @@ func isFooterEffectivelyEmpty(footerXML string) bool {
 	cleaned = regexp.MustCompile(`<w:pPr[^>]*>[\s]*</w:pPr>`).ReplaceAllString(cleaned, "")
 	cleaned = strings.TrimSpace(cleaned)
 	return cleaned == ""
+}
+
+func isHeaderEffectivelyEmpty(headerXML string) bool {
+	return strings.TrimSpace(xmlText(headerXML)) == "" &&
+		!strings.Contains(headerXML, "<w:drawing") &&
+		!strings.Contains(headerXML, "<w:pict")
 }
 
 // extractTemplateParts opens the template DOCX and extracts all non-empty
@@ -2884,7 +3166,7 @@ func extractTemplateParts(templatePath string) (headers map[string]string, foote
 		if !ok {
 			continue
 		}
-		if isFooterEffectivelyEmpty(string(content)) {
+		if isHeaderEffectivelyEmpty(string(content)) {
 			continue
 		}
 		headers[target] = string(content)
@@ -2989,7 +3271,7 @@ func materializeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]st
 			docType := cqrwstHeaderDocumentType(fields, xmlText(templateXML))
 
 			processed := templateXML
-			processed = regexp.MustCompile(`>(\d{4})\u5c4a<`).ReplaceAllString(processed, ">"+year+"\u5c4a<")
+			processed = regexp.MustCompile(`>(\d{4})届<`).ReplaceAllString(processed, ">"+year+"届<")
 			if major != "" && major != "XXX" {
 				processed = strings.ReplaceAll(processed, ">XXX<", ">"+html.EscapeString(major)+"<")
 			}
@@ -3003,12 +3285,7 @@ func materializeCQRWSTMainHeader(pkg *ooxmlpkg.DocxPackage, fields map[string]st
 			}
 
 			for _, headerTarget := range referencedHeaderTargets(pkg, string(document)) {
-				content, ok := pkg.Get(headerTarget)
-				if !ok {
-					continue
-				}
-				headerXML := string(content)
-				if !containsCQRWSTMarker(headerXML) && !containsCQRWSTMarker(xmlText(headerXML)) {
+				if _, ok := pkg.Get(headerTarget); !ok {
 					continue
 				}
 				pkg.Set(headerTarget, []byte(processed))
@@ -3187,7 +3464,7 @@ func cqrwstMainHeaderText(fields map[string]string, templateHeader string) strin
 	year := coverYear(fields)
 	major := cqrwstCoverMajor(fields)
 	docType := cqrwstHeaderDocumentType(fields, templateHeader)
-	college := "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662" // 重庆人文科技学院
+	college := templateprofile.ExtractCollegeName(templateHeader, "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662")
 	return college + year + "\u5c4a" + major + "\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a" + docType
 }
 
@@ -3213,7 +3490,7 @@ func cqrwstHeaderDocumentType(fields map[string]string, templateHeader string) s
 	}
 	for _, source := range sources {
 		compact := strings.ReplaceAll(strings.TrimSpace(source), " ", "")
-		if strings.Contains(compact, "\u6bd5\u4e1a\u8bbe\u8ba1") && !strings.Contains(compact, "\u6bd5\u4e1a\u8bba\u6587/\u8bbe\u8ba1") {
+		if strings.Contains(compact, "\u6bd5\u4e1a\u8bbe\u8ba1") && !strings.Contains(compact, "\u8bba\u6587") {
 			return "\u8bbe\u8ba1"
 		}
 		if strings.Contains(compact, "\u6bd5\u4e1a\u8bba\u6587") && !strings.Contains(compact, "\u6bd5\u4e1a\u8bba\u6587/\u8bbe\u8ba1") {

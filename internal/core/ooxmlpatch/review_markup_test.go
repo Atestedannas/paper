@@ -16,7 +16,7 @@ func TestFinalizeReviewMarkupAcceptsChangesAndRemovesComments(t *testing.T) {
 		"word/comments.xml": `<w:comments><w:comment w:id="0"><w:p><w:r><w:t>note</w:t></w:r></w:p></w:comment></w:comments>`,
 		"word/document.xml": `<w:document><w:body><w:p>` +
 			`<w:commentRangeStart w:id="0"/>` +
-			`<w:r><w:t>Keep </w:t></w:r>` +
+			`<w:r><w:rPr><w:b/></w:rPr><w:t>Keep </w:t></w:r>` +
 			`<w:ins><w:r><w:t>inserted</w:t></w:r></w:ins>` +
 			`<w:del><w:r><w:delText>deleted</w:delText></w:r></w:del>` +
 			`<w:r><w:commentReference w:id="0"/></w:r>` +
@@ -45,5 +45,8 @@ func TestFinalizeReviewMarkupAcceptsChangesAndRemovesComments(t *testing.T) {
 	}
 	if !strings.Contains(string(document), "inserted") {
 		t.Fatalf("accepted insertion text missing: %s", document)
+	}
+	if !strings.Contains(string(document), "Keep ") {
+		t.Fatalf("ordinary formatted run was removed with comment reference: %s", document)
 	}
 }

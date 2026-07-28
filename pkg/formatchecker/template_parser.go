@@ -315,7 +315,7 @@ func (p *TemplateParser) parseHeadingStylesImproved(doc *document.Document, stan
 		}
 		text = strings.TrimSpace(text)
 
-		level := classifyHeadingLevel(styleName, text)
+		level := classifyHeadingLevel(styleName, text, nil)
 		if level <= 0 || foundLevels[level] {
 			continue
 		}
@@ -356,15 +356,43 @@ func (p *TemplateParser) parseHeadingStylesImproved(doc *document.Document, stan
 	}
 }
 
-// classifyHeadingLevel returns 1/2/3 for heading paragraphs, 0 otherwise.
-func classifyHeadingLevel(styleName, text string) int {
+// classifyHeadingLevel returns 1/2/3/4/5 for heading paragraphs, 0 otherwise.
+// When numberingProfile is non-nil, OOXML-precise patterns derived from
+// numbering.xml take priority over hardcoded regex guesses.
+func classifyHeadingLevel(styleName, text string, numberingProfile *templateprofile.NumberingProfile) int {
 	sn := strings.ToLower(strings.TrimSpace(styleName))
+	// Phase 0: Word style names – 100% reliable, bypass everything else
 	for level := 1; level <= 5; level++ {
 		if sn == fmt.Sprintf("heading%d", level) || sn == fmt.Sprintf("heading %d", level) ||
 			sn == fmt.Sprintf("\u6807\u9898 %d", level) || sn == strconv.Itoa(level) {
 			return level
 		}
 	}
+
+	// Phase 1: Numbering.xml OOXML precise patterns (no guessing)
+	if numberingProfile != nil {
+		patterns := numberingProfile.BuildHeadingPatterns()
+		for _, profileKey := range []string{"heading_4", "heading_3", "heading_2", "heading_1"} {
+			pat, ok := patterns[profileKey]
+			if !ok {
+				continue
+			}
+			if pat.MatchString(strings.TrimSpace(text)) {
+				switch profileKey {
+				case "heading_1":
+					return 1
+				case "heading_2":
+					return 2
+				case "heading_3":
+					return 3
+				case "heading_4":
+					return 4
+				}
+			}
+		}
+	}
+
+	// Phase 2: Hardcoded rules — legacy fallback
 	trimmed := strings.TrimSpace(text)
 	if matched, _ := regexp.MatchString("^\u7b2c[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\u96f6\u3007\\d]+\u7ae0(?:\\s|$)", trimmed); matched {
 		return 1
@@ -520,13 +548,14 @@ func (p *TemplateParser) ParseTemplateToFormatRules(templatePath string) (map[st
 	defer doc.Close()
 
 	sc := loadDocxStyleCache(templatePath)
+	numberingProfile := loadNumberingProfile(templatePath)
 
 	rules := make(map[string]interface{})
 
 	rules["page_setup"] = p.extractPageSetupRules(doc)
 
 	allParas := doc.Paragraphs()
-	classified := p.classifyParagraphs(allParas, sc)
+	classified := p.classifyParagraphs(allParas, sc, numberingProfile)
 
 	// 标题
 	if info := classified["title"]; len(info) > 0 {
@@ -834,7 +863,7 @@ func (p *TemplateParser) extractParaInfoFromRun(para document.Paragraph, run doc
 }
 
 // classifyParagraphs scans all paragraphs and classifies them by category.
-func (p *TemplateParser) classifyParagraphs(paras []document.Paragraph, sc *docxStyleCache) map[string][]paraInfo {
+func (p *TemplateParser) classifyParagraphs(paras []document.Paragraph, sc *docxStyleCache, numberingProfile *templateprofile.NumberingProfile) map[string][]paraInfo {
 	result := make(map[string][]paraInfo)
 	foundCategories := make(map[string]bool)
 
@@ -857,7 +886,7 @@ func (p *TemplateParser) classifyParagraphs(paras []document.Paragraph, sc *docx
 			continue
 		}
 
-		category := p.classifyParagraphCategory(styleName, text, i, len(paras))
+		category := p.classifyParagraphCategory(styleName, text, i, len(paras), numberingProfile)
 		switch category {
 		case "abstract_title":
 			activeSection = "abstract"
@@ -905,7 +934,7 @@ func (p *TemplateParser) classifyParagraphs(paras []document.Paragraph, sc *docx
 	return result
 }
 
-func (p *TemplateParser) classifyParagraphCategory(styleName, text string, index, total int) string {
+func (p *TemplateParser) classifyParagraphCategory(styleName, text string, index, total int, numberingProfile *templateprofile.NumberingProfile) string {
 	sn := strings.ToLower(styleName)
 	textLower := strings.ToLower(text)
 	normalized := normalizeChineseTextForParser(text)
@@ -1064,7 +1093,7 @@ func (p *TemplateParser) classifyParagraphCategory(styleName, text string, index
 		return "table_note"
 	}
 
-	level := classifyHeadingLevel(styleName, text)
+	level := classifyHeadingLevel(styleName, text, numberingProfile)
 	if level >= 1 && level <= 5 {
 		return fmt.Sprintf("heading%d", level)
 	}

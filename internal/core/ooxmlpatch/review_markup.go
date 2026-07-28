@@ -9,7 +9,7 @@ import (
 
 var (
 	commentRangeElement     = regexp.MustCompile(`(?s)<w:commentRange(?:Start|End)\b[^>]*/>`)
-	commentReferenceRun     = regexp.MustCompile(`(?s)<w:r\b[^>]*>\s*(?:<w:rPr\b[^>]*>.*?</w:rPr>\s*)?<w:commentReference\b[^>]*/>\s*</w:r>`)
+	commentReferenceElement = regexp.MustCompile(`<w:commentReference\b[^>]*/>`)
 	trackedInsertionElement = regexp.MustCompile(`(?s)<w:(?:ins|moveTo)\b[^>]*>(.*?)</w:(?:ins|moveTo)>`)
 	trackedDeletionElement  = regexp.MustCompile(`(?s)<w:(?:del|moveFrom)\b[^>]*>.*?</w:(?:del|moveFrom)>`)
 	commentsRelationship    = regexp.MustCompile(`(?s)<Relationship\b[^>]*\bType="[^"]*/comments"[^>]*/>`)
@@ -44,7 +44,7 @@ func FinalizeReviewMarkup(pkg *ooxmlpkg.DocxPackage) int {
 }
 
 func finalizeReviewXML(content string) string {
-	content = commentReferenceRun.ReplaceAllString(content, "")
+	content = commentReferenceElement.ReplaceAllString(content, "")
 	content = commentRangeElement.ReplaceAllString(content, "")
 	content = trackedDeletionElement.ReplaceAllString(content, "")
 	content = trackedInsertionElement.ReplaceAllString(content, "$1")

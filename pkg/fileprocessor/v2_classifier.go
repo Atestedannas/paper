@@ -57,7 +57,8 @@ const (
 var (
 	reHeading1Num   = regexp.MustCompile(`^(\d+)\s`)
 	reHeading1NumCN = regexp.MustCompile(`^([1-9])\p{Han}`)
-	reHeading1Ch    = regexp.MustCompile(`^第[一二三四五六七八九十百]+章`)
+	reHeading1Ch    = regexp.MustCompile(`^第(?:[一二三四五六七八九十百]+|\d+)章`)
+	reHeading1List  = regexp.MustCompile(`^[一二三四五六七八九十百]+[、.．]`)
 	reHeading2      = regexp.MustCompile(`^(\d+)[.．](\d+)\s*[^.．\d]`)
 	reHeading3      = regexp.MustCompile(`^(\d+)[.．](\d+)[.．](\d+)`)
 	reHeading4      = regexp.MustCompile(`^(\d+)[.．](\d+)[.．](\d+)[.．](\d+)`)
@@ -483,7 +484,7 @@ func isCoverLabel(s string) bool {
 }
 
 func isHeading1(s string) bool {
-	if reHeading1Ch.MatchString(s) {
+	if reHeading1Ch.MatchString(s) || reHeading1List.MatchString(s) {
 		return true
 	}
 	if reHeading1Num.MatchString(s) || reHeading1NumCN.MatchString(s) {

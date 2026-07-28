@@ -2389,11 +2389,11 @@ func buildRunProperties(style paragraphStyle) string {
 			eastAsiaFont,
 		))
 	}
-	if style.fontSize != "" {
-		builder.WriteString(fmt.Sprintf(`<w:sz w:val="%s"/><w:szCs w:val="%s"/>`, style.fontSize, style.fontSize))
-	}
 	if style.bold {
 		builder.WriteString(`<w:b/><w:bCs/>`)
+	}
+	if style.fontSize != "" {
+		builder.WriteString(fmt.Sprintf(`<w:sz w:val="%s"/><w:szCs w:val="%s"/>`, style.fontSize, style.fontSize))
 	}
 	return builder.String()
 }

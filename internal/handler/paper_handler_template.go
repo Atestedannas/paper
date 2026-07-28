@@ -7,7 +7,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -199,19 +198,11 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 // processTemplateSample 处理格式范例文档：直接从DOCX解析格式属性，
 // 与AI/正则解析结果合并后保存。
 func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extractedText string) {
-	docxPath := filePath
-
-	// .doc 需要先转为 .docx
 	if ext == ".doc" {
-		converted := h.trySofficeConvertToDocx(filePath)
-		if converted == "" {
-			log.Printf("[格式范例] .doc转.docx失败，回退到文本解析模式")
-			h.processTemplateText(c, extractedText)
-			return
-		}
-		docxPath = converted
-		defer os.Remove(converted)
+		utils.ErrorResponse(c, http.StatusBadRequest, "格式范例必须使用 DOCX 文件", "服务器不再转换旧版 .doc")
+		return
 	}
+	docxPath := filePath
 
 	parser := formatchecker.NewTemplateParser()
 	docxRules, err := parser.ParseTemplateToFormatRules(docxPath)
@@ -365,48 +356,6 @@ func persistTemplateDOCX(templateID uuid.UUID, sourcePath string) (string, error
 		return "", err
 	}
 	return targetPath, nil
-}
-
-// trySofficeConvertToDocx converts a .doc file to .docx using soffice,
-// returning the path to the generated .docx or empty string on failure.
-func (h *PaperHandler) trySofficeConvertToDocx(filePath string) string {
-	sofficePaths := []string{
-		"soffice",
-		`C:\Program Files\LibreOffice\program\soffice.exe`,
-		`C:\Program Files (x86)\LibreOffice\program\soffice.exe`,
-		"/usr/bin/soffice",
-		"/usr/local/bin/soffice",
-	}
-
-	var sofficeBin string
-	for _, p := range sofficePaths {
-		if _, err := exec.LookPath(p); err == nil {
-			sofficeBin = p
-			break
-		}
-	}
-	if sofficeBin == "" {
-		return ""
-	}
-
-	absPath, _ := filepath.Abs(filePath)
-	outDir := filepath.Dir(absPath)
-	baseName := strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
-
-	cmd := exec.Command(sofficeBin,
-		"--headless", "--convert-to", "docx",
-		"--outdir", outDir, absPath,
-	)
-	if err := cmd.Run(); err != nil {
-		log.Printf("[格式范例] soffice转换失败: %v", err)
-		return ""
-	}
-
-	docxPath := filepath.Join(outDir, baseName+".docx")
-	if _, err := os.Stat(docxPath); err != nil {
-		return ""
-	}
-	return docxPath
 }
 
 // processTemplateText 用提取的文本解析并保存格式模板（公共逻辑）

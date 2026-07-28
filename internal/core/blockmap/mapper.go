@@ -26,6 +26,7 @@ func (m *Mapper) Map(template *templatecompile.CompiledTemplatePackage, paper *p
 	result := &MappingResult{
 		UnmappedBlocks: append([]string(nil), paper.Abnormal...),
 		CoverFields:    copyCoverFields(paper.CoverFields),
+		HasTOC:         paper.HasTOC,
 	}
 
 	blocks := append([]templatecompile.TemplateBlock(nil), template.BlockCatalog...)
@@ -178,6 +179,7 @@ func isEmptyPaper(paper *paperparse.ParsedPaper) bool {
 		len(paper.KeywordsCN) == 0 &&
 		len(paper.Headings) == 0 &&
 		len(paper.Body) == 0 &&
+		!paper.HasTOC &&
 		len(paper.References) == 0 &&
 		len(paper.Acknowledgements) == 0 &&
 		len(paper.ContentBlocks) == 0 &&

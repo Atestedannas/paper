@@ -17,9 +17,10 @@ import (
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/paper-format-checker/backend/internal/core/cqrwst"
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 	"github.com/paper-format-checker/backend/internal/core/transplant"
-	"github.com/paper-format-checker/backend/pkg/docconvert"
 )
 
 // v2ApplyDedupe 合并对同一文档 + 相同 corrections 的并发 ApplyCorrectionsV2（避免双请求产生两套审计日志与重复 CPU）。
@@ -60,6 +61,10 @@ func NewV2FormatEngine(proc *EnhancedProcessor, templatePath string) *V2FormatEn
 // 返回输出文件路径
 func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (string, error) {
 	startTime := time.Now()
+	if e.processor != nil {
+		e.processor.templatePath = e.templatePath
+		e.processor.formatLocks = NewFormatLockManager()
+	}
 	log.Println("========== V2 格式修正引擎 开始 ==========")
 	log.Printf("[V2] 模板: %s", e.templatePath)
 	log.Printf("[V2] 学生论文: %s", studentDocPath)
@@ -149,16 +154,22 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	var notesSpec, captionSpec, headerSpec *ParagraphFormatSpec
 	var profileForMargins *templateprofile.Profile
 	var templateHeaderText string
+	var resolvedSpecs map[string]ParagraphFormatSpec
 	if ruleEngine, ruleErr := NewFormatRuleEngine(e.processor, e.templatePath, nil); ruleErr == nil {
+		resolvedSpecs = ruleEngine.Rules()
 		// 保存 Profile 引用，稍后在格式化完成后应用页边距
 		// （避免被后续 sectPr 操作覆盖 —— B1-B2 修复）
 		if ruleEngine.Profile != nil {
 			profileForMargins = ruleEngine.Profile
 		}
 		headingSpecs = make(map[string]ParagraphFormatSpec)
-		for _, level := range []string{"heading_1", "heading_2", "heading_3", "heading_4"} {
-			if spec, ok := ruleEngine.GetRule(level); ok {
-				headingSpecs[level] = spec
+		for _, category := range []string{
+			V2Heading1, V2Heading2, V2Heading3, V2Heading4,
+			V2AcknowledgementsTitle, V2Acknowledgements,
+			V2AppendixTitle, V2Appendix, V2NotesTitle, V2Notes,
+		} {
+			if spec, ok := ruleEngine.GetRule(category); ok {
+				headingSpecs[category] = spec
 			}
 		}
 		// 🔒 LOCKED: 正文段落 — bodySpec 从 FormatRuleEngine 取值（模板 > 硬编码兜底）
@@ -239,8 +250,26 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 		tocTitleSpec, tocEntrySpec,
 		referencesTitleSpec, sectionTitleSpec, notesSpec, captionSpec, headerSpec,
 		templateHeaderText)
-	smartFmt.ApplySmartFormatting(studentDoc, classified)
-	smartFmt.ApplyBodyFormats(classified)
+	smartClassified := classified
+	if len(resolvedSpecs) > 0 {
+		paragraphsByType := v2ParagraphMap(classified)
+		verifyAndLockParagraphTypes(e.processor, e.processor.formatLocks, paragraphsByType, resolvedSpecs)
+		NewAIFormatApplier(e.processor).Apply(
+			paragraphsByType,
+			resolvedSpecs,
+			lockedCategoryMap(e.processor.formatLocks, paragraphsByType),
+		)
+		verifyAndLockParagraphTypes(e.processor, e.processor.formatLocks, paragraphsByType, resolvedSpecs)
+		smartClassified = unlockedV2Paragraphs(e.processor.formatLocks, classified)
+	}
+	smartFmt.ApplySmartFormatting(studentDoc, smartClassified)
+	smartFmt.ApplyBodyFormats(smartClassified)
+	if len(resolvedSpecs) > 0 {
+		repair := NewRepairAgent(e.processor, 3, e.processor.repairDiagnosticClient()).
+			WithLocks(e.processor.formatLocks).
+			RunClassified(v2ParagraphMap(classified), resolvedSpecs)
+		fixCount += repair.TotalFixes
+	}
 
 	// B1-B2 修复：在所有 sectPr 操作（克隆/格式化/页眉）完成后才应用页边距覆盖
 	if profileForMargins != nil {
@@ -302,6 +331,13 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	if err := studentDoc.SaveToFile(outputPath); err != nil {
 		return "", fmt.Errorf("保存文档失败: %w", err)
 	}
+	if err := copyAndMaterializeTemplateHeaderFooter(e.templatePath, outputPath, e.processor.extractCoverInfo(studentDoc)); err != nil {
+		return "", fmt.Errorf("复制模板页眉页脚失败: %w", err)
+	}
+	if headerCount, footerCount, ok := verifyCopiedHeaderFooterStructure(e.templatePath, outputPath); ok {
+		e.processor.formatLocks.Lock("header", headerCount)
+		e.processor.formatLocks.Lock("footer", footerCount)
+	}
 	if profileForMargins != nil {
 		// B-S5 fix: unioffice body-level sectPr pgMar serialization is
 		// non-deterministic (sometimes 1417 instead of 1418).  Post-save
@@ -316,77 +352,6 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 			} else {
 				if err := os.WriteFile(outputPath, patched, 0644); err != nil {
 					log.Printf("[B1B2] post-save ZIP patch write error: %v", err)
-				}
-			}
-		}
-	}
-
-	// B-NORMALFIX: unioffice Normal style sz=24 (12pt) corrupts run-level sz=21 (10.5pt)
-	// during serialization.  Post-save patch Normal style sz 24→21 in styles.xml.
-	{
-		data, err := os.ReadFile(outputPath)
-		if err != nil {
-			log.Printf("[NormalFix] failed to read saved file: %v", err)
-		} else {
-			patched, err := patchDocDefaults(data)
-			if err != nil {
-				log.Printf("[DocDefaultsFix] patch warning: %v", err)
-			} else if !bytes.Equal(patched, data) {
-				if err := os.WriteFile(outputPath, patched, 0644); err != nil {
-					log.Printf("[DocDefaultsFix] write error: %v", err)
-				} else {
-					log.Printf("[DocDefaultsFix] docDefaults fonts patched 宋体/Times New Roman")
-					data = patched
-				}
-			}
-
-			patched2, err := patchNormalStyleFontSize(data)
-			if err != nil {
-				log.Printf("[NormalFix] styles.xml patch warning: %v", err)
-			} else if !bytes.Equal(patched2, data) {
-				if err := os.WriteFile(outputPath, patched2, 0644); err != nil {
-					log.Printf("[NormalFix] write error: %v", err)
-				} else {
-					log.Printf("[NormalFix] Normal style sz patched 24→21")
-				}
-			}
-		}
-	}
-
-	// B-REFFIX: unioffice SaveToFile corrupts reference entry font from sz=21 to sz=24.
-	// Post-save patch all ref paragraphs: sz/szCs val=24→21.
-	{
-		data, err := os.ReadFile(outputPath)
-		if err != nil {
-			log.Printf("[RefFix] failed to read saved file: %v", err)
-		} else {
-			patched, err := patchReferenceFontSize(data)
-			if err != nil {
-				log.Printf("[RefFix] patch warning: %v", err)
-			} else if !bytes.Equal(patched, data) {
-				if err := os.WriteFile(outputPath, patched, 0644); err != nil {
-					log.Printf("[RefFix] write error: %v", err)
-				} else {
-					log.Printf("[RefFix] reference font sz patched 24→21")
-				}
-			}
-		}
-	}
-
-	// B-ACKFIX: 致谢段落格式修复：标题 sz 21→24 / jc distribute, 正文 sz 21→24 / 移除首行缩进
-	{
-		data, err := os.ReadFile(outputPath)
-		if err != nil {
-			log.Printf("[AckFix] failed to read saved file: %v", err)
-		} else {
-			patched, err := patchAcknowledgements(data)
-			if err != nil {
-				log.Printf("[AckFix] patch warning: %v", err)
-			} else if !bytes.Equal(patched, data) {
-				if err := os.WriteFile(outputPath, patched, 0644); err != nil {
-					log.Printf("[AckFix] write error: %v", err)
-				} else {
-					log.Printf("[AckFix] acknowledgements format patched (title sz=24/distribute, content sz=24/no-indent)")
 				}
 			}
 		}
@@ -726,8 +691,19 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 		if err != nil {
 			return "", err
 		}
+		profile, err := templateprofile.Extract(templatePath)
+		if err != nil {
+			return "", fmt.Errorf("extract template profile for final validation: %w", err)
+		}
+		if _, err := cqrwst.ApplyTemplateProfileStylesAndPageSetup(ctx, finalPath, profile); err != nil {
+			return "", fmt.Errorf("apply final template profile styles and page setup: %w", err)
+		}
+		p.applyPostSavePatches(finalPath, templatePath)
 		if _, err := transplant.NormalizeFinalDOCX(finalPath); err != nil {
 			return "", fmt.Errorf("normalize final docx: %w", err)
+		}
+		if _, err := ooxmlpkg.RepairPropertyOrder(finalPath); err != nil {
+			return "", fmt.Errorf("repair final OOXML property order: %w", err)
 		}
 		logPaperFormatAudit("GoV2", "path_chosen", map[string]interface{}{
 			"engine":      finalEngine,
@@ -765,8 +741,6 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 					return "", finErr
 				}
 				log.Println("================= V2 格式修正流程 完成 (ShellInPlace) =================")
-				// Apply post-save patches
-				p.applyPostSavePatches(finalPath)
 				return finalPath, nil
 			}
 			logPaperFormatAudit("GoV2", "shell_discarded", map[string]interface{}{
@@ -791,8 +765,6 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 				return "", finErr
 			}
 			log.Println("================= V2 格式修正流程 完成 (StyleFormatter) =================")
-			// Apply post-save patches
-			p.applyPostSavePatches(finalPath)
 			return finalPath, nil
 		}
 		log.Printf("[V2入口] StyleFormatter 失败: %v, 回退到 V2FormatEngine", err)
@@ -811,8 +783,6 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 	if finErr != nil {
 		return "", finErr
 	}
-	// Apply post-save patches
-	p.applyPostSavePatches(finalPath)
 	return finalPath, nil
 }
 
@@ -1111,20 +1081,14 @@ func (p *EnhancedProcessor) resolveTemplatePath(corrections []map[string]interfa
 		return ""
 	}
 
-	// Convert .doc template to .docx if needed
+	// Production is DOCX-only; a pre-converted sibling may be used for legacy records.
 	if strings.ToLower(filepath.Ext(templatePath)) == ".doc" {
 		docxPath := strings.TrimSuffix(templatePath, filepath.Ext(templatePath)) + ".docx"
 		if _, err := os.Stat(docxPath); os.IsNotExist(err) {
-			log.Printf("[V2入口] 转换模板 .doc → .docx: %s", templatePath)
-			converted, convErr := docconvert.ConvertDocToDocx(templatePath, false)
-			if convErr != nil {
-				log.Printf("[V2入口] 模板转换失败: %v", convErr)
-				return ""
-			}
-			templatePath = converted
-		} else {
-			templatePath = docxPath
+			log.Printf("[V2入口] 不支持旧版 .doc 模板，请预先转换为 DOCX: %s", templatePath)
+			return ""
 		}
+		templatePath = docxPath
 	}
 
 	return templatePath
@@ -1223,7 +1187,7 @@ func dumpFinalDocDiagnostics(doc *document.Document, classified []V2ClassifiedPa
 // are difficult to express through the formatting engine alone. These run
 // after all engines (StyleFormatter, V2FormatEngine, ShellInPlace) produce
 // their final file, ensuring consistent results regardless of engine choice.
-func (p *EnhancedProcessor) applyPostSavePatches(outputPath string) {
+func (p *EnhancedProcessor) applyPostSavePatches(outputPath, templatePath string) {
 	log.Println("[PostSave] applying XML patches...")
 
 	data, err := os.ReadFile(outputPath)
@@ -1232,56 +1196,32 @@ func (p *EnhancedProcessor) applyPostSavePatches(outputPath string) {
 		return
 	}
 
-	// Patch 1: docDefaults — inject eastAsia=宋体 / ascii=Times New Roman
-	patched, err := patchDocDefaults(data)
-	if err != nil {
-		log.Printf("[PostSave] DocDefaults patch error: %v", err)
-	} else if !bytes.Equal(patched, data) {
-		data = patched
-		log.Println("[PostSave] DocDefaults patched (eastAsia=宋体, ascii=Times New Roman)")
-	}
-
-	// Patch 2: Normal style font size fix
-	patched2, err := patchNormalStyleFontSize(data)
-	if err != nil {
-		log.Printf("[PostSave] NormalFix error: %v", err)
-	} else if !bytes.Equal(patched2, data) {
-		data = patched2
-	}
-
-	// Patch 3: Acknowledgements format fix (sz 21→24, remove firstLine=480, jc distribute)
-	patched3, err := patchAcknowledgements(data)
-	if err != nil {
-		log.Printf("[PostSave] AckFix error: %v", err)
-	} else if !bytes.Equal(patched3, data) {
-		data = patched3
-		log.Println("[PostSave] Acknowledgements patched (title sz=24/distribute, content sz=24/no-indent)")
-	}
-
-	// Patch 4: Reference entry font size fix
-	patched4, err := patchReferenceFontSize(data)
-	if err != nil {
-		log.Printf("[PostSave] RefFix error: %v", err)
-	} else if !bytes.Equal(patched4, data) {
-		data = patched4
-	}
-
-	// Patch 5: Header normalization — fix header10 wrong text, preserve chapter suffixes
-	patched5, err := patchHeaderNormalization(data)
+	// Remove duplicate document-type suffixes without changing template styles.
+	patched, err := patchHeaderNormalization(data)
 	if err != nil {
 		log.Printf("[PostSave] HeaderFix error: %v", err)
-	} else if !bytes.Equal(patched5, data) {
-		data = patched5
-		log.Println("[PostSave] Headers normalized (school name + chapter suffixes)")
+	} else if !bytes.Equal(patched, data) {
+		data = patched
+		log.Println("[PostSave] Duplicate header suffixes normalized")
 	}
 
-	// Patch 6: Footer page number — strip hardcoded "-" around PAGE fields
-	patched6, err := patchFooterPageNumber(data)
+	// Strip legacy hardcoded "-" around PAGE fields.
+	patched, err = patchFooterPageNumber(data)
 	if err != nil {
 		log.Printf("[PostSave] FooterFix error: %v", err)
-	} else if !bytes.Equal(patched6, data) {
-		data = patched6
+	} else if !bytes.Equal(patched, data) {
+		data = patched
 		log.Println("[PostSave] Footers patched (removed hardcoded dashes around PAGE)")
+	}
+
+	if templatePath != "" {
+		if profile, profileErr := templateprofile.Extract(templatePath); profileErr != nil {
+			log.Printf("[PostSave] PageMargins profile error: %v", profileErr)
+		} else if patched, patchErr := patchBodySectPrMarginsFromBytes(data, &profile.PageSetup); patchErr != nil {
+			log.Printf("[PostSave] PageMargins patch error: %v", patchErr)
+		} else {
+			data = patched
+		}
 	}
 
 	if err := os.WriteFile(outputPath, data, 0644); err != nil {

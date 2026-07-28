@@ -6,6 +6,7 @@ type ParsedPaper struct {
 	KeywordsCN       []string          `json:"keywords_cn"`
 	Headings         []Heading         `json:"headings"`
 	Body             []string          `json:"body"`
+	HasTOC           bool              `json:"has_toc"`
 	References       []string          `json:"references"`
 	Acknowledgements []string          `json:"acknowledgements"`
 	ContentBlocks    []ContentBlock    `json:"content_blocks"`

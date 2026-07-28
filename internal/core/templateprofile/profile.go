@@ -96,6 +96,7 @@ type Profile struct {
 	FooterFirst HeaderFooterRule       `json:"footer_first,omitempty"`
 	FooterEven  HeaderFooterRule       `json:"footer_even,omitempty"`
 	AI          *AIProfile             `json:"ai,omitempty"`
+	Numbering   *NumberingProfile      `json:"numbering,omitempty"` // OOXML numbering.xml 精确提取
 	Confidence  float64                `json:"confidence"`
 }
 
@@ -195,6 +196,141 @@ type AIProfile struct {
 	Error   string                 `json:"error,omitempty"`
 }
 
+// ─────────────────────────────────────────────────────
+// Numbering.xml 精确提取
+// ─────────────────────────────────────────────────────
+
+// NumberingLevel mirrors a single <w:lvl> element from word/numbering.xml.
+// Extracted directly from OOXML — no AI inference, no guessing.
+type NumberingLevel struct {
+	Level      int    `json:"level"`       // 0-based ilvl
+	NumFmt     string `json:"num_fmt"`     // decimal / chineseCounting / upperLetter / ...
+	LvlText    string `json:"lvl_text"`    // e.g. “%1”, “%1.%2”, “第%1章”
+	Start      int    `json:"start"`       // start value (default 1)
+	PStyle     string `json:"p_style"`     // linked paragraph style (Heading1, Heading2, …)
+	IsLgl      bool   `json:"is_lgl"`      // <w:isLgl/> flag
+	LvlRestart int    `json:"lvl_restart"` // <w:lvlRestart w:val="..."/>  (-1 = never restart)
+}
+
+// NumberingProfile holds every abstractNum definition found in numbering.xml.
+type NumberingProfile struct {
+	AbstractNums map[int][]NumberingLevel `json:"abstract_nums"` // abstractNumId → levels
+	NumToAbs     map[int]int              `json:"num_to_abs"`    // numId → abstractNumId
+}
+
+// HeadingNumberingLookup returns the heading levels extracted from numbering.xml,
+// keyed by style name (e.g. "Heading1" → {Level, NumFmt, LvlText, Start}).
+// Only levels that have a non-empty PStyle are included.
+func (np *NumberingProfile) HeadingNumberingLookup() map[string]NumberingLevel {
+	lookup := make(map[string]NumberingLevel)
+	for _, levels := range np.AbstractNums {
+		for _, lvl := range levels {
+			if lvl.PStyle != "" {
+				// Normalize to title-case for consistent lookup
+				key := strings.ToLower(lvl.PStyle)
+				if _, exists := lookup[key]; !exists {
+					lookup[key] = lvl
+				}
+			}
+		}
+	}
+	return lookup
+}
+
+// BuildHeadingPatterns converts numbering level definitions into compiled regexps.
+// Returns a map from profile key ("heading_1", "heading_2", …) to regexp.
+// The patterns precisely match what the template's numbering.xml defines,
+// replacing the hardcoded "^\d+\.\d+" guesses.
+func (np *NumberingProfile) BuildHeadingPatterns() map[string]*regexp.Regexp {
+	lookup := np.HeadingNumberingLookup()
+	patterns := make(map[string]*regexp.Regexp)
+
+	// style→profile mapping: "heading1"→"heading_1", etc.
+	styleToProfile := map[string]string{
+		"heading1": "heading_1",
+		"heading2": "heading_2",
+		"heading3": "heading_3",
+		"heading4": "heading_4",
+		"heading5": "heading_4",
+	}
+
+	for styleName, lvl := range lookup {
+		profileKey, ok := styleToProfile[styleName]
+		if !ok {
+			// Try numeric suffix extraction
+			for s, p := range styleToProfile {
+				if strings.HasSuffix(styleName, s[len(s)-1:]) && len(styleName) > len(s)-1 {
+					profileKey = p
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				continue
+			}
+		}
+
+		pattern := lvlTextToPattern(lvl.LvlText, lvl.NumFmt)
+		if pattern != "" {
+			patterns[profileKey] = regexp.MustCompile(pattern)
+		}
+	}
+	return patterns
+}
+
+// lvlTextToPattern converts a numbering lvlText + numFmt into a Go regexp.
+//
+// Examples:
+//
+//	LvlText       NumFmt          → Pattern
+//	%1            decimal         → ^\d+[.\s]?\S
+//	%1.%2         decimal         → ^\d+\.\d+[.\s]?\S
+//	第%1章        chineseCounting  → ^第[一二三四五六七八九十百零〇两0-9]+章\s*\S
+//	%1.%2.%3      decimal         → ^\d+\.\d+\.\d+[.\s]?\S
+func lvlTextToPattern(lvlText, numFmt string) string {
+	if lvlText == "" {
+		return ""
+	}
+
+	// Map numFmt to a character class for the placeholder replacement
+	numFmtToCharClass := map[string]string{
+		"decimal":                 `\d+`,
+		"chineseCounting":         `[一二三四五六七八九十百零〇两0-9]+`,
+		"chineseCountingThousand": `[一二三四五六七八九十百零〇两0-9]+`,
+		"upperLetter":             `[A-Z]`,
+		"lowerLetter":             `[a-z]`,
+		"upperRoman":              `[IVXLCDM]+`,
+		"lowerRoman":              `[ivxlcdm]+`,
+		"japaneseCounting":        `[一二三四五六七八九十百零〇]+`,
+	}
+
+	result := regexp.QuoteMeta(lvlText)
+
+	// If lvlText is just "%1" with no surrounding text, add trailing separator flexibility
+	hasSurrounding := len(lvlText) > 2
+
+	// Replace %1, %2, %3, ... with appropriate character classes
+	for i := 1; i <= 9; i++ {
+		placeholder := regexp.QuoteMeta(fmt.Sprintf("%%%d", i))
+		replacement, ok := numFmtToCharClass[numFmt]
+		if !ok {
+			replacement = `\S+`
+		}
+		result = strings.ReplaceAll(result, placeholder, replacement)
+	}
+
+	// Anchor at start, add trailing content requirement
+	if hasSurrounding {
+		// Pattern like "第%1章" → anchored, text follows naturally
+		result = `^` + result + `\s*\S*`
+	} else {
+		// Pattern like "%1" or "%1.%2" → allow optional dot/space after number
+		result = `^` + result + `[.\s]?\S`
+	}
+
+	return result
+}
+
 type Options struct {
 	AIEnabled bool
 	AIClient  ChatClient
@@ -230,6 +366,7 @@ var (
 	attrPattern                  = regexp.MustCompile(`\s([A-Za-z0-9_:]+)="([^"]*)"`)
 	headerFooterReferencePattern = regexp.MustCompile(`<w:(?:header|footer)Reference\b[^>]*/>`)
 	relationshipPattern          = regexp.MustCompile(`<Relationship\b[^>]*/>`)
+	collegeNamePattern           = regexp.MustCompile(`[\p{Han}A-Za-z0-9·-]+(?:大学|学院)`)
 	bodyStartArabicPattern       = regexp.MustCompile(`^1\s+[^\d.]\S*`)
 	heading1ArabicPattern        = regexp.MustCompile(`^\d+\s+\S+`)
 	heading2ArabicPattern        = regexp.MustCompile(`^\d+\.\d+\s+\S+`)
@@ -239,6 +376,19 @@ var (
 	heading1ChineseListPattern   = regexp.MustCompile(`^[一二三四五六七八九十]+[、．.]\s*\S+`)
 	bodyStartChineseListPattern  = regexp.MustCompile(`^一[、．.]\s*\S+`)
 )
+
+func ExtractCollegeName(headerText, fallback string) string {
+	best := ""
+	for _, match := range collegeNamePattern.FindAllString(headerText, -1) {
+		if len([]rune(match)) > len([]rune(best)) {
+			best = match
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return strings.TrimSpace(fallback)
+}
 
 func Build(ctx context.Context, templatePath string, opts Options) (*Profile, error) {
 	if err := ctx.Err(); err != nil {
@@ -253,6 +403,83 @@ func Build(ctx context.Context, templatePath string, opts Options) (*Profile, er
 		AttachAISummary(ctx, profile, opts.AIClient)
 	}
 	return profile, nil
+}
+
+// parseNumberingXML reads word/numbering.xml from the DOCX package and extracts
+// all abstractNum definitions into a NumberingProfile.
+// Returns nil, nil if numbering.xml is absent (template has no numbering definitions).
+func parseNumberingXML(pkg *ooxmlpkg.DocxPackage) (*NumberingProfile, error) {
+	xmlBytes, ok := pkg.Get("word/numbering.xml")
+	if !ok {
+		return nil, nil
+	}
+	return ParseNumberingFromRawXML(string(xmlBytes)), nil
+}
+
+// ParseNumberingFromRawXML extracts numbering profile from raw numbering.xml content.
+// Exported for use by TemplateParser and other packages that read DOCX differently.
+func ParseNumberingFromRawXML(xmlStr string) *NumberingProfile {
+
+	np := &NumberingProfile{
+		AbstractNums: make(map[int][]NumberingLevel),
+		NumToAbs:     make(map[int]int),
+	}
+
+	// Extract abstractNum blocks: <w:abstractNum w:abstractNumId="N"> ... </w:abstractNum>
+	absNumPattern := regexp.MustCompile(`<w:abstractNum\s+[^>]*?w:abstractNumId="(\d+)"[^>]*>(.*?)</w:abstractNum>`)
+	for _, absMatch := range absNumPattern.FindAllStringSubmatch(xmlStr, -1) {
+		absID, _ := strconv.Atoi(absMatch[1])
+		absBody := absMatch[2]
+
+		var levels []NumberingLevel
+		// Extract level blocks: <w:lvl w:ilvl="N"> ... </w:lvl>
+		lvlPattern := regexp.MustCompile(`<w:lvl\s+[^>]*?w:ilvl="(\d+)"[^>]*>(.*?)</w:lvl>`)
+		for _, lvlMatch := range lvlPattern.FindAllStringSubmatch(absBody, -1) {
+			ilvl, _ := strconv.Atoi(lvlMatch[1])
+			lvlBody := lvlMatch[2]
+
+			level := NumberingLevel{
+				Level:      ilvl,
+				Start:      1,
+				LvlRestart: -1, // default: never restart
+			}
+
+			if m := regexp.MustCompile(`<w:numFmt\s+[^>]*?w:val="([^"]*)"`).FindStringSubmatch(lvlBody); m != nil {
+				level.NumFmt = m[1]
+			}
+			if m := regexp.MustCompile(`<w:lvlText\s+[^>]*?w:val="([^"]*)"`).FindStringSubmatch(lvlBody); m != nil {
+				level.LvlText = m[1]
+			}
+			if m := regexp.MustCompile(`<w:start\s+[^>]*?w:val="(\d+)"`).FindStringSubmatch(lvlBody); m != nil {
+				level.Start, _ = strconv.Atoi(m[1])
+			}
+			if m := regexp.MustCompile(`<w:pStyle\s+[^>]*?w:val="([^"]*)"`).FindStringSubmatch(lvlBody); m != nil {
+				level.PStyle = m[1]
+			}
+			if strings.Contains(lvlBody, "<w:isLgl") {
+				level.IsLgl = true
+			}
+			if m := regexp.MustCompile(`<w:lvlRestart\s+[^>]*?w:val="(\d+)"`).FindStringSubmatch(lvlBody); m != nil {
+				level.LvlRestart, _ = strconv.Atoi(m[1])
+			}
+
+			levels = append(levels, level)
+		}
+		np.AbstractNums[absID] = levels
+	}
+
+	// Extract num mappings: <w:num w:numId="N"> <w:abstractNumId w:val="M"/> </w:num>
+	numPattern := regexp.MustCompile(`<w:num\s+[^>]*?w:numId="(\d+)"[^>]*>.*?<w:abstractNumId\s+[^>]*?w:val="(\d+)"`)
+	for _, numMatch := range numPattern.FindAllStringSubmatch(xmlStr, -1) {
+		numID, _ := strconv.Atoi(numMatch[1])
+		absID, _ := strconv.Atoi(numMatch[2])
+		np.NumToAbs[numID] = absID
+	}
+
+	if len(np.AbstractNums) == 0 {
+		return nil
+	}
+	return np
 }
 
 func Extract(templatePath string) (*Profile, error) {
@@ -287,13 +514,23 @@ func Extract(templatePath string) (*Profile, error) {
 	if stylesXML, ok := pkg.Get("word/styles.xml"); ok {
 		styleDefinitions, styleNameToID = extractStyleDefinitions(string(stylesXML))
 	}
+	if numbering, err := parseNumberingXML(pkg); err == nil && numbering != nil {
+		profile.Numbering = numbering
+	}
 	profile.RulePack = extractLocalRulePack(paras)
 	extractHeaderFooterVariants(profile, pkg, string(documentXML))
+
+	// Build numbering-derived heading patterns (OOXML precise, no AI guessing)
+	numberingPatterns := map[string]*regexp.Regexp{}
+	if profile.Numbering != nil {
+		numberingPatterns = profile.Numbering.BuildHeadingPatterns()
+	}
+
 	styleSamples := map[string][]StyleRule{}
 	bodyStarted := false
 	inTOC := false
 	for index, para := range paras {
-		key := classifyParagraph(para.Text)
+		key := classifyParagraphNumberingAware(para.Text, numberingPatterns)
 		if key == "toc_title" {
 			inTOC = true
 		} else if inTOC && (key == "body_start" || strings.HasPrefix(key, "heading_")) {
@@ -316,7 +553,8 @@ func Extract(templatePath string) (*Profile, error) {
 		if key == "" {
 			continue
 		}
-		styleSamples[key] = append(styleSamples[key], extractStyleWithDefinitions(key, para.XML, styleDefinitions))
+		style := extractStyleWithDefinitions(key, para.XML, styleDefinitions)
+		styleSamples[key] = append(styleSamples[key], extractLeadingLabelRunStyle(key, para.XML, style))
 		if key == "body_start" {
 			styleSamples["heading_1"] = append(styleSamples["heading_1"], extractStyleWithDefinitions("heading_1", para.XML, styleDefinitions))
 		}
@@ -334,16 +572,13 @@ func Extract(templatePath string) (*Profile, error) {
 		profile.Styles[key] = aggregateStyleRules(key, samples)
 	}
 
-	// Override paragraph-sampled values with resolved style definitions for key styles.
-	// This fixes A1-A8: paragraph sampling error — we now use the styles.xml basedOn→docDefaults
-	// inheritance chain for font_east_asia, font_ascii, fontSize, firstLine, alignment, etc.
+	// Fill paragraph-sampled gaps from resolved named styles. Direct paragraph/run
+	// formatting remains authoritative because templates commonly override Heading styles.
 	keyToStyleName := map[string]string{
-		"heading_1":        "heading1",
-		"heading_2":        "heading2",
-		"heading_3":        "heading3",
-		"heading_4":        "heading4",
-		"body":             "normal",
-		"references_title": "normal", // references title inherits body font/size
+		"heading_1": "heading1",
+		"heading_2": "heading2",
+		"heading_3": "heading3",
+		"heading_4": "heading4",
 	}
 	for profileKey, styleName := range keyToStyleName {
 		if existing, ok := profile.Styles[profileKey]; !ok {
@@ -368,38 +603,49 @@ func Extract(templatePath string) (*Profile, error) {
 			if !ok {
 				continue
 			}
-			// Resolved definition values take precedence over paragraph-sampled values.
 			override := StyleRule{Label: existing.Label}
-			override.BoldSet = true // explicit override
-			override.Bold = def.Bold
-			if def.FontEastAsia != "" {
+			if !existing.BoldSet && def.BoldSet {
+				override.BoldSet = true
+				override.Bold = def.Bold
+			}
+			if existing.FontEastAsia == "" && def.FontEastAsia != "" {
 				override.FontEastAsia = def.FontEastAsia
 			}
-			if def.FontASCII != "" {
+			if existing.FontASCII == "" && def.FontASCII != "" {
 				override.FontASCII = def.FontASCII
 			}
-			if def.FontSizeHalfPt != "" {
+			if existing.FontHint == "" && def.FontHint != "" {
+				override.FontHint = def.FontHint
+			}
+			if existing.FontSizeHalfPt == "" && def.FontSizeHalfPt != "" {
 				override.FontSizeHalfPt = def.FontSizeHalfPt
 			}
-			if def.Alignment != "" {
+			if existing.ComplexSizeHalfPt == "" && def.ComplexSizeHalfPt != "" {
+				override.ComplexSizeHalfPt = def.ComplexSizeHalfPt
+			}
+			if !existing.ItalicSet && def.ItalicSet {
+				override.ItalicSet = true
+				override.Italic = def.Italic
+			}
+			if existing.Alignment == "" && def.Alignment != "" {
 				override.Alignment = def.Alignment
 			}
-			if def.Line != "" {
+			if existing.Line == "" && def.Line != "" {
 				override.Line = def.Line
 			}
-			if def.LineRule != "" {
+			if existing.LineRule == "" && def.LineRule != "" {
 				override.LineRule = def.LineRule
 			}
-			if def.FirstLineTwips != "" {
+			if existing.FirstLineTwips == "" && def.FirstLineTwips != "" {
 				override.FirstLineTwips = def.FirstLineTwips
 			}
-			if def.FirstLineChars != "" {
+			if existing.FirstLineChars == "" && def.FirstLineChars != "" {
 				override.FirstLineChars = def.FirstLineChars
 			}
-			if def.BeforeTwips != "" {
+			if existing.BeforeTwips == "" && def.BeforeTwips != "" {
 				override.BeforeTwips = def.BeforeTwips
 			}
-			if def.AfterTwips != "" {
+			if existing.AfterTwips == "" && def.AfterTwips != "" {
 				override.AfterTwips = def.AfterTwips
 			}
 			profile.Styles[profileKey] = mergeExtractedStyle(existing, override, "")
@@ -1116,29 +1362,35 @@ func Parse(data string) (*Profile, error) {
 }
 
 func extractPageSetup(documentXML string) PageSetupRule {
-	// B1-B2 fix: use the last sectPr in the document (body-level section properties),
-	// not the first one (which may be an intermediate section break with different margins).
-	// Template has first sectPr top=1134/left=1134 but the body uses last sectPr top=1418/left=1418.
 	sections := sectPrPattern.FindAllString(documentXML, -1)
 	if len(sections) == 0 {
 		return PageSetupRule{}
 	}
-	section := sections[len(sections)-1]
 	rule := PageSetupRule{}
-	if pgSz := pgSzPattern.FindString(section); pgSz != "" {
-		attrs := attrs(pgSz)
-		rule.PageWidthTwips = attrs["w:w"]
-		rule.PageHeightTwips = attrs["w:h"]
-		rule.Orientation = attrs["w:orient"]
-	}
-	if pgMar := pgMarPattern.FindString(section); pgMar != "" {
-		attrs := attrs(pgMar)
-		rule.MarginTopTwips = attrs["w:top"]
-		rule.MarginRightTwips = attrs["w:right"]
-		rule.MarginBottomTwips = attrs["w:bottom"]
-		rule.MarginLeftTwips = attrs["w:left"]
-		rule.HeaderMarginTwips = attrs["w:header"]
-		rule.FooterMarginTwips = attrs["w:footer"]
+	for index := len(sections) - 1; index >= 0; index-- {
+		section := sections[index]
+		if rule.PageWidthTwips == "" {
+			if pgSz := pgSzPattern.FindString(section); pgSz != "" {
+				values := attrs(pgSz)
+				rule.PageWidthTwips = values["w:w"]
+				rule.PageHeightTwips = values["w:h"]
+				rule.Orientation = values["w:orient"]
+			}
+		}
+		if rule.MarginTopTwips == "" {
+			if pgMar := pgMarPattern.FindString(section); pgMar != "" {
+				values := attrs(pgMar)
+				rule.MarginTopTwips = values["w:top"]
+				rule.MarginRightTwips = values["w:right"]
+				rule.MarginBottomTwips = values["w:bottom"]
+				rule.MarginLeftTwips = values["w:left"]
+				rule.HeaderMarginTwips = values["w:header"]
+				rule.FooterMarginTwips = values["w:footer"]
+			}
+		}
+		if rule.PageWidthTwips != "" && rule.MarginTopTwips != "" {
+			break
+		}
 	}
 	return rule
 }
@@ -1160,6 +1412,32 @@ func extractText(raw string) string {
 		}
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+// classifyParagraphNumberingAware first tries numbering-derived patterns (precise
+// OOXML extraction), then falls back to the original classifyParagraph logic.
+// When numberingPatterns is empty, it behaves identically to classifyParagraph.
+func classifyParagraphNumberingAware(text string, numberingPatterns map[string]*regexp.Regexp) string {
+	// Phase 1: Try numbering-derived heading patterns (most precise)
+	if len(numberingPatterns) > 0 {
+		for _, profileKey := range []string{"heading_3", "heading_2", "heading_1"} {
+			pat, ok := numberingPatterns[profileKey]
+			if !ok {
+				continue
+			}
+			if pat.MatchString(strings.TrimSpace(text)) {
+				return profileKey
+			}
+		}
+		if pat, ok := numberingPatterns["heading_4"]; ok {
+			if pat.MatchString(strings.TrimSpace(text)) {
+				return "heading_4"
+			}
+		}
+	}
+
+	// Phase 2: Fall back to original rule-based classifier
+	return classifyParagraph(text)
 }
 
 func classifyParagraph(text string) string {
@@ -1243,6 +1521,9 @@ func extractStyle(label string, raw string) StyleRule {
 		style.ComplexSizeHalfPt = attrs(size)["w:val"]
 	}
 	boldScope := paragraphRunPropsPattern.FindString(raw)
+	if boldScope == "" && strings.Contains(raw, "<w:style") {
+		boldScope = runPropertiesPattern.FindString(raw)
+	}
 	if hasBoldDeclaration(boldScope) {
 		style.BoldSet = true
 		style.Bold = enabledBold(boldScope)
@@ -1265,6 +1546,9 @@ func extractStyle(label string, raw string) StyleRule {
 		style.Bold = declaredRuns > 0 && enabled*5 > totalRuns*3
 	}
 	italicScope := paragraphRunPropsPattern.FindString(raw)
+	if italicScope == "" && strings.Contains(raw, "<w:style") {
+		italicScope = runPropertiesPattern.FindString(raw)
+	}
 	if hasItalicDeclaration(italicScope) {
 		style.ItalicSet = true
 		style.Italic = enabledProperty(italicScope, "i")
@@ -1299,6 +1583,27 @@ func extractStyle(label string, raw string) StyleRule {
 		style.OutlineLevel = attrs(outline)["w:val"]
 	}
 	return style
+}
+
+func extractLeadingLabelRunStyle(label, paragraphXML string, base StyleRule) StyleRule {
+	switch label {
+	case "abstract_cn", "keywords_cn", "abstract_en", "keywords_en":
+	default:
+		return base
+	}
+	for _, run := range runElementPattern.FindAllString(paragraphXML, -1) {
+		text := strings.TrimSpace(extractText(run))
+		normalized := normalizeLabel(text)
+		lower := strings.ToLower(text)
+		matches := label == "abstract_cn" && strings.HasPrefix(normalized, "摘要") ||
+			label == "keywords_cn" && strings.HasPrefix(normalized, "关键词") ||
+			label == "abstract_en" && strings.HasPrefix(lower, "abstract") ||
+			label == "keywords_en" && (strings.HasPrefix(lower, "keywords") || strings.HasPrefix(lower, "key words"))
+		if matches {
+			return mergeExtractedStyle(base, extractStyle(label, run), run)
+		}
+	}
+	return base
 }
 
 func extractStyleWithDefinitions(label, paragraphXML string, definitions map[string]StyleRule) StyleRule {
@@ -1595,7 +1900,7 @@ func extractHeaderFooterVariants(profile *Profile, pkg *ooxmlpkg.DocxPackage, do
 			profile.Footer = rule
 		}
 	}
-	if profile.HeaderEven.Exists {
+	if profile.HeaderEven.Exists && (strings.TrimSpace(profile.HeaderEven.Text) != "" || profile.HeaderEven.HasPageField) {
 		profile.RulePack.HeaderPolicy = "odd_even"
 		profile.RulePack.OddHeaderText = profile.Header.Text
 		profile.RulePack.EvenHeaderText = profile.HeaderEven.Text

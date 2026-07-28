@@ -60,6 +60,7 @@ const (
 	sectionCover section = iota
 	sectionAbstractCN
 	sectionKeywordsCN
+	sectionTOC
 	sectionBody
 	sectionReferences
 	sectionAcknowledgements
@@ -70,6 +71,9 @@ var chineseChapterHeadingPattern = regexp.MustCompile(`^第[一二三四五六�
 var chineseListHeadingPattern = regexp.MustCompile(`^[一二三四五六七八九十百]+[、．.]\s*(.+)$`)
 var paragraphStylePattern = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
 var paragraphOutlinePattern = regexp.MustCompile(`<w:outlineLvl\b[^>]*\bw:val="(\d+)"`)
+var compactHeadingPattern = regexp.MustCompile(`^(\d+\.\d+(?:\.\d+)*)(?:\.)?([^\d\s].+)$`)
+var tocFieldInstructionPattern = regexp.MustCompile(`(?is)<w:instrText\b[^>]*>[^<]*\bTOC(?:\s|\\)`)
+var tocPageNumberPattern = regexp.MustCompile(`(?:\t|[.．·…]{2,})?.*(?:\t|[.．·…]{2,}|\s)(?:[ivxlcdm]+|\d+)\s*$`)
 var bodyElementPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
 var ooxmlTextElementPattern = regexp.MustCompile(`(?s)<w:t(?:\s[^>]*)?>(.*?)</w:t>`)
 var ooxmlTagPattern = regexp.MustCompile(`(?s)<[^>]+>`)
@@ -98,11 +102,45 @@ func parseElementsWithStyles(elements []bodyElement, styleLevels map[string]int)
 		CoverFields: make(map[string]string),
 	}
 	current := sectionCover
+	pendingPageBoundary := false
 
 	for _, element := range elements {
 		text := strings.TrimSpace(element.text)
+		hasPageBoundary := paragraphStartsNewPage(element.xml)
+		hasTOCField := tocFieldInstructionPattern.MatchString(element.xml)
 		if text == "" {
+			if current == sectionTOC && hasPageBoundary {
+				pendingPageBoundary = true
+			}
+			if hasTOCField {
+				paper.HasTOC = true
+				current = sectionTOC
+			}
 			continue
+		}
+		startsNewPage := pendingPageBoundary || hasPageBoundary
+		pendingPageBoundary = false
+
+		if isTOCTitle(text) || hasTOCField || isTOCParagraph(element.xml) {
+			paper.HasTOC = true
+			current = sectionTOC
+			continue
+		}
+		if current == sectionTOC {
+			if isTOCParagraph(element.xml) || looksLikeTOCEntry(text) {
+				continue
+			}
+			heading, isHeading := parseHeading(text)
+			if !isHeading {
+				if level := paragraphHeadingLevel(element.xml, styleLevels); level > 0 {
+					heading = Heading{Level: level, Text: text}
+					isHeading = true
+				}
+			}
+			if !startsNewPage && (!isHeading || heading.Level != 1) {
+				continue
+			}
+			current = sectionBody
 		}
 		if element.kind == "tbl" {
 			if current == sectionBody {
@@ -319,6 +357,45 @@ func paragraphHeadingLevel(paragraphXML string, styleLevels map[string]int) int 
 		return level
 	}
 	return headingLevelFromName(match[1])
+}
+
+func isTOCTitle(text string) bool {
+	compact := strings.NewReplacer(" ", "", "\t", "", "\u00a0", "", "\u3000", "").Replace(strings.TrimSpace(text))
+	return compact == "目录" || strings.EqualFold(compact, "tableofcontents")
+}
+
+func isTOCParagraph(paragraphXML string) bool {
+	match := paragraphStylePattern.FindStringSubmatch(paragraphXML)
+	if len(match) != 2 {
+		return false
+	}
+	styleID := strings.ToLower(strings.NewReplacer(" ", "", "_", "", "-", "").Replace(match[1]))
+	if styleID == "tocheading" {
+		return true
+	}
+	if !strings.HasPrefix(styleID, "toc") {
+		return false
+	}
+	level, err := strconv.Atoi(strings.TrimPrefix(styleID, "toc"))
+	return err == nil && level >= 1 && level <= 9
+}
+
+func paragraphStartsNewPage(paragraphXML string) bool {
+	for _, marker := range []string{
+		"<w:pageBreakBefore",
+		`<w:br w:type="page"`,
+		"<w:lastRenderedPageBreak",
+		"<w:sectPr",
+	} {
+		if strings.Contains(paragraphXML, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeTOCEntry(text string) bool {
+	return tocPageNumberPattern.MatchString(strings.TrimSpace(text))
 }
 
 func headingLevelFromName(name string) int {
@@ -638,10 +715,12 @@ func splitSectionMarker(text string, marker string) (string, bool) {
 }
 
 func parseHeading(text string) (Heading, bool) {
-	matches := headingPattern.FindStringSubmatch(text)
-	if matches != nil {
-		level := strings.Count(matches[1], ".") + 1
-		return Heading{Level: level, Text: strings.TrimSpace(matches[2])}, true
+	for _, pattern := range []*regexp.Regexp{headingPattern, compactHeadingPattern} {
+		matches := pattern.FindStringSubmatch(text)
+		if matches != nil {
+			level := strings.Count(matches[1], ".") + 1
+			return Heading{Level: level, Text: strings.TrimSpace(matches[2])}, true
+		}
 	}
 	for _, pattern := range []*regexp.Regexp{chineseChapterHeadingPattern, chineseListHeadingPattern} {
 		if matches := pattern.FindStringSubmatch(strings.TrimSpace(text)); len(matches) == 2 {

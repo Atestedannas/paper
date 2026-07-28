@@ -20,14 +20,27 @@ COPY . .
 # CGO_ENABLED=0 表示禁用 CGO，构建静态链接的可执行文件
 RUN CGO_ENABLED=0 GOOS=linux go build -o main ./cmd/server
 
+FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS openxml-builder
+ARG OPENXML_RUNTIME_ID=linux-musl-x64
+WORKDIR /src
+COPY tools/openxml-validator/ ./
+RUN dotnet publish -c Release -r ${OPENXML_RUNTIME_ID} --self-contained true \
+    -p:PublishSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o /out
+
 # 使用轻量级的 Alpine 镜像作为运行环境
 FROM alpine:latest
+
+RUN apk add --no-cache ca-certificates icu-libs libgcc libstdc++
 
 # 设置工作目录
 WORKDIR /app
 
 # 复制构建好的可执行文件
 COPY --from=builder /app/main .
+COPY --from=openxml-builder /out/OpenXmlValidator /app/openxml-validator
+
+ENV OPENXML_VALIDATOR_BIN=/app/openxml-validator \
+    OPENXML_VALIDATOR_REQUIRED=true
 
 # 复制必要的配置文件或静态资源（如果有）
 COPY --from=builder /app/.env .

@@ -25,14 +25,14 @@ type DocDiffReport struct {
 	WarningCount int        `json:"warning_count"`
 	ParaDiffs    []ParaDiff `json:"para_diffs"`
 	// 闭环验收（docvalidate.validate_document），与样式 diff 互补
-	ValidationOK          *bool    `json:"validation_ok,omitempty"`
-	ValidationErrorCount  int      `json:"validation_error_count,omitempty"`
-	ValidationWarningCount int     `json:"validation_warning_count,omitempty"`
+	ValidationOK           *bool    `json:"validation_ok,omitempty"`
+	ValidationErrorCount   int      `json:"validation_error_count,omitempty"`
+	ValidationWarningCount int      `json:"validation_warning_count,omitempty"`
 	ValidationTemplateGaps []string `json:"validation_template_gaps,omitempty"`
 	// 黄金模板标题段落格式与样式定义对齐（template_parity）
-	TemplateParityOK                *bool `json:"template_parity_ok,omitempty"`
-	TemplateParityRemainingMismatch int   `json:"template_parity_remaining_mismatches,omitempty"`
-	Compliance100                   *bool `json:"compliance_100,omitempty"`
+	TemplateParityOK                *bool   `json:"template_parity_ok,omitempty"`
+	TemplateParityRemainingMismatch int     `json:"template_parity_remaining_mismatches,omitempty"`
+	Compliance100                   *bool   `json:"compliance_100,omitempty"`
 	ComplianceScore                 float64 `json:"compliance_score,omitempty"`
 }
 
@@ -138,5 +138,63 @@ func DiffSpec(expected, actual ParagraphFormatSpec) []SpecDiff {
 		}
 	}
 
+	return diffs
+}
+
+func DiffSpecExact(expected, actual ParagraphFormatSpec) []SpecDiff {
+	var diffs []SpecDiff
+	add := func(field string, expectedValue, actualValue interface{}) {
+		if fmt.Sprint(expectedValue) != fmt.Sprint(actualValue) {
+			diffs = append(diffs, SpecDiff{
+				Field: field, Expected: fmt.Sprint(expectedValue), Actual: fmt.Sprint(actualValue), Severity: "error",
+			})
+		}
+	}
+	if expected.FontEastAsia != "" {
+		add("font_east_asia", expected.FontEastAsia, actual.FontEastAsia)
+	}
+	if expected.FontAscii != "" {
+		add("font_ascii", expected.FontAscii, actual.FontAscii)
+	}
+	if expected.FontSizeHalfPt > 0 {
+		add("font_size_half_pt", expected.FontSizeHalfPt, actual.FontSizeHalfPt)
+	}
+	if expected.FontSizeCSHalfPt > 0 {
+		add("font_size_cs_half_pt", expected.FontSizeCSHalfPt, actual.FontSizeCSHalfPt)
+	}
+	add("bold", expected.Bold, actual.Bold)
+	add("italic", expected.Italic, actual.Italic)
+	add("underline", expected.Underline, actual.Underline)
+	if expected.AlignmentSet {
+		add("alignment", expected.Alignment, actual.Alignment)
+	}
+	if expected.LineSpacingVal > 0 {
+		add("line_spacing", expected.LineSpacingVal, actual.LineSpacingVal)
+		add("line_spacing_rule", expected.LineSpacingRule, actual.LineSpacingRule)
+	}
+	if expected.SpaceBefore > 0 {
+		add("space_before", expected.SpaceBefore, actual.SpaceBefore)
+	}
+	if expected.SpaceAfter > 0 {
+		add("space_after", expected.SpaceAfter, actual.SpaceAfter)
+	}
+	if expected.FirstLineIndent > 0 {
+		add("first_line_indent", expected.FirstLineIndent, actual.FirstLineIndent)
+	}
+	if expected.IndentLeft > 0 {
+		add("indent_left", expected.IndentLeft, actual.IndentLeft)
+	}
+	if expected.IndentRight > 0 {
+		add("indent_right", expected.IndentRight, actual.IndentRight)
+	}
+	if expected.ColorHex != "" {
+		add("color", expected.ColorHex, actual.ColorHex)
+	}
+	if expected.OutlineLevel > 0 {
+		add("outline_level", expected.OutlineLevel, actual.OutlineLevel)
+	}
+	add("page_break", expected.PageBreak, actual.PageBreak)
+	add("keep_with_next", expected.KeepWithNext, actual.KeepWithNext)
+	add("keep_lines", expected.KeepLines, actual.KeepLines)
 	return diffs
 }

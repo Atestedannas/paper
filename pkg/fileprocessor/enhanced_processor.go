@@ -14,6 +14,7 @@ import (
 	"gitee.com/greatmusicians/unioffice/document"
 	"gitee.com/greatmusicians/unioffice/measurement"
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 	"github.com/paper-format-checker/backend/pkg/aiclassifier"
 )
 
@@ -24,8 +25,10 @@ type EnhancedProcessor struct {
 	smartClassifier     *aiclassifier.SmartClassifier // 智能段落分类器（三级路由）
 	templatePath        string                        // 黄金模板路径（由 SetTemplatePath 设置）
 	templateHeaderText  string                        // 模板页眉原文（从 templateprofile 提取）
-	lastDiffReport      *DocDiffReport                // 最近一次格式修正的差异报告
-	lastStrongVerify    *StrongVerifyResult           // 最近一次强校验摘要（供接口返回）
+	templateProfile     *templateprofile.Profile
+	formatLocks         *FormatLockManager
+	lastDiffReport      *DocDiffReport      // 最近一次格式修正的差异报告
+	lastStrongVerify    *StrongVerifyResult // 最近一次强校验摘要（供接口返回）
 	formatSelfCheckHook func(FormattingSelfCheckResult)
 }
 
@@ -68,6 +71,7 @@ func NewEnhancedProcessor() *EnhancedProcessor {
 	return &EnhancedProcessor{
 		debug:       true,
 		fontNameMap: make(map[string]*string),
+		formatLocks: NewFormatLockManager(),
 	}
 }
 
@@ -182,6 +186,7 @@ func (p *EnhancedProcessor) normalizeFormatRules(rules map[string]interface{}) m
 
 // ApplyCorrections 应用修正（增强版）
 func (p *EnhancedProcessor) ApplyCorrections(ctx context.Context, docPath string, corrections []map[string]interface{}) (string, error) {
+	p.formatLocks = NewFormatLockManager()
 
 	log.Println("================= 格式修正流程 开始 =================")
 	log.Printf("[入口] 文件: %s, corrections 数量: %d", docPath, len(corrections))
@@ -309,6 +314,7 @@ func (p *EnhancedProcessor) ApplyCorrections(ctx context.Context, docPath string
 	log.Printf("[格式修正] 最终模板路径: %q", activeTplPath)
 
 	if activeTplPath != "" {
+		p.templatePath = activeTplPath
 		ruleEngine, ruleErr := NewFormatRuleEngine(p, activeTplPath, formatRules)
 		if specs := ruleEngineRules(ruleEngine, ruleErr); len(specs) > 0 {
 			templateSpecs = specs
@@ -373,6 +379,15 @@ func (p *EnhancedProcessor) ApplyCorrections(ctx context.Context, docPath string
 	}
 	if err := normalizeLegacyFormatterOutput(outputPath); err != nil {
 		return "", fmt.Errorf("清理最终文档失败: %w", err)
+	}
+	if activeTplPath != "" {
+		if err := copyAndMaterializeTemplateHeaderFooter(activeTplPath, outputPath, p.extractCoverInfo(doc)); err != nil {
+			return "", fmt.Errorf("复制模板页眉页脚失败: %w", err)
+		}
+		if headerCount, footerCount, ok := verifyCopiedHeaderFooterStructure(activeTplPath, outputPath); ok {
+			p.formatLocks.Lock("header", headerCount)
+			p.formatLocks.Lock("footer", footerCount)
+		}
 	}
 
 	log.Printf("[保存] ✅ 文档保存成功: %s", outputPath)
@@ -601,7 +616,11 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 	if err != nil {
 		return nil, err
 	}
-	locks := NewFormatLockManager()
+	locks := p.formatLocks
+	if locks == nil {
+		locks = NewFormatLockManager()
+		p.formatLocks = locks
+	}
 	var classified map[string][]document.Paragraph
 	skipCategories := map[string]bool{}
 
@@ -623,12 +642,15 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 			p.verifySectionPageSize(doc)
 
 		case FormatStepPageSetup:
-			if err := p.applyPageSetup(doc, rules); err != nil {
-				stepErrors = append(stepErrors, fmt.Sprintf("PageSetup失败: %v", err))
+			if p.templateProfile != nil {
+				ApplyProfilePageMargins(doc, p.templateProfile)
+			} else {
+				if err := p.applyPageSetup(doc, rules); err != nil {
+					stepErrors = append(stepErrors, fmt.Sprintf("PageSetup失败: %v", err))
+				}
+				mt, mb, ml, mr := p.extractMarginsFromRules(rules)
+				p.verifyPageSetupMargins(doc, mt, mb, ml, mr)
 			}
-			// 9b: 验证页边距 — 从 rules 提取期望值，匹配 applyPageSetup 实际应用的值
-			mt, mb, ml, mr := p.extractMarginsFromRules(rules)
-			p.verifyPageSetupMargins(doc, mt, mb, ml, mr)
 
 		case FormatStepHeaderFooter:
 			if err := p.applyHeaderFooter(doc, rules, specs); err != nil {
@@ -652,6 +674,8 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 			}
 			totalFixed := NewAIFormatApplier(p).Apply(classified, specs, skipCategories)
 			log.Printf("[格式规划器] 段落格式修正=%d", totalFixed)
+			verifyAndLockParagraphTypes(p, locks, classified, specs)
+			skipCategories = lockedCategoryMap(locks, classified)
 			// 9d: 验证段落数一致性
 			finalParaCount := len(doc.Paragraphs())
 			if finalParaCount != initialParaCount {
@@ -664,6 +688,9 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 		case FormatStepPageBreaks:
 			for _, category := range []string{"references_title", "acknowledgements_title", "appendix_title", "notes_title"} {
 				if paras := classified[category]; len(paras) > 0 {
+					if locks.IsLocked(category, len(paras)) {
+						continue
+					}
 					if spec, ok := specs[category]; ok && spec.PageBreak {
 						p.setPageBreakBefore(paras[0])
 					}
@@ -2023,7 +2050,33 @@ func (p *EnhancedProcessor) isOriginalityDeclaration(text string) bool {
 }
 
 // detectHeadingLevel 检测标题级别
+// 优先级：Word 样式名 → numbering.xml OOXML 精确模式 → 硬编码正则兜底
 func (p *EnhancedProcessor) detectHeadingLevel(text string) int {
+	// Phase 1: Numbering.xml OOXML precise patterns — no guessing
+	if p.templateProfile != nil && p.templateProfile.Numbering != nil {
+		patterns := p.templateProfile.Numbering.BuildHeadingPatterns()
+		for _, profileKey := range []string{"heading_4", "heading_3", "heading_2", "heading_1"} {
+			pat, ok := patterns[profileKey]
+			if !ok {
+				continue
+			}
+			if pat.MatchString(strings.TrimSpace(text)) {
+				switch profileKey {
+				case "heading_1":
+					return 1
+				case "heading_2":
+					return 2
+				case "heading_3":
+					return 3
+				case "heading_4":
+					return 4
+				}
+			}
+		}
+	}
+
+	// Phase 2: Hardcoded patterns — legacy fallback
+	normalized := normalizeSpaces(strings.TrimSpace(text))
 	level1Patterns := []string{
 		`^[一二三四五六七八九十]+[、.]`,
 		`^[0-9]+[、.]`,
@@ -2064,6 +2117,9 @@ func (p *EnhancedProcessor) detectHeadingLevel(text string) int {
 		if matched, _ := regexp.MatchString(pattern, text); matched {
 			return 1
 		}
+	}
+	if isHeading1(normalized) {
+		return 1
 	}
 
 	return 0
@@ -2231,24 +2287,15 @@ func (p *EnhancedProcessor) extractCellText(cell document.Cell) string {
 
 // applyHeaderFooter 应用页眉、页脚和页码设置
 func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[string]interface{}, specSets ...map[string]ParagraphFormatSpec) error {
+	if strings.TrimSpace(p.templatePath) != "" {
+		return nil
+	}
 	pageSetupRules, _ := rules["page_setup"].(map[string]interface{})
 
 	section := doc.BodySection()
 
-	// 🔒 LOCKED: Do NOT clear EG_HdrFtrReferences here — formatSmartHeader already
-	// set per-section headers. Only clear footer refs (setupFooterWithPageNumber
-	// will add new ones). Header refs must be preserved.
-	sectPr := section.X()
-	if sectPr != nil {
-		// Remove only footer references, keep header references
-		var kept []*wml.EG_HdrFtrReferences
-		for _, ref := range sectPr.EG_HdrFtrReferences {
-			if ref.HeaderReference != nil {
-				kept = append(kept, ref)
-			}
-		}
-		sectPr.EG_HdrFtrReferences = kept
-	}
+	// 页脚由本函数统一重建，先清除所有分节中的旧页脚引用，避免旧格式继续生效。
+	p.clearHeaderFooterReferences(doc, false, true)
 
 	// ── 页眉 ──
 	// 优先从 page_setup.header 取，其次从顶层 header 取
@@ -2294,13 +2341,16 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 	if _, hasContent := headerRules["content"]; !hasContent || headerRules["content"] == "" {
 		// 规则中无页眉内容时，用封面信息自动构建完整页眉
 		major, _ := coverInfo["专业"]
-		college := "重庆工程学院"
+		college := templateprofile.ExtractCollegeName(p.templateHeaderText, "重庆工程学院")
+		headerText := strings.TrimSpace(p.templateHeaderText)
 		if major != "" {
-			headerText := college
+			headerText = college
 			if gradeYear != "" {
 				headerText += gradeYear + "届"
 			}
 			headerText += major + "专业本科毕业论文（设计）"
+		}
+		if headerText != "" {
 			headerRules["content"] = headerText
 			log.Printf("[页眉] 自动构建页眉: %q", headerText)
 		}
@@ -2332,9 +2382,11 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 		}
 		headerRules["content"] = content
 	}
-	// 🔒 Per-section headers are now handled by formatSmartHeader (v2_smart_format.go).
-	// Skip setupHeader to avoid overwriting per-section headers without suffixes.
-	// p.setupHeader(doc, section, headerRules)  // DISABLED: formatSmartHeader already sets per-section headers
+	// V2 已生成且有内容的分节页眉必须保留；旧路径或空页眉则由模板规则创建。
+	if !documentHasUsableHeader(doc) {
+		p.clearHeaderFooterReferences(doc, true, false)
+		p.setupHeader(doc, section, headerRules)
+	}
 
 	// ── 页脚 & 页码 ──
 	// 优先从 page_setup 取，其次从顶层取
@@ -2371,6 +2423,41 @@ func (p *EnhancedProcessor) applyHeaderFooter(doc *document.Document, rules map[
 	return nil
 }
 
+func documentHasUsableHeader(doc *document.Document) bool {
+	for _, header := range doc.Headers() {
+		if strings.TrimSpace(getHeaderPlainText(header)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *EnhancedProcessor) clearHeaderFooterReferences(doc *document.Document, clearHeader, clearFooter bool) {
+	clearReferences := func(sectPr *wml.CT_SectPr) {
+		if sectPr == nil {
+			return
+		}
+		kept := sectPr.EG_HdrFtrReferences[:0]
+		for _, ref := range sectPr.EG_HdrFtrReferences {
+			if clearHeader && ref.HeaderReference != nil {
+				continue
+			}
+			if clearFooter && ref.FooterReference != nil {
+				continue
+			}
+			kept = append(kept, ref)
+		}
+		sectPr.EG_HdrFtrReferences = kept
+	}
+
+	clearReferences(doc.BodySection().X())
+	for _, paragraph := range doc.Paragraphs() {
+		if paragraph.X().PPr != nil {
+			clearReferences(paragraph.X().PPr.SectPr)
+		}
+	}
+}
+
 // 🔒 LOCKED: propagateHdrFtrToAllSections — 将 body section 的页眉页脚引用复制到所有段落级 sectPr
 // 解决 applySectionBreaksForPageNumbering 创建的节无页眉页脚问题
 func (p *EnhancedProcessor) propagateHdrFtrToAllSections(doc *document.Document) {
@@ -2392,11 +2479,12 @@ func (p *EnhancedProcessor) propagateHdrFtrToAllSections(doc *document.Document)
 		}
 	}
 
-	if len(ftrRefs) == 0 {
+	if len(hdrRefs) == 0 && len(ftrRefs) == 0 {
 		return
 	}
 
-	count := 0
+	headerCount := 0
+	footerCount := 0
 	for _, para := range doc.Paragraphs() {
 		pPr := para.X().PPr
 		if pPr == nil || pPr.SectPr == nil {
@@ -2404,12 +2492,27 @@ func (p *EnhancedProcessor) propagateHdrFtrToAllSections(doc *document.Document)
 		}
 		paraSectPr := pPr.SectPr
 
-		// Only propagate footer references — headers are per-section (set by formatSmartHeader).
-		// Check if footer already set
+		hasHdr := false
 		hasFtr := false
 		for _, ref := range paraSectPr.EG_HdrFtrReferences {
+			if ref.HeaderReference != nil {
+				hasHdr = true
+			}
 			if ref.FooterReference != nil {
 				hasFtr = true
+			}
+		}
+
+		if !hasHdr {
+			for _, hdrRef := range hdrRefs {
+				newRef := wml.NewEG_HdrFtrReferences()
+				newRef.HeaderReference = wml.NewCT_HdrFtrRef()
+				newRef.HeaderReference.TypeAttr = hdrRef.TypeAttr
+				newRef.HeaderReference.IdAttr = hdrRef.IdAttr
+				paraSectPr.EG_HdrFtrReferences = append(paraSectPr.EG_HdrFtrReferences, newRef)
+			}
+			if len(hdrRefs) > 0 {
+				headerCount++
 			}
 		}
 
@@ -2421,15 +2524,14 @@ func (p *EnhancedProcessor) propagateHdrFtrToAllSections(doc *document.Document)
 				newRef.FooterReference.IdAttr = ftrRef.IdAttr
 				paraSectPr.EG_HdrFtrReferences = append(paraSectPr.EG_HdrFtrReferences, newRef)
 			}
-		}
-
-		if !hasFtr {
-			count++
+			if len(ftrRefs) > 0 {
+				footerCount++
+			}
 		}
 	}
 
-	if count > 0 {
-		log.Printf("[页眉页脚] 已向 %d 个分节段落传播页眉页脚引用", count)
+	if headerCount > 0 || footerCount > 0 {
+		log.Printf("[页眉页脚] 已传播分节引用: 页眉=%d 页脚=%d", headerCount, footerCount)
 	}
 }
 
