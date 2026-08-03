@@ -405,6 +405,36 @@ func assertStyleProfileContract(t *testing.T, profile StyleProfile) {
 	}
 }
 
+func TestCompileStyleProfilesDoesNotInventMissingTemplateFormatting(t *testing.T) {
+	profiles := compileStyleProfiles(&templateprofile.Profile{
+		Styles: map[string]templateprofile.StyleRule{
+			"body": {FontEastAsia: "TemplateBodyFont", FontSizeHalfPt: "24"},
+		},
+	})
+
+	for _, profile := range profiles {
+		if profile.Name == "toc_entry" || profile.Name == "table_caption" || profile.Name == "figure_caption" {
+			t.Fatalf("compiler invented formatting absent from the template: %#v", profile)
+		}
+	}
+}
+
+func TestCompileStyleProfilesPreservesResolvedFontSlots(t *testing.T) {
+	profiles := compileStyleProfiles(&templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+		"body": {
+			FontASCII: "ASCII", FontHAnsi: "HANSI", FontEastAsia: "EAST", FontCS: "CS",
+			FontASCIITheme: "minorAscii", FontHAnsiTheme: "minorHAnsi",
+			FontEastAsiaTheme: "minorEastAsia", FontCSTheme: "minorBidi",
+		},
+	}})
+	got := profiles[0].Properties
+	if got.ASCIIFont != "ASCII" || got.HAnsiFont != "HANSI" || got.EastAsiaFont != "EAST" || got.ComplexFont != "CS" ||
+		got.ASCIITheme != "minorAscii" || got.HAnsiTheme != "minorHAnsi" ||
+		got.EastAsiaTheme != "minorEastAsia" || got.ComplexTheme != "minorBidi" {
+		t.Fatalf("compiled font slots = %#v", got)
+	}
+}
+
 func assertVerificationRuleContract(t *testing.T, rule VerificationRule) {
 	t.Helper()
 

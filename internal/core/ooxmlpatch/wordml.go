@@ -3,6 +3,7 @@ package ooxmlpatch
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
@@ -25,14 +26,15 @@ var (
 	paragraphStyleElement  = regexp.MustCompile(`<w:pStyle\b[^>]*/>`)
 	outlineLevelElement    = regexp.MustCompile(`<w:outlineLvl\b[^>]*/>`)
 
-	runFontsElement       = regexp.MustCompile(`<w:rFonts\b[^>]*/>`)
-	runSizeElement        = regexp.MustCompile(`<w:sz\b[^>]*/>`)
-	runComplexSizeElement = regexp.MustCompile(`<w:szCs\b[^>]*/>`)
-	runBoldElement        = regexp.MustCompile(`<w:b\b[^>]*/>`)
-	runComplexBoldElement = regexp.MustCompile(`<w:bCs\b[^>]*/>`)
-	runItalicElement      = regexp.MustCompile(`<w:i\b[^>]*/>`)
-	runVertAlignElement   = regexp.MustCompile(`<w:vertAlign\b[^>]*/>`)
-	runColorElement       = regexp.MustCompile(`<w:color\b[^>]*/>`)
+	runFontsElement         = regexp.MustCompile(`<w:rFonts\b[^>]*/>`)
+	runSizeElement          = regexp.MustCompile(`<w:sz\b[^>]*/>`)
+	runComplexSizeElement   = regexp.MustCompile(`<w:szCs\b[^>]*/>`)
+	runBoldElement          = regexp.MustCompile(`<w:b\b[^>]*/>`)
+	runComplexBoldElement   = regexp.MustCompile(`<w:bCs\b[^>]*/>`)
+	runItalicElement        = regexp.MustCompile(`<w:i\b[^>]*/>`)
+	runComplexItalicElement = regexp.MustCompile(`<w:iCs\b[^>]*/>`)
+	runVertAlignElement     = regexp.MustCompile(`<w:vertAlign\b[^>]*/>`)
+	runColorElement         = regexp.MustCompile(`<w:color\b[^>]*/>`)
 
 	pageSizeElement              = regexp.MustCompile(`<w:pgSz\b[^>]*/>`)
 	pageMarginElement            = regexp.MustCompile(`<w:pgMar\b[^>]*/>`)
@@ -89,11 +91,14 @@ type ParagraphPropertiesSpec struct {
 	EastAsiaFont       string
 	AsciiFont          string
 	HAnsiFont          string
+	ComplexFont        string
 	FontHint           string
 	FontSizeHalfPoints int
 	ComplexSizeHalfPts int
 	Bold               bool
+	BoldSet            bool
 	Italic             bool
+	ItalicSet          bool
 	Color              string
 }
 
@@ -101,11 +106,14 @@ type RunPropertiesSpec struct {
 	EastAsiaFont       string
 	AsciiFont          string
 	HAnsiFont          string
+	ComplexFont        string
 	FontHint           string
 	FontSizeHalfPoints int
 	ComplexSizeHalfPts int
 	Bold               bool
+	BoldSet            bool
 	Italic             bool
+	ItalicSet          bool
 	Color              string
 	VerticalAlign      string
 }
@@ -271,119 +279,190 @@ func ApplyThreeLineTableBorders(tableXML string, spec TableBordersSpec) (string,
 }
 
 func updateSectionPropertiesBody(body string, spec SectionPropertiesSpec) string {
-	body = pageSizeElement.ReplaceAllString(body, "")
-	body = pageMarginElement.ReplaceAllString(body, "")
-	if spec.PageNumberFormat != "" || spec.PageNumberStart > 0 {
-		body = pageNumberTypeElement.ReplaceAllString(body, "")
-	}
 	if spec.RemoveHeaderFooter {
 		body = headerFooterReferenceElement.ReplaceAllString(body, "")
 	}
-
-	var builder strings.Builder
 	if spec.PageWidthTwips > 0 || spec.PageHeightTwips > 0 || spec.PageOrientation != "" {
-		builder.WriteString(`<w:pgSz`)
+		updates := make([]xmlAttributeUpdate, 0, 3)
 		if spec.PageWidthTwips > 0 {
-			builder.WriteString(fmt.Sprintf(` w:w="%d"`, spec.PageWidthTwips))
+			updates = append(updates, xmlAttributeUpdate{"w:w", strconv.Itoa(spec.PageWidthTwips)})
 		}
 		if spec.PageHeightTwips > 0 {
-			builder.WriteString(fmt.Sprintf(` w:h="%d"`, spec.PageHeightTwips))
+			updates = append(updates, xmlAttributeUpdate{"w:h", strconv.Itoa(spec.PageHeightTwips)})
 		}
 		if spec.PageOrientation != "" {
-			builder.WriteString(fmt.Sprintf(` w:orient="%s"`, spec.PageOrientation))
+			updates = append(updates, xmlAttributeUpdate{"w:orient", spec.PageOrientation})
 		}
-		builder.WriteString(`/>`)
+		body = upsertPropertyElement(body, pageSizeElement, "w:pgSz", updates, nil)
 	}
-	if margin := buildPageMargins(spec); margin != "" {
-		builder.WriteString(margin)
+	if sectionMarginsRequested(spec) {
+		updates := make([]xmlAttributeUpdate, 0, 7)
+		for _, item := range []struct {
+			name  string
+			value int
+		}{
+			{"w:top", spec.MarginTopTwips},
+			{"w:right", spec.MarginRightTwips},
+			{"w:bottom", spec.MarginBottomTwips},
+			{"w:left", spec.MarginLeftTwips},
+			{"w:gutter", spec.GutterTwips},
+			{"w:header", spec.HeaderMarginTwips},
+			{"w:footer", spec.FooterMarginTwips},
+		} {
+			if item.value > 0 {
+				updates = append(updates, xmlAttributeUpdate{item.name, strconv.Itoa(item.value)})
+			}
+		}
+		body = upsertPropertyElement(body, pageMarginElement, "w:pgMar", updates, nil)
 	}
 	if spec.PageNumberFormat != "" || spec.PageNumberStart > 0 {
-		builder.WriteString(buildPageNumberType(spec.PageNumberFormat, spec.PageNumberStart))
+		updates := make([]xmlAttributeUpdate, 0, 2)
+		if spec.PageNumberFormat != "" {
+			updates = append(updates, xmlAttributeUpdate{"w:fmt", spec.PageNumberFormat})
+		}
+		if spec.PageNumberStart > 0 {
+			updates = append(updates, xmlAttributeUpdate{"w:start", strconv.Itoa(spec.PageNumberStart)})
+		}
+		body = upsertPropertyElement(body, pageNumberTypeElement, "w:pgNumType", updates, nil)
 	}
-	builder.WriteString(body)
-	return builder.String()
+	return body
 }
 
 func updateParagraphPropertiesBody(body string, spec ParagraphPropertiesSpec) string {
 	if spec.StyleID != "" {
-		body = paragraphStyleElement.ReplaceAllString(body, "")
-	}
-	body = jcElement.ReplaceAllString(body, "")
-	body = spacingElement.ReplaceAllString(body, "")
-	body = indentElement.ReplaceAllString(body, "")
-	body = pageBreakBeforeElement.ReplaceAllString(body, "")
-	body = keepNextElement.ReplaceAllString(body, "")
-	body = snapToGridElement.ReplaceAllString(body, "")
-	body = adjustRightIndElement.ReplaceAllString(body, "")
-	if spec.RemoveOutlineLevel || spec.OutlineLevelSet {
-		body = outlineLevelElement.ReplaceAllString(body, "")
-	}
-	if spec.RunPropertiesInPPr {
-		body = runPropertiesElement.ReplaceAllString(body, "")
-	}
-
-	var builder strings.Builder
-	if spec.StyleID != "" {
-		builder.WriteString(fmt.Sprintf(`<w:pStyle w:val="%s"/>`, spec.StyleID))
+		body = upsertPropertyElement(body, paragraphStyleElement, "w:pStyle", []xmlAttributeUpdate{{"w:val", spec.StyleID}}, nil)
 	}
 	if spec.OutlineLevelSet {
-		builder.WriteString(fmt.Sprintf(`<w:outlineLvl w:val="%d"/>`, spec.OutlineLevel))
+		body = upsertPropertyElement(body, outlineLevelElement, "w:outlineLvl", []xmlAttributeUpdate{{"w:val", strconv.Itoa(spec.OutlineLevel)}}, nil)
+	} else if spec.RemoveOutlineLevel {
+		body = outlineLevelElement.ReplaceAllString(body, "")
 	}
 	if spec.Alignment != "" {
-		builder.WriteString(fmt.Sprintf(`<w:jc w:val="%s"/>`, spec.Alignment))
+		body = upsertPropertyElement(body, jcElement, "w:jc", []xmlAttributeUpdate{{"w:val", spec.Alignment}}, nil)
 	}
 	if spec.BeforeTwips > 0 || spec.AfterTwips > 0 || spec.BeforeLines > 0 || spec.AfterLines > 0 || spec.BeforeLinesSet || spec.AfterLinesSet || spec.LineTwips > 0 || spec.LineRule != "" {
-		builder.WriteString(buildSpacing(spec.BeforeTwips, spec.AfterTwips, spec.BeforeLines, spec.AfterLines, spec.BeforeLinesSet, spec.AfterLinesSet, spec.LineTwips, spec.LineRule))
+		updates := make([]xmlAttributeUpdate, 0, 6)
+		remove := make([]string, 0, 4)
+		if spec.BeforeTwips > 0 {
+			updates = append(updates, xmlAttributeUpdate{"w:before", strconv.Itoa(spec.BeforeTwips)})
+			if !spec.BeforeLinesSet {
+				remove = append(remove, "w:beforeLines", "w:beforeAutospacing")
+			}
+		}
+		if spec.AfterTwips > 0 {
+			updates = append(updates, xmlAttributeUpdate{"w:after", strconv.Itoa(spec.AfterTwips)})
+			if !spec.AfterLinesSet {
+				remove = append(remove, "w:afterLines", "w:afterAutospacing")
+			}
+		}
+		if spec.BeforeLinesSet {
+			updates = append(updates, xmlAttributeUpdate{"w:beforeLines", strconv.Itoa(spec.BeforeLines)})
+			if spec.BeforeTwips <= 0 {
+				remove = append(remove, "w:before", "w:beforeAutospacing")
+			}
+		}
+		if spec.AfterLinesSet {
+			updates = append(updates, xmlAttributeUpdate{"w:afterLines", strconv.Itoa(spec.AfterLines)})
+			if spec.AfterTwips <= 0 {
+				remove = append(remove, "w:after", "w:afterAutospacing")
+			}
+		}
+		if spec.LineTwips > 0 {
+			updates = append(updates, xmlAttributeUpdate{"w:line", strconv.Itoa(spec.LineTwips)})
+		}
+		if spec.LineRule != "" {
+			updates = append(updates, xmlAttributeUpdate{"w:lineRule", spec.LineRule})
+		}
+		body = upsertPropertyElement(body, spacingElement, "w:spacing", updates, remove)
 	}
 	if spec.FirstLineChars > 0 || spec.FirstLineCharsSet {
-		builder.WriteString(`<w:ind`)
-		builder.WriteString(fmt.Sprintf(` w:firstLineChars="%d"`, spec.FirstLineChars))
+		updates := []xmlAttributeUpdate{{"w:firstLineChars", strconv.Itoa(spec.FirstLineChars)}}
 		if spec.FirstLineTwips > 0 {
-			builder.WriteString(fmt.Sprintf(` w:firstLine="%d"`, spec.FirstLineTwips))
+			updates = append(updates, xmlAttributeUpdate{"w:firstLine", strconv.Itoa(spec.FirstLineTwips)})
 		}
-		builder.WriteString(`/>`)
+		body = upsertPropertyElement(body, indentElement, "w:ind", updates, []string{"w:hanging", "w:hangingChars"})
 	} else if spec.FirstLineTwips > 0 {
-		builder.WriteString(fmt.Sprintf(`<w:ind w:firstLine="%d"/>`, spec.FirstLineTwips))
+		body = upsertPropertyElement(body, indentElement, "w:ind", []xmlAttributeUpdate{{"w:firstLine", strconv.Itoa(spec.FirstLineTwips)}}, []string{"w:hanging", "w:hangingChars"})
 	}
 	if spec.PageBreakBefore {
-		builder.WriteString(`<w:pageBreakBefore/>`)
+		body = upsertOnOffProperty(body, pageBreakBeforeElement, "w:pageBreakBefore", true)
 	}
 	if spec.KeepNext {
-		builder.WriteString(`<w:keepNext/>`)
+		body = upsertOnOffProperty(body, keepNextElement, "w:keepNext", true)
 	}
 	if spec.SnapToGridOff {
-		builder.WriteString(`<w:snapToGrid w:val="0"/>`)
+		body = upsertPropertyElement(body, snapToGridElement, "w:snapToGrid", []xmlAttributeUpdate{{"w:val", "0"}}, nil)
 	}
 	if spec.AdjustRightIndZero {
-		builder.WriteString(`<w:adjustRightInd w:val="0"/>`)
+		body = upsertPropertyElement(body, adjustRightIndElement, "w:adjustRightInd", []xmlAttributeUpdate{{"w:val", "0"}}, nil)
 	}
 	if spec.RunPropertiesInPPr {
-		builder.WriteString(buildRunProperties(RunPropertiesSpec{
+		runSpec := RunPropertiesSpec{
 			EastAsiaFont:       spec.EastAsiaFont,
 			AsciiFont:          spec.AsciiFont,
 			HAnsiFont:          spec.HAnsiFont,
+			ComplexFont:        spec.ComplexFont,
 			FontHint:           spec.FontHint,
 			FontSizeHalfPoints: spec.FontSizeHalfPoints,
 			ComplexSizeHalfPts: spec.ComplexSizeHalfPts,
 			Bold:               spec.Bold,
+			BoldSet:            spec.BoldSet,
 			Italic:             spec.Italic,
+			ItalicSet:          spec.ItalicSet,
 			Color:              spec.Color,
-		}))
+		}
+		if hasRunPropertiesRequest(runSpec) {
+			body = updateNestedRunProperties(body, runSpec)
+		}
 	}
-	builder.WriteString(body)
-	return builder.String()
+	return body
 }
 
 func updateRunPropertiesBody(body string, spec RunPropertiesSpec) string {
-	body = runFontsElement.ReplaceAllString(body, "")
-	body = runSizeElement.ReplaceAllString(body, "")
-	body = runComplexSizeElement.ReplaceAllString(body, "")
-	body = runBoldElement.ReplaceAllString(body, "")
-	body = runComplexBoldElement.ReplaceAllString(body, "")
-	body = runItalicElement.ReplaceAllString(body, "")
-	body = runVertAlignElement.ReplaceAllString(body, "")
-	body = runColorElement.ReplaceAllString(body, "")
-	return buildRunPropertiesBody(spec) + body
+	if spec.EastAsiaFont != "" || spec.AsciiFont != "" || spec.HAnsiFont != "" || spec.ComplexFont != "" || spec.FontHint != "" {
+		updates := make([]xmlAttributeUpdate, 0, 5)
+		remove := make([]string, 0, 4)
+		for _, font := range []struct {
+			name       string
+			value      string
+			themeNames []string
+		}{
+			{"w:ascii", spec.AsciiFont, []string{"w:asciiTheme"}},
+			{"w:hAnsi", spec.HAnsiFont, []string{"w:hAnsiTheme"}},
+			{"w:eastAsia", spec.EastAsiaFont, []string{"w:eastAsiaTheme"}},
+			{"w:cs", spec.ComplexFont, []string{"w:cstheme", "w:csTheme"}},
+		} {
+			if font.value != "" {
+				updates = append(updates, xmlAttributeUpdate{font.name, font.value})
+				remove = append(remove, font.themeNames...)
+			}
+		}
+		if spec.FontHint != "" {
+			updates = append(updates, xmlAttributeUpdate{"w:hint", spec.FontHint})
+		}
+		body = upsertPropertyElement(body, runFontsElement, "w:rFonts", updates, remove)
+	}
+	if spec.FontSizeHalfPoints > 0 {
+		body = upsertPropertyElement(body, runSizeElement, "w:sz", []xmlAttributeUpdate{{"w:val", strconv.Itoa(spec.FontSizeHalfPoints)}}, nil)
+	}
+	if spec.ComplexSizeHalfPts > 0 {
+		body = upsertPropertyElement(body, runComplexSizeElement, "w:szCs", []xmlAttributeUpdate{{"w:val", strconv.Itoa(spec.ComplexSizeHalfPts)}}, nil)
+	}
+	if spec.BoldSet || spec.Bold {
+		body = upsertOnOffProperty(body, runBoldElement, "w:b", spec.Bold)
+		body = upsertOnOffProperty(body, runComplexBoldElement, "w:bCs", spec.Bold)
+	}
+	if spec.ItalicSet || spec.Italic {
+		body = upsertOnOffProperty(body, runItalicElement, "w:i", spec.Italic)
+		body = upsertOnOffProperty(body, runComplexItalicElement, "w:iCs", spec.Italic)
+	}
+	if spec.VerticalAlign != "" {
+		body = upsertPropertyElement(body, runVertAlignElement, "w:vertAlign", []xmlAttributeUpdate{{"w:val", spec.VerticalAlign}}, nil)
+	}
+	if spec.Color != "" {
+		body = upsertPropertyElement(body, runColorElement, "w:color", []xmlAttributeUpdate{{"w:val", spec.Color}}, nil)
+	}
+	return body
 }
 
 func buildRunProperties(spec RunPropertiesSpec) string {
@@ -392,7 +471,7 @@ func buildRunProperties(spec RunPropertiesSpec) string {
 
 func buildRunPropertiesBody(spec RunPropertiesSpec) string {
 	var builder strings.Builder
-	if spec.EastAsiaFont != "" || spec.AsciiFont != "" || spec.HAnsiFont != "" || spec.FontHint != "" {
+	if spec.EastAsiaFont != "" || spec.AsciiFont != "" || spec.HAnsiFont != "" || spec.ComplexFont != "" || spec.FontHint != "" {
 		builder.WriteString(`<w:rFonts`)
 		if spec.EastAsiaFont != "" {
 			builder.WriteString(fmt.Sprintf(` w:eastAsia="%s"`, spec.EastAsiaFont))
@@ -403,17 +482,31 @@ func buildRunPropertiesBody(spec RunPropertiesSpec) string {
 		if spec.HAnsiFont != "" {
 			builder.WriteString(fmt.Sprintf(` w:hAnsi="%s"`, spec.HAnsiFont))
 		}
+		if spec.ComplexFont != "" {
+			builder.WriteString(fmt.Sprintf(` w:cs="%s"`, spec.ComplexFont))
+		}
 		if spec.FontHint != "" {
 			builder.WriteString(fmt.Sprintf(` w:hint="%s"`, spec.FontHint))
 		}
 		builder.WriteString(`/>`)
 	}
-	if spec.Bold {
-		builder.WriteString(`<w:b/>`)
-		builder.WriteString(`<w:bCs/>`)
+	if spec.BoldSet || spec.Bold {
+		if spec.Bold {
+			builder.WriteString(`<w:b/>`)
+			builder.WriteString(`<w:bCs/>`)
+		} else {
+			builder.WriteString(`<w:b w:val="false"/>`)
+			builder.WriteString(`<w:bCs w:val="false"/>`)
+		}
 	}
-	if spec.Italic {
-		builder.WriteString(`<w:i/>`)
+	if spec.ItalicSet || spec.Italic {
+		if spec.Italic {
+			builder.WriteString(`<w:i/>`)
+			builder.WriteString(`<w:iCs/>`)
+		} else {
+			builder.WriteString(`<w:i w:val="false"/>`)
+			builder.WriteString(`<w:iCs w:val="false"/>`)
+		}
 	}
 	if spec.Color != "" {
 		builder.WriteString(fmt.Sprintf(`<w:color w:val="%s"/>`, spec.Color))
@@ -485,6 +578,116 @@ func buildPageNumberType(format string, start int) string {
 	}
 	builder.WriteString(`/>`)
 	return builder.String()
+}
+
+type xmlAttributeUpdate struct {
+	name  string
+	value string
+}
+
+func sectionMarginsRequested(spec SectionPropertiesSpec) bool {
+	return spec.MarginTopTwips > 0 ||
+		spec.MarginRightTwips > 0 ||
+		spec.MarginBottomTwips > 0 ||
+		spec.MarginLeftTwips > 0 ||
+		spec.GutterTwips > 0 ||
+		spec.HeaderMarginTwips > 0 ||
+		spec.FooterMarginTwips > 0
+}
+
+func hasRunPropertiesRequest(spec RunPropertiesSpec) bool {
+	return spec.EastAsiaFont != "" ||
+		spec.AsciiFont != "" ||
+		spec.HAnsiFont != "" ||
+		spec.ComplexFont != "" ||
+		spec.FontHint != "" ||
+		spec.FontSizeHalfPoints > 0 ||
+		spec.ComplexSizeHalfPts > 0 ||
+		spec.BoldSet ||
+		spec.Bold ||
+		spec.ItalicSet ||
+		spec.Italic ||
+		spec.Color != "" ||
+		spec.VerticalAlign != ""
+}
+
+func updateNestedRunProperties(body string, spec RunPropertiesSpec) string {
+	current := runPropertiesElement.FindString(body)
+	if current == "" {
+		return buildRunProperties(spec) + body
+	}
+	updated := replaceElementBody(current, updateRunPropertiesBody(elementBody(current), spec), "w:rPr")
+	if ordered, _, err := ooxmlpkg.RepairPropertyBlock([]byte(updated), "rPr"); err == nil {
+		updated = string(ordered)
+	}
+	return strings.Replace(body, current, updated, 1)
+}
+
+func upsertOnOffProperty(body string, pattern *regexp.Regexp, name string, enabled bool) string {
+	if enabled {
+		return upsertPropertyElement(body, pattern, name, nil, []string{"w:val"})
+	}
+	return upsertPropertyElement(body, pattern, name, []xmlAttributeUpdate{{"w:val", "false"}}, nil)
+}
+
+func upsertPropertyElement(
+	body string,
+	pattern *regexp.Regexp,
+	name string,
+	updates []xmlAttributeUpdate,
+	removeAttributes []string,
+) string {
+	current := pattern.FindString(body)
+	if current == "" {
+		var builder strings.Builder
+		builder.WriteString("<")
+		builder.WriteString(name)
+		for _, update := range updates {
+			builder.WriteString(" ")
+			builder.WriteString(update.name)
+			builder.WriteString(`="`)
+			builder.WriteString(escapeXMLAttribute(update.value))
+			builder.WriteString(`"`)
+		}
+		builder.WriteString("/>")
+		return builder.String() + body
+	}
+
+	updated := current
+	for _, attribute := range removeAttributes {
+		updated = removeXMLAttribute(updated, attribute)
+	}
+	for _, update := range updates {
+		updated = setXMLAttribute(updated, update.name, update.value)
+	}
+	return strings.Replace(body, current, updated, 1)
+}
+
+func removeXMLAttribute(element, name string) string {
+	pattern := regexp.MustCompile(`(?i)\s+` + regexp.QuoteMeta(name) + `\s*=\s*("[^"]*"|'[^']*')`)
+	return pattern.ReplaceAllString(element, "")
+}
+
+func setXMLAttribute(element, name, value string) string {
+	pattern := regexp.MustCompile(`(?i)(\s+` + regexp.QuoteMeta(name) + `\s*=\s*)("[^"]*"|'[^']*')`)
+	if match := pattern.FindStringSubmatchIndex(element); match != nil {
+		replacement := element[match[2]:match[3]] + `"` + escapeXMLAttribute(value) + `"`
+		return element[:match[0]] + replacement + element[match[1]:]
+	}
+	insertAt := strings.LastIndex(element, "/>")
+	if insertAt < 0 {
+		return element
+	}
+	return element[:insertAt] + " " + name + `="` + escapeXMLAttribute(value) + `"` + element[insertAt:]
+}
+
+func escapeXMLAttribute(value string) string {
+	return strings.NewReplacer(
+		"&", "&amp;",
+		`"`, "&quot;",
+		"<", "&lt;",
+		">", "&gt;",
+	).Replace(value)
 }
 
 func buildThreeLineBorders(spec TableBordersSpec) string {

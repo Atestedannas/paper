@@ -76,7 +76,7 @@ func TestNormalizeFinalDOCXRemovesWhiteShadingAndPaginationArtifacts(t *testing.
 		t.Fatal("NormalizeFinalDOCX() changed = 0")
 	}
 	documentXML := readDocxEntry(t, path, "word/document.xml")
-	for _, forbidden := range []string{`w:fill="FFFFFF"`, "pageBreakBefore", "keepLines"} {
+	for _, forbidden := range []string{`w:fill="FFFFFF"`} {
 		if strings.Contains(documentXML, forbidden) {
 			t.Fatalf("document.xml still contains %q: %s", forbidden, documentXML)
 		}
@@ -107,6 +107,71 @@ func TestNormalizeFinalDOCXRemovesWhiteShadingAndPaginationArtifacts(t *testing.
 	}
 }
 
+func TestNormalizeFinalDOCXPreservesNotesAndCommentsByteForByte(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "protected-parts.docx")
+	protected := map[string]string{
+		"word/comments.xml":  `<w:comments><w:comment w:id="1"><w:p><w:pPr><w:jc w:val="start"/><w:shd w:fill="FFFFFF"/></w:pPr><w:ins><w:r><w:t>comment</w:t></w:r></w:ins></w:p></w:comment></w:comments>`,
+		"word/footnotes.xml": `<w:footnotes><w:footnote w:id="2"><w:p><w:pPr><w:jc w:val="start"/></w:pPr><w:r><w:t>footnote</w:t></w:r></w:p></w:footnote></w:footnotes>`,
+		"word/endnotes.xml":  `<w:endnotes><w:endnote w:id="3"><w:p><w:pPr><w:shd w:fill="FFFFFF"/></w:pPr><w:r><w:t>endnote</w:t></w:r></w:p></w:endnote></w:endnotes>`,
+	}
+	entries := map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>body</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`,
+	}
+	for name, content := range protected {
+		entries[name] = content
+	}
+	writeTestDocx(t, path, entries)
+
+	if _, err := NormalizeFinalDOCX(path); err != nil {
+		t.Fatalf("NormalizeFinalDOCX() error = %v", err)
+	}
+	for name, want := range protected {
+		if got := readDocxEntry(t, path, name); got != want {
+			t.Fatalf("%s changed during final normalization:\nwant %s\ngot  %s", name, want, got)
+		}
+	}
+}
+
+func TestNormalizeFinalDOCXFinalizesTrackedParagraphs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tracked.docx")
+	documentXML := `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+		`<w:p><w:r><w:t>before</w:t></w:r></w:p>` +
+		`<w:del w:id="1"><w:p><w:pPr><w:spacing w:after="240"/></w:pPr></w:p></w:del>` +
+		`<w:p><w:r><w:t>after</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	writeTestDocx(t, path, map[string]string{"word/document.xml": documentXML})
+
+	if _, err := NormalizeFinalDOCX(path); err != nil {
+		t.Fatalf("NormalizeFinalDOCX() error = %v", err)
+	}
+	got := readDocxEntry(t, path, "word/document.xml")
+	if strings.Contains(got, `<w:del`) || strings.Count(got, "<w:p>") != 2 ||
+		!strings.Contains(got, ">before<") || !strings.Contains(got, ">after<") {
+		t.Fatalf("normalization did not accept tracked deletion while retaining visible paragraphs: %s", got)
+	}
+}
+
+func TestNormalizeFinalDOCXPreservesEmptyPaginationParagraph(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty-pagination.docx")
+	writeTestDocx(t, path, map[string]string{
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:pPr><w:keepNext/><w:pageBreakBefore/><w:spacing w:after="240"/></w:pPr></w:p>` +
+			`<w:p><w:r><w:t>正文</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	if _, err := NormalizeFinalDOCX(path); err != nil {
+		t.Fatalf("NormalizeFinalDOCX() error = %v", err)
+	}
+	got := readDocxEntry(t, path, "word/document.xml")
+	if strings.Count(got, "<w:p>") != 2 || !strings.Contains(got, `<w:spacing w:after="240"/>`) {
+		t.Fatalf("empty layout paragraph was removed: %s", got)
+	}
+	if !strings.Contains(got, "pageBreakBefore") || !strings.Contains(got, "keepNext") {
+		t.Fatalf("pagination controls were removed: %s", got)
+	}
+}
+
 func TestGenerateEscapesXMLPayload(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
@@ -133,7 +198,7 @@ func TestGenerateEscapesXMLPayload(t *testing.T) {
 	}
 }
 
-func TestGenerateFinalizesTemplateReviewMarkup(t *testing.T) {
+func TestGenerateAcceptsTrackedChangesAndRemovesTemplateComments(t *testing.T) {
 	tmpDir := t.TempDir()
 	skeletonPath := filepath.Join(tmpDir, "skeleton.docx")
 	writeTestDocx(t, skeletonPath, map[string]string{
@@ -168,7 +233,7 @@ func TestGenerateFinalizesTemplateReviewMarkup(t *testing.T) {
 	rels := readDocxEntry(t, outputPath, "word/_rels/document.xml.rels")
 	types := readDocxEntry(t, outputPath, "[Content_Types].xml")
 	if _, ok := openTestPackage(t, outputPath).Get("word/comments.xml"); ok {
-		t.Fatal("generated docx should remove comments.xml")
+		t.Fatal("generated docx should remove comments.xml inherited from the template")
 	}
 	for _, forbidden := range []string{"commentRange", "commentReference", "<w:ins", "<w:del", "deleted text", "comments"} {
 		if strings.Contains(document+rels+types, forbidden) {
@@ -1655,6 +1720,53 @@ func TestCQRWSTMainHeaderTextUsesTemplateCollege(t *testing.T) {
 	want := "重庆工程学院2026届护理学专业本科毕业论文"
 	if got != want {
 		t.Fatalf("cqrwstMainHeaderText() = %q, want %q", got, want)
+	}
+}
+
+func TestCQRWSTMainHeaderTextDoesNotLeakAnotherSchoolFallback(t *testing.T) {
+	got := cqrwstMainHeaderText(map[string]string{
+		"\u5b66\u6821\u540d\u79f0": "\u91cd\u5e86\u5de5\u7a0b\u5b66\u9662",
+		"\u4e13\u4e1a":             "\u8f6f\u4ef6\u5de5\u7a0b",
+		"\u5b8c\u6210\u65e5\u671f": "2026-05",
+	}, "Undergraduate Thesis")
+	if strings.Contains(got, "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662") {
+		t.Fatalf("header leaked another school's fallback: %q", got)
+	}
+	if !strings.HasPrefix(got, "\u91cd\u5e86\u5de5\u7a0b\u5b66\u9662") {
+		t.Fatalf("header did not use template metadata fallback: %q", got)
+	}
+}
+
+func TestProfileStyleToParagraphStyleCarriesEffectiveStyleFields(t *testing.T) {
+	got := profileStyleToParagraphStyle(&templateprofile.StyleRule{
+		FontEastAsia:      "EA",
+		FontASCII:         "ASCII",
+		FontHAnsi:         "HANSI",
+		FontCS:            "CS",
+		FontHint:          "eastAsia",
+		FontSizeHalfPt:    "24",
+		ComplexSizeHalfPt: "26",
+		BoldSet:           true,
+		Bold:              false,
+		ItalicSet:         true,
+		Italic:            true,
+		Alignment:         "both",
+		Line:              "360",
+		LineRule:          "auto",
+		BeforeTwips:       "120",
+		AfterTwips:        "240",
+		BeforeLines:       "100",
+		AfterLines:        "200",
+		FirstLineChars:    "200",
+		FirstLineTwips:    "480",
+		OutlineLevel:      "2",
+	}, paragraphStyle{Bold: true})
+
+	if got.EastAsiaFont != "EA" || got.AsciiFont != "ASCII" || got.HAnsiFont != "HANSI" || got.ComplexFont != "CS" || got.FontHint != "eastAsia" ||
+		got.Size != 24 || got.ComplexSize != 26 || !got.BoldSet || got.Bold || !got.ItalicSet || !got.Italic ||
+		got.Alignment != "both" || got.Line != 360 || got.LineRule != "auto" || got.Before != 120 || got.After != 240 || got.BeforeLines != 100 || got.AfterLines != 200 ||
+		got.FirstLineChars != 200 || got.FirstLine != 480 || !got.OutlineLevelSet || got.OutlineLevel != 2 {
+		t.Fatalf("effective profile style was not fully propagated: %#v", got)
 	}
 }
 

@@ -2,11 +2,13 @@ package fileprocessor
 
 import (
 	"log"
+	"math"
 	"regexp"
 	"strings"
 	"unicode"
 
 	"gitee.com/greatmusicians/unioffice/document"
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
 // V2Zone 论文结构区段
@@ -239,7 +241,7 @@ func (c *V2DeterministicClassifier) assignTypes(paras []V2ClassifiedPara) {
 			}
 
 		case ZoneBody:
-			paras[i].Type = classifyBodyParagraph(normalized)
+			paras[i].Type = c.classifyBodyParagraphWithSignals(paras, i, normalized)
 
 		case ZoneReferences:
 			if reRefItem.MatchString(trimmed) || isReferenceContinuation(trimmed) {
@@ -531,6 +533,12 @@ func isReferenceContinuation(s string) bool {
 }
 
 func classifyBodyParagraph(s string) string {
+	if isContinuationTableCaption(s) {
+		return V2TableCaption
+	}
+	if looksLikeNarrativeSentence(s) {
+		return V2Body
+	}
 	if reHeading4.MatchString(s) {
 		return V2Heading4
 	}
@@ -553,4 +561,144 @@ func classifyBodyParagraph(s string) string {
 		return V2ReferencesTitle
 	}
 	return V2Body
+}
+
+func isContinuationTableCaption(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	return strings.HasPrefix(normalized, "\u7eed\u8868") ||
+		(strings.HasPrefix(normalized, "table ") && strings.Contains(normalized, "continued"))
+}
+
+func looksLikeNarrativeSentence(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if strings.ContainsAny(trimmed, "。！？；!?;") {
+		return true
+	}
+	return len([]rune(trimmed)) > 25 && strings.ContainsAny(trimmed, "，,")
+}
+
+func (c *V2DeterministicClassifier) classifyBodyParagraphWithSignals(paras []V2ClassifiedPara, index int, text string) string {
+	semantic := classifyBodyParagraph(text)
+	if semantic != V2Body || c.processor == nil || c.processor.templateProfile == nil || len([]rune(text)) > 80 {
+		return semantic
+	}
+
+	actual := extractParaFormatSpec(paras[index].Para)
+	bestType, bestScore := semantic, c.combinedSignalScore(semantic, semantic, actual, templateStyle(c.processor.templateProfile, semantic), previousType(paras, index))
+	for _, candidate := range []string{V2Heading1, V2Heading2, V2Heading3, V2Heading4} {
+		score := c.combinedSignalScore(candidate, semantic, actual, templateStyle(c.processor.templateProfile, candidate), previousType(paras, index))
+		if score > bestScore {
+			bestType, bestScore = candidate, score
+		}
+	}
+	if bestType != semantic && bestScore >= 0.62 {
+		return bestType
+	}
+	return semantic
+}
+
+func (c *V2DeterministicClassifier) combinedSignalScore(candidate, semantic string, actual ParagraphFormatSpec, expected templateprofile.StyleRule, previous string) float64 {
+	semanticScore := 0.0
+	if candidate == semantic {
+		semanticScore = 1
+	} else if semantic == V2Body && strings.HasPrefix(candidate, "heading_") {
+		semanticScore = 0.15
+	}
+	return 0.4*semanticScore + 0.4*matchFormatScore(actual, expected) + 0.2*sequenceScore(previous, candidate)
+}
+
+func templateStyle(profile *templateprofile.Profile, paraType string) templateprofile.StyleRule {
+	if profile == nil {
+		return templateprofile.StyleRule{}
+	}
+	sectionKey := map[string]string{
+		V2Heading1: "chapter_title",
+		V2Heading2: "section_title",
+		V2Heading3: "subsection_title",
+		V2Body:     "body_text",
+	}[paraType]
+	if style, ok := profile.SectionFormats[sectionKey]; ok {
+		return style
+	}
+	styleKey := map[string]string{
+		V2Heading1: "heading_1",
+		V2Heading2: "heading_2",
+		V2Heading3: "heading_3",
+		V2Heading4: "heading_4",
+		V2Body:     "body",
+	}[paraType]
+	return profile.Styles[styleKey]
+}
+
+func matchFormatScore(actual ParagraphFormatSpec, expected templateprofile.StyleRule) float64 {
+	spec, ok := styleRuleToFormatSpec(expected)
+	if !ok {
+		return 0
+	}
+	score, weight := 0.0, 0.0
+	if spec.FontSizeHalfPt > 0 && actual.FontSizeHalfPt > 0 {
+		weight += 0.35
+		delta := math.Abs(float64(spec.FontSizeHalfPt) - float64(actual.FontSizeHalfPt))
+		if delta <= 1 {
+			score += 0.35
+		} else if delta <= 2 {
+			score += 0.2
+		}
+	}
+	if expected.BoldSet {
+		weight += 0.2
+		if actual.Bold == expected.Bold {
+			score += 0.2
+		}
+	}
+	if spec.AlignmentSet && actual.AlignmentSet {
+		weight += 0.15
+		if actual.Alignment == spec.Alignment {
+			score += 0.15
+		}
+	}
+	if spec.LineSpacingVal > 0 && actual.LineSpacingVal > 0 {
+		weight += 0.1
+		if math.Abs(float64(spec.LineSpacingVal-actual.LineSpacingVal)) <= 40 {
+			score += 0.1
+		}
+	}
+	if spec.FirstLineIndent > 0 || actual.FirstLineIndent > 0 {
+		weight += 0.1
+		if math.Abs(float64(spec.FirstLineIndent)-float64(actual.FirstLineIndent)) <= 80 {
+			score += 0.1
+		}
+	}
+	if expected.FontEastAsia != "" && actual.FontEastAsia != "" {
+		weight += 0.1
+		if strings.EqualFold(expected.FontEastAsia, actual.FontEastAsia) {
+			score += 0.1
+		}
+	}
+	if weight == 0 {
+		return 0
+	}
+	return score / weight
+}
+
+func previousType(paras []V2ClassifiedPara, index int) string {
+	for index--; index >= 0; index-- {
+		if paras[index].Text != "" {
+			return paras[index].Type
+		}
+	}
+	return ""
+}
+
+func sequenceScore(previous, candidate string) float64 {
+	if candidate == V2Body {
+		return 1
+	}
+	if previous == candidate {
+		return 0
+	}
+	if candidate == V2Heading1 && (previous == V2Heading2 || previous == V2Heading3 || previous == V2Heading4) {
+		return 0
+	}
+	return 1
 }

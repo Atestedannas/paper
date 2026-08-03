@@ -216,7 +216,8 @@ func TestCopyTemplateHeaderFooterPackageCopiesHeaderMediaAndContentTypes(t *test
 	outputEntries := map[string][]byte{
 		"[Content_Types].xml":          []byte(`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/></Types>`),
 		"word/document.xml":            []byte(`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p><w:sectPr></w:sectPr></w:body></w:document>`),
-		"word/_rels/document.xml.rels": []byte(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`),
+		"word/_rels/document.xml.rels": []byte(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/></Relationships>`),
+		"word/media/image1.png":        []byte("student-png-bytes"),
 	}
 	if err := writeDocxEntries(templatePath, templateEntries); err != nil {
 		t.Fatalf("write template entries: %v", err)
@@ -229,9 +230,16 @@ func TestCopyTemplateHeaderFooterPackageCopiesHeaderMediaAndContentTypes(t *test
 		t.Fatalf("copyTemplateHeaderFooterPackage() error = %v", err)
 	}
 
-	imageEntry := readDocxEntry(t, outputPath, "word/media/image1.png")
-	if imageEntry == "" {
-		t.Fatalf("expected header image asset to be copied")
+	if imageEntry := readDocxEntry(t, outputPath, "word/media/image1.png"); imageEntry != "student-png-bytes" {
+		t.Fatalf("student image must not be overwritten, got %q", imageEntry)
+	}
+	copiedImage := readDocxEntry(t, outputPath, "word/media/image1_template1.png")
+	if copiedImage != "png-bytes" {
+		t.Fatalf("expected colliding template header image to be copied under a new name, got %q", copiedImage)
+	}
+	headerRels := readDocxEntry(t, outputPath, "word/_rels/header1.xml.rels")
+	if !strings.Contains(headerRels, `Target="media/image1_template1.png"`) {
+		t.Fatalf("expected header relationship to be rewritten to renamed image, got %s", headerRels)
 	}
 
 	contentTypes := readDocxEntry(t, outputPath, "[Content_Types].xml")
@@ -242,6 +250,214 @@ func TestCopyTemplateHeaderFooterPackageCopiesHeaderMediaAndContentTypes(t *test
 	docXML := readDocxEntry(t, outputPath, "word/document.xml")
 	if !strings.Contains(docXML, `w:headerReference`) || !strings.Contains(docXML, `w:footerReference`) {
 		t.Fatalf("expected document.xml to include template header/footer refs, got %s", docXML)
+	}
+}
+
+func TestCopyTemplateHeaderFooterPackageMigratesReferencedStyleClosure(t *testing.T) {
+	tmpDir := t.TempDir()
+	templatePath := filepath.Join(tmpDir, "template.docx")
+	outputPath := filepath.Join(tmpDir, "output.docx")
+
+	templateEntries := map[string][]byte{
+		"[Content_Types].xml":          []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`),
+		"word/document.xml":            []byte(`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:t>Template</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rId8"/></w:sectPr></w:body></w:document>`),
+		"word/_rels/document.xml.rels": []byte(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId8" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`),
+		"word/header1.xml":             []byte(`<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:pStyle w:val="HeaderStyle"/></w:pPr><w:r><w:rPr><w:rStyle w:val="HeaderChar"/><w:rFonts w:eastAsiaTheme="majorEastAsia"/></w:rPr><w:t>Header</w:t></w:r></w:p></w:hdr>`),
+		"word/styles.xml": []byte(`<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+			`<w:style w:type="paragraph" w:styleId="Base"><w:name w:val="Template Base"/><w:pPr><w:tabs><w:tab w:val="center" w:pos="4153"/></w:tabs><w:spacing w:line="240"/><w:jc w:val="center"/></w:pPr><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi" w:eastAsiaTheme="minorEastAsia" w:cstheme="minorBidi"/><w:lang w:eastAsia="zh-CN" w:bidi="ar-SA"/></w:rPr></w:style>` +
+			`<w:style w:type="character" w:styleId="DefaultChar"><w:name w:val="Template Default Character"/></w:style>` +
+			`<w:style w:type="character" w:styleId="HeaderChar"><w:name w:val="Template Header Character"/><w:basedOn w:val="DefaultChar"/></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="NextStyle"><w:name w:val="Template Next"/><w:basedOn w:val="Base"/></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="HeaderStyle"><w:name w:val="Template Header"/><w:basedOn w:val="Base"/><w:link w:val="HeaderChar"/><w:next w:val="NextStyle"/><w:qFormat/><w:uiPriority w:val="99"/></w:style>` +
+			`</w:styles>`),
+		"word/theme/theme1.xml": []byte(`<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:fontScheme name="Template"><a:majorFont><a:latin typeface="Template Major Latin"/><a:ea typeface=""/><a:cs typeface=""/><a:font script="Hans" typeface="Template Major Hans"/></a:majorFont><a:minorFont><a:latin typeface="Template Minor Latin"/><a:ea typeface=""/><a:cs typeface=""/><a:font script="Hans" typeface="Template Minor Hans"/><a:font script="Arab" typeface="Template Minor Arabic"/></a:minorFont></a:fontScheme></a:themeElements></a:theme>`),
+		"word/fontTable.xml":    []byte(`<w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:font w:name="Template Major Hans"/><w:font w:name="Template Minor Latin"/><w:font w:name="Template Minor Hans"/><w:font w:name="Template Minor Arabic"/></w:fonts>`),
+	}
+	outputEntries := map[string][]byte{
+		"[Content_Types].xml":          []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>`),
+		"word/document.xml":            []byte(`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`),
+		"word/_rels/document.xml.rels": []byte(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`),
+		"word/styles.xml": []byte(`<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+			`<w:style w:type="paragraph" w:styleId="Base"><w:name w:val="Student Base"/><w:pPr><w:jc w:val="left"/></w:pPr></w:style>` +
+			`<w:style w:type="character" w:styleId="DefaultChar"><w:name w:val="Student Default Character"/></w:style>` +
+			`<w:style w:type="character" w:styleId="HeaderChar"><w:name w:val="Student Header Character"/></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="NextStyle"><w:name w:val="Student Next"/></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="HeaderStyle"><w:name w:val="Student Header"/></w:style>` +
+			`</w:styles>`),
+		"word/theme/theme1.xml": []byte(`<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Student Theme"/>`),
+		"word/fontTable.xml":    []byte(`<w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:font w:name="Student Font"/></w:fonts>`),
+	}
+	if err := writeDocxEntries(templatePath, templateEntries); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeDocxEntries(outputPath, outputEntries); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyTemplateHeaderFooterPackage(templatePath, outputPath); err != nil {
+		t.Fatalf("copyTemplateHeaderFooterPackage() error = %v", err)
+	}
+
+	header := readDocxEntry(t, outputPath, "word/header1.xml")
+	for _, want := range []string{
+		`<w:pStyle w:val="HeaderStyle_template1"/>`,
+		`<w:rStyle w:val="HeaderChar_template1"/>`,
+		`w:eastAsia="Template Major Hans"`,
+	} {
+		if !strings.Contains(header, want) {
+			t.Fatalf("copied header is missing %s: %s", want, header)
+		}
+	}
+	for _, attribute := range []string{"asciiTheme", "hAnsiTheme", "eastAsiaTheme", "cstheme"} {
+		if strings.Contains(header, attribute+"=") {
+			t.Fatalf("copied header retained %s: %s", attribute, header)
+		}
+	}
+
+	styles := readDocxEntry(t, outputPath, "word/styles.xml")
+	for _, want := range []string{
+		`w:styleId="Base"><w:name w:val="Student Base"`,
+		`w:styleId="HeaderStyle_template1"`,
+		`<w:basedOn w:val="Base_template1"/>`,
+		`<w:link w:val="HeaderChar_template1"/>`,
+		`<w:next w:val="NextStyle_template1"/>`,
+		`w:ascii="Template Minor Latin"`,
+		`w:eastAsia="Template Minor Hans"`,
+		`w:cs="Template Minor Arabic"`,
+		`<w:tabs><w:tab w:val="center" w:pos="4153"/></w:tabs>`,
+	} {
+		if !strings.Contains(styles, want) {
+			t.Fatalf("migrated style closure is missing %s: %s", want, styles)
+		}
+	}
+	if strings.Contains(styles, `w:asciiTheme=`) ||
+		strings.Contains(styles, `w:hAnsiTheme=`) ||
+		strings.Contains(styles, `w:eastAsiaTheme=`) ||
+		strings.Contains(styles, `w:cstheme=`) {
+		t.Fatalf("migrated styles retained template theme references: %s", styles)
+	}
+	migratedHeaderStyle := strictStyleDefinitions(styles)["HeaderStyle_template1"]
+	if strings.Index(migratedHeaderStyle, "<w:next") > strings.Index(migratedHeaderStyle, "<w:link") ||
+		strings.Index(migratedHeaderStyle, "<w:uiPriority") > strings.Index(migratedHeaderStyle, "<w:qFormat") {
+		t.Fatalf("migrated style metadata is not in OOXML schema order: %s", migratedHeaderStyle)
+	}
+	if theme := readDocxEntry(t, outputPath, "word/theme/theme1.xml"); theme != string(outputEntries["word/theme/theme1.xml"]) {
+		t.Fatalf("student global theme must not be replaced: %s", theme)
+	}
+	if relationships := readDocxEntry(t, outputPath, "word/_rels/document.xml.rels"); !strings.Contains(relationships, `/relationships/styles`) {
+		t.Fatalf("migrated style part has no document relationship: %s", relationships)
+	}
+	if contentTypes := readDocxEntry(t, outputPath, "[Content_Types].xml"); !strings.Contains(contentTypes, `PartName="/word/styles.xml"`) {
+		t.Fatalf("migrated style part has no content type: %s", contentTypes)
+	}
+	fontTable := readDocxEntry(t, outputPath, "word/fontTable.xml")
+	for _, font := range []string{"Student Font", "Template Major Hans", "Template Minor Latin", "Template Minor Hans", "Template Minor Arabic"} {
+		if !strings.Contains(fontTable, `w:name="`+font+`"`) {
+			t.Fatalf("font table is missing %q: %s", font, fontTable)
+		}
+	}
+}
+
+func TestCopyTemplateHeaderFooterPackageMigratesStyleNumberingClosure(t *testing.T) {
+	tmpDir := t.TempDir()
+	templatePath := filepath.Join(tmpDir, "template-numbering.docx")
+	outputPath := filepath.Join(tmpDir, "output-numbering.docx")
+
+	templateEntries := map[string][]byte{
+		"[Content_Types].xml": []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+			`<Default Extension="xml" ContentType="application/xml"/>` +
+			`<Default Extension="png" ContentType="image/png"/>` +
+			`<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>` +
+			`<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>` +
+			`<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>` +
+			`</Types>`),
+		"word/document.xml": []byte(`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:sectPr><w:headerReference w:type="default" r:id="rIdHeader"/></w:sectPr></w:body></w:document>`),
+		"word/_rels/document.xml.rels": []byte(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>` +
+			`<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+			`<Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>` +
+			`</Relationships>`),
+		"word/header1.xml": []byte(`<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:pStyle w:val="HeaderStyle"/></w:pPr><w:r><w:t>Header</w:t></w:r></w:p></w:hdr>`),
+		"word/styles.xml": []byte(`<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+			`<w:style w:type="paragraph" w:styleId="ListBase"><w:name w:val="Template List Base"/></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="NumberingLinked"><w:name w:val="Template Numbering Linked"/></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="HeaderStyle"><w:name w:val="Template Header"/><w:basedOn w:val="ListBase"/><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="7"/></w:numPr></w:pPr></w:style>` +
+			`</w:styles>`),
+		"word/numbering.xml": []byte(`<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml">` +
+			`<w:numPicBullet w:numPicBulletId="5"><w:pict><v:shape><v:imagedata r:id="rIdBullet"/></v:shape></w:pict></w:numPicBullet>` +
+			`<w:abstractNum w:abstractNumId="4"><w:lvl w:ilvl="0"><w:pStyle w:val="NumberingLinked"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlPicBulletId w:val="5"/></w:lvl></w:abstractNum>` +
+			`<w:num w:numId="7"><w:abstractNumId w:val="4"/></w:num>` +
+			`</w:numbering>`),
+		"word/_rels/numbering.xml.rels":  []byte(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdBullet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/template-bullet.png"/></Relationships>`),
+		"word/media/template-bullet.png": []byte("template bullet"),
+	}
+	outputEntries := map[string][]byte{
+		"[Content_Types].xml": []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`),
+		"word/document.xml":   []byte(`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:sectPr/></w:body></w:document>`),
+		"word/_rels/document.xml.rels": []byte(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+			`</Relationships>`),
+		"word/styles.xml": []byte(`<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+			`<w:style w:type="paragraph" w:styleId="ListBase"><w:name w:val="Student List Base"/></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="NumberingLinked"><w:name w:val="Student Numbering Linked"/></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="HeaderStyle"><w:name w:val="Student Header"/></w:style>` +
+			`</w:styles>`),
+		"word/numbering.xml": []byte(`<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml">` +
+			`<w:numPicBullet w:numPicBulletId="5"><w:pict><v:shape><v:imagedata r:id="rIdBullet"/></v:shape></w:pict></w:numPicBullet>` +
+			`<w:abstractNum w:abstractNumId="4"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="-"/></w:lvl></w:abstractNum>` +
+			`<w:num w:numId="7"><w:abstractNumId w:val="4"/></w:num>` +
+			`</w:numbering>`),
+		"word/_rels/numbering.xml.rels":  []byte(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdBullet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/template-bullet.png"/></Relationships>`),
+		"word/media/template-bullet.png": []byte("student bullet"),
+	}
+	if err := writeDocxEntries(templatePath, templateEntries); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeDocxEntries(outputPath, outputEntries); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyTemplateHeaderFooterPackage(templatePath, outputPath); err != nil {
+		t.Fatalf("copyTemplateHeaderFooterPackage() error = %v", err)
+	}
+
+	styles := strictStyleDefinitions(readDocxEntry(t, outputPath, "word/styles.xml"))
+	migratedHeader := styles["HeaderStyle_template1"]
+	if !strings.Contains(migratedHeader, `<w:numId w:val="1"/>`) || strings.Contains(migratedHeader, `<w:numId w:val="7"/>`) {
+		t.Fatalf("migrated style numbering ID was not remapped: %s", migratedHeader)
+	}
+	if _, ok := styles["NumberingLinked_template1"]; !ok {
+		t.Fatalf("numbering-linked style was not included in the style closure: %#v", styles)
+	}
+
+	numbering := readDocxEntry(t, outputPath, "word/numbering.xml")
+	for _, want := range []string{
+		`<w:abstractNum w:abstractNumId="4"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/>`,
+		`<w:num w:numId="7"><w:abstractNumId w:val="4"/></w:num>`,
+		`<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:pStyle w:val="NumberingLinked_template1"/>`,
+		`<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>`,
+		`<w:numPicBullet w:numPicBulletId="0">`,
+		`<w:lvlPicBulletId w:val="0"/>`,
+		`r:id="rId1"`,
+	} {
+		if !strings.Contains(numbering, want) {
+			t.Fatalf("merged numbering is missing %s: %s", want, numbering)
+		}
+	}
+	if relationships := readDocxEntry(t, outputPath, "word/_rels/document.xml.rels"); !strings.Contains(relationships, `/relationships/numbering`) {
+		t.Fatalf("migrated numbering part has no document relationship: %s", relationships)
+	}
+	if contentTypes := readDocxEntry(t, outputPath, "[Content_Types].xml"); !strings.Contains(contentTypes, `PartName="/word/numbering.xml"`) {
+		t.Fatalf("migrated numbering part has no content type: %s", contentTypes)
+	}
+	if relationships := readDocxEntry(t, outputPath, "word/_rels/numbering.xml.rels"); !strings.Contains(relationships, `Id="rId1"`) || !strings.Contains(relationships, `Target="media/template-bullet_template1.png"`) {
+		t.Fatalf("picture-bullet relationship closure was not remapped: %s", relationships)
+	}
+	if got := readDocxEntry(t, outputPath, "word/media/template-bullet_template1.png"); got != "template bullet" {
+		t.Fatalf("picture-bullet media was not copied: %q", got)
+	}
+	if contentTypes := readDocxEntry(t, outputPath, "[Content_Types].xml"); !strings.Contains(contentTypes, `Extension="png"`) {
+		t.Fatalf("picture-bullet media content type was not copied: %s", contentTypes)
 	}
 }
 

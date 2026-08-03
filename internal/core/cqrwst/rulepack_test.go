@@ -11,7 +11,36 @@ import (
 	"time"
 
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
+
+func TestTemplateProfileNeverFallsBackToAnotherSchoolsFormat(t *testing.T) {
+	SetRulePackProfile(&templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+		"body": {
+			Label:        "body",
+			FontEastAsia: "Template Body Font",
+		},
+	}})
+	t.Cleanup(func() { SetRulePackProfile(nil) })
+
+	body := bodyStyle()
+	if body.eastAsiaFont != "Template Body Font" {
+		t.Fatalf("body eastAsia font = %q, want template value", body.eastAsiaFont)
+	}
+	if body.asciiFont != "" || body.fontSize != "" || body.line != "" || body.firstLineChars != nil || body.alignment != "" {
+		t.Fatalf("undefined template fields leaked hardcoded defaults: %#v", body)
+	}
+
+	heading := heading1Style()
+	if heading.eastAsiaFont != "" || heading.asciiFont != "" || heading.fontSize != "" || heading.line != "" || heading.bold {
+		t.Fatalf("missing template heading must remain undefined, got %#v", heading)
+	}
+
+	keywords := keywordParagraphStyle(true)
+	if keywords.line != "" || keywords.alignment != "" {
+		t.Fatalf("keyword paragraph leaked fixed layout: %#v", keywords)
+	}
+}
 
 func TestFixDOCXNormalizesDeterministicCQRWSTTextRules(t *testing.T) {
 	t.Setenv("CQRWST_ALLOW_CONTENT_NORMALIZATION", "true")

@@ -552,7 +552,12 @@ func (v *FormatVerifier) compareAllWithSpecs(classified map[string][]document.Pa
 			if text == "" {
 				continue
 			}
-			for _, diff := range DiffSpecExact(spec, extractParaFormatSpec(para)) {
+			actual := extractParaFormatSpec(para)
+			patch := buildParagraphSpecPatch(para, spec)
+			for _, diff := range DiffSpecExact(patch, actual) {
+				if !specManagesDiffField(patch, diff.Field) {
+					continue
+				}
 				allDiffs = append(allDiffs, FormatDiff{
 					Category: category,
 					ParaIdx:  i,

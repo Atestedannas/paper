@@ -5,13 +5,343 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 )
 
 type fakeChatClient struct {
 	response string
 	prompt   string
+}
+
+func TestCollectParagraphsIgnoresNestedTextBoxAnnotations(t *testing.T) {
+	documentXML := `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+		`<w:p><w:r><w:drawing><w:txbxContent><w:p><w:r><w:t>三号黑体，居中</w:t></w:r></w:p></w:txbxContent></w:drawing></w:r>` +
+		`<w:r><w:rPr><w:rFonts w:eastAsia="黑体"/><w:sz w:val="32"/></w:rPr><w:t>1 绪论</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>正文</w:t></w:r></w:p></w:body></w:document>`
+
+	paragraphs := collectParagraphs(documentXML)
+	if len(paragraphs) != 2 {
+		t.Fatalf("collectParagraphs() count = %d, want 2", len(paragraphs))
+	}
+	if paragraphs[0].Text != "1 绪论" || strings.Contains(paragraphs[0].XML, "三号黑体") {
+		t.Fatalf("nested annotation polluted paragraph: text=%q xml=%s", paragraphs[0].Text, paragraphs[0].XML)
+	}
+	style := extractStyle("heading_1", paragraphs[0].XML)
+	if style.FontEastAsia != "黑体" || style.FontSizeHalfPt != "32" {
+		t.Fatalf("heading style = %+v", style)
+	}
+}
+
+func TestExtractDoesNotMixMultipleEmbeddedExamplePapers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "multi-example.docx")
+	documentXML := `<?xml version="1.0" encoding="UTF-8"?>` +
+		`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+		`<w:p><w:r><w:t>摘  要</w:t></w:r></w:p>` +
+		`<w:p><w:pPr><w:spacing w:line="400" w:lineRule="exact"/><w:ind w:firstLine="480"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="宋体"/><w:sz w:val="24"/></w:rPr><w:t>这是第一套示例论文的摘要正文，用于提取稳定的摘要正文格式。</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>1 绪论</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:rPr><w:rFonts w:eastAsia="黑体"/><w:sz w:val="28"/></w:rPr><w:t>1.1.1 第一套三级标题</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>致  谢</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>摘  要</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:rPr><w:rFonts w:eastAsia="宋体"/><w:sz w:val="40"/><w:b/></w:rPr><w:t>1.1.1 第二套冲突标题</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	writeDocxEntries(t, path, map[string]string{
+		"[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
+		"word/document.xml":   documentXML,
+	})
+
+	profile, err := Extract(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heading := profile.Styles["heading_3"]
+	if heading.FontEastAsia != "黑体" || heading.FontSizeHalfPt != "28" || heading.Bold {
+		t.Fatalf("later embedded example polluted heading_3: %#v", heading)
+	}
+}
+
+func TestExtractResolvesParagraphStyleInheritance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "style-inheritance.docx")
+	writeDocxEntries(t, path, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+			`<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+			`<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>` +
+			`</Types>`,
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:r><w:t>&#25688;&#35201;</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:pStyle w:val="HeadingCustom"/></w:pPr><w:r><w:t>1 Introduction</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+		"word/styles.xml": `<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+			`<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:eastAsia="DocDefaultFont" w:ascii="DefaultASCII"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>` +
+			`<w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="HeadingBase"><w:basedOn w:val="Normal"/><w:pPr><w:jc w:val="center"/></w:pPr></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="HeadingCustom"><w:basedOn w:val="HeadingBase"/><w:rPr><w:rFonts w:eastAsia="InheritedHeadingFont"/><w:sz w:val="30"/></w:rPr></w:style>` +
+			`</w:styles>`,
+	})
+
+	profile, err := Extract(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heading := profile.Styles["heading_1"]
+	if heading.FontEastAsia != "InheritedHeadingFont" || heading.FontASCII != "DefaultASCII" ||
+		heading.FontSizeHalfPt != "30" || heading.Alignment != "center" {
+		t.Fatalf("inherited heading style = %#v", heading)
+	}
+}
+
+func TestExtractResolvesAllThemeFontSlotsAndCharacterStyle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "theme-fonts.docx")
+	writeDocxEntries(t, path, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:r><w:t>&#25688;&#35201;</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:pStyle w:val="HeadingCustom"/></w:pPr><w:r><w:rPr><w:rStyle w:val="EmphasisEast"/></w:rPr><w:t>1 Introduction</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+		"word/styles.xml": `<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+			`<w:docDefaults><w:rPrDefault><w:rPr>` +
+			`<w:rFonts w:asciiTheme="minorAscii" w:hAnsiTheme="minorHAnsi" w:eastAsiaTheme="minorEastAsia" w:cstheme="minorBidi"/>` +
+			`<w:lang w:val="en-US" w:eastAsia="zh-CN" w:bidi="ar-SA"/>` +
+			`</w:rPr></w:rPrDefault></w:docDefaults>` +
+			`<w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:rFonts w:ascii="ParagraphAscii"/></w:rPr></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="HeadingCustom"><w:basedOn w:val="Normal"/><w:rPr><w:sz w:val="30"/></w:rPr></w:style>` +
+			`<w:style w:type="character" w:styleId="EmphasisEast"><w:rPr><w:rFonts w:eastAsiaTheme="majorEastAsia"/></w:rPr></w:style>` +
+			`</w:styles>`,
+		"word/theme/theme1.xml": `<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:fontScheme>` +
+			`<a:majorFont><a:latin typeface="MajorLatin"/><a:ea typeface=""/><a:cs typeface=""/><a:font script="Hans" typeface="MajorHans"/><a:font script="Arab" typeface="MajorArab"/></a:majorFont>` +
+			`<a:minorFont><a:latin typeface="MinorLatin"/><a:ea typeface=""/><a:cs typeface=""/><a:font script="Hans" typeface="MinorHans"/><a:font script="Arab" typeface="MinorArab"/></a:minorFont>` +
+			`</a:fontScheme></a:themeElements></a:theme>`,
+	})
+
+	profile, err := Extract(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := ooxmlpkg.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stylesXML, _ := pkg.Get("word/styles.xml")
+	resolver := extractThemeFontResolver(pkg, string(stylesXML))
+	definitions, _ := extractStyleDefinitions(materializeThemeFonts(string(stylesXML), resolver))
+	if charStyle := definitions["EmphasisEast"]; charStyle.FontEastAsia != "MajorHans" || charStyle.FontASCII != "" {
+		t.Fatalf("character style definition must keep undefined slots: %#v", charStyle)
+	}
+	documentXML, _ := pkg.Get("word/document.xml")
+	paragraphs := collectParagraphs(materializeThemeFonts(string(documentXML), resolver))
+	base := extractStyleWithDefinitions("heading_1", paragraphs[1].XML, definitions)
+	effective := extractRepresentativeRunStyleWithDefinitions("heading_1", paragraphs[1].XML, base, definitions)
+	if effective.FontEastAsia != "MajorHans" {
+		t.Fatalf("representative character style not applied: base=%#v effective=%#v paragraph=%s", base, effective, paragraphs[1].XML)
+	}
+	got := profile.Styles["heading_1"]
+	if got.FontASCII != "ParagraphAscii" || got.FontASCIITheme != "" ||
+		got.FontHAnsi != "MinorLatin" || got.FontHAnsiTheme != "minorHAnsi" ||
+		got.FontEastAsia != "MajorHans" || got.FontEastAsiaTheme != "majorEastAsia" ||
+		got.FontCS != "MinorArab" || got.FontCSTheme != "minorBidi" {
+		t.Fatalf("effective themed fonts = %#v", got)
+	}
+	if got.SampleCount != 1 || got.Confidence != 1 || len(got.Sources) != 1 ||
+		got.Sources[0].Part != "word/document.xml" || got.Sources[0].ParagraphIndex != 2 ||
+		got.Sources[0].ParagraphStyleID != "HeadingCustom" || got.Sources[0].RunStyleID != "EmphasisEast" ||
+		strings.Join(got.Sources[0].InheritanceChain, "/") != "Normal/HeadingCustom/EmphasisEast" {
+		t.Fatalf("style provenance = %#v", got)
+	}
+}
+
+func TestExtractCascadesNumberingLevelBetweenParagraphStyleAndInheritedDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "numbering-style-cascade.docx")
+	writeDocxEntries(t, path, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:r><w:t>&#25688;&#35201;</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:pStyle w:val="HeadingCustom"/><w:numPr><w:ilvl w:val="2"/></w:numPr><w:ind w:firstLine="480"/></w:pPr>` +
+			`<w:r><w:rPr><w:rStyle w:val="CharCustom"/><w:rFonts w:eastAsia="DirectEast"/><w:i w:val="0"/></w:rPr><w:t>1 Introduction</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+		"word/styles.xml": `<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+			`<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:eastAsia="DefaultEast" w:ascii="DefaultAscii" w:hAnsi="DefaultHAnsi" w:cs="DefaultCS"/><w:sz w:val="18"/><w:lang w:bidi="ar-SA"/></w:rPr></w:rPrDefault></w:docDefaults>` +
+			`<w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:rFonts w:eastAsia="InheritedEast"/></w:rPr></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="Base"><w:basedOn w:val="Normal"/><w:pPr><w:numPr><w:numId w:val="42"/></w:numPr><w:jc w:val="right"/><w:spacing w:line="300"/></w:pPr><w:rPr><w:sz w:val="20"/></w:rPr></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="HeadingCustom"><w:basedOn w:val="Base"/><w:pPr><w:jc w:val="left"/></w:pPr><w:rPr><w:rFonts w:hAnsi="ParagraphHAnsi"/><w:b w:val="0"/></w:rPr></w:style>` +
+			`<w:style w:type="character" w:styleId="CharCustom"><w:rPr><w:rFonts w:ascii="CharacterAscii"/></w:rPr></w:style>` +
+			`</w:styles>`,
+		"word/numbering.xml": `<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+			`<w:abstractNum w:abstractNumId="9"><w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="HeadingCustom"/><w:lvlText w:val="%1.%2.%3"/>` +
+			`<w:pPr><w:jc w:val="center"/><w:spacing w:line="400" w:lineRule="exact"/><w:ind w:firstLine="200"/></w:pPr>` +
+			`<w:rPr><w:rFonts w:cstheme="majorBidi"/><w:sz w:val="28"/><w:b/><w:i/></w:rPr></w:lvl></w:abstractNum>` +
+			`<w:num w:numId="42"><w:abstractNumId w:val="9"/></w:num></w:numbering>`,
+		"word/theme/theme1.xml": `<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:fontScheme>` +
+			`<a:majorFont><a:latin typeface="MajorLatin"/><a:ea typeface=""/><a:cs typeface=""/><a:font script="Arab" typeface="MajorArabic"/></a:majorFont>` +
+			`<a:minorFont><a:latin typeface="MinorLatin"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>` +
+			`</a:fontScheme></a:themeElements></a:theme>`,
+	})
+
+	profile, err := Extract(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := profile.Styles["heading_1"]
+	if got.FontEastAsia != "DirectEast" || got.FontASCII != "CharacterAscii" ||
+		got.FontHAnsi != "ParagraphHAnsi" || got.FontCS != "MajorArabic" || got.FontCSTheme != "majorBidi" {
+		t.Fatalf("four-slot precedence = %#v", got)
+	}
+	if got.Alignment != "left" || got.Line != "400" || got.LineRule != "exact" ||
+		got.FirstLineTwips != "480" || got.FontSizeHalfPt != "28" {
+		t.Fatalf("paragraph/numbering precedence = %#v", got)
+	}
+	if !got.BoldSet || got.Bold || !got.ItalicSet || got.Italic {
+		t.Fatalf("tri-state precedence = %#v", got)
+	}
+	wantChain := "Normal/Base/numbering:9:2/HeadingCustom/CharCustom"
+	if chain := strings.Join(got.InheritanceChain, "/"); chain != wantChain {
+		t.Fatalf("inheritance chain = %q, want %q", chain, wantChain)
+	}
+	level := profile.Numbering.AbstractNums[9][0].Style
+	if level.Alignment != "center" || level.Line != "400" || level.FontCS != "MajorArabic" ||
+		!level.BoldSet || !level.Bold || !level.ItalicSet || !level.Italic {
+		t.Fatalf("numbering level pPr/rPr = %#v", level)
+	}
+}
+
+func TestThemeReferenceSelectsItsDeclaredCharacterRange(t *testing.T) {
+	resolver := themeFontResolver{
+		Major:          themeFontFamily{Latin: "MajorLatin", Scripts: map[string]string{"Hans": "MajorHans"}},
+		Minor:          themeFontFamily{Latin: "MinorLatin", Scripts: map[string]string{"Hans": "MinorHans"}},
+		EastAsiaScript: "Hans",
+	}
+	style := extractStyle("body", materializeThemeFonts(
+		`<w:rPr><w:rFonts w:asciiTheme="minorEastAsia" w:cstheme="majorAscii"/></w:rPr>`,
+		resolver,
+	))
+	if style.FontASCII != "MinorHans" || style.FontCS != "MajorLatin" {
+		t.Fatalf("cross-range theme references = %#v", style)
+	}
+}
+
+func TestExtractSamplesTOCStylesWithoutTreatingEntriesAsBodyHeadings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "toc-styles.docx")
+	writeDocxEntries(t, path, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:r><w:t>&#25688;&#35201;</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>&#30446;&#24405;</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:pStyle w:val="TOCLevel1"/></w:pPr><w:r><w:t>1 Introduction2</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:pStyle w:val="TOCLevel2"/></w:pPr><w:r><w:t>1.1 Background3</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:pStyle w:val="HeadingActual"/><w:pageBreakBefore/></w:pPr><w:r><w:t>1 Introduction</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+		"word/styles.xml": `<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+			`<w:style w:type="paragraph" w:styleId="TOCLevel1"><w:name w:val="toc 1"/><w:rPr><w:rFonts w:eastAsia="TOCFont"/><w:sz w:val="20"/></w:rPr></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="TOCLevel2"><w:name w:val="toc 2"/><w:rPr><w:rFonts w:eastAsia="TOCFont"/><w:sz w:val="18"/></w:rPr></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="HeadingActual"><w:name w:val="heading 1"/><w:rPr><w:rFonts w:eastAsia="HeadingFont"/><w:sz w:val="30"/></w:rPr></w:style>` +
+			`</w:styles>`,
+	})
+
+	profile, err := Extract(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := profile.Styles["toc_entry"]; got.FontEastAsia != "TOCFont" || got.FontSizeHalfPt != "20" {
+		t.Fatalf("toc_entry style = %#v", got)
+	}
+	if got := profile.Styles["toc_entry_2"]; got.FontSizeHalfPt != "18" {
+		t.Fatalf("toc_entry_2 style = %#v", got)
+	}
+	if got := profile.Styles["heading_1"]; got.FontEastAsia != "HeadingFont" || got.FontSizeHalfPt != "30" {
+		t.Fatalf("real heading style was polluted by TOC entries: %#v", got)
+	}
+}
+
+func TestExtractSamplesCaptionFormattingFromCenteredCaptionParagraphs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "caption-styles.docx")
+	writeDocxEntries(t, path, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:r><w:t>&#25688;&#35201;</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>Keywords: sample</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>1 Introduction</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:line="300"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="CaptionFont"/><w:sz w:val="21"/></w:rPr><w:t>&#22270;1.1 Architecture</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:line="320"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="TableCaptionFont"/><w:sz w:val="22"/></w:rPr><w:t>&#34920;1.1Data</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:jc w:val="both"/></w:pPr><w:r><w:rPr><w:sz w:val="24"/></w:rPr><w:t>&#22270;1.2describes ordinary body content.</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	profile, err := Extract(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := profile.Styles["figure_caption"]; got.FontEastAsia != "CaptionFont" || got.FontSizeHalfPt != "21" || got.Alignment != "center" {
+		t.Fatalf("figure caption style = %#v", got)
+	}
+	if got := profile.Styles["table_caption"]; got.FontEastAsia != "TableCaptionFont" || got.FontSizeHalfPt != "22" || got.Line != "320" {
+		t.Fatalf("table caption style = %#v", got)
+	}
+	if profile.Styles["body"].FontSizeHalfPt != "24" {
+		t.Fatalf("ordinary body paragraph was not kept separate: %#v", profile.Styles["body"])
+	}
+}
+
+func TestExtractDoesNotSampleChapterSummarySentencesAsHeadings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chapter-summary.docx")
+	writeDocxEntries(t, path, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:r><w:t>&#25688;&#35201;</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>Keywords: sample</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="HeadingFont"/><w:sz w:val="32"/></w:rPr><w:t>1 Introduction</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:jc w:val="both"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="BodyFont"/><w:sz w:val="24"/></w:rPr><w:t>` +
+			"\u7b2c\u4e00\u7ae0 This sentence explains the chapter in ordinary body prose." +
+			`</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+
+	profile, err := Extract(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := profile.Styles["heading_1"]; got.FontEastAsia != "HeadingFont" || got.FontSizeHalfPt != "32" {
+		t.Fatalf("heading style was polluted by a chapter summary sentence: %#v", got)
+	}
+	if got := profile.Styles["body"]; got.FontEastAsia != "BodyFont" || got.FontSizeHalfPt != "24" {
+		t.Fatalf("chapter summary sentence was not sampled as body: %#v", got)
+	}
+}
+
+func TestRealTemplateProfileCandidates(t *testing.T) {
+	path := os.Getenv("PAPER_TEMPLATE_DOCX")
+	if path == "" {
+		t.Skip("set PAPER_TEMPLATE_DOCX")
+	}
+	pkg, err := ooxmlpkg.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentXML, ok := pkg.Get("word/document.xml")
+	if !ok {
+		t.Fatal("word/document.xml missing")
+	}
+	patterns := map[string]*regexp.Regexp{}
+	if numbering, err := parseNumberingXML(pkg); err == nil && numbering != nil {
+		patterns = numbering.BuildHeadingPatterns()
+	}
+	for index, para := range collectParagraphs(string(documentXML)) {
+		key := classifyParagraphNumberingAware(para.Text, patterns)
+		if key == "" {
+			continue
+		}
+		style := extractStyle(key, para.XML)
+		t.Logf("%d key=%s text=%q style=%+v", index, key, shortProfileText(para.Text), style)
+	}
+}
+
+func shortProfileText(text string) string {
+	runes := []rune(text)
+	if len(runes) > 50 {
+		runes = runes[:50]
+	}
+	return string(runes)
 }
 
 func TestExtractCollegeName(t *testing.T) {
@@ -38,6 +368,37 @@ func TestExtractLeadingLabelRunStyleOverridesParagraphDefault(t *testing.T) {
 	got := extractLeadingLabelRunStyle("abstract_cn", paragraph, base)
 	if got.FontEastAsia != "黑体" || got.FontSizeHalfPt != "30" || !got.Bold || got.AfterTwips != "624" {
 		t.Fatalf("leading label run style not extracted: %#v", got)
+	}
+}
+
+func TestSectionFormatMapSeparatesAbstractBody(t *testing.T) {
+	paragraph := `<w:p>` +
+		`<w:r><w:rPr><w:rFonts w:eastAsia="黑体"/><w:sz w:val="30"/><w:b/></w:rPr><w:t>摘要：</w:t></w:r>` +
+		`<w:r><w:rPr><w:rFonts w:eastAsia="宋体"/><w:sz w:val="24"/></w:rPr><w:t>正文内容</w:t></w:r></w:p>`
+	body, ok := extractTrailingContentRunStyle("abstract_body", paragraph)
+	if !ok || body.FontEastAsia != "宋体" || body.FontSizeHalfPt != "24" {
+		t.Fatalf("abstract body style = %#v, ok=%v", body, ok)
+	}
+	sections := buildSectionFormatMap(map[string]StyleRule{
+		"heading_1":     {FontSizeHalfPt: "32"},
+		"body":          {FontSizeHalfPt: "24"},
+		"abstract_body": body,
+	})
+	if sections["chapter_title"].FontSizeHalfPt != "32" ||
+		sections["body_text"].FontSizeHalfPt != "24" ||
+		sections["abstract_body"].FontEastAsia != "宋体" {
+		t.Fatalf("section formats = %#v", sections)
+	}
+}
+
+func TestExtractTrailingContentRunStyleSupportsAllFrontMatterLabels(t *testing.T) {
+	paragraph := `<w:p>` +
+		`<w:r><w:rPr><w:rFonts w:eastAsia="黑体"/><w:b/></w:rPr><w:t>关键词：</w:t></w:r>` +
+		`<w:r><w:rPr><w:rFonts w:eastAsia="宋体"/><w:sz w:val="24"/></w:rPr><w:t>格式；模板</w:t></w:r></w:p>`
+
+	body, ok := extractTrailingContentRunStyle("keywords_cn_body", paragraph)
+	if !ok || body.FontEastAsia != "宋体" || body.FontSizeHalfPt != "24" {
+		t.Fatalf("keyword body style = %#v, ok=%v", body, ok)
 	}
 }
 
@@ -176,6 +537,18 @@ func TestApplyFormatRulesSupportsExplicitIndentAndSpacingUnits(t *testing.T) {
 	style := profile.Styles["body_start"]
 	if style.FirstLineChars != "200" || style.BeforeTwips != "240" || style.AfterTwips != "120" {
 		t.Fatalf("explicit units not converted correctly: %#v", style)
+	}
+}
+
+func TestApplyFormatRulesSupportsFixedLineSpacing(t *testing.T) {
+	profile := &Profile{Styles: map[string]StyleRule{"body_start": {}}}
+	err := ApplyFormatRules(profile, `{"body":{"line_space":"fixed","line_space_value":20}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	style := profile.Styles["body_start"]
+	if style.Line != "400" || style.LineRule != "exact" {
+		t.Fatalf("fixed line spacing = %#v", style)
 	}
 }
 

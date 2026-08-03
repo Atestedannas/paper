@@ -712,6 +712,8 @@ func (p *TemplateParser) ParseTemplateToFormatRules(templatePath string) (map[st
 	// 页眉页脚内容提取
 	p.extractHeaderFooterRules(doc, sc, rules)
 	if profile, profileErr := templateprofile.Extract(templatePath); profileErr == nil {
+		applySectionFormatRules(rules, profile.SectionFormats)
+		rules["section_formats"] = profile.SectionFormats
 		if profile.Header.Exists && profile.Header.Text != "" {
 			headerRules, _ := rules["header"].(map[string]interface{})
 			if headerRules == nil {
@@ -803,6 +805,106 @@ func (p *TemplateParser) paraInfoToRuleMap(info paraInfo) map[string]interface{}
 		m["color"] = "#" + strings.TrimPrefix(info.Color, "#")
 	}
 	return m
+}
+
+func applySectionFormatRules(rules map[string]interface{}, sections templateprofile.SectionFormatMap) {
+	set := func(container map[string]interface{}, key string, style templateprofile.StyleRule) {
+		if style.FontSizeHalfPt == "" {
+			return
+		}
+		container[key] = styleRuleToTemplateRule(style)
+	}
+	set(rules, "title", sections["cover_title"])
+	set(rules, "body", sections["body_text"])
+
+	headings, _ := rules["headings"].(map[string]interface{})
+	if headings == nil {
+		headings = map[string]interface{}{}
+	}
+	set(headings, "level1", sections["chapter_title"])
+	set(headings, "level2", sections["section_title"])
+	set(headings, "level3", sections["subsection_title"])
+	if len(headings) > 0 {
+		rules["headings"] = headings
+	}
+
+	abstract, _ := rules["abstract"].(map[string]interface{})
+	if abstract == nil {
+		abstract = map[string]interface{}{}
+	}
+	set(abstract, "content", sections["abstract_body"])
+	if len(abstract) > 0 {
+		rules["abstract"] = abstract
+	}
+
+	references, _ := rules["references"].(map[string]interface{})
+	if references == nil {
+		references = map[string]interface{}{}
+	}
+	set(references, "content", sections["reference_item"])
+	if title, ok := references["title"]; ok {
+		references["label"] = title
+	}
+	if len(references) > 0 {
+		rules["references"] = references
+	}
+	if acknowledgements, ok := rules["acknowledgements"].(map[string]interface{}); ok {
+		if title, exists := acknowledgements["title"]; exists {
+			acknowledgements["label"] = title
+		}
+	}
+}
+
+func styleRuleToTemplateRule(style templateprofile.StyleRule) map[string]interface{} {
+	rule := map[string]interface{}{}
+	eastAsia, ascii := style.FontEastAsia, style.FontASCII
+	if eastAsia == "" && isChineseTemplateFont(ascii) {
+		eastAsia, ascii = ascii, ""
+	}
+	if eastAsia != "" {
+		rule["font_name"] = eastAsia
+	}
+	if ascii != "" {
+		rule["font_name_latin"] = ascii
+	}
+	if halfPoints, err := strconv.ParseFloat(style.FontSizeHalfPt, 64); err == nil && halfPoints > 0 {
+		points := halfPoints / 2
+		rule["font_size"] = fontPointsToChineseName(points)
+		rule["font_size_pt"] = points
+	}
+	if style.BoldSet {
+		rule["bold"] = style.Bold
+	}
+	if style.Alignment != "" {
+		rule["alignment"] = style.Alignment
+	}
+	if line, err := strconv.ParseFloat(style.Line, 64); err == nil && line > 0 {
+		if strings.EqualFold(style.LineRule, "exact") {
+			rule["line_space"] = "fixed"
+			rule["line_space_value"] = line / 20
+		} else {
+			rule["line_space"] = line / 240
+		}
+	}
+	if chars, err := strconv.ParseFloat(style.FirstLineChars, 64); err == nil {
+		rule["first_line_indent"] = chars / 100
+	}
+	if before, err := strconv.ParseFloat(style.BeforeTwips, 64); err == nil {
+		rule["paragraph_before_twips"] = before
+	}
+	if after, err := strconv.ParseFloat(style.AfterTwips, 64); err == nil {
+		rule["paragraph_after_twips"] = after
+	}
+	return rule
+}
+
+func isChineseTemplateFont(font string) bool {
+	for _, name := range []string{"宋体", "黑体", "楷体", "仿宋", "方正", "华文", "微软雅黑"} {
+		if strings.Contains(font, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *TemplateParser) extractParaInfo(para document.Paragraph, sc *docxStyleCache) paraInfo {
@@ -1444,22 +1546,4 @@ func extractUniversityFromText(text string) string {
 		return m
 	}
 	return text
-}
-
-// ── IsSampleDocument 检测是否为格式范例文档 ─────────────────────────────
-
-// IsSampleDocument checks whether a DOCX file is a "formatted sample"
-// (actual paper with formatting) rather than a "format description"
-// (text document describing formatting rules).
-//
-// Heuristic: if the extracted text does NOT contain many format-description
-// keywords (字体, 字号, 行距, 居中, 对齐, 加粗 appearing at least 5 times total),
-// it's likely a formatted sample.
-func IsSampleDocument(text string) bool {
-	keywords := []string{"字体", "字号", "行距", "居中", "对齐", "加粗", "磅", "页边距", "格式要求", "宋体", "黑体", "楷体"}
-	totalHits := 0
-	for _, kw := range keywords {
-		totalHits += strings.Count(text, kw)
-	}
-	return totalHits < 5
 }

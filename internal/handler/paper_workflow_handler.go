@@ -146,13 +146,18 @@ func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
 		return
 	}
 	var templateID uuid.UUID
-	if raw := strings.TrimSpace(c.PostForm("template_id")); raw != "" {
-		templateID, err = resolveWorkflowFormatTemplateID(raw, c.PostForm("document_type"))
-		if err != nil {
-			_ = os.Remove(inputPath)
-			utils.ErrorResponse(c, http.StatusBadRequest, "invalid template_id", err.Error())
-			return
-		}
+	raw := strings.TrimSpace(c.PostForm("template_id"))
+	if raw == "" {
+		_ = os.Remove(inputPath)
+		utils.ErrorResponse(c, http.StatusBadRequest, "请选择学校模板", "template_id is required")
+		return
+	}
+	templateID, err = resolveWorkflowFormatTemplateID(raw, c.PostForm("document_type"))
+
+	if err != nil {
+		_ = os.Remove(inputPath)
+		utils.ErrorResponse(c, http.StatusBadRequest, "invalid template_id", err.Error())
+		return
 	}
 
 	job, err := h.svc.CreatePaperJob(c.Request.Context(), service.CreatePaperJobInput{
@@ -211,13 +216,7 @@ func resolveWorkflowFormatTemplateID(raw string, documentType string) (uuid.UUID
 			return template.ID, nil
 		}
 	}
-	if len(preferredTemplates) > 0 {
-		return preferredTemplates[0].ID, nil
-	}
-	if len(templates) > 0 {
-		return templates[0].ID, nil
-	}
-	return uuid.Nil, fmt.Errorf("no active template for university %d", universityID)
+	return uuid.Nil, fmt.Errorf("学校 %d 的模板文件缺失，请联系管理员上传模板", universityID)
 }
 
 func (h *PaperWorkflowHandler) authorizePaperJob(c *gin.Context, userID uuid.UUID) (uuid.UUID, uuid.UUID, error) {
@@ -353,7 +352,7 @@ func jobDownloadReady(job *service.WorkflowJobView) bool {
 	if job == nil || strings.TrimSpace(job.DownloadPath) == "" {
 		return false
 	}
-	return job.Status == string(workflow.StatusVerifiedPass) || job.Status == string(workflow.StatusManualReview)
+	return job.Status == string(workflow.StatusVerifiedPass) && job.Stage == workflow.StageVerified
 }
 
 func (h *PaperWorkflowHandler) respondJobLookupError(c *gin.Context, err error) {

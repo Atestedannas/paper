@@ -231,7 +231,47 @@ func TestMergeDocumentSectionHeaderFooterRefsUsesTemplateSectionMapping(t *testi
 	}
 }
 
-func TestMergeDocumentSectionHeaderFooterRefsCopiesTemplateSectionProperties(t *testing.T) {
+func TestMergeDocumentSectionHeaderFooterRefsMapsBySemanticRoleNotPosition(t *testing.T) {
+	outputEntries := map[string][]byte{
+		"word/document.xml": []byte(`<?xml version="1.0"?><w:document xmlns:w="w" xmlns:r="r"><w:body>` +
+			`<w:p><w:r><w:t>论文封面</w:t></w:r></w:p><w:sectPr/>` +
+			`<w:p><w:r><w:t>摘要</w:t></w:r></w:p><w:p><w:r><w:t>ABSTRACT</w:t></w:r></w:p><w:sectPr/>` +
+			`<w:p><w:r><w:t>目录</w:t></w:r></w:p><w:sectPr/>` +
+			`<w:p><w:r><w:t>第1章 绪论</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t>参考文献</w:t></w:r></w:p><w:sectPr/>` +
+			`</w:body></w:document>`),
+	}
+	templateEntries := map[string][]byte{
+		"word/document.xml": []byte(`<?xml version="1.0"?><w:document xmlns:w="w" xmlns:r="r"><w:body>` +
+			`<w:p><w:r><w:t>模板封面</w:t></w:r></w:p><w:sectPr/>` +
+			`<w:p><w:r><w:t>摘要</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="cn"/></w:sectPr>` +
+			`<w:p><w:r><w:t>ABSTRACT</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="en"/></w:sectPr>` +
+			`<w:p><w:r><w:t>目录</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="toc"/></w:sectPr>` +
+			`<w:p><w:r><w:t>第1章 正文</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="body"/></w:sectPr>` +
+			`<w:p><w:r><w:t>第2章 正文</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="chapter2"/></w:sectPr>` +
+			`</w:body></w:document>`),
+	}
+
+	mergeDocumentSectionHeaderFooterRefs(outputEntries, templateEntries)
+	sections := extractSectPrBlocks(string(outputEntries["word/document.xml"]))
+	if len(sections) != 4 {
+		t.Fatalf("expected four output sections, got %d", len(sections))
+	}
+	if strings.Contains(sections[0], "headerReference") {
+		t.Fatalf("cover must use the template cover section, got %s", sections[0])
+	}
+	if !strings.Contains(sections[1], `r:id="cn"`) {
+		t.Fatalf("combined abstract section must map to the template Chinese abstract role, got %s", sections[1])
+	}
+	if !strings.Contains(sections[2], `r:id="toc"`) {
+		t.Fatalf("TOC section must map to the template TOC role, got %s", sections[2])
+	}
+	if !strings.Contains(sections[3], `r:id="body"`) || strings.Contains(sections[3], `r:id="toc"`) {
+		t.Fatalf("body section must map to the template body role, got %s", sections[3])
+	}
+}
+
+func TestMergeDocumentSectionHeaderFooterRefsPreservesOutputSectionProperties(t *testing.T) {
 	outputEntries := map[string][]byte{
 		"word/document.xml": []byte(`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>` +
 			`<w:p><w:r><w:t>Cover</w:t></w:r></w:p>` +
@@ -257,21 +297,21 @@ func TestMergeDocumentSectionHeaderFooterRefsCopiesTemplateSectionProperties(t *
 	if len(sectPrs) != 3 {
 		t.Fatalf("expected 3 sectPr blocks, got %d", len(sectPrs))
 	}
-	if !strings.Contains(sectPrs[0], `w:top="1134"`) || strings.Contains(sectPrs[0], `w:start="1"`) {
-		t.Fatalf("expected first output section to inherit template cover section properties, got %s", sectPrs[0])
+	if !strings.Contains(sectPrs[0], `w:top="1418"`) || !strings.Contains(sectPrs[0], `w:start="1"`) {
+		t.Fatalf("expected first output section properties to be preserved, got %s", sectPrs[0])
 	}
 	for idx, sectPr := range sectPrs[1:] {
 		if !strings.Contains(sectPr, `r:id="rId8"`) || !strings.Contains(sectPr, `r:id="rId9"`) {
 			t.Fatalf("expected output section %d to reuse template body header/footer refs, got %s", idx+2, sectPr)
 		}
-		if !strings.Contains(sectPr, `w:type w:val="continuous"`) {
-			t.Fatalf("expected output section %d to inherit template section break type, got %s", idx+2, sectPr)
+		if !strings.Contains(sectPr, `w:type w:val="nextPage"`) {
+			t.Fatalf("expected output section %d to preserve its section break type, got %s", idx+2, sectPr)
 		}
-		if !strings.Contains(sectPr, `w:pgNumType w:fmt="upperRoman" w:start="0"`) {
-			t.Fatalf("expected output section %d to inherit template page numbering, got %s", idx+2, sectPr)
+		if !strings.Contains(sectPr, `w:pgNumType w:fmt="decimal" w:start="1"`) {
+			t.Fatalf("expected output section %d to preserve its page numbering, got %s", idx+2, sectPr)
 		}
-		if !strings.Contains(sectPr, `<w:titlePg/>`) {
-			t.Fatalf("expected output section %d to inherit template titlePg flag, got %s", idx+2, sectPr)
+		if strings.Contains(sectPr, `<w:titlePg/>`) {
+			t.Fatalf("expected output section %d not to inherit unrelated template titlePg, got %s", idx+2, sectPr)
 		}
 	}
 }

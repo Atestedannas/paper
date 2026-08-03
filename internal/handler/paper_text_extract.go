@@ -92,6 +92,7 @@ func (h *PaperHandler) tryUniofficeExtract(filePath string) string {
 	if err != nil {
 		return ""
 	}
+	defer doc.Close()
 
 	var sb strings.Builder
 	for _, para := range doc.Paragraphs() {

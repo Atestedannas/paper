@@ -52,8 +52,7 @@ var ErrCorrectedFileNotFound = fmt.Errorf("corrected file not found")
 // logFormatRulesDebug 在环境变量 PAPER_DEBUG_FORMAT_RULES=1 或 true 时，把模板 format_rules（JSON）打到日志。
 // 用于 POST /upload 异步链路：检查 CheckPaperFormat、修正 FixPaperFormat、快速 QuickV2Fix 对照规则与引擎行为。
 func logFormatRulesDebug(phase string, paperID, templateID uuid.UUID, rulesMap map[string]interface{}) {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv("PAPER_DEBUG_FORMAT_RULES")))
-	if v != "1" && v != "true" && v != "yes" {
+	if !formatRulesDebugEnabled() {
 		return
 	}
 	if rulesMap == nil {
@@ -71,6 +70,15 @@ func logFormatRulesDebug(phase string, paperID, templateID uuid.UUID, rulesMap m
 	}
 	log.Printf("[format_rules调试] phase=%s paper=%s template=%s 顶层键=%v\n%s",
 		phase, paperID, templateID, keysOfRulesMapForDebug(rulesMap), out)
+}
+
+func formatRulesDebugEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PAPER_DEBUG_FORMAT_RULES"))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func keysOfRulesMapForDebug(m map[string]interface{}) []string {
@@ -219,11 +227,12 @@ func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (stri
 		return "", ErrLegacyWritePathDisabled
 	}
 
-	// 初始化诊断日志文件写入器
-	if err := fileprocessor.InitDiagLog("D:\\workpace\\diag_output.log"); err != nil {
-		log.Printf("[QuickV2Fix] 诊断日志初始化失败，继续执行: %v", err)
-	} else {
-		defer fileprocessor.CloseDiagLog()
+	if diagnosticPath := strings.TrimSpace(os.Getenv("PAPER_DIAG_LOG_PATH")); diagnosticPath != "" {
+		if err := fileprocessor.InitDiagLog(diagnosticPath); err != nil {
+			log.Printf("[QuickV2Fix] 诊断日志初始化失败，继续执行: %v", err)
+		} else {
+			defer fileprocessor.CloseDiagLog()
+		}
 	}
 
 	start := time.Now()

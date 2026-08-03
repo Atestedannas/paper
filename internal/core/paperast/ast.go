@@ -49,16 +49,18 @@ type ValidationIssue struct {
 }
 
 var (
-	bodyChildPattern   = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
-	nodeTypePattern    = regexp.MustCompile(`^<w:(p|tbl)\b`)
-	textPattern        = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
-	deletedPattern     = regexp.MustCompile(`(?s)<w:(?:del|moveFrom)\b[^>]*>.*?</w:(?:del|moveFrom)>`)
-	stylePattern       = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
-	headingPattern     = regexp.MustCompile(`^(\d+(?:\.\d+){0,3})\s+\S+`)
-	chapterPattern     = regexp.MustCompile(`^第[一二三四五六七八九十百千万\d]+章(?:\s*\S+)?$`)
-	chineseListPattern = regexp.MustCompile(`^[一二三四五六七八九十百]+[、．.]\s*\S+`)
-	spacingPattern     = regexp.MustCompile(`<w:spacing\b[^>]*/>`)
-	attributePattern   = regexp.MustCompile(`\b([A-Za-z0-9_:.]+)="([^"]*)"`)
+	bodyChildPattern      = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
+	nodeTypePattern       = regexp.MustCompile(`^<w:(p|tbl)\b`)
+	textPattern           = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
+	deletedPattern        = regexp.MustCompile(`(?s)<w:(?:del|moveFrom)\b[^>]*>.*?</w:(?:del|moveFrom)>`)
+	stylePattern          = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
+	outlinePattern        = regexp.MustCompile(`<w:outlineLvl\b[^>]*\bw:val="(\d+)"`)
+	headingPattern        = regexp.MustCompile(`^(\d+(?:\.\d+){0,3})\s+\S+`)
+	compactHeadingPattern = regexp.MustCompile(`^(\d+(?:\.\d+){1,3})(?:\.)?([^\d\s].+)$`)
+	chapterPattern        = regexp.MustCompile(`^第[一二三四五六七八九十百千万\d]+章(?:\s*\S+)?$`)
+	chineseListPattern    = regexp.MustCompile(`^[一二三四五六七八九十百]+[、．.]\s*\S+`)
+	spacingPattern        = regexp.MustCompile(`<w:spacing\b[^>]*/>`)
+	attributePattern      = regexp.MustCompile(`\b([A-Za-z0-9_:.]+)="([^"]*)"`)
 )
 
 func Extract(docxPath string) (Snapshot, error) {
@@ -86,9 +88,19 @@ func ExtractDocumentXML(documentXML string) Snapshot {
 		text := extractText(raw)
 		styleID := extractStyleID(raw)
 		role, level, _, evidence := classify(nodeType, text)
-		if nodeType == "paragraph" && chapterPattern.MatchString(strings.TrimSpace(text)) {
+		if nodeType == "paragraph" && (role == "body_paragraph" || role == "heading") {
+			if outline, ok := extractOutlineLevel(raw); ok {
+				role, level, evidence = "heading", outline+1, []string{"ooxml:outline_level"}
+			}
+		}
+		if nodeType == "paragraph" && sectionID == "toc" {
+			if tocLevel, ok := tocStyleLevel(styleID); ok {
+				role, level, evidence = "toc_entry", tocLevel, []string{"ooxml:toc_style"}
+			}
+		}
+		if nodeType == "paragraph" && role == "body_paragraph" && chapterPattern.MatchString(strings.TrimSpace(text)) {
 			role, level, evidence = "heading", 1, []string{"regex:chinese_chapter_heading"}
-		} else if nodeType == "paragraph" && chineseListPattern.MatchString(strings.TrimSpace(text)) {
+		} else if nodeType == "paragraph" && role == "body_paragraph" && chineseListPattern.MatchString(strings.TrimSpace(text)) {
 			role, level, evidence = "heading", 1, []string{"regex:chinese_list_heading"}
 		}
 		confidence := confidenceFor(role, nodeType, text, styleID, evidence)
@@ -241,7 +253,35 @@ func classify(nodeType string, text string) (string, int, float64, []string) {
 		level := strings.Count(match[1], ".") + 1
 		return "heading", level, 0.95, []string{"regex:decimal_heading"}
 	}
+	if match := compactHeadingPattern.FindStringSubmatch(trimmed); len(match) == 3 {
+		level := strings.Count(match[1], ".") + 1
+		return "heading", level, 0.95, []string{"regex:compact_decimal_heading"}
+	}
 	return "body_paragraph", 0, 0.75, []string{"fallback:non_empty_paragraph"}
+}
+
+func extractOutlineLevel(raw string) (int, bool) {
+	match := outlinePattern.FindStringSubmatch(raw)
+	if len(match) != 2 {
+		return 0, false
+	}
+	level := 0
+	if _, err := fmt.Sscanf(match[1], "%d", &level); err != nil || level < 0 || level > 8 {
+		return 0, false
+	}
+	return level, true
+}
+
+func tocStyleLevel(styleID string) (int, bool) {
+	normalized := strings.ToLower(strings.NewReplacer(" ", "", "_", "", "-", "").Replace(strings.TrimSpace(styleID)))
+	if !strings.HasPrefix(normalized, "toc") {
+		return 0, false
+	}
+	level := 0
+	if _, err := fmt.Sscanf(strings.TrimPrefix(normalized, "toc"), "%d", &level); err != nil || level < 1 || level > 9 {
+		return 0, false
+	}
+	return level, true
 }
 
 func confidenceFor(role, nodeType, text, styleID string, evidence []string) float64 {

@@ -717,6 +717,7 @@ func main() {
 				templates.POST("/:id/versions/:versionId/promote", adminTemplateHandler.PromoteTemplateVersion)
 				templates.POST("/parse-paper", adminTemplateHandler.ParsePaperToTemplate)
 				templates.GET("/:id/usage-stats", adminTemplateHandler.GetTemplateUsageStats)
+				templates.POST("/upload-docx", adminTemplateHandler.UploadTemplateDOCX)
 
 				// legacy aliases
 				templates.GET("/:id/display", paperHandler.GetFormatStandardForDisplay)

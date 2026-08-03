@@ -84,6 +84,12 @@ type StyleProfile struct {
 type StyleProperties struct {
 	EastAsiaFont          string `json:"east_asia_font,omitempty"`
 	ASCIIFont             string `json:"ascii_font,omitempty"`
+	HAnsiFont             string `json:"hansi_font,omitempty"`
+	ComplexFont           string `json:"complex_font,omitempty"`
+	ASCIITheme            string `json:"ascii_theme,omitempty"`
+	HAnsiTheme            string `json:"hansi_theme,omitempty"`
+	EastAsiaTheme         string `json:"east_asia_theme,omitempty"`
+	ComplexTheme          string `json:"complex_theme,omitempty"`
 	FontHint              string `json:"font_hint,omitempty"`
 	FontSizeHalfPoints    int    `json:"font_size_half_points,omitempty"`
 	ComplexSizeHalfPoints int    `json:"complex_size_half_points,omitempty"`

@@ -2,8 +2,12 @@ package handler
 
 import (
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -467,6 +471,110 @@ func (h *AdminTemplateHandler) GetTemplateUsageStats(c *gin.Context) {
 	stats.LastUsedAt = &lastUsed
 
 	utils.SuccessResponse(c, "获取成功", stats)
+}
+
+// UploadTemplateDOCX 上传模板 .docx（仅存文件，格式规则延迟到首次提交论文时解析）
+// POST /api/v1/admin/templates/upload-docx
+// 上传后只保存 .docx 文件路径，FormatRules 留空。
+// 第一个用户提交论文选择此模板时，系统自动解析并回写 FormatRules，后续直接读 DB JSON。
+func (h *AdminTemplateHandler) UploadTemplateDOCX(c *gin.Context) {
+	if !h.checkAdminPermission(c) {
+		return
+	}
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "请上传模板文件", err.Error())
+		return
+	}
+
+	ext := strings.ToLower(filepath.Ext(file.Filename))
+	if ext != ".docx" {
+		utils.ErrorResponse(c, http.StatusBadRequest, "仅支持 .docx 格式模板", "")
+		return
+	}
+
+	// 创建上传目录
+	uploadDir := filepath.Join("uploads", "templates")
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "创建上传目录失败", err.Error())
+		return
+	}
+
+	// 保存临时文件
+	tmpFileName := fmt.Sprintf("%s_%d%s", uuid.New().String(), time.Now().Unix(), ext)
+	tmpFilePath := filepath.Join(uploadDir, tmpFileName)
+	if err := c.SaveUploadedFile(file, tmpFilePath); err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "保存文件失败", err.Error())
+		return
+	}
+	defer os.Remove(tmpFilePath)
+
+	// 解析表单参数
+	name := strings.TrimSpace(c.PostForm("name"))
+	universityIDStr := c.PostForm("university_id")
+	documentType := strings.TrimSpace(c.PostForm("document_type"))
+	subject := strings.TrimSpace(c.PostForm("subject"))
+	description := strings.TrimSpace(c.PostForm("description"))
+
+	if name == "" {
+		name = strings.TrimSuffix(file.Filename, ext)
+	}
+	if documentType == "" {
+		documentType = "本科论文"
+	}
+	if subject == "" {
+		subject = "综合"
+	}
+
+	var universityID *int64
+	if uid, err := strconv.ParseInt(universityIDStr, 10, 64); err == nil && uid > 0 {
+		universityID = &uid
+	}
+
+	// 生成模板
+	templateUUID := uuid.New()
+	templateID := fmt.Sprintf("tpl_%s", uuid.New().String()[:12])
+
+	// 持久化模板文件
+	stablePath, err := persistTemplateDOCX(templateUUID, tmpFilePath)
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "保存模板文件失败", err.Error())
+		return
+	}
+
+	template := model.FormatTemplate{
+		ID:                 templateUUID,
+		TemplateID:         templateID,
+		Name:               name,
+		UniversityID:       universityID,
+		DocumentType:       documentType,
+		Subject:            subject,
+		Source:             "admin_upload",
+		Version:            "1.0",
+		IsPublic:           true,
+		IsActive:           true,
+		FilePath:           stablePath,
+		GoldenTemplatePath: stablePath,
+		FormatRules:        "", // 延迟解析：首次提交论文时自动解析并回写
+		Description:        description,
+	}
+
+	if err := database.DB.Create(&template).Error; err != nil {
+		utils.ErrorResponse(c, http.StatusInternalServerError, "创建模板失败", err.Error())
+		return
+	}
+
+	log.Printf("[ADMIN_TEMPLATE_UPLOAD] template %s (id=%s) saved, FormatRules deferred to first paper submission",
+		name, templateUUID)
+
+	utils.Created(c, gin.H{
+		"message":      "模板上传成功，格式规则将在首次提交论文时自动解析",
+		"id":           templateUUID,
+		"name":         name,
+		"file_path":    stablePath,
+		"parse_status": "deferred",
+	})
 }
 
 // checkAdminPermission 检查管理员权限

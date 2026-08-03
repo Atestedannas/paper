@@ -83,6 +83,7 @@ var xmlAttributePattern = regexp.MustCompile(`\b([A-Za-z_:][A-Za-z0-9_.:-]*)="([
 var shadingPattern = regexp.MustCompile(`<w:shd\b[^>]*/>`)
 var documentBackgroundPattern = regexp.MustCompile(`<w:background\b[^>]*/>`)
 var pageBreakBeforePattern = regexp.MustCompile(`<w:pageBreakBefore\b[^>]*/>`)
+var keepNextPattern = regexp.MustCompile(`<w:keepNext\b[^>]*/>`)
 var keepLinesPattern = regexp.MustCompile(`<w:keepLines\b[^>]*/>`)
 var widowControlPattern = regexp.MustCompile(`<w:widowControl\b[^>]*/>`)
 
@@ -133,14 +134,34 @@ func profileStyleToParagraphStyle(pr *templateprofile.StyleRule, defaults paragr
 	if pr.FontASCII != "" {
 		ps.AsciiFont = pr.FontASCII
 	}
+	if pr.FontHAnsi != "" {
+		ps.HAnsiFont = pr.FontHAnsi
+	}
+	if pr.FontCS != "" {
+		ps.ComplexFont = pr.FontCS
+	}
+	if pr.FontHint != "" {
+		ps.FontHint = pr.FontHint
+	}
 	if pr.FontSizeHalfPt != "" {
 		val, err := strconv.Atoi(strings.TrimSpace(pr.FontSizeHalfPt))
 		if err == nil {
 			ps.Size = val
 		}
 	}
+	if pr.ComplexSizeHalfPt != "" {
+		val, err := strconv.Atoi(strings.TrimSpace(pr.ComplexSizeHalfPt))
+		if err == nil {
+			ps.ComplexSize = val
+		}
+	}
 	if pr.BoldSet {
+		ps.BoldSet = true
 		ps.Bold = pr.Bold
+	}
+	if pr.ItalicSet {
+		ps.ItalicSet = true
+		ps.Italic = pr.Italic
 	}
 	if pr.Alignment != "" {
 		ps.Alignment = pr.Alignment
@@ -151,10 +172,44 @@ func profileStyleToParagraphStyle(pr *templateprofile.StyleRule, defaults paragr
 			ps.Line = line
 		}
 	}
+	if pr.LineRule != "" {
+		ps.LineRule = pr.LineRule
+	}
+	if pr.BeforeTwips != "" {
+		if value, err := strconv.Atoi(strings.TrimSpace(pr.BeforeTwips)); err == nil {
+			ps.Before = value
+		}
+	}
+	if pr.AfterTwips != "" {
+		if value, err := strconv.Atoi(strings.TrimSpace(pr.AfterTwips)); err == nil {
+			ps.After = value
+		}
+	}
+	if pr.BeforeLines != "" {
+		if value, err := strconv.Atoi(strings.TrimSpace(pr.BeforeLines)); err == nil {
+			ps.BeforeLines = value
+		}
+	}
+	if pr.AfterLines != "" {
+		if value, err := strconv.Atoi(strings.TrimSpace(pr.AfterLines)); err == nil {
+			ps.AfterLines = value
+		}
+	}
 	if pr.FirstLineChars != "" {
 		fc, err := strconv.Atoi(strings.TrimSpace(pr.FirstLineChars))
 		if err == nil {
 			ps.FirstLineChars = fc
+		}
+	}
+	if pr.FirstLineTwips != "" {
+		if value, err := strconv.Atoi(strings.TrimSpace(pr.FirstLineTwips)); err == nil {
+			ps.FirstLine = value
+		}
+	}
+	if pr.OutlineLevel != "" {
+		if value, err := strconv.Atoi(strings.TrimSpace(pr.OutlineLevel)); err == nil {
+			ps.OutlineLevel = value
+			ps.OutlineLevelSet = true
 		}
 	}
 	return ps
@@ -228,6 +283,9 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 	}
 	normalizePackageXML(pkg)
 	ooxmlpatch.FinalizeReviewMarkup(pkg)
+	// Comments present here originate from the template skeleton. Student
+	// comments are handled by the in-place repair path and are never removed.
+	ooxmlpatch.RemoveComments(pkg)
 	ensureUpdateFieldsOnOpen(pkg)
 	if _, err := ooxmlpatch.ApplyHeadingNumberingDefinitions(pkg, []string{"1", "1.1", "1.1.1"}); err != nil {
 		return err
@@ -288,6 +346,9 @@ func packageContainsRefreshableField(pkg *ooxmlpkg.DocxPackage) bool {
 		if !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") {
 			continue
 		}
+		if isProtectedNoteOrCommentPart(name) {
+			continue
+		}
 		content, ok := pkg.Get(name)
 		if ok && refreshableFieldPattern.Match(content) {
 			return true
@@ -322,11 +383,13 @@ func NormalizeFinalDOCX(path string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	changed := 0
-	changed += ooxmlpatch.FinalizeReviewMarkup(pkg)
+	changed := ooxmlpatch.FinalizeReviewMarkup(pkg)
 	changed += removeDanglingStyleReferences(pkg)
 	for _, name := range pkg.Names() {
 		if !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") {
+			continue
+		}
+		if isProtectedNoteOrCommentPart(name) {
 			continue
 		}
 		content, ok := pkg.Get(name)
@@ -340,10 +403,15 @@ func NormalizeFinalDOCX(path string) (int, error) {
 		updated = emptyGutterPattern.ReplaceAllString(updated, "")
 		updated = deduplicateVMLIDs(updated)
 		if name == defaultPatchTarget {
-			updated = normalizeParagraphPaginationControls(updated)
+			beforeParagraphs := len(paragraphPattern.FindAllStringIndex(updated, -1))
 			updated = fallbackStartTagPattern.ReplaceAllStringFunc(updated, deduplicateStartTagAttributes)
+			logParagraphMutation(name, "fallback-attributes", beforeParagraphs, updated)
+			beforeParagraphs = len(paragraphPattern.FindAllStringIndex(updated, -1))
 			updated = normalizeContentTablesStructurally(updated)
+			logParagraphMutation(name, "content-tables", beforeParagraphs, updated)
+			beforeParagraphs = len(paragraphPattern.FindAllStringIndex(updated, -1))
 			updated = constrainOversizedDrawings(updated)
+			logParagraphMutation(name, "drawings", beforeParagraphs, updated)
 		}
 		if strings.HasPrefix(name, "word/footer") && strings.Contains(updated, "PAGE") {
 			updated = paragraphPattern.ReplaceAllStringFunc(updated, func(paragraph string) string {
@@ -375,6 +443,20 @@ func NormalizeFinalDOCX(path string) (int, error) {
 		return 0, nil
 	}
 	return changed, pkg.Write(path)
+}
+
+func isProtectedNoteOrCommentPart(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasPrefix(lower, "word/comments") ||
+		lower == "word/footnotes.xml" ||
+		lower == "word/endnotes.xml"
+}
+
+func logParagraphMutation(name, operation string, before int, content string) {
+	after := len(paragraphPattern.FindAllStringIndex(content, -1))
+	if before != after {
+		log.Printf("[内容保全] part=%s operation=%s paragraphs=%d->%d", name, operation, before, after)
+	}
 }
 
 type xmlElementSpan struct {
@@ -1773,7 +1855,9 @@ type paragraphStyle struct {
 	Size               int
 	ComplexSize        int
 	Bold               bool
+	BoldSet            bool
 	Italic             bool
+	ItalicSet          bool
 	BoldPrefix         string
 	FirstLine          int
 	FirstLineChars     int
@@ -1792,7 +1876,9 @@ type paragraphStyle struct {
 	AdjustRightIndZero bool
 	SuperscriptCites   bool
 	AsciiFont          string
+	HAnsiFont          string
 	EastAsiaFont       string
+	ComplexFont        string
 	FontHint           string
 }
 
@@ -1810,7 +1896,9 @@ func compiledParagraphStyle(profiles []templatecompile.StyleProfile, names ...st
 				Size:            properties.FontSizeHalfPoints,
 				ComplexSize:     properties.ComplexSizeHalfPoints,
 				Bold:            properties.Bold,
+				BoldSet:         properties.BoldSet,
 				Italic:          properties.Italic,
+				ItalicSet:       properties.ItalicSet,
 				FirstLine:       properties.FirstLineTwips,
 				FirstLineChars:  properties.FirstLineChars,
 				Line:            properties.LineTwips,
@@ -1819,7 +1907,9 @@ func compiledParagraphStyle(profiles []templatecompile.StyleProfile, names ...st
 				After:           properties.AfterTwips,
 				Alignment:       properties.Alignment,
 				AsciiFont:       properties.ASCIIFont,
+				HAnsiFont:       properties.HAnsiFont,
 				EastAsiaFont:    properties.EastAsiaFont,
+				ComplexFont:     properties.ComplexFont,
 				FontHint:        properties.FontHint,
 				OutlineLevel:    properties.OutlineLevel,
 				OutlineLevelSet: properties.OutlineLevelSet,
@@ -1830,7 +1920,7 @@ func compiledParagraphStyle(profiles []templatecompile.StyleProfile, names ...st
 }
 
 func hasCompiledStyleProperties(properties templatecompile.StyleProperties) bool {
-	return properties.EastAsiaFont != "" || properties.ASCIIFont != "" || properties.FontHint != "" || properties.FontSizeHalfPoints > 0 ||
+	return properties.EastAsiaFont != "" || properties.ASCIIFont != "" || properties.HAnsiFont != "" || properties.ComplexFont != "" || properties.FontHint != "" || properties.FontSizeHalfPoints > 0 ||
 		properties.ComplexSizeHalfPoints > 0 || properties.BoldSet || properties.ItalicSet || properties.Alignment != "" ||
 		properties.LineTwips > 0 || properties.BeforeTwips > 0 || properties.AfterTwips > 0 || properties.FirstLineChars > 0 ||
 		properties.FirstLineTwips > 0 || properties.OutlineLevelSet
@@ -1859,6 +1949,8 @@ func paragraphWithStyle(text string, style paragraphStyle) string {
 
 func transplantParagraphSpec(text string, style paragraphStyle, includeRunProperties bool) ooxmlpatch.ParagraphPropertiesSpec {
 	asciiFont, eastAsiaFont := fontsForParagraphText(text, style)
+	hAnsiFont := firstNonEmpty(style.HAnsiFont, asciiFont)
+	complexFont := firstNonEmpty(style.ComplexFont, hAnsiFont)
 	return ooxmlpatch.ParagraphPropertiesSpec{
 		StyleID:            headingStyleID(style.HeadingLevel),
 		OutlineLevel:       effectiveOutlineLevel(style),
@@ -1882,11 +1974,14 @@ func transplantParagraphSpec(text string, style paragraphStyle, includeRunProper
 		EastAsiaFont:       eastAsiaFont,
 		FontHint:           style.FontHint,
 		AsciiFont:          asciiFont,
-		HAnsiFont:          asciiFont,
+		HAnsiFont:          hAnsiFont,
+		ComplexFont:        complexFont,
 		FontSizeHalfPoints: style.Size,
 		ComplexSizeHalfPts: firstPositive(style.ComplexSize, style.Size),
 		Bold:               style.Bold,
+		BoldSet:            style.BoldSet,
 		Italic:             style.Italic,
+		ItalicSet:          style.ItalicSet,
 	}
 }
 
@@ -1940,14 +2035,17 @@ func runPropertiesForParagraphStyle(text string, style paragraphStyle) string {
 
 func runXMLForParagraphStyle(text string, style paragraphStyle, bold bool) string {
 	asciiFont, eastAsiaFont := fontsForParagraphText(text, style)
+	hAnsiFont := firstNonEmpty(style.HAnsiFont, asciiFont)
+	complexFont := firstNonEmpty(style.ComplexFont, hAnsiFont)
 	if (style.SuperscriptCites || (style.Size == 24 && style.FirstLineChars == 200)) && !bold && style.HeadingLevel == 0 && bracketCitationPattern.MatchString(text) {
 		return runXMLWithSuperscriptCitations(text, style.Size, asciiFont, eastAsiaFont)
 	}
 	run := runXMLWithFonts(text, style.Size, bold, asciiFont, eastAsiaFont)
 	updated, _ := ooxmlpatch.ApplyRunProperties(run, ooxmlpatch.RunPropertiesSpec{
-		EastAsiaFont: eastAsiaFont, AsciiFont: asciiFont, HAnsiFont: asciiFont,
+		EastAsiaFont: eastAsiaFont, AsciiFont: asciiFont, HAnsiFont: hAnsiFont, ComplexFont: complexFont,
 		FontHint:           style.FontHint,
-		FontSizeHalfPoints: style.Size, ComplexSizeHalfPts: firstPositive(style.ComplexSize, style.Size), Bold: bold, Italic: style.Italic,
+		FontSizeHalfPoints: style.Size, ComplexSizeHalfPts: firstPositive(style.ComplexSize, style.Size),
+		Bold: bold, BoldSet: style.BoldSet, Italic: style.Italic, ItalicSet: style.ItalicSet,
 	})
 	return updated
 }
@@ -2814,18 +2912,17 @@ func normalizeParagraphPaginationControls(content string) string {
 		}
 		text := strings.TrimSpace(xmlText(paragraph))
 		if text == "" && paragraphHasPaginationControl(paragraph) {
-			if paragraphContainsNonTextObject(paragraph) {
-				paragraph = pageBreakBeforePattern.ReplaceAllString(paragraph, "")
-				paragraph = keepLinesPattern.ReplaceAllString(paragraph, "")
-				paragraph = widowControlPattern.ReplaceAllString(paragraph, "")
-				return paragraph
-			}
-			return ""
+			paragraph = pageBreakBeforePattern.ReplaceAllString(paragraph, "")
+			paragraph = keepNextPattern.ReplaceAllString(paragraph, "")
+			paragraph = keepLinesPattern.ReplaceAllString(paragraph, "")
+			paragraph = widowControlPattern.ReplaceAllString(paragraph, "")
+			return paragraph
 		}
 		if isNavigationHeadingText(text) || isTableCaption(text) {
 			return paragraph
 		}
 		paragraph = pageBreakBeforePattern.ReplaceAllString(paragraph, "")
+		paragraph = keepNextPattern.ReplaceAllString(paragraph, "")
 		paragraph = keepLinesPattern.ReplaceAllString(paragraph, "")
 		paragraph = widowControlPattern.ReplaceAllString(paragraph, "")
 		return paragraph
@@ -3464,8 +3561,17 @@ func cqrwstMainHeaderText(fields map[string]string, templateHeader string) strin
 	year := coverYear(fields)
 	major := cqrwstCoverMajor(fields)
 	docType := cqrwstHeaderDocumentType(fields, templateHeader)
-	college := templateprofile.ExtractCollegeName(templateHeader, "\u91cd\u5e86\u4eba\u6587\u79d1\u6280\u5b66\u9662")
+	college := templateprofile.ExtractCollegeName(templateHeader, schoolNameFromFields(fields))
 	return college + year + "\u5c4a" + major + "\u4e13\u4e1a\u672c\u79d1\u6bd5\u4e1a" + docType
+}
+
+func schoolNameFromFields(fields map[string]string) string {
+	for _, key := range []string{"\u5b66\u6821", "\u5b66\u6821\u540d\u79f0", "\u9662\u6821", "university", "university_name"} {
+		if value := strings.TrimSpace(fields[key]); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func cqrwstCoverMajor(fields map[string]string) string {

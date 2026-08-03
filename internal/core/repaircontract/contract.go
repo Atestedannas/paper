@@ -102,11 +102,11 @@ func Build(rules templatecontract.RuleSet, ast paperast.Snapshot) Contract {
 			},
 			{
 				ID:          "validate_content_preservation",
-				Engine:      "paper-ast-content-guard",
+				Engine:      "paper-ast-and-ooxml-structure-guard",
 				Determinism: "required",
-				Inputs:      []string{"source_paper_ast", "final_paper_ast"},
-				Outputs:     []string{"content_preservation_result"},
-				Policy:      "visible_content_change_blocks_download",
+				Inputs:      []string{"source_paper_ast", "final_paper_ast", "source_docx", "final_docx"},
+				Outputs:     []string{"content_preservation_result", "structure_preservation_result"},
+				Policy:      "visible_content_or_ooxml_structure_loss_blocks_download",
 			},
 		},
 		Blocked: []BlockedAction{
@@ -151,22 +151,69 @@ func (contract Contract) Blocks(action string) bool {
 }
 
 func ValidateVisibleContentPreserved(before, after paperast.Snapshot) []ValidationIssue {
-	remaining := visibleNodeTexts(after.Nodes)
+	return validateVisibleContentPreserved(before, after, nil)
+}
+
+// ValidateVisibleContentPreservedWithTemplate permits only visible paragraphs
+// that already belong to the selected template skeleton. Student content must
+// still occur, unchanged and in order; arbitrary inserted text remains fatal.
+func ValidateVisibleContentPreservedWithTemplate(before, after, template paperast.Snapshot) []ValidationIssue {
+	allowed := make(map[string]int)
+	for _, text := range visibleNodeTexts(template.Nodes) {
+		allowed[text]++
+	}
+	return validateVisibleContentPreserved(before, after, allowed)
+}
+
+func validateVisibleContentPreserved(before, after paperast.Snapshot, allowedInsertions map[string]int) []ValidationIssue {
+	expected := visibleNodeTexts(before.Nodes)
+	actual := visibleNodeTexts(after.Nodes)
 	position := 0
 	var issues []ValidationIssue
-	for _, text := range visibleNodeTexts(before.Nodes) {
+	for _, text := range expected {
 		found := false
-		for position < len(remaining) {
-			if remaining[position] == text {
+		combined := ""
+		var spaced []string
+		for position < len(actual) {
+			item := actual[position]
+			nextCombined := combined + item
+			nextSpaced := append(append([]string(nil), spaced...), item)
+			combinedWithSpace := strings.Join(nextSpaced, " ")
+			if nextCombined == text || combinedWithSpace == text {
 				found = true
 				position++
 				break
 			}
-			position++
+			if strings.HasPrefix(text, nextCombined) || strings.HasPrefix(text, combinedWithSpace) {
+				combined = nextCombined
+				spaced = nextSpaced
+				position++
+				continue
+			}
+			if allowedInsertions[item] > 0 {
+				allowedInsertions[item]--
+				position++
+				continue
+			}
+			if !strings.HasPrefix(text, nextCombined) && !strings.HasPrefix(text, combinedWithSpace) {
+				break
+			}
 		}
 		if !found {
 			issues = append(issues, ValidationIssue{Kind: "visible_content_rewrite", Message: "repair removed, reordered, or rewrote visible content: " + text})
 			break
+		}
+	}
+	if len(issues) == 0 {
+		for position < len(actual) && allowedInsertions[actual[position]] > 0 {
+			allowedInsertions[actual[position]]--
+			position++
+		}
+		if position != len(actual) {
+			issues = append(issues, ValidationIssue{
+				Kind:    "visible_content_rewrite",
+				Message: "repair inserted visible content: " + strings.Join(actual[position:], " | "),
+			})
 		}
 	}
 	return issues

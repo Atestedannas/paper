@@ -94,7 +94,9 @@ func NewFormatRuleEngine(processor *EnhancedProcessor, templatePath string, user
 	if templateDoc, openErr := document.Open(templatePath); openErr == nil {
 		strictSpecs := extractStrictTemplateSpecs(templateDoc, processor)
 		for key, spec := range strictSpecs {
-			engine.compiled[key] = overlayTemplateFormatSpec(engine.compiled[key], spec)
+			if _, exists := engine.compiled[key]; !exists {
+				engine.compiled[key] = spec
+			}
 		}
 		for source, targets := range map[string][]string{
 			V2ThesisTitle:      {"cover_title"},
@@ -106,12 +108,16 @@ func NewFormatRuleEngine(processor *EnhancedProcessor, templatePath string, user
 		} {
 			if spec, ok := strictSpecs[source]; ok {
 				for _, target := range targets {
-					engine.compiled[target] = overlayTemplateFormatSpec(engine.compiled[target], spec)
+					if _, exists := engine.compiled[target]; !exists {
+						engine.compiled[target] = spec
+					}
 				}
 			}
 		}
 		for key, spec := range extractInstructionTemplateSpecs(templateDoc, processor) {
-			engine.compiled[key] = overlayTemplateFormatSpec(engine.compiled[key], spec)
+			if _, exists := engine.compiled[key]; !exists {
+				engine.compiled[key] = spec
+			}
 		}
 		templateDoc.Close()
 	}
@@ -194,15 +200,7 @@ func overlayTemplateFormatSpec(base, explicit ParagraphFormatSpec) ParagraphForm
 
 func (e *FormatRuleEngine) GetRule(paragraphType string) (ParagraphFormatSpec, bool) {
 	spec, found := ParagraphFormatSpec{}, false
-	if namedStyleAuthoritative(paragraphType) {
-		if named, ok := e.namedStyles[paragraphType]; ok {
-			spec = named
-			found = true
-		} else if compiled, ok := e.compiled[paragraphType]; ok {
-			spec = compiled
-			found = true
-		}
-	} else if compiled, ok := e.compiled[paragraphType]; ok {
+	if compiled, ok := e.compiled[paragraphType]; ok {
 		spec = compiled
 		found = true
 	} else if named, ok := e.namedStyles[paragraphType]; ok {
@@ -220,18 +218,6 @@ func (e *FormatRuleEngine) GetRule(paragraphType string) (ParagraphFormatSpec, b
 		found = true
 	}
 	return spec, found && !spec.IsEmpty()
-}
-
-func namedStyleAuthoritative(paragraphType string) bool {
-	switch paragraphType {
-	case "body",
-		"heading_1", "heading_2", "heading_3", "heading_4",
-		"reference", "references",
-		"acknowledgement", "acknowledgements":
-		return true
-	default:
-		return false
-	}
 }
 
 func (e *FormatRuleEngine) Rules() map[string]ParagraphFormatSpec {
@@ -409,16 +395,24 @@ func headerFooterFormatSpec(rule templateprofile.HeaderFooterRule) (ParagraphFor
 
 // 🔒 LOCKED: 标题格式全部从模板提取 — styleRuleToFormatSpec 将 templateprofile.StyleRule → ParagraphFormatSpec
 func styleRuleToFormatSpec(style templateprofile.StyleRule) (ParagraphFormatSpec, bool) {
+	eastAsia, ascii := style.FontEastAsia, style.FontASCII
+	if ascii != "" && (isChineseFont(ascii) || containsChineseChar(ascii)) {
+		if eastAsia == "" {
+			eastAsia = ascii
+		}
+		// A Chinese family stored in w:ascii is not reliable evidence for the
+		// Western font slot. Keep it as East Asian evidence only.
+		ascii = ""
+	}
 	spec := ParagraphFormatSpec{
-		FontEastAsia: style.FontEastAsia,
-		FontAscii:    style.FontASCII,
+		FontEastAsia: eastAsia,
+		FontAscii:    ascii,
 		Bold:         style.Bold,
 		Italic:       style.Italic,
 		SampleCount:  1,
 	}
 	if v, err := strconv.ParseUint(style.FontSizeHalfPt, 10, 64); err == nil {
 		spec.FontSizeHalfPt = v
-		spec.FontSizeCSHalfPt = v
 	} else {
 		return spec, false
 	}
@@ -446,14 +440,18 @@ func styleRuleToFormatSpec(style templateprofile.StyleRule) (ParagraphFormatSpec
 	if v, err := strconv.ParseUint(style.AfterTwips, 10, 64); err == nil {
 		spec.SpaceAfter = v
 	}
-	// B-H3FL: 从 templateprofile.StyleRule 提取首行缩进。
-	// 优先级：FirstLineTwips（模板 styles.xml 的 w:ind@w:firstLine）> FirstLineChars
-	if v, err := strconv.ParseUint(style.FirstLineTwips, 10, 64); err == nil {
-		spec.FirstLineIndent = v
-	} else if v, err := strconv.ParseUint(style.FirstLineChars, 10, 64); err == nil {
-		// FirstLineChars 是 1/100 字符数，转为 twips 需结合字号，
-		// 但这里仅做兜底：直接保留原始值（大多数模板使用 twips）
-		spec.FirstLineIndent = v
+	// Centered and right-aligned samples often retain irrelevant indentation
+	// metadata. Applying that metadata to titles moves them off-center.
+	if !spec.AlignmentSet || (spec.Alignment != wml.ST_JcCenter && spec.Alignment != wml.ST_JcRight) {
+		if v, err := strconv.ParseUint(style.FirstLineTwips, 10, 64); err == nil {
+			// More than four glyph widths is not a plausible first-line indent;
+			// it is usually stale positioning metadata from a textbox/title.
+			if spec.FontSizeHalfPt == 0 || v <= spec.FontSizeHalfPt*40 {
+				spec.FirstLineIndent = v
+			}
+		} else if v, err := strconv.ParseUint(style.FirstLineChars, 10, 64); err == nil {
+			spec.FirstLineIndent = v
+		}
 	}
 	return spec, !spec.IsEmpty()
 }

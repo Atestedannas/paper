@@ -42,6 +42,10 @@ var (
 	templateProfileSubsectionFormula = regexp.MustCompile(`^\x{5f0f}[\x{ff08}(]\d+\.\d+\.\d+[\x{ff09})]`)
 	templateProfileDocElementPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
 	templateProfileAuthorYearRef     = regexp.MustCompile(`^[A-Z][A-Za-z-]+(?:\s+et\s+al\.)?\s*\(\d{4}[a-z]?\)`)
+	templateProfileOutlineLevel      = regexp.MustCompile(`<w:outlineLvl\b[^>]*\bw:val="([0-8])"`)
+	templateProfileCompactHeading    = regexp.MustCompile(`^(\d+(?:\.\d+){1,3})(?:\.)?([^\d\s].+)$`)
+	templateProfileFigureCaption     = regexp.MustCompile(`^\x{56fe}\s*\d+(?:[.\-]\d+)*\s+\S+`)
+	templateProfileTableCaption      = regexp.MustCompile(`^(?:\x{7eed}\x{8868}|\x{8868})\s*\d+(?:[.\-]\d+)*\s+\S+`)
 )
 
 type TemplateProfileProcessor interface {
@@ -111,6 +115,17 @@ func ApplyTemplateProfileStylesAndPageSetup(ctx context.Context, path string, pr
 		return 0, err
 	}
 	return count + pageCount, nil
+}
+
+func ApplyTemplateProfilePageSetup(ctx context.Context, path string, profile *templateprofile.Profile) (int, error) {
+	if profile == nil {
+		return 0, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	_, count, err := applyTemplateProfilePageSetup(path, profile)
+	return count, err
 }
 
 func fixDOCXWithTemplateProfileProcessors(ctx context.Context, path string, profile *templateprofile.Profile, processors []TemplateProfileProcessor) (Result, error) {
@@ -1396,7 +1411,7 @@ func applyTemplateProfileStylesToDocumentXML(documentXML string, profile *templa
 		} else {
 			referenceMisses = 0
 		}
-		key := templateProfileStyleKey(text, &currentSection)
+		key := templateProfileStyleKey(paragraph, text, &currentSection)
 		if key == "" {
 			return paragraph
 		}
@@ -1408,17 +1423,14 @@ func applyTemplateProfileStylesToDocumentXML(documentXML string, profile *templa
 		if !ok {
 			return paragraph
 		}
-		if isTemplateProfileLabeledFrontMatterKey(key) && !isStructuredFrontMatterParagraph(paragraph, text) {
-			next := applyTemplateProfileLabeledFrontMatterParagraph(text, style)
+		if isTemplateProfileLabeledFrontMatterKey(key) {
+			next := applyTemplateProfileLabeledFrontMatterParagraph(paragraph, text, key, style, profile)
 			if next != paragraph {
 				count++
 			}
 			return next
 		}
 		next := applyParagraphStyle(paragraph, style)
-		if isTemplateProfileLabeledFrontMatterKey(key) && isStructuredFrontMatterParagraph(paragraph, text) {
-			next = applyParagraphProperties(paragraph, style)
-		}
 		if next != paragraph {
 			count++
 		}
@@ -1447,19 +1459,105 @@ func isTemplateProfileLabeledFrontMatterKey(key string) bool {
 	return false
 }
 
-func applyTemplateProfileLabeledFrontMatterParagraph(text string, style paragraphStyle) string {
+func applyTemplateProfileLabeledFrontMatterParagraph(paragraph, text, key string, labelStyle paragraphStyle, profile *templateprofile.Profile) string {
 	label, body, ok := splitFrontMatterLabel(text)
 	if !ok {
-		return buildParagraphXML(text, style)
+		return applyParagraphStyle(paragraph, labelStyle)
 	}
-	labelStyle := style
 	labelStyle.bold = true
-	bodyStyle := style
+	labelStyle.boldSet = true
+	bodyStyle := labelStyle
 	bodyStyle.bold = false
-	if body != "" && isASCIIText(label) {
-		body = " " + strings.TrimSpace(body)
+	bodyStyle.boldSet = true
+	if extracted, ok := templateProfileFrontMatterBodyStyle(profile, key); ok {
+		bodyStyle = extracted
 	}
-	return buildLabeledParagraphXML(label, body, labelStyle, bodyStyle, style)
+	if body == "" {
+		return applyParagraphStyle(paragraph, labelStyle)
+	}
+
+	labelStart := strings.Index(text, label)
+	if labelStart < 0 {
+		return applyParagraphStyle(paragraph, bodyStyle)
+	}
+	labelEnd := labelStart + len(label)
+	updated := applyParagraphProperties(paragraph, bodyStyle)
+	offset := 0
+	return runPattern.ReplaceAllStringFunc(updated, func(run string) string {
+		visible := extractParagraphText(run)
+		if visible == "" {
+			return run
+		}
+		runStart := offset
+		runEnd := runStart + len(visible)
+		offset = runEnd
+		switch {
+		case runEnd <= labelEnd:
+			return applyRunProperties(run, labelStyle)
+		case runStart >= labelEnd:
+			return applyRunProperties(run, bodyStyle)
+		default:
+			return applyFrontMatterRunBoundaryStyle(run, visible, labelEnd-runStart, labelStyle, bodyStyle)
+		}
+	})
+}
+
+func applyFrontMatterRunBoundaryStyle(run, visible string, boundary int, labelStyle, bodyStyle paragraphStyle) string {
+	if boundary <= 0 {
+		return applyRunProperties(run, bodyStyle)
+	}
+	if boundary >= len(visible) {
+		return applyRunProperties(run, labelStyle)
+	}
+
+	textMatches := textPattern.FindAllStringSubmatchIndex(run, -1)
+	if len(textMatches) != 1 || len(textMatches[0]) < 4 {
+		// ponytail: mixed-content runs stay intact; split them only with a real XML tree editor.
+		return applyRunProperties(run, labelStyle)
+	}
+	match := textMatches[0]
+	if decodeVisibleText(run[match[2]:match[3]]) != visible || !isPlainTextRun(run) {
+		return applyRunProperties(run, labelStyle)
+	}
+
+	labelRun := run[:match[2]] + html.EscapeString(visible[:boundary]) + run[match[3]:]
+	bodyRun := run[:match[2]] + html.EscapeString(visible[boundary:]) + run[match[3]:]
+	return applyRunProperties(labelRun, labelStyle) + applyRunProperties(bodyRun, bodyStyle)
+}
+
+func isPlainTextRun(run string) bool {
+	shell := textPattern.ReplaceAllString(run, "")
+	shell = runPropertiesPattern.ReplaceAllString(shell, "")
+	openEnd := strings.Index(shell, ">")
+	closeStart := strings.LastIndex(shell, "</w:r>")
+	return openEnd >= 0 && closeStart >= openEnd && strings.TrimSpace(shell[openEnd+1:closeStart]) == ""
+}
+
+func templateProfileFrontMatterBodyStyle(profile *templateprofile.Profile, key string) (paragraphStyle, bool) {
+	if profile == nil {
+		return paragraphStyle{}, false
+	}
+	var candidates []string
+	for _, candidate := range strings.Split(key, "\x00") {
+		switch candidate {
+		case "abstract_cn":
+			candidates = append(candidates, "abstract_body")
+		case "abstract_en":
+			candidates = append(candidates, "abstract_en_body")
+		case "keywords_cn":
+			candidates = append(candidates, "keywords_cn_body", "abstract_body")
+		case "keywords_en":
+			candidates = append(candidates, "keywords_en_body", "abstract_en_body")
+		}
+	}
+	for _, candidate := range candidates {
+		if rule, ok := profile.Styles[candidate]; ok {
+			if style, valid := paragraphStyleFromTemplateProfile(rule); valid {
+				return style, true
+			}
+		}
+	}
+	return paragraphStyle{}, false
 }
 
 func splitFrontMatterLabel(text string) (string, string, bool) {
@@ -1472,15 +1570,6 @@ func splitFrontMatterLabel(text string) (string, string, bool) {
 		}
 	}
 	return "", "", false
-}
-
-func isASCIIText(text string) bool {
-	for _, r := range text {
-		if r > 127 {
-			return false
-		}
-	}
-	return true
 }
 
 func applyTemplateProfilePageBreaks(path string, profile *templateprofile.Profile) (bool, int, error) {
@@ -1704,7 +1793,7 @@ func isConservativeTemplatePageBreakSection(key string) bool {
 	}
 }
 
-func templateProfileStyleKey(text string, section *string) string {
+func templateProfileStyleKey(paragraph string, text string, section *string) string {
 	if section == nil {
 		empty := ""
 		section = &empty
@@ -1712,6 +1801,7 @@ func templateProfileStyleKey(text string, section *string) string {
 	trimmed := strings.TrimSpace(text)
 	normalized := normalizeChineseLabelText(trimmed)
 	lower := strings.ToLower(trimmed)
+	headingLevel := templateProfileParagraphHeadingLevel(paragraph, trimmed)
 	switch {
 	case normalized == "\u53c2\u8003\u6587\u732e":
 		*section = "references"
@@ -1731,16 +1821,20 @@ func templateProfileStyleKey(text string, section *string) string {
 	case strings.HasPrefix(lower, "keywords") || strings.HasPrefix(lower, "key words"):
 		*section = ""
 		return "keywords_en"
-	case heading4Pattern.MatchString(trimmed):
+	case templateProfileTableCaption.MatchString(trimmed):
+		return "table_caption"
+	case templateProfileFigureCaption.MatchString(trimmed):
+		return "figure_caption"
+	case headingLevel == 4:
 		*section = "body"
 		return "heading_4"
-	case heading3Pattern.MatchString(trimmed):
+	case headingLevel == 3:
 		*section = "body"
 		return "heading_3"
-	case heading2Pattern.MatchString(trimmed):
+	case headingLevel == 2:
 		*section = "body"
 		return "heading_2"
-	case heading1Pattern.MatchString(trimmed):
+	case headingLevel == 1:
 		*section = "body"
 		if isBodyStartParagraph(trimmed) {
 			return preferStyleKey("body_start", "heading_1")
@@ -1761,11 +1855,34 @@ func templateProfileStyleKey(text string, section *string) string {
 	case *section == "body":
 		return "body"
 	case *section == "abstract_cn":
-		return "abstract_cn"
+		return "abstract_body"
 	case *section == "abstract_en":
-		return "abstract_en"
+		return "abstract_en_body"
 	default:
 		return ""
+	}
+}
+
+func templateProfileParagraphHeadingLevel(paragraph string, text string) int {
+	if match := templateProfileOutlineLevel.FindStringSubmatch(paragraph); len(match) == 2 {
+		if level, err := strconv.Atoi(match[1]); err == nil {
+			return level + 1
+		}
+	}
+	if match := templateProfileCompactHeading.FindStringSubmatch(strings.TrimSpace(text)); len(match) == 3 {
+		return strings.Count(match[1], ".") + 1
+	}
+	switch {
+	case heading4Pattern.MatchString(text):
+		return 4
+	case heading3Pattern.MatchString(text):
+		return 3
+	case heading2Pattern.MatchString(text):
+		return 2
+	case heading1Pattern.MatchString(text):
+		return 1
+	default:
+		return 0
 	}
 }
 
@@ -1793,14 +1910,22 @@ func paragraphStyleFromTemplateProfile(rule templateprofile.StyleRule) (paragrap
 		message:      "模板画像段落样式",
 		eastAsiaFont: strings.TrimSpace(rule.FontEastAsia),
 		asciiFont:    strings.TrimSpace(rule.FontASCII),
+		hAnsiFont:    strings.TrimSpace(rule.FontHAnsi),
+		complexFont:  strings.TrimSpace(rule.FontCS),
 		fontSize:     strings.TrimSpace(rule.FontSizeHalfPt),
 		bold:         rule.Bold,
+		boldSet:      rule.BoldSet,
+		italic:       rule.Italic,
+		italicSet:    rule.ItalicSet,
 		alignment:    strings.TrimSpace(rule.Alignment),
 		line:         strings.TrimSpace(rule.Line),
 		lineRule:     strings.TrimSpace(rule.LineRule),
 	}
 	if style.asciiFont == "" && style.eastAsiaFont != "" {
 		style.asciiFont = style.eastAsiaFont
+	}
+	if style.hAnsiFont == "" {
+		style.hAnsiFont = style.asciiFont
 	}
 	if value, ok := parseTemplateProfileInt(rule.BeforeLines); ok {
 		style.beforeLines = intPtr(value)
@@ -1817,9 +1942,10 @@ func paragraphStyleFromTemplateProfile(rule templateprofile.StyleRule) (paragrap
 	if value, ok := parseTemplateProfileInt(rule.FirstLineChars); ok {
 		style.firstLineChars = intPtr(value)
 	}
-	ok := style.eastAsiaFont != "" || style.asciiFont != "" || style.fontSize != "" ||
+	ok := style.eastAsiaFont != "" || style.asciiFont != "" || style.hAnsiFont != "" || style.complexFont != "" || style.fontSize != "" ||
 		style.alignment != "" || style.line != "" || style.beforeTwips != nil || style.afterTwips != nil ||
-		style.beforeLines != nil || style.afterLines != nil || style.firstLineChars != nil || style.bold
+		style.beforeLines != nil || style.afterLines != nil || style.firstLineChars != nil ||
+		style.boldSet || style.bold || style.italicSet || style.italic
 	return style, ok
 }
 

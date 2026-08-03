@@ -31,6 +31,7 @@ func writeValidationDocx(t *testing.T, pathname, extraName, extraContent string)
 	writer := zip.NewWriter(file)
 	entries := map[string]string{
 		"[Content_Types].xml": `<?xml version="1.0"?><Types/>`,
+		"_rels/":              "",
 		"word/document.xml":   `<?xml version="1.0"?><document/>`,
 		extraName:             extraContent,
 	}

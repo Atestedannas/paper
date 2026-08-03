@@ -56,6 +56,56 @@ func TestValidateVisibleContentPreservedRejectsRewriteButIgnoresTOCFields(t *tes
 	}
 }
 
+func TestValidateVisibleContentPreservedAllowsFormatOnlyParagraphSplit(t *testing.T) {
+	before := paperast.Snapshot{Nodes: []paperast.Node{
+		{Text: "摘要：正文原文", SectionID: "abstract"},
+		{Text: "Abstract: Objective text.", SectionID: "abstract"},
+	}}
+	after := paperast.Snapshot{Nodes: []paperast.Node{
+		{Text: "摘要：", SectionID: "abstract"},
+		{Text: "正文原文", SectionID: "abstract"},
+		{Text: "Abstract:", SectionID: "abstract"},
+		{Text: "Objective text.", SectionID: "abstract"},
+	}}
+
+	if issues := ValidateVisibleContentPreserved(before, after); len(issues) != 0 {
+		t.Fatalf("format-only paragraph split was treated as content rewrite: %#v", issues)
+	}
+}
+
+func TestValidateVisibleContentPreservedRejectsInsertedText(t *testing.T) {
+	before := paperast.Snapshot{Nodes: []paperast.Node{{Text: "正文原文", SectionID: "body"}}}
+	after := paperast.Snapshot{Nodes: []paperast.Node{
+		{Text: "模板示例残留", SectionID: "body"},
+		{Text: "正文原文", SectionID: "body"},
+	}}
+
+	if issues := ValidateVisibleContentPreserved(before, after); len(issues) != 1 {
+		t.Fatalf("inserted visible text was not rejected: %#v", issues)
+	}
+}
+
+func TestValidateVisibleContentPreservedAllowsSelectedTemplateSkeletonText(t *testing.T) {
+	before := paperast.Snapshot{Nodes: []paperast.Node{
+		{Text: "1 Introduction", SectionID: "body"},
+		{Text: "Student body", SectionID: "body"},
+	}}
+	after := paperast.Snapshot{Nodes: []paperast.Node{
+		{Text: "SCHOOL TEMPLATE", SectionID: "cover"},
+		{Text: "1 Introduction", SectionID: "body"},
+		{Text: "References", SectionID: "references"},
+		{Text: "Student body", SectionID: "body"},
+	}}
+	template := paperast.Snapshot{Nodes: []paperast.Node{
+		{Text: "SCHOOL TEMPLATE", SectionID: "cover"},
+		{Text: "References", SectionID: "references"},
+	}}
+
+	if issues := ValidateVisibleContentPreservedWithTemplate(before, after, template); len(issues) != 0 {
+		t.Fatalf("selected template skeleton text was treated as a rewrite: %#v", issues)
+	}
+}
+
 func TestBuildHonorsExplicitContentNormalizationOverride(t *testing.T) {
 	t.Setenv("CQRWST_ALLOW_CONTENT_NORMALIZATION", "true")
 

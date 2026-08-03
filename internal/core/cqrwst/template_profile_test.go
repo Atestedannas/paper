@@ -191,6 +191,43 @@ func TestApplyTemplateProfileStylesSkipsTOCEntries(t *testing.T) {
 	}
 }
 
+func TestApplyTemplateProfileStylesUsesOutlineLevelsAndTemplateCaptions(t *testing.T) {
+	documentXML := `<w:document><w:body>` +
+		`<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>3Results</w:t></w:r></w:p>` +
+		`<w:p><w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:r><w:t>4.2Analysis</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>` + "\u88683-1 Data" + `</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>Ordinary body paragraph.</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+		"heading_1": {
+			FontEastAsia: "TemplateHeadingOne", FontASCII: "TemplateHeadingOne",
+			FontSizeHalfPt: "32", Alignment: "center",
+		},
+		"heading_2": {
+			FontEastAsia: "TemplateHeadingTwo", FontASCII: "TemplateHeadingTwo",
+			FontSizeHalfPt: "28", Alignment: "left",
+		},
+		"table_caption": {
+			FontEastAsia: "TemplateCaption", FontASCII: "TemplateCaption",
+			FontSizeHalfPt: "21", Alignment: "center", Line: "300",
+		},
+		"body": {
+			FontEastAsia: "TemplateBody", FontASCII: "TemplateBody",
+			FontSizeHalfPt: "24", Alignment: "both", Line: "400",
+		},
+	}}
+
+	updated, count := applyTemplateProfileStylesToDocumentXML(documentXML, profile)
+
+	if count != 4 {
+		t.Fatalf("style change count = %d, want 4", count)
+	}
+	assertParagraphHas(t, updated, "3Results", []string{`w:eastAsia="TemplateHeadingOne"`, `w:sz w:val="32"`, `w:jc w:val="center"`})
+	assertParagraphHas(t, updated, "4.2Analysis", []string{`w:eastAsia="TemplateHeadingTwo"`, `w:sz w:val="28"`, `w:jc w:val="left"`})
+	assertParagraphHas(t, updated, "\u88683-1 Data", []string{`w:eastAsia="TemplateCaption"`, `w:sz w:val="21"`, `w:jc w:val="center"`, `w:line="300"`})
+	assertParagraphHas(t, updated, "Ordinary body paragraph.", []string{`w:eastAsia="TemplateBody"`, `w:sz w:val="24"`, `w:jc w:val="both"`})
+}
+
 func TestCheckDOCXWithTemplateProfileUsesProfileStyles(t *testing.T) {
 	docxPath := writeCQRWSTDocx(t,
 		`<w:p><w:r><w:t>1 Introduction</w:t></w:r></w:p>`+
@@ -273,6 +310,139 @@ func TestFixDOCXWithTemplateProfilePreservesStructuredFrontMatterRuns(t *testing
 	}
 	if !strings.Contains(abstractParagraph, `<w:b/>`) {
 		t.Fatalf("structured abstract should keep bold label run: %s", abstractParagraph)
+	}
+}
+
+func TestApplyTemplateProfileStylesUsesSeparateTemplateDerivedFrontMatterBodyStyles(t *testing.T) {
+	documentXML := `<w:document><w:body>` +
+		`<w:p><w:r><w:t>摘要：正文内容</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>关键词：模板；格式</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+		"abstract_cn": {
+			FontEastAsia: "TemplateLabel", FontSizeHalfPt: "32",
+			Bold: true, Alignment: "center",
+		},
+		"abstract_body": {
+			FontEastAsia: "TemplateBody", FontSizeHalfPt: "24",
+			Alignment: "both", Line: "400", FirstLineChars: "200",
+		},
+		"keywords_cn": {
+			FontEastAsia: "TemplateKeywordLabel", FontSizeHalfPt: "24",
+			Bold: true, Alignment: "left", Line: "400",
+		},
+		"keywords_cn_body": {
+			FontEastAsia: "TemplateKeywordBody", FontSizeHalfPt: "24",
+		},
+	}}
+
+	updated, count := applyTemplateProfileStylesToDocumentXML(documentXML, profile)
+	if count != 2 {
+		t.Fatalf("style change count = %d, want 2", count)
+	}
+	if got := len(paragraphPattern.FindAllString(updated, -1)); got != 2 {
+		t.Fatalf("paragraph count = %d, want original 2: %s", got, updated)
+	}
+	abstractParagraph := paragraphContaining(updated, "摘要：")
+	abstractRuns := runPattern.FindAllString(abstractParagraph, -1)
+	if len(abstractRuns) != 2 {
+		t.Fatalf("abstract paragraph should contain label/body runs: %s", abstractParagraph)
+	}
+	if !strings.Contains(abstractRuns[0], `w:eastAsia="TemplateLabel"`) ||
+		!strings.Contains(abstractRuns[0], `<w:b/>`) ||
+		!strings.Contains(abstractRuns[1], `w:eastAsia="TemplateBody"`) {
+		t.Fatalf("abstract label/body styles did not come from their template samples: %s", abstractParagraph)
+	}
+	assertParagraphHas(t, updated, "摘要：", []string{
+		`w:jc w:val="both"`,
+		`w:line="400"`, `w:firstLineChars="200"`,
+	})
+	keywordParagraph := paragraphContaining(updated, "关键词：")
+	runs := runPattern.FindAllString(keywordParagraph, -1)
+	if len(runs) != 2 {
+		t.Fatalf("keyword paragraph should contain label/body runs: %s", keywordParagraph)
+	}
+	if !strings.Contains(runs[0], `w:eastAsia="TemplateKeywordLabel"`) ||
+		!strings.Contains(runs[1], `w:eastAsia="TemplateKeywordBody"`) {
+		t.Fatalf("keyword label/body styles did not come from their template samples: %s", keywordParagraph)
+	}
+}
+
+func TestApplyTemplateProfileStylesPreservesFrontMatterBookmarksHyperlinksAndFields(t *testing.T) {
+	documentXML := `<w:document><w:body><w:p>` +
+		`<w:bookmarkStart w:id="7" w:name="_RefAbstract"/><w:r><w:t>摘要：</w:t></w:r><w:bookmarkEnd w:id="7"/>` +
+		`<w:hyperlink r:id="rId9"><w:r><w:t>正文内容</w:t></w:r></w:hyperlink>` +
+		`<w:r><w:fldChar w:fldCharType="begin"/></w:r>` +
+		`<w:r><w:instrText xml:space="preserve"> PAGEREF _RefAbstract </w:instrText></w:r>` +
+		`<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r>` +
+		`<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:body></w:document>`
+	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+		"abstract_cn": {
+			FontEastAsia: "TemplateLabel", FontSizeHalfPt: "32", Bold: true, Alignment: "center",
+		},
+		"abstract_body": {
+			FontEastAsia: "TemplateBody", FontSizeHalfPt: "24", Alignment: "both", Line: "400",
+		},
+	}}
+
+	updated, count := applyTemplateProfileStylesToDocumentXML(documentXML, profile)
+	if count != 1 {
+		t.Fatalf("style change count = %d, want 1", count)
+	}
+	for _, tag := range []string{"<w:bookmarkStart", "<w:bookmarkEnd", "<w:hyperlink", "<w:fldChar", "<w:instrText"} {
+		if got, want := strings.Count(updated, tag), strings.Count(documentXML, tag); got != want {
+			t.Fatalf("%s count = %d, want %d: %s", tag, got, want, updated)
+		}
+	}
+	if !strings.Contains(updated, `<w:hyperlink r:id="rId9"><w:r>`) ||
+		!strings.Contains(updated, `PAGEREF _RefAbstract`) {
+		t.Fatalf("hyperlink/field structure was changed: %s", updated)
+	}
+	if body := paragraphContaining(updated, "正文内容"); !strings.Contains(body, `w:eastAsia="TemplateBody"`) {
+		t.Fatalf("body run did not receive template body style: %s", body)
+	}
+}
+
+func TestParagraphStyleFromTemplateProfilePreservesExplicitFalse(t *testing.T) {
+	style, ok := paragraphStyleFromTemplateProfile(templateprofile.StyleRule{
+		BoldSet: true, ItalicSet: true,
+	})
+	if !ok {
+		t.Fatal("explicit false style was treated as undefined")
+	}
+
+	run := `<w:r><w:rPr><w:b/><w:bCs/><w:i/><w:iCs/><w:vertAlign w:val="subscript"/></w:rPr><w:t>x</w:t></w:r>`
+	updated := applyRunProperties(run, style)
+	for _, want := range []string{
+		`<w:b w:val="false"/>`,
+		`<w:bCs w:val="false"/>`,
+		`<w:i w:val="false"/>`,
+		`<w:iCs w:val="false"/>`,
+		`<w:vertAlign w:val="subscript"/>`,
+	} {
+		if !strings.Contains(updated, want) {
+			t.Fatalf("template profile tri-state missing %s: %s", want, updated)
+		}
+	}
+}
+
+func TestParagraphStyleFromTemplateProfilePreservesAllFontSlots(t *testing.T) {
+	style, ok := paragraphStyleFromTemplateProfile(templateprofile.StyleRule{
+		FontASCII: "ASCII", FontHAnsi: "HANSI", FontEastAsia: "EAST", FontCS: "CS",
+	})
+	if !ok {
+		t.Fatal("font-only template style was treated as empty")
+	}
+	properties := buildRunProperties(style)
+	for _, want := range []string{
+		`w:ascii="ASCII"`,
+		`w:hAnsi="HANSI"`,
+		`w:eastAsia="EAST"`,
+		`w:cs="CS"`,
+	} {
+		if !strings.Contains(properties, want) {
+			t.Fatalf("missing %s in %s", want, properties)
+		}
 	}
 }
 

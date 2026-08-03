@@ -89,6 +89,21 @@ func TestVerifierRejectsRendererIncompatibleStartAlignment(t *testing.T) {
 	}
 }
 
+func TestVerifierDoesNotRewriteOrRejectCommentFormatting(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean body.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/comments.xml": `<w:comments><w:comment w:id="1"><w:p><w:pPr><w:jc w:val="start"/></w:pPr><w:r><w:t>review note</w:t></w:r></w:p></w:comment></w:comments>`,
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.FatalIssues, "renderer_incompatible_ooxml") {
+		t.Fatalf("comment formatting must not be treated as rendered body OOXML: %#v", result.FatalIssues)
+	}
+}
+
 func TestVerifierRejectsNestedWordRun(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
 		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:r><w:t>bad</w:t></w:r></w:r></w:p></w:body></w:document>`,
@@ -131,21 +146,18 @@ func TestVerifierRejectsBookmarkInsideRunProperties(t *testing.T) {
 	}
 }
 
-func TestVerifierRequiresFinalDeliveryWithoutComments(t *testing.T) {
+func TestVerifierAllowsPreservedComments(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
 		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
 		"word/comments.xml": `<w:comments><w:comment w:id="0"><w:p><w:r><w:t>review note</w:t></w:r></w:p></w:comment></w:comments>`,
 	})
 
-	result, err := NewVerifier().Verify(context.Background(), docxPath)
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
 	if err != nil {
 		t.Fatalf("Verify() error = %v", err)
 	}
-	if result.Passed {
-		t.Fatal("Verify() Passed = true, want false")
-	}
-	if !hasVerifyIssueKind(result.RepairableIssues, "comments_not_finalized") {
-		t.Fatalf("RepairableIssues = %#v, want comments_not_finalized", result.RepairableIssues)
+	if hasVerifyIssueKind(result.RepairableIssues, "comments_not_finalized") {
+		t.Fatalf("preserved comments must not be treated as a format error: %#v", result.RepairableIssues)
 	}
 }
 
@@ -585,6 +597,22 @@ func TestVerifierAllowsMediaContentTypeDefault(t *testing.T) {
 	}
 	if hasVerifyIssueKind(result.RepairableIssues, "media_content_type_missing") {
 		t.Fatalf("RepairableIssues = %#v, did not want media_content_type_missing", result.RepairableIssues)
+	}
+}
+
+func TestVerifierIgnoresMediaDirectoryEntry(t *testing.T) {
+	docxPath := writeVerifyTestDocx(t, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>`,
+		"word/document.xml":   `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
+		"word/media/":         "",
+	})
+
+	result, err := NewVerifier().WithoutCQRWSTRules().Verify(context.Background(), docxPath)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if hasVerifyIssueKind(result.RepairableIssues, "media_content_type_missing") {
+		t.Fatalf("RepairableIssues = %#v, did not want media_content_type_missing for a directory entry", result.RepairableIssues)
 	}
 }
 

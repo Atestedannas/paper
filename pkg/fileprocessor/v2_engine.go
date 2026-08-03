@@ -9,6 +9,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +31,59 @@ var v2ApplyDedupe singleflight.Group
 func normalizeLegacyFormatterOutput(path string) error {
 	_, err := transplant.NormalizeFinalDOCX(path)
 	return err
+}
+
+func logOutputParagraphCount(stage, path string) {
+	pkg, err := ooxmlpkg.Open(path)
+	if err != nil {
+		log.Printf("[内容保全] 阶段=%s 无法读取文档: %v", stage, err)
+		return
+	}
+	documentXML, ok := pkg.Get("word/document.xml")
+	if !ok {
+		log.Printf("[内容保全] 阶段=%s 缺少 word/document.xml", stage)
+		return
+	}
+	log.Printf("[内容保全] 阶段=%s 段落数=%d", stage, countDocxParagraphs(string(documentXML)))
+	emptyAttributes := map[string]bool{}
+	for _, match := range regexp.MustCompile(`\b([A-Za-z_:][A-Za-z0-9_.:-]*)=""`).FindAllSubmatch(documentXML, -1) {
+		emptyAttributes[string(match[1])] = true
+	}
+	if len(emptyAttributes) > 0 {
+		log.Printf("[OOXML属性] 阶段=%s 空值属性=%v", stage, emptyAttributes)
+	}
+	logGoldenStageFormatDrift(stage, path)
+}
+
+func logGoldenStageFormatDrift(stage, candidatePath string) {
+	goldenPath := strings.TrimSpace(os.Getenv("PAPER_GOLDEN_DOCX"))
+	if goldenPath == "" {
+		return
+	}
+	golden, err := document.Open(goldenPath)
+	if err != nil {
+		log.Printf("[黄金回归] 阶段=%s 无法读取黄金稿: %v", stage, err)
+		return
+	}
+	defer golden.Close()
+	candidate, err := document.Open(candidatePath)
+	if err != nil {
+		log.Printf("[黄金回归] 阶段=%s 无法读取候选稿: %v", stage, err)
+		return
+	}
+	defer candidate.Close()
+	goldenParagraphs, candidateParagraphs := golden.Paragraphs(), candidate.Paragraphs()
+	if len(goldenParagraphs) != len(candidateParagraphs) {
+		log.Printf("[黄金回归] 阶段=%s 段落数=%d/%d", stage, len(goldenParagraphs), len(candidateParagraphs))
+		return
+	}
+	diffs := 0
+	for index := range goldenParagraphs {
+		if extractParaFormatSpec(goldenParagraphs[index]) != extractParaFormatSpec(candidateParagraphs[index]) {
+			diffs++
+		}
+	}
+	log.Printf("[黄金回归] 阶段=%s 直接格式差异段=%d", stage, diffs)
 }
 
 func v2ApplyDedupeKey(docPath string, corrections []map[string]interface{}) string {
@@ -61,6 +116,7 @@ func NewV2FormatEngine(proc *EnhancedProcessor, templatePath string) *V2FormatEn
 // 返回输出文件路径
 func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (string, error) {
 	startTime := time.Now()
+	runLog := formatLogFromContext(ctx)
 	if e.processor != nil {
 		e.processor.templatePath = e.templatePath
 		e.processor.formatLocks = NewFormatLockManager()
@@ -69,11 +125,12 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	log.Printf("[V2] 模板: %s", e.templatePath)
 	log.Printf("[V2] 学生论文: %s", studentDocPath)
 
-	// 初始化诊断日志
-	if err := InitDiagLog("D:\\workpace\\diag_output.log"); err != nil {
-		log.Printf("[V2] 警告: 无法初始化诊断日志: %v", err)
-	} else {
-		defer CloseDiagLog()
+	if diagnosticPath := strings.TrimSpace(os.Getenv("PAPER_DIAG_LOG_PATH")); diagnosticPath != "" {
+		if err := InitDiagLog(diagnosticPath); err != nil {
+			log.Printf("[V2] unable to initialize optional diagnostic log: %v", err)
+		} else {
+			defer CloseDiagLog()
+		}
 	}
 
 	// #region agent log
@@ -85,20 +142,36 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 
 	// ── 步骤 1: 打开模板文档 ──
 	log.Println("[V2][步骤1] 打开模板文档...")
+	runLog.section("第1步：打开学校模板并提取格式规范")
+	runLog.printf("Extract(templatePath) 输入：%s", e.templatePath)
 	templateDoc, err := document.Open(e.templatePath)
 	if err != nil {
+		runLog.printf("打开模板失败：%v", err)
 		return "", fmt.Errorf("无法打开模板文档: %w", err)
 	}
 	defer templateDoc.Close()
 	log.Printf("[V2][步骤1] 模板段落数: %d", len(templateDoc.Paragraphs()))
+	runLog.printf("模板打开成功：段落=%d，表格=%d", len(templateDoc.Paragraphs()), len(templateDoc.Tables()))
+	if e.processor != nil {
+		profile, profileErr := templateprofile.Extract(e.templatePath)
+		if profileErr != nil {
+			log.Printf("[V2][步骤1] 模板分区格式提取失败，分类回退到语义规则: %v", profileErr)
+			runLog.printf("Profile 提取失败：%v", profileErr)
+		} else {
+			e.processor.templateProfile = profile
+			runLog.profile(profile, "第1步结果：学校模板 Profile（可读值）")
+		}
+	}
 
 	// ── 步骤 2: 从模板提取完整XML格式 ──
 	log.Println("[V2][步骤2] 提取模板格式（XML完整节点）...")
 	store := ExtractTemplateFormats(templateDoc, e.processor)
 	if len(store.Formats) == 0 {
+		runLog.printf("模板采样失败：未找到任何具有格式的段落。")
 		return "", fmt.Errorf("模板格式提取失败：未找到任何格式定义")
 	}
 	log.Printf("[V2][步骤2] 提取了 %d 种格式类型", len(store.Formats))
+	runLog.templateSamples(store)
 
 	// ── 步骤 3: 打开学生文档 ──
 	log.Println("[V2][步骤3] 打开学生文档...")
@@ -108,25 +181,47 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	}
 	defer studentDoc.Close()
 	log.Printf("[V2][步骤3] 学生文档段落数: %d", len(studentDoc.Paragraphs()))
+	runLog.section("第3步：打开学生论文")
+	runLog.printf("学生论文打开成功：段落=%d，表格=%d", len(studentDoc.Paragraphs()), len(studentDoc.Tables()))
 
 	// ── 步骤 4: 复制模板样式定义到学生文档 ──
 	log.Println("[V2][步骤4] 复制样式定义...")
-	CloneStyles(templateDoc, studentDoc)
+	styleSummary := CloneStyles(templateDoc, studentDoc)
+	runLog.section("第4步：复制模板样式定义")
+	runLog.printf("DocDefaults 默认样式已复制=%s；命名样式共复制=%d（覆盖学生已有=%d，新增=%d）",
+		yesNo(styleSummary.DocDefaultsCopied), styleSummary.NamedStylesCopied, styleSummary.Overwritten, styleSummary.Added)
+	runLog.printf("复制的样式 ID：%s", strings.Join(styleSummary.StyleIDs, "、"))
 
 	// ── 步骤 5: 复制页面设置（A4/边距等）──
 	log.Println("[V2][步骤5] 复制页面设置...")
-	CloneSectionProperties(templateDoc, studentDoc)
+	sectionSummary := CloneSectionProperties(templateDoc, studentDoc)
+	runLog.section("第5步：复制页面设置")
+	runLog.printf("纸张大小已复制=%s；页边距已复制=%s；保留学生原页眉页脚引用=%d 个",
+		yesNo(sectionSummary.PageSizeCopied), yesNo(sectionSummary.PageMarginsCopied),
+		sectionSummary.PreservedHeaderFooterReferences)
+	if e.processor != nil && e.processor.templateProfile != nil {
+		runLog.printf("复制目标的页面精确值：%s", humanPageSetup(e.processor.templateProfile.PageSetup))
+	}
 
 	// ── 步骤 5b: 应用 Section 级别高级格式（页眉/页脚/三线表/上标等）──
 	log.Println("[V2][步骤5b] 应用高级Section格式...")
+	runLog.section("第5b步：应用节级别高级格式")
 	if err := e.processor.ApplyTemplateSectionLevelFormatting(studentDoc); err != nil {
 		log.Printf("[V2][步骤5b] 警告: Section 格式部分失败: %v", err)
+		runLog.printf("结果：部分失败；%v", err)
+	} else {
+		runLog.printf("结果：成功。")
 	}
+	tableCount, sectionBreakCount, citationCount := sectionLevelStats(studentDoc)
+	runLog.printf("实际处理结果：三线表重写=%d 个；当前段落级分节符=%d 个；识别并设为上标的引用/注释 run=%d 个。",
+		tableCount, sectionBreakCount, citationCount)
+	runLog.printf("页眉页脚策略：此步骤不生成硬编码页眉页脚，最终从学校模板部件复制。")
 
 	// ── 步骤 6: 确定性段落分类 ──
 	log.Println("[V2][步骤6] 确定性段落分类...")
 	classifier := NewV2DeterministicClassifier(e.processor)
-	classified := classifier.Classify(studentDoc.Paragraphs())
+	classified := classifier.Classify(BodyLevelParagraphsOnly(studentDoc))
+	runLog.classifications(classified)
 
 	// ── 步骤 7: XML格式克隆（非封面、非特殊段落）──
 	// 职责：复制模板段落的完整 XML 节点（含 pPr + rPr），处理非格式属性
@@ -135,9 +230,8 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	//       ① 克隆保证"不低于模板"的基准；② 智能格式化按学校规范做精确调整。
 	//       两步骤职责不重叠：克隆管结构完整性，智能格式化管语义精确性。
 	log.Println("[V2][步骤7] XML格式克隆...")
-	cloner := NewV2FormatCloner(store)
-	fixCount := cloner.ApplyAll(classified)
-	log.Printf("[V2][步骤7] 修正了 %d 个段落", fixCount)
+	fixCount := 0
+	log.Println("[V2][步骤7] 已停用旧全局段落克隆，使用分区规则映射")
 
 	// ── 步骤 7b: 智能格式化（题目/摘要/标题/页眉等特殊段落）──
 	// 职责：对标题、摘要、正文等特殊段落按学校规范做精确格式调整。
@@ -156,7 +250,8 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	var templateHeaderText string
 	var resolvedSpecs map[string]ParagraphFormatSpec
 	if ruleEngine, ruleErr := NewFormatRuleEngine(e.processor, e.templatePath, nil); ruleErr == nil {
-		resolvedSpecs = ruleEngine.Rules()
+		resolvedSpecs = templateProfileBackedSpecs(ruleEngine.Rules(), ruleEngine.Profile)
+		runLog.resolvedRules(resolvedSpecs)
 		// 保存 Profile 引用，稍后在格式化完成后应用页边距
 		// （避免被后续 sectPr 操作覆盖 —— B1-B2 修复）
 		if ruleEngine.Profile != nil {
@@ -254,21 +349,26 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	if len(resolvedSpecs) > 0 {
 		paragraphsByType := v2ParagraphMap(classified)
 		verifyAndLockParagraphTypes(e.processor, e.processor.formatLocks, paragraphsByType, resolvedSpecs)
-		NewAIFormatApplier(e.processor).Apply(
+		appliedCount := NewAIFormatApplier(e.processor).Apply(
 			paragraphsByType,
 			resolvedSpecs,
 			lockedCategoryMap(e.processor.formatLocks, paragraphsByType),
 		)
+		runLog.printf("规则写入结果：实际处理 %d 个非空段落；已符合规则并锁定的类别会跳过重复写入。", appliedCount)
 		verifyAndLockParagraphTypes(e.processor, e.processor.formatLocks, paragraphsByType, resolvedSpecs)
 		smartClassified = unlockedV2Paragraphs(e.processor.formatLocks, classified)
 	}
-	smartFmt.ApplySmartFormatting(studentDoc, smartClassified)
-	smartFmt.ApplyBodyFormats(smartClassified)
+	// The unified rule applier above is the paragraph-format writer. The legacy
+	// smart formatter contains hard-coded fallbacks and must not overwrite
+	// template-derived specs.
+	_ = smartFmt
+	_ = smartClassified
 	if len(resolvedSpecs) > 0 {
 		repair := NewRepairAgent(e.processor, 3, e.processor.repairDiagnosticClient()).
 			WithLocks(e.processor.formatLocks).
 			RunClassified(v2ParagraphMap(classified), resolvedSpecs)
 		fixCount += repair.TotalFixes
+		runLog.repair(repair)
 	}
 
 	// B1-B2 修复：在所有 sectPr 操作（克隆/格式化/页眉）完成后才应用页边距覆盖
@@ -303,12 +403,13 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 				diagLines = append(diagLines, fmt.Sprintf("para[%d] PgMar top=%d left=%d", i, top, left))
 			}
 		}
-		os.WriteFile(`C:\Users\user\AppData\Local\Temp\b1b2_diag.txt`, []byte(strings.Join(diagLines, "\n")), 0644)
+		if diagPath := strings.TrimSpace(os.Getenv("PAPER_V2_MARGIN_DIAG_PATH")); diagPath != "" {
+			_ = os.WriteFile(diagPath, []byte(strings.Join(diagLines, "\n")), 0o644)
+		}
 	}
 
-	// ── 步骤 8: 表格格式处理 ──
-	log.Println("[V2][步骤8] 处理表格格式...")
-	e.applyTableFormatFromTemplate(studentDoc, store)
+	// Preserve tables unless a dedicated table rule exists. Body paragraph
+	// formatting must not overwrite cover grids, headers, or data tables.
 
 	// ── 步骤 9: 生成差异报告 ──
 	log.Println("[V2][步骤9] 生成差异报告...")
@@ -316,10 +417,13 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	e.processor.lastDiffReport = diffReport
 	log.Printf("[V2][步骤9] 差异报告: 扫描%d段, %d错误, %d警告",
 		diffReport.TotalParas, diffReport.ErrorCount, diffReport.WarningCount)
+	runLog.diffReport(diffReport)
 
 	// ── 步骤 10: 保存输出文件 ──
 	outputPath := e.generateOutputPath(studentDocPath)
 	log.Printf("[V2][步骤10] 保存到: %s", outputPath)
+	runLog.section("第10步：保存文件并复制页眉页脚")
+	runLog.printf("输出文件：%s", outputPath)
 
 	// 节点4：最终产出验证 — 保存前检查关键段落类型的实际 run/paragraph 属性
 	DiagPrintf(" ====== 节点4: 最终产出验证 (保存前) ======")
@@ -331,12 +435,27 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	if err := studentDoc.SaveToFile(outputPath); err != nil {
 		return "", fmt.Errorf("保存文档失败: %w", err)
 	}
-	if err := copyAndMaterializeTemplateHeaderFooter(e.templatePath, outputPath, e.processor.extractCoverInfo(studentDoc)); err != nil {
+	if info, statErr := os.Stat(outputPath); statErr == nil {
+		runLog.printf("文档保存成功：%d 字节。", info.Size())
+	}
+	coverInfo := e.processor.extractCoverInfo(studentDoc)
+	coverKeys := make([]string, 0, len(coverInfo))
+	for key := range coverInfo {
+		coverKeys = append(coverKeys, key)
+	}
+	sort.Strings(coverKeys)
+	for _, key := range coverKeys {
+		runLog.printf("页眉占位符材料：%s=%q", key, compactText(coverInfo[key], 120))
+	}
+	if err := copyAndMaterializeTemplateHeaderFooter(e.templatePath, outputPath, coverInfo); err != nil {
 		return "", fmt.Errorf("复制模板页眉页脚失败: %w", err)
 	}
 	if headerCount, footerCount, ok := verifyCopiedHeaderFooterStructure(e.templatePath, outputPath); ok {
 		e.processor.formatLocks.Lock("header", headerCount)
 		e.processor.formatLocks.Lock("footer", footerCount)
+		runLog.printf("页眉页脚复制并验证成功：页眉部件=%d，页脚部件=%d。", headerCount, footerCount)
+	} else {
+		runLog.printf("页眉页脚结构复检未能确认通过。")
 	}
 	if profileForMargins != nil {
 		// B-S5 fix: unioffice body-level sectPr pgMar serialization is
@@ -349,9 +468,16 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 			patched, err := patchBodySectPrMarginsFromBytes(data, &profileForMargins.PageSetup)
 			if err != nil {
 				log.Printf("[B1B2] post-save ZIP patch warning: %v", err)
+				runLog.printf("页边距兜底修补失败：%v", err)
 			} else {
+				changed := !bytes.Equal(data, patched)
 				if err := os.WriteFile(outputPath, patched, 0644); err != nil {
 					log.Printf("[B1B2] post-save ZIP patch write error: %v", err)
+					runLog.printf("页边距兜底结果写入失败：%v", err)
+				} else {
+					runLog.section("最后一步：页边距兜底修补")
+					runLog.printf("目标页面值：%s", humanPageSetup(profileForMargins.PageSetup))
+					runLog.printf("是否发现保存后的边距偏差并改写 OOXML ZIP：%s", yesNo(changed))
 				}
 			}
 		}
@@ -566,64 +692,6 @@ func findTemplateFile() string {
 	return ""
 }
 
-const cqHRNormativeMarker = "附件5"
-
-// findCQHRNormativeAttachment5Template 在 uploads/templates 下查找文件名含「附件5」的规范稿（重庆人文毕业论文格式模板）。
-// 优先 .docx，其次 .doc；同扩展名取体积最大者。与 isPipelineTemplateArtifact 配合排除 *_styled 等中间文件。
-func findCQHRNormativeAttachment5Template() string {
-	const dir = "uploads/templates"
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
-	var docxCand, docCand []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if !strings.Contains(name, cqHRNormativeMarker) {
-			continue
-		}
-		full := filepath.Join(dir, name)
-		if isPipelineTemplateArtifact(full) {
-			continue
-		}
-		ext := strings.ToLower(filepath.Ext(name))
-		switch ext {
-		case ".docx":
-			docxCand = append(docxCand, full)
-		case ".doc":
-			docCand = append(docCand, full)
-		}
-	}
-	pickLargest := func(paths []string) string {
-		const minBytes = int64(10000)
-		var best string
-		var bestSize int64
-		for _, path := range paths {
-			st, err := os.Stat(path)
-			if err != nil || st.Size() <= minBytes {
-				continue
-			}
-			if st.Size() > bestSize {
-				bestSize = st.Size()
-				best = path
-			}
-		}
-		return best
-	}
-	if p := pickLargest(docxCand); p != "" {
-		log.Printf("[V2模板搜索] 重庆人文「附件5」规范模板(docx): %s", p)
-		return p
-	}
-	if p := pickLargest(docCand); p != "" {
-		log.Printf("[V2模板搜索] 重庆人文「附件5」规范模板(doc): %s", p)
-		return p
-	}
-	return ""
-}
-
 // logPaperFormatAudit 与 Python [PAPER_FORMAT_AUDIT] 同前缀；控制台 + 默认写入 logs/paper_format_audit.log。
 func logPaperFormatAudit(phase, action string, fields map[string]interface{}) {
 	line, err := formatAuditJSONLine(phase, action, fields)
@@ -658,7 +726,7 @@ func (p *EnhancedProcessor) ApplyCorrectionsV2(ctx context.Context, docPath stri
 	return res.(string), nil
 }
 
-func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath string, corrections []map[string]interface{}) (string, error) {
+func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath string, corrections []map[string]interface{}) (result string, retErr error) {
 	log.Println("================= V2 格式修正流程 开始 =================")
 	log.Printf("[V2入口] 文件: %s", docPath)
 
@@ -677,38 +745,81 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 	}
 
 	log.Printf("[V2入口] 使用模板: %s", templatePath)
+	runLog, runLogErr := newFormatRunLog(docPath, templatePath)
+	if runLogErr != nil {
+		log.Printf("[格式诊断日志] 创建 logs/geshi 日志失败（不阻断论文处理）: %v", runLogErr)
+	} else {
+		ctx = withFormatRunLog(ctx, runLog)
+		defer func() { runLog.finish(retErr) }()
+		runLog.section("流程入口")
+		runLog.printf("用户修正规则数量：%d", len(corrections))
+	}
+	var sourceContent []string
+	if fileExt == ".docx" {
+		var snapshotErr error
+		sourceContent, snapshotErr = captureDOCXContent(p, docPath)
+		if snapshotErr != nil {
+			runLog.printf("输入论文内容快照失败：%v", snapshotErr)
+			return "", fmt.Errorf("capture source content: %w", snapshotErr)
+		}
+		runLog.printf("输入论文内容快照：共 %d 个段落，供最终内容保全检查使用。", len(sourceContent))
+	}
 	logPaperFormatAudit("GoV2", "apply_start", map[string]interface{}{
 		"doc_path":      docPath,
 		"template_path": templatePath,
 		"shell_enabled": false,
 	})
 	finalizeOutput := func(primaryEngine, outPath string) (string, error) {
-		plannedPath, err := p.applyUnifiedRulePlanToFile(outPath, templatePath, corrections)
+		runLog.section("最终闭环处理")
+		runLog.printf("主格式引擎：%s；主引擎产物：%s", primaryEngine, outPath)
+		logOutputParagraphCount("primary-engine", outPath)
+		plannedPath, err := p.applyUnifiedRulePlanToFile(outPath, templatePath, corrections, runLog)
 		if err != nil {
 			return "", fmt.Errorf("apply unified format plan: %w", err)
 		}
+		runLog.printf("统一规则计划：成功；产物=%s", plannedPath)
+		logOutputParagraphCount("unified-rule-plan", plannedPath)
 		finalPath, finalEngine, err := p.enforceStrongFormatConsistency(ctx, docPath, plannedPath, templatePath, corrections, primaryEngine)
 		if err != nil {
 			return "", err
 		}
+		runLog.printf("强一致性复检：成功；最终采用引擎=%s；产物=%s", finalEngine, finalPath)
+		logOutputParagraphCount("strong-consistency", finalPath)
 		profile, err := templateprofile.Extract(templatePath)
 		if err != nil {
 			return "", fmt.Errorf("extract template profile for final validation: %w", err)
 		}
-		if _, err := cqrwst.ApplyTemplateProfileStylesAndPageSetup(ctx, finalPath, profile); err != nil {
-			return "", fmt.Errorf("apply final template profile styles and page setup: %w", err)
+		if _, err := cqrwst.ApplyTemplateProfilePageSetup(ctx, finalPath, profile); err != nil {
+			return "", fmt.Errorf("apply final template profile page setup: %w", err)
 		}
+		runLog.printf("最终页面设置重写：成功；%s", humanPageSetup(profile.PageSetup))
+		logOutputParagraphCount("template-profile", finalPath)
 		p.applyPostSavePatches(finalPath, templatePath)
+		runLog.printf("保存后 XML 补丁：已执行（页眉规范化、页码域规范化、页边距兜底）。")
+		logOutputParagraphCount("post-save-patches", finalPath)
 		if _, err := transplant.NormalizeFinalDOCX(finalPath); err != nil {
 			return "", fmt.Errorf("normalize final docx: %w", err)
 		}
+		runLog.printf("OOXML 归一化：成功。")
+		logOutputParagraphCount("normalize-final", finalPath)
 		if _, err := ooxmlpkg.RepairPropertyOrder(finalPath); err != nil {
 			return "", fmt.Errorf("repair final OOXML property order: %w", err)
+		}
+		runLog.printf("OOXML 段落属性/文字属性元素顺序修复：成功。")
+		logOutputParagraphCount("property-order", finalPath)
+		if sourceContent != nil {
+			if err := verifyDOCXContentPreserved(p, sourceContent, finalPath); err != nil {
+				return "", fmt.Errorf("content preservation check failed: %w", err)
+			}
+			runLog.printf("内容保全检查：成功；段落数量=%d，逐段文字未改变。", len(sourceContent))
 		}
 		logPaperFormatAudit("GoV2", "path_chosen", map[string]interface{}{
 			"engine":      finalEngine,
 			"output_path": finalPath,
 		})
+		if info, statErr := os.Stat(finalPath); statErr == nil {
+			runLog.printf("最终文件：%s（%d 字节）", finalPath, info.Size())
+		}
 		return finalPath, nil
 	}
 
@@ -776,6 +887,7 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 	outputPath, err := engine.Process(ctx, docPath)
 	if err != nil {
 		log.Printf("[V2入口] V2FormatEngine 也失败: %v, 回退到旧版", err)
+		runLog.printf("V2FormatEngine 失败：%v；转入旧版回退流程。", err)
 		return p.ApplyCorrections(ctx, docPath, corrections)
 	}
 
@@ -786,13 +898,44 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 	return finalPath, nil
 }
 
-func (p *EnhancedProcessor) applyUnifiedRulePlanToFile(path, templatePath string, corrections []map[string]interface{}) (string, error) {
+func captureDOCXContent(processor *EnhancedProcessor, path string) ([]string, error) {
+	doc, err := document.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer doc.Close()
+	paragraphs := doc.Paragraphs()
+	content := make([]string, len(paragraphs))
+	for index, paragraph := range paragraphs {
+		content[index] = processor.extractParagraphText(paragraph)
+	}
+	return content, nil
+}
+
+func verifyDOCXContentPreserved(processor *EnhancedProcessor, source []string, outputPath string) error {
+	output, err := captureDOCXContent(processor, outputPath)
+	if err != nil {
+		return err
+	}
+	if len(output) != len(source) {
+		return fmt.Errorf("paragraph count changed from %d to %d", len(source), len(output))
+	}
+	for index := range source {
+		if source[index] != output[index] {
+			return fmt.Errorf("paragraph %d text changed", index)
+		}
+	}
+	return nil
+}
+
+func (p *EnhancedProcessor) applyUnifiedRulePlanToFile(path, templatePath string, corrections []map[string]interface{}, runLog *formatRunLog) (string, error) {
 	rules := normalizedFormatRulesFromCorrections(p, corrections)
 	engine, err := NewFormatRuleEngine(p, templatePath, rules)
 	if err != nil {
 		return "", err
 	}
-	specs := engine.Rules()
+	specs := templateProfileBackedSpecs(engine.Rules(), engine.Profile)
+	runLog.resolvedRules(specs)
 	doc, err := document.Open(path)
 	if err != nil {
 		return "", err
@@ -803,6 +946,8 @@ func (p *EnhancedProcessor) applyUnifiedRulePlanToFile(path, templatePath string
 		return "", err
 	}
 	repair := NewRepairAgent(p, 3, p.repairDiagnosticClient()).WithLocks(locks).Run(doc, specs)
+	runLog.printf("最终统一规则计划的复检与修复：")
+	runLog.repair(repair)
 	if repair.NeedsManualReview {
 		log.Printf("[修复代理] 规划执行后三轮仍有 %d 处差异，标记为需人工复核", repair.FinalDiffs)
 	}
@@ -812,6 +957,10 @@ func (p *EnhancedProcessor) applyUnifiedRulePlanToFile(path, templatePath string
 		return "", err
 	}
 	doc.Close()
+	if _, err := transplant.NormalizeFinalDOCX(tempPath); err != nil {
+		_ = os.Remove(tempPath)
+		return "", fmt.Errorf("normalize unified rule plan output: %w", err)
+	}
 	return promoteStrongVerificationRetry(tempPath, path), nil
 }
 
@@ -855,7 +1004,7 @@ func (p *EnhancedProcessor) countTemplateSpecDiffs(docPath, templatePath string,
 	if err != nil {
 		return 0, err
 	}
-	specs := engine.Rules()
+	specs := templateProfileBackedSpecs(engine.Rules(), engine.Profile)
 	if len(specs) == 0 {
 		return 0, fmt.Errorf("no template specs loaded")
 	}
@@ -865,7 +1014,7 @@ func (p *EnhancedProcessor) countTemplateSpecDiffs(docPath, templatePath string,
 	}
 	defer doc.Close()
 	verifier := NewFormatVerifier(p, nil)
-	classified := p.classifyParagraphs(doc.Paragraphs())
+	classified := NewV2DeterministicClassifier(p).ClassifyToMap(BodyLevelParagraphsOnly(doc))
 	diffs := verifier.compareAllWithSpecs(classified, specs)
 	return len(diffs), nil
 }
@@ -945,6 +1094,11 @@ func (p *EnhancedProcessor) enforceStrongFormatConsistency(
 		}
 	}
 	doc.Close()
+	if _, normalizeErr := transplant.NormalizeFinalDOCX(retryPath); normalizeErr != nil {
+		_ = os.Remove(retryPath)
+		log.Printf("[强校验] 重试产物规范化失败，进入 V2 回退: %v", normalizeErr)
+		return p.fallbackToV2Engine(ctx, sourceDocPath, templatePath, corrections, initialDiffs, threshold)
+	}
 
 	retryDiffs, recountErr := p.countTemplateSpecDiffs(retryPath, templatePath, formatRules)
 	if recountErr != nil {
@@ -1045,9 +1199,56 @@ func normalizedFormatRulesFromCorrections(p *EnhancedProcessor, corrections []ma
 	return nil
 }
 
+func templateProfileBackedSpecs(specs map[string]ParagraphFormatSpec, profile *templateprofile.Profile) map[string]ParagraphFormatSpec {
+	if profile == nil {
+		return map[string]ParagraphFormatSpec{}
+	}
+	styleKeys := map[string][]string{
+		V2ThesisTitle:           {"cover_title"},
+		V2AbstractTitle:         {"abstract_cn"},
+		V2Abstract:              {"abstract_body"},
+		V2EnAbstractTitle:       {"abstract_en"},
+		V2EnAbstract:            {"abstract_en_body"},
+		V2Heading1:              {"heading_1", "body_start"},
+		V2Heading2:              {"heading_2"},
+		V2Heading3:              {"heading_3"},
+		V2Heading4:              {"heading_4"},
+		V2Body:                  {"body"},
+		V2ReferencesTitle:       {"references_title"},
+		V2References:            {"references"},
+		V2AcknowledgementsTitle: {"acknowledgements_title"},
+		V2Acknowledgements:      {"acknowledgements"},
+		V2AppendixTitle:         {"appendix_title"},
+		V2Appendix:              {"appendix"},
+		V2NotesTitle:            {"notes_title"},
+		V2Notes:                 {"notes"},
+		V2TOCTitle:              {"toc_title"},
+		V2TOC:                   {"toc_entry"},
+		V2FigureCaption:         {"figure_caption", "caption"},
+		V2TableCaption:          {"table_caption", "caption"},
+	}
+	result := make(map[string]ParagraphFormatSpec)
+	for category, candidates := range styleKeys {
+		for _, key := range candidates {
+			if style, ok := profile.Styles[key]; ok {
+				if spec, usable := styleRuleToFormatSpec(style); usable {
+					result[category] = spec
+				}
+				break
+			}
+		}
+	}
+	for _, category := range []string{"header", "footer"} {
+		if spec, ok := specs[category]; ok {
+			result[category] = spec
+		}
+	}
+	return result
+}
+
 // resolveTemplatePath searches for a valid golden template path from multiple sources.
-// 优先级：① corrections.template_path（单次请求显式指定）② 重庆人文 + uploads/templates 下「附件5」规范稿
-// ③ SetTemplatePath / DB golden_template_path ④ 自动扫描 golden_templates 与 templates
+// 优先级：① corrections.template_path（单次请求显式指定）
+// ② SetTemplatePath / DB golden_template_path ③ 自动扫描 golden_templates 与 templates
 func (p *EnhancedProcessor) resolveTemplatePath(corrections []map[string]interface{}) string {
 	var templatePath string
 
@@ -1055,13 +1256,6 @@ func (p *EnhancedProcessor) resolveTemplatePath(corrections []map[string]interfa
 		if _, err := os.Stat(templatePath); os.IsNotExist(err) {
 			log.Printf("[V2入口] corrections.template_path 不存在: %s", templatePath)
 			templatePath = ""
-		}
-	}
-	if templatePath == "" && os.Getenv("DISABLE_CQHR_ATTACHMENT5_PRIORITY") == "" {
-		if getSchoolIDFromCorrectionsList(corrections) == "cq-hr-university" {
-			if att := findCQHRNormativeAttachment5Template(); att != "" {
-				templatePath = att
-			}
 		}
 	}
 	if templatePath == "" {

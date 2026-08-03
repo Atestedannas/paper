@@ -160,6 +160,7 @@ func createMinimalDocx(t *testing.T, path string) {
 
 	entries := map[string]string{
 		"[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>`,
+		"_rels/":              "",
 		"_rels/.rels":         `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`,
 		"word/document.xml":   "<w:document><w:body><w:p/></w:body></w:document>",
 	}

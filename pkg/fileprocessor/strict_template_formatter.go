@@ -2,17 +2,21 @@ package fileprocessor
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"math"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 
 	"gitee.com/greatmusicians/unioffice/document"
 	"gitee.com/greatmusicians/unioffice/schema/soo/ofc/sharedTypes"
@@ -1963,17 +1967,24 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 		return err
 	}
 
-	copyMatchingEntries(outputEntries, templateEntries, func(name string) bool {
-		return strings.HasPrefix(name, "word/header") ||
-			strings.HasPrefix(name, "word/footer") ||
-			strings.HasPrefix(name, "word/_rels/header") ||
-			strings.HasPrefix(name, "word/_rels/footer") ||
-			strings.HasPrefix(name, "word/media/")
-	})
-
-	mergeContentTypes(outputEntries, templateEntries)
-	relationshipIDs := mergeDocumentRelationships(outputEntries, templateEntries)
-	mergeDocumentSectionHeaderFooterRefs(outputEntries, templateEntries, relationshipIDs)
+	sectionRefs := mapTemplateSectionHeaderFooterRefs(
+		string(outputEntries["word/document.xml"]),
+		string(templateEntries["word/document.xml"]),
+	)
+	requiredRelationshipIDs := referencedRelationshipIDs(sectionRefs)
+	relationshipIDs, copiedParts, err := mergeSelectedDocumentRelationships(
+		outputEntries,
+		templateEntries,
+		requiredRelationshipIDs,
+	)
+	if err != nil {
+		return err
+	}
+	if err := mergeTemplateHeaderFooterStyles(outputEntries, templateEntries, copiedParts); err != nil {
+		return err
+	}
+	mergeCopiedPartContentTypes(outputEntries, templateEntries, copiedParts)
+	mergeDocumentSectionHeaderFooterRefsWithPlan(outputEntries, sectionRefs, relationshipIDs)
 
 	return writeDocxEntries(outputPath, outputEntries)
 }
@@ -2014,45 +2025,84 @@ func copyAndMaterializeTemplateHeaderFooter(templatePath, outputPath string, cov
 	return writeDocxEntries(outputPath, entries)
 }
 
+func CopyTemplateHeaderFooter(templatePath, outputPath string, coverInfo map[string]string) error {
+	return copyAndMaterializeTemplateHeaderFooter(templatePath, outputPath, coverInfo)
+}
+
 func verifyCopiedHeaderFooterStructure(templatePath, outputPath string) (int, int, bool) {
-	templateEntries, err := readDocxEntries(templatePath)
-	if err != nil {
-		return 0, 0, false
-	}
+	_ = templatePath
 	outputEntries, err := readDocxEntries(outputPath)
 	if err != nil {
 		return 0, 0, false
 	}
+
+	var relationships strictRelationshipSet
+	if err := xml.Unmarshal(outputEntries["word/_rels/document.xml.rels"], &relationships); err != nil {
+		return 0, 0, false
+	}
+	byID := make(map[string]strictRelationshipPart, len(relationships.Relationships))
+	for _, rel := range relationships.Relationships {
+		byID[rel.ID] = rel
+	}
+
+	referencedParts := map[string]bool{}
 	headerCount, footerCount := 0, 0
-	for name, expected := range templateEntries {
-		actual, ok := outputEntries[name]
-		if !ok {
-			if strings.HasPrefix(name, "word/header") || strings.HasPrefix(name, "word/footer") {
+	documentXML := string(outputEntries["word/document.xml"])
+	for _, sectPr := range extractSectPrBlocks(documentXML) {
+		for _, ref := range extractHeaderFooterReferenceTags(sectPr) {
+			id := strictXMLAttributeValue(ref, "r:id")
+			rel, ok := byID[id]
+			if !ok || !isHeaderFooterRelationship(rel) {
 				return 0, 0, false
 			}
-			continue
-		}
-		switch {
-		case strings.HasPrefix(name, "word/header") && strings.HasSuffix(name, ".xml"):
-			headerCount++
-			blank := func(xmlText string) string {
-				return replaceDocxTextNodes(xmlText, make([]string, len(extractDocxTextNodes(xmlText))))
-			}
-			if blank(string(expected)) != blank(string(actual)) {
+			partName := resolveRelationshipPart("word/document.xml", rel.Target)
+			if _, exists := outputEntries[partName]; !exists {
 				return 0, 0, false
 			}
-		case strings.HasPrefix(name, "word/footer") && strings.HasSuffix(name, ".xml"):
-			footerCount++
-			if string(expected) != string(actual) {
-				return 0, 0, false
+			if !referencedParts[partName] {
+				referencedParts[partName] = true
+				if strings.Contains(rel.Type, "/header") {
+					headerCount++
+				} else {
+					footerCount++
+				}
 			}
-		case strings.HasPrefix(name, "word/_rels/header"), strings.HasPrefix(name, "word/_rels/footer"):
-			if string(expected) != string(actual) {
+			if !verifyPartRelationshipClosure(partName, outputEntries, map[string]bool{}) {
 				return 0, 0, false
 			}
 		}
 	}
 	return headerCount, footerCount, true
+}
+
+func verifyPartRelationshipClosure(partName string, entries map[string][]byte, visiting map[string]bool) bool {
+	if visiting[partName] {
+		return true
+	}
+	visiting[partName] = true
+	defer delete(visiting, partName)
+
+	relsContent, ok := entries[relationshipPartName(partName)]
+	if !ok {
+		return true
+	}
+	var relationships strictRelationshipSet
+	if xml.Unmarshal(relsContent, &relationships) != nil {
+		return false
+	}
+	for _, rel := range relationships.Relationships {
+		if strings.EqualFold(rel.TargetMode, "External") {
+			continue
+		}
+		targetPart := resolveRelationshipPart(partName, rel.Target)
+		if _, exists := entries[targetPart]; !exists {
+			return false
+		}
+		if !verifyPartRelationshipClosure(targetPart, entries, visiting) {
+			return false
+		}
+	}
+	return true
 }
 
 func materializeTemplateHeaderText(text string, coverInfo map[string]string) string {
@@ -2341,6 +2391,1297 @@ func mergeDocumentRelationships(outputEntries, templateEntries map[string][]byte
 	return idMap
 }
 
+func mergeSelectedDocumentRelationships(
+	outputEntries,
+	templateEntries map[string][]byte,
+	requiredIDs map[string]bool,
+) (map[string]string, map[string]string, error) {
+	idMap := map[string]string{}
+	copiedParts := map[string]string{}
+	if len(requiredIDs) == 0 {
+		return idMap, copiedParts, nil
+	}
+	outputContent, ok := outputEntries["word/_rels/document.xml.rels"]
+	if !ok {
+		return idMap, copiedParts, fmt.Errorf("missing word/_rels/document.xml.rels")
+	}
+	templateContent, ok := templateEntries["word/_rels/document.xml.rels"]
+	if !ok {
+		return idMap, copiedParts, fmt.Errorf("template is missing word/_rels/document.xml.rels")
+	}
+
+	var outputRels strictRelationshipSet
+	var templateRels strictRelationshipSet
+	if err := xml.Unmarshal(outputContent, &outputRels); err != nil {
+		return idMap, copiedParts, fmt.Errorf("parse output document relationships: %w", err)
+	}
+	if err := xml.Unmarshal(templateContent, &templateRels); err != nil {
+		return idMap, copiedParts, fmt.Errorf("parse template document relationships: %w", err)
+	}
+
+	filtered := make([]strictRelationshipPart, 0, len(outputRels.Relationships)+len(requiredIDs))
+	usedIDs := map[string]bool{}
+	for _, rel := range outputRels.Relationships {
+		if isHeaderFooterRelationship(rel) {
+			continue
+		}
+		filtered = append(filtered, rel)
+		usedIDs[rel.ID] = true
+	}
+
+	for _, rel := range templateRels.Relationships {
+		if !isHeaderFooterRelationship(rel) || !requiredIDs[rel.ID] {
+			continue
+		}
+		sourcePart := resolveRelationshipPart("word/document.xml", rel.Target)
+		if _, ok := templateEntries[sourcePart]; !ok {
+			return idMap, copiedParts, fmt.Errorf("template relationship %s target is missing: %s", rel.ID, sourcePart)
+		}
+		destinationPart, err := copyTemplatePartClosure(
+			sourcePart,
+			templateEntries,
+			outputEntries,
+			copiedParts,
+			map[string]bool{},
+		)
+		if err != nil {
+			return idMap, copiedParts, err
+		}
+
+		originalID := rel.ID
+		if usedIDs[rel.ID] {
+			rel.ID = nextFreeRelationshipID(usedIDs)
+		}
+		usedIDs[rel.ID] = true
+		idMap[originalID] = rel.ID
+		rel.Target = relativeRelationshipTarget("word/document.xml", destinationPart)
+		filtered = append(filtered, rel)
+	}
+
+	outputRels.Relationships = filtered
+	merged, err := xml.Marshal(outputRels)
+	if err != nil {
+		return map[string]string{}, map[string]string{}, err
+	}
+	outputEntries["word/_rels/document.xml.rels"] = merged
+	for id := range requiredIDs {
+		if _, ok := idMap[id]; !ok {
+			return idMap, copiedParts, fmt.Errorf("template section references missing header/footer relationship %s", id)
+		}
+	}
+	return idMap, copiedParts, nil
+}
+
+// mergeSelectedPartRelationships copies only the relationships actually used
+// by a migrated OOXML fragment, together with each internal target's recursive
+// relationship closure. Relationship IDs and colliding part names are remapped.
+func mergeSelectedPartRelationships(
+	sourcePart,
+	destinationPart string,
+	requiredIDs map[string]bool,
+	templateEntries,
+	outputEntries map[string][]byte,
+) (map[string]string, map[string]string, error) {
+	idMap := map[string]string{}
+	copiedParts := map[string]string{}
+	if len(requiredIDs) == 0 {
+		return idMap, copiedParts, nil
+	}
+
+	templateRelationshipsPart := relationshipPartName(sourcePart)
+	templateContent, ok := templateEntries[templateRelationshipsPart]
+	if !ok {
+		return nil, nil, fmt.Errorf("template part %s references relationships, but %s is missing", sourcePart, templateRelationshipsPart)
+	}
+	var templateRelationships strictRelationshipSet
+	if err := xml.Unmarshal(templateContent, &templateRelationships); err != nil {
+		return nil, nil, fmt.Errorf("parse template relationships %s: %w", templateRelationshipsPart, err)
+	}
+
+	outputRelationshipsPart := relationshipPartName(destinationPart)
+	outputRelationships := strictRelationshipSet{Xmlns: "http://schemas.openxmlformats.org/package/2006/relationships"}
+	if outputContent, exists := outputEntries[outputRelationshipsPart]; exists {
+		if err := xml.Unmarshal(outputContent, &outputRelationships); err != nil {
+			return nil, nil, fmt.Errorf("parse output relationships %s: %w", outputRelationshipsPart, err)
+		}
+		if outputRelationships.Xmlns == "" {
+			outputRelationships.Xmlns = "http://schemas.openxmlformats.org/package/2006/relationships"
+		}
+	}
+
+	usedIDs := map[string]bool{}
+	for _, relationship := range outputRelationships.Relationships {
+		usedIDs[relationship.ID] = true
+	}
+	for _, relationship := range templateRelationships.Relationships {
+		if !requiredIDs[relationship.ID] {
+			continue
+		}
+		originalID := relationship.ID
+		if usedIDs[relationship.ID] {
+			relationship.ID = nextFreeRelationshipID(usedIDs)
+		}
+		usedIDs[relationship.ID] = true
+		idMap[originalID] = relationship.ID
+
+		if !strings.EqualFold(relationship.TargetMode, "External") {
+			sourceTarget := resolveRelationshipPart(sourcePart, relationship.Target)
+			if _, exists := templateEntries[sourceTarget]; !exists {
+				return nil, nil, fmt.Errorf("template relationship %s target is missing: %s", originalID, sourceTarget)
+			}
+			destinationTarget, err := copyTemplatePartClosure(
+				sourceTarget,
+				templateEntries,
+				outputEntries,
+				copiedParts,
+				map[string]bool{},
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+			relationship.Target = relativeRelationshipTarget(destinationPart, destinationTarget)
+		}
+		outputRelationships.Relationships = append(outputRelationships.Relationships, relationship)
+	}
+	for id := range requiredIDs {
+		if _, ok := idMap[id]; !ok {
+			return nil, nil, fmt.Errorf("template part %s references missing relationship %s", sourcePart, id)
+		}
+	}
+
+	merged, err := xml.Marshal(outputRelationships)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal output relationships %s: %w", outputRelationshipsPart, err)
+	}
+	outputEntries[outputRelationshipsPart] = merged
+	return idMap, copiedParts, nil
+}
+
+func collectStrictRelationshipReferences(content string) map[string]bool {
+	ids := map[string]bool{}
+	for _, tag := range strictRelationshipReferenceTagPattern.FindAllString(content, -1) {
+		for _, attribute := range []string{"r:id", "r:embed", "r:link"} {
+			if id := strictXMLAttributeValue(tag, attribute); id != "" {
+				ids[id] = true
+			}
+		}
+	}
+	return ids
+}
+
+func rewriteStrictRelationshipReferences(content string, idMap map[string]string) string {
+	return strictRelationshipReferenceTagPattern.ReplaceAllStringFunc(content, func(tag string) string {
+		for _, attribute := range []string{"r:id", "r:embed", "r:link"} {
+			if mapped := idMap[strictXMLAttributeValue(tag, attribute)]; mapped != "" {
+				tag = replaceStrictXMLAttribute(tag, attribute, mapped)
+			}
+		}
+		return tag
+	})
+}
+
+func copyTemplatePartClosure(
+	sourcePart string,
+	templateEntries,
+	outputEntries map[string][]byte,
+	copiedParts map[string]string,
+	visiting map[string]bool,
+) (string, error) {
+	sourcePart = normalizePackagePartName(sourcePart)
+	if destinationPart, ok := copiedParts[sourcePart]; ok {
+		return destinationPart, nil
+	}
+	if visiting[sourcePart] {
+		return "", fmt.Errorf("relationship cycle at %s", sourcePart)
+	}
+	sourceContent, ok := templateEntries[sourcePart]
+	if !ok {
+		return "", fmt.Errorf("missing relationship target %s", sourcePart)
+	}
+
+	visiting[sourcePart] = true
+	defer delete(visiting, sourcePart)
+
+	destinationPart := allocateCopiedPartName(sourcePart, sourceContent, templateEntries, outputEntries)
+	copiedParts[sourcePart] = destinationPart
+	if _, exists := outputEntries[destinationPart]; !exists {
+		outputEntries[destinationPart] = append([]byte(nil), sourceContent...)
+	}
+
+	sourceRelsPart := relationshipPartName(sourcePart)
+	sourceRelsContent, hasRelationships := templateEntries[sourceRelsPart]
+	if !hasRelationships {
+		return destinationPart, nil
+	}
+
+	var relationships strictRelationshipSet
+	if err := xml.Unmarshal(sourceRelsContent, &relationships); err != nil {
+		return "", fmt.Errorf("parse relationships %s: %w", sourceRelsPart, err)
+	}
+	for index := range relationships.Relationships {
+		rel := &relationships.Relationships[index]
+		if strings.EqualFold(rel.TargetMode, "External") {
+			continue
+		}
+		childSourcePart := resolveRelationshipPart(sourcePart, rel.Target)
+		childDestinationPart, err := copyTemplatePartClosure(
+			childSourcePart,
+			templateEntries,
+			outputEntries,
+			copiedParts,
+			visiting,
+		)
+		if err != nil {
+			return "", err
+		}
+		rel.Target = relativeRelationshipTarget(destinationPart, childDestinationPart)
+	}
+
+	destinationRelationships, err := xml.Marshal(relationships)
+	if err != nil {
+		return "", fmt.Errorf("marshal relationships %s: %w", sourceRelsPart, err)
+	}
+	outputEntries[relationshipPartName(destinationPart)] = destinationRelationships
+	return destinationPart, nil
+}
+
+func allocateCopiedPartName(
+	sourcePart string,
+	sourceContent []byte,
+	templateEntries,
+	outputEntries map[string][]byte,
+) string {
+	existingContent, exists := outputEntries[sourcePart]
+	if !exists {
+		return sourcePart
+	}
+	sourceRelationships := templateEntries[relationshipPartName(sourcePart)]
+	existingRelationships := outputEntries[relationshipPartName(sourcePart)]
+	if bytes.Equal(existingContent, sourceContent) && bytes.Equal(existingRelationships, sourceRelationships) {
+		return sourcePart
+	}
+
+	extension := pathpkg.Ext(sourcePart)
+	base := strings.TrimSuffix(sourcePart, extension)
+	for suffix := 1; ; suffix++ {
+		candidate := fmt.Sprintf("%s_template%d%s", base, suffix, extension)
+		if _, exists := outputEntries[candidate]; !exists {
+			return candidate
+		}
+	}
+}
+
+func normalizePackagePartName(name string) string {
+	return strings.TrimPrefix(pathpkg.Clean(strings.ReplaceAll(name, `\`, "/")), "/")
+}
+
+func relationshipPartName(partName string) string {
+	partName = normalizePackagePartName(partName)
+	return pathpkg.Join(pathpkg.Dir(partName), "_rels", pathpkg.Base(partName)+".rels")
+}
+
+func resolveRelationshipPart(sourcePart, target string) string {
+	target = strings.ReplaceAll(target, `\`, "/")
+	if strings.HasPrefix(target, "/") {
+		return normalizePackagePartName(target)
+	}
+	return normalizePackagePartName(pathpkg.Join(pathpkg.Dir(sourcePart), target))
+}
+
+func relativeRelationshipTarget(sourcePart, targetPart string) string {
+	relative, err := filepath.Rel(
+		filepath.FromSlash(pathpkg.Dir(normalizePackagePartName(sourcePart))),
+		filepath.FromSlash(normalizePackagePartName(targetPart)),
+	)
+	if err != nil {
+		return normalizePackagePartName(targetPart)
+	}
+	return filepath.ToSlash(relative)
+}
+
+func mergeCopiedPartContentTypes(
+	outputEntries,
+	templateEntries map[string][]byte,
+	copiedParts map[string]string,
+) {
+	outputContent, ok := outputEntries["[Content_Types].xml"]
+	if !ok || len(copiedParts) == 0 {
+		return
+	}
+	templateContent, ok := templateEntries["[Content_Types].xml"]
+	if !ok {
+		return
+	}
+
+	outputXML := string(outputContent)
+	templateXML := string(templateContent)
+	requiredExtensions := map[string]bool{}
+	for _, destinationPart := range copiedParts {
+		extension := strings.TrimPrefix(strings.ToLower(pathpkg.Ext(destinationPart)), ".")
+		if extension != "" {
+			requiredExtensions[extension] = true
+		}
+	}
+
+	for _, tag := range extractSelfClosingTags(templateXML, "<Default ", "/>") {
+		extension := strings.ToLower(strictXMLAttributeValue(tag, "Extension"))
+		if requiredExtensions[extension] && !hasContentTypeIdentity(outputXML, tag) {
+			outputXML = strings.Replace(outputXML, "</Types>", tag+"</Types>", 1)
+		}
+	}
+	for sourcePart, destinationPart := range copiedParts {
+		sourceName := "/" + normalizePackagePartName(sourcePart)
+		for _, tag := range extractSelfClosingTags(templateXML, "<Override ", "/>") {
+			if strictXMLAttributeValue(tag, "PartName") != sourceName {
+				continue
+			}
+			mappedTag := replaceStrictXMLAttribute(tag, "PartName", "/"+normalizePackagePartName(destinationPart))
+			if !hasContentTypeIdentity(outputXML, mappedTag) {
+				outputXML = strings.Replace(outputXML, "</Types>", mappedTag+"</Types>", 1)
+			}
+			break
+		}
+	}
+	outputEntries["[Content_Types].xml"] = []byte(outputXML)
+}
+
+var strictStyleBlockPattern = regexp.MustCompile(`(?s)<w:style\b[^>]*(?:/>|>.*?</w:style>)`)
+var strictStyleReferencePattern = regexp.MustCompile(`<w:(?:pStyle|rStyle)\b[^>]*>`)
+var strictStyleDependencyPattern = regexp.MustCompile(`<w:(?:basedOn|link|next)\b[^>]*>`)
+var strictRunFontsPattern = regexp.MustCompile(`<w:rFonts\b[^>]*>`)
+var strictFontBlockPattern = regexp.MustCompile(`(?s)<w:font\b[^>]*(?:/>|>.*?</w:font>)`)
+var strictAbstractNumberingPattern = regexp.MustCompile(`(?s)<w:abstractNum\b[^>]*>.*?</w:abstractNum>`)
+var strictNumberingInstancePattern = regexp.MustCompile(`(?s)<w:num\b[^>]*>.*?</w:num>`)
+var strictNumberingPictureBulletPattern = regexp.MustCompile(`(?s)<w:numPicBullet\b[^>]*>.*?</w:numPicBullet>`)
+var strictAbstractNumberingStartPattern = regexp.MustCompile(`<w:abstractNum\b[^>]*>`)
+var strictNumberingInstanceStartPattern = regexp.MustCompile(`<w:num\b[^>]*>`)
+var strictNumberingPictureBulletStartPattern = regexp.MustCompile(`<w:numPicBullet\b[^>]*>`)
+var strictAbstractNumberingIDPattern = regexp.MustCompile(`<w:abstractNumId\b[^>]*>`)
+var strictNumberingIDPattern = regexp.MustCompile(`<w:numId\b[^>]*>`)
+var strictNumberingPictureBulletIDPattern = regexp.MustCompile(`<w:lvlPicBulletId\b[^>]*>`)
+var strictNumberingStyleReferencePattern = regexp.MustCompile(`<w:(?:pStyle|rStyle|numStyleLink|styleLink)\b[^>]*>`)
+var strictNumberingRootPattern = regexp.MustCompile(`<w:numbering\b[^>]*>`)
+var strictRelationshipReferenceTagPattern = regexp.MustCompile(`<[^>]+\br:(?:id|embed|link)\s*=\s*(?:"[^"]*"|'[^']*')[^>]*>`)
+
+type strictNumberingCatalog struct {
+	PictureBullets map[string]string
+	Abstract       map[string]string
+	Numbers        map[string]string
+}
+
+func mergeTemplateHeaderFooterStyles(
+	outputEntries,
+	templateEntries map[string][]byte,
+	copiedParts map[string]string,
+) error {
+	partNames := make([]string, 0)
+	referencedStyles := map[string]bool{}
+	for sourcePart, destinationPart := range copiedParts {
+		if !isHeaderFooterPart(sourcePart) {
+			continue
+		}
+		partNames = append(partNames, destinationPart)
+		for _, id := range collectStrictStyleReferences(string(outputEntries[destinationPart])) {
+			referencedStyles[id] = true
+		}
+	}
+	if len(referencedStyles) == 0 {
+		return nil
+	}
+
+	templateStyles, ok := templateEntries["word/styles.xml"]
+	if !ok {
+		return fmt.Errorf("template header/footer references styles, but word/styles.xml is missing")
+	}
+	templateDefinitions := strictStyleDefinitions(string(templateStyles))
+	templateNumberingPart := strictDocumentRelationshipPart(templateEntries, "/numbering")
+	templateNumberingXML := string(templateEntries[templateNumberingPart])
+	closure, err := strictStyleClosureWithNumbering(referencedStyles, templateDefinitions, templateNumberingXML)
+	if err != nil {
+		return err
+	}
+
+	outputStyles := string(outputEntries["word/styles.xml"])
+	usedStyleIDs := map[string]bool{}
+	for id := range strictStyleDefinitions(outputStyles) {
+		usedStyleIDs[id] = true
+	}
+	idMap := make(map[string]string, len(closure))
+	for _, id := range closure {
+		destinationID := id
+		if usedStyleIDs[destinationID] {
+			destinationID = nextTemplateStyleID(id, usedStyleIDs)
+		}
+		usedStyleIDs[destinationID] = true
+		idMap[id] = destinationID
+	}
+	themeFonts := parseStrictThemeFonts(templateEntries["word/theme/theme1.xml"], string(templateStyles))
+	numberingIDMap, numberingXML, err := mergeTemplateStyleNumbering(
+		outputEntries,
+		templateEntries,
+		templateNumberingPart,
+		closure,
+		templateDefinitions,
+		idMap,
+		themeFonts,
+	)
+	if err != nil {
+		return err
+	}
+
+	migratedStyles := make([]string, 0, len(closure))
+	materializedXML := make([]string, 0, len(closure)+len(partNames)+len(numberingXML))
+	materializedXML = append(materializedXML, numberingXML...)
+	for _, id := range closure {
+		definition := replaceStrictXMLAttribute(templateDefinitions[id], "w:styleId", idMap[id])
+		definition = rewriteStrictStyleDependencies(definition, idMap)
+		definition = rewriteStrictNumberingReferences(definition, numberingIDMap)
+		definition, unresolved := materializeStrictThemeFonts(definition, themeFonts)
+		if unresolved {
+			return fmt.Errorf("cannot resolve template theme font used by style %q", id)
+		}
+		if ordered, _, orderErr := ooxmlpkg.RepairPropertyBlock([]byte(definition), "style"); orderErr != nil {
+			return fmt.Errorf("normalize migrated style %q: %w", id, orderErr)
+		} else {
+			definition = string(ordered)
+		}
+		migratedStyles = append(migratedStyles, definition)
+		materializedXML = append(materializedXML, definition)
+	}
+	outputStyles, err = appendStrictStyleDefinitions(outputStyles, migratedStyles)
+	if err != nil {
+		return err
+	}
+	outputEntries["word/styles.xml"] = []byte(outputStyles)
+	if err := ensureTemplateStylesRelationship(outputEntries, templateEntries); err != nil {
+		return err
+	}
+	mergeCopiedPartContentTypes(outputEntries, templateEntries, map[string]string{
+		"word/styles.xml": "word/styles.xml",
+	})
+
+	sort.Strings(partNames)
+	for _, partName := range partNames {
+		content := rewriteStrictStyleReferences(string(outputEntries[partName]), idMap)
+		content, unresolved := materializeStrictThemeFonts(content, themeFonts)
+		if unresolved {
+			return fmt.Errorf("cannot resolve template theme font used by %s", partName)
+		}
+		outputEntries[partName] = []byte(content)
+		materializedXML = append(materializedXML, content)
+	}
+	mergeRequiredTemplateFonts(outputEntries, templateEntries, materializedXML)
+	return nil
+}
+
+func ensureTemplateStylesRelationship(outputEntries, templateEntries map[string][]byte) error {
+	return ensureTemplateDocumentRelationship(outputEntries, templateEntries, "/styles", "word/styles.xml")
+}
+
+func ensureTemplateDocumentRelationship(outputEntries, templateEntries map[string][]byte, relationshipSuffix, destinationPart string) error {
+	var outputRelationships strictRelationshipSet
+	if err := xml.Unmarshal(outputEntries["word/_rels/document.xml.rels"], &outputRelationships); err != nil {
+		return fmt.Errorf("parse output document relationships for %s: %w", pathpkg.Base(relationshipSuffix), err)
+	}
+	usedIDs := map[string]bool{}
+	for _, relationship := range outputRelationships.Relationships {
+		usedIDs[relationship.ID] = true
+		if strings.HasSuffix(strings.TrimSpace(relationship.Type), relationshipSuffix) {
+			return nil
+		}
+	}
+
+	var templateRelationships strictRelationshipSet
+	if err := xml.Unmarshal(templateEntries["word/_rels/document.xml.rels"], &templateRelationships); err != nil {
+		return fmt.Errorf("parse template document relationships for %s: %w", pathpkg.Base(relationshipSuffix), err)
+	}
+	for _, relationship := range templateRelationships.Relationships {
+		if !strings.HasSuffix(strings.TrimSpace(relationship.Type), relationshipSuffix) {
+			continue
+		}
+		relationship.ID = nextFreeRelationshipID(usedIDs)
+		relationship.Target = relativeRelationshipTarget("word/document.xml", destinationPart)
+		relationship.TargetMode = ""
+		outputRelationships.Relationships = append(outputRelationships.Relationships, relationship)
+		merged, err := xml.Marshal(outputRelationships)
+		if err != nil {
+			return fmt.Errorf("marshal output document %s relationship: %w", pathpkg.Base(relationshipSuffix), err)
+		}
+		outputEntries["word/_rels/document.xml.rels"] = merged
+		return nil
+	}
+	return fmt.Errorf("template %s has no document relationship", destinationPart)
+}
+
+func isHeaderFooterPart(name string) bool {
+	name = normalizePackagePartName(name)
+	return (strings.HasPrefix(name, "word/header") || strings.HasPrefix(name, "word/footer")) &&
+		strings.HasSuffix(name, ".xml")
+}
+
+func collectStrictStyleReferences(content string) []string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, tag := range strictStyleReferencePattern.FindAllString(content, -1) {
+		id := strictXMLAttributeValue(tag, "w:val")
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func strictStyleDefinitions(stylesXML string) map[string]string {
+	definitions := map[string]string{}
+	for _, definition := range strictStyleBlockPattern.FindAllString(stylesXML, -1) {
+		if id := strictXMLAttributeValue(definition, "w:styleId"); id != "" {
+			definitions[id] = definition
+		}
+	}
+	return definitions
+}
+
+func strictStyleClosure(rootIDs map[string]bool, definitions map[string]string) ([]string, error) {
+	var ordered []string
+	state := map[string]uint8{}
+	var visit func(string) error
+	visit = func(id string) error {
+		switch state[id] {
+		case 1:
+			// Linked paragraph/character styles and next-style references may
+			// legally form cycles; the visited set is the closure boundary.
+			return nil
+		case 2:
+			return nil
+		}
+		definition, ok := definitions[id]
+		if !ok {
+			return fmt.Errorf("template header/footer references missing style %q", id)
+		}
+		state[id] = 1
+		for _, tag := range strictStyleDependencyPattern.FindAllString(definition, -1) {
+			if dependency := strictXMLAttributeValue(tag, "w:val"); dependency != "" {
+				if err := visit(dependency); err != nil {
+					return err
+				}
+			}
+		}
+		state[id] = 2
+		ordered = append(ordered, id)
+		return nil
+	}
+
+	roots := make([]string, 0, len(rootIDs))
+	for id := range rootIDs {
+		roots = append(roots, id)
+	}
+	sort.Strings(roots)
+	for _, id := range roots {
+		if err := visit(id); err != nil {
+			return nil, err
+		}
+	}
+	return ordered, nil
+}
+
+func strictStyleClosureWithNumbering(rootIDs map[string]bool, definitions map[string]string, numberingXML string) ([]string, error) {
+	roots := make(map[string]bool, len(rootIDs))
+	for id := range rootIDs {
+		roots[id] = true
+	}
+	for {
+		closure, err := strictStyleClosure(roots, definitions)
+		if err != nil {
+			return nil, err
+		}
+		requiredNumbers := map[string]bool{}
+		for _, id := range closure {
+			for _, numberID := range collectStrictNumberingReferences(definitions[id]) {
+				requiredNumbers[numberID] = true
+			}
+		}
+		dependencies, err := strictNumberingStyleDependencies(numberingXML, requiredNumbers)
+		if err != nil {
+			return nil, err
+		}
+		changed := false
+		for _, id := range dependencies {
+			if !roots[id] {
+				roots[id] = true
+				changed = true
+			}
+		}
+		if !changed {
+			return closure, nil
+		}
+	}
+}
+
+func strictNumberingStyleDependencies(numberingXML string, requiredNumbers map[string]bool) ([]string, error) {
+	if len(requiredNumbers) == 0 || numberingXML == "" {
+		return nil, nil
+	}
+	catalog := strictNumberingDefinitions(numberingXML)
+	seen := map[string]bool{}
+	var result []string
+	for numberID := range requiredNumbers {
+		if numberID == "0" {
+			continue
+		}
+		numberDefinition, ok := catalog.Numbers[numberID]
+		if !ok {
+			return nil, fmt.Errorf("template style references missing numbering instance %s", numberID)
+		}
+		abstractID := strictAbstractNumberingID(numberDefinition)
+		abstractDefinition, ok := catalog.Abstract[abstractID]
+		if !ok {
+			return nil, fmt.Errorf("template numbering instance %s references missing abstract numbering %s", numberID, abstractID)
+		}
+		for _, tag := range strictNumberingStyleReferencePattern.FindAllString(abstractDefinition, -1) {
+			id := strictXMLAttributeValue(tag, "w:val")
+			if id != "" && !seen[id] {
+				seen[id] = true
+				result = append(result, id)
+			}
+		}
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func mergeTemplateStyleNumbering(
+	outputEntries,
+	templateEntries map[string][]byte,
+	templateNumberingPart string,
+	styleClosure []string,
+	templateStyles map[string]string,
+	styleIDMap map[string]string,
+	themeFonts strictThemeFontSet,
+) (map[string]string, []string, error) {
+	requiredNumbers := make([]string, 0)
+	seenNumbers := map[string]bool{}
+	for _, styleID := range styleClosure {
+		for _, numberID := range collectStrictNumberingReferences(templateStyles[styleID]) {
+			if numberID == "0" || seenNumbers[numberID] {
+				continue
+			}
+			seenNumbers[numberID] = true
+			requiredNumbers = append(requiredNumbers, numberID)
+		}
+	}
+	if len(requiredNumbers) == 0 {
+		return map[string]string{}, nil, nil
+	}
+	if templateNumberingPart == "" {
+		return nil, nil, fmt.Errorf("template styles reference numbering, but the numbering relationship is missing")
+	}
+	templateNumbering, ok := templateEntries[templateNumberingPart]
+	if !ok {
+		return nil, nil, fmt.Errorf("template styles reference numbering, but %s is missing", templateNumberingPart)
+	}
+	templateCatalog := strictNumberingDefinitions(string(templateNumbering))
+
+	outputNumberingPart := strictDocumentRelationshipPart(outputEntries, "/numbering")
+	if outputNumberingPart == "" {
+		outputNumberingPart = "word/numbering.xml"
+	}
+	outputNumbering := string(outputEntries[outputNumberingPart])
+	if outputNumbering == "" {
+		outputNumbering = `<?xml version="1.0" encoding="UTF-8"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"></w:numbering>`
+	}
+	outputCatalog := strictNumberingDefinitions(outputNumbering)
+	usedNumberIDs := make(map[string]bool, len(outputCatalog.Numbers))
+	usedAbstractIDs := make(map[string]bool, len(outputCatalog.Abstract))
+	usedPictureBulletIDs := make(map[string]bool, len(outputCatalog.PictureBullets))
+	for id := range outputCatalog.Numbers {
+		usedNumberIDs[id] = true
+	}
+	for id := range outputCatalog.Abstract {
+		usedAbstractIDs[id] = true
+	}
+	for id := range outputCatalog.PictureBullets {
+		usedPictureBulletIDs[id] = true
+	}
+
+	numberIDMap := map[string]string{}
+	abstractIDMap := map[string]string{}
+	pictureBulletIDMap := map[string]string{}
+	var pictureBulletDefinitions, abstractDefinitions, numberDefinitions []string
+	var materializedXML []string
+	for _, sourceNumberID := range requiredNumbers {
+		numberDefinition, ok := templateCatalog.Numbers[sourceNumberID]
+		if !ok {
+			return nil, nil, fmt.Errorf("template style references missing numbering instance %s", sourceNumberID)
+		}
+		sourceAbstractID := strictAbstractNumberingID(numberDefinition)
+		abstractDefinition, ok := templateCatalog.Abstract[sourceAbstractID]
+		if !ok {
+			return nil, nil, fmt.Errorf("template numbering instance %s references missing abstract numbering %s", sourceNumberID, sourceAbstractID)
+		}
+
+		destinationAbstractID := abstractIDMap[sourceAbstractID]
+		if destinationAbstractID == "" {
+			destinationAbstractID = allocateStrictDecimalID(sourceAbstractID, usedAbstractIDs, 0)
+			abstractIDMap[sourceAbstractID] = destinationAbstractID
+			abstractDefinition = strictAbstractNumberingStartPattern.ReplaceAllStringFunc(abstractDefinition, func(tag string) string {
+				return replaceStrictXMLAttribute(tag, "w:abstractNumId", destinationAbstractID)
+			})
+			abstractDefinition = rewriteStrictNumberingStyleReferences(abstractDefinition, styleIDMap)
+			for _, sourcePictureBulletID := range collectStrictNumberingPictureBulletReferences(abstractDefinition) {
+				destinationPictureBulletID := pictureBulletIDMap[sourcePictureBulletID]
+				if destinationPictureBulletID == "" {
+					pictureBulletDefinition, exists := templateCatalog.PictureBullets[sourcePictureBulletID]
+					if !exists {
+						return nil, nil, fmt.Errorf("template abstract numbering %s references missing picture bullet %s", sourceAbstractID, sourcePictureBulletID)
+					}
+					destinationPictureBulletID = allocateStrictDecimalID(sourcePictureBulletID, usedPictureBulletIDs, 0)
+					pictureBulletIDMap[sourcePictureBulletID] = destinationPictureBulletID
+					pictureBulletDefinition = strictNumberingPictureBulletStartPattern.ReplaceAllStringFunc(pictureBulletDefinition, func(tag string) string {
+						return replaceStrictXMLAttribute(tag, "w:numPicBulletId", destinationPictureBulletID)
+					})
+					pictureBulletDefinitions = append(pictureBulletDefinitions, pictureBulletDefinition)
+				}
+				abstractDefinition = rewriteStrictNumberingPictureBulletReferences(abstractDefinition, map[string]string{
+					sourcePictureBulletID: destinationPictureBulletID,
+				})
+			}
+			var unresolved bool
+			abstractDefinition, unresolved = materializeStrictThemeFonts(abstractDefinition, themeFonts)
+			if unresolved {
+				return nil, nil, fmt.Errorf("cannot resolve template theme font used by abstract numbering %s", sourceAbstractID)
+			}
+			abstractDefinitions = append(abstractDefinitions, abstractDefinition)
+			materializedXML = append(materializedXML, abstractDefinition)
+		}
+
+		destinationNumberID := allocateStrictDecimalID(sourceNumberID, usedNumberIDs, 1)
+		numberIDMap[sourceNumberID] = destinationNumberID
+		numberDefinition = strictNumberingInstanceStartPattern.ReplaceAllStringFunc(numberDefinition, func(tag string) string {
+			return replaceStrictXMLAttribute(tag, "w:numId", destinationNumberID)
+		})
+		numberDefinition = strictAbstractNumberingIDPattern.ReplaceAllStringFunc(numberDefinition, func(tag string) string {
+			return replaceStrictXMLAttribute(tag, "w:val", destinationAbstractID)
+		})
+		var unresolved bool
+		numberDefinition, unresolved = materializeStrictThemeFonts(numberDefinition, themeFonts)
+		if unresolved {
+			return nil, nil, fmt.Errorf("cannot resolve template theme font used by numbering instance %s", sourceNumberID)
+		}
+		numberDefinitions = append(numberDefinitions, numberDefinition)
+		materializedXML = append(materializedXML, numberDefinition)
+	}
+
+	relationshipIDMap, copiedParts, err := mergeSelectedPartRelationships(
+		templateNumberingPart,
+		outputNumberingPart,
+		collectStrictRelationshipReferences(strings.Join(pictureBulletDefinitions, "")),
+		templateEntries,
+		outputEntries,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	for index, definition := range pictureBulletDefinitions {
+		definition = rewriteStrictRelationshipReferences(definition, relationshipIDMap)
+		var unresolved bool
+		definition, unresolved = materializeStrictThemeFonts(definition, themeFonts)
+		if unresolved {
+			return nil, nil, fmt.Errorf("cannot resolve template theme font used by picture bullet")
+		}
+		pictureBulletDefinitions[index] = definition
+		materializedXML = append(materializedXML, definition)
+	}
+	outputNumbering = mergeStrictNumberingRootNamespaces(outputNumbering, string(templateNumbering))
+	merged, err := appendStrictNumberingDefinitions(outputNumbering, pictureBulletDefinitions, abstractDefinitions, numberDefinitions)
+	if err != nil {
+		return nil, nil, err
+	}
+	outputEntries[outputNumberingPart] = []byte(merged)
+	if err := ensureTemplateDocumentRelationship(outputEntries, templateEntries, "/numbering", outputNumberingPart); err != nil {
+		return nil, nil, err
+	}
+	copiedParts[templateNumberingPart] = outputNumberingPart
+	mergeCopiedPartContentTypes(outputEntries, templateEntries, copiedParts)
+	return numberIDMap, materializedXML, nil
+}
+
+func strictNumberingDefinitions(numberingXML string) strictNumberingCatalog {
+	catalog := strictNumberingCatalog{
+		PictureBullets: map[string]string{},
+		Abstract:       map[string]string{},
+		Numbers:        map[string]string{},
+	}
+	for _, definition := range strictNumberingPictureBulletPattern.FindAllString(numberingXML, -1) {
+		if start := strictNumberingPictureBulletStartPattern.FindString(definition); start != "" {
+			if id := strictXMLAttributeValue(start, "w:numPicBulletId"); id != "" {
+				catalog.PictureBullets[id] = definition
+			}
+		}
+	}
+	for _, definition := range strictAbstractNumberingPattern.FindAllString(numberingXML, -1) {
+		if start := strictAbstractNumberingStartPattern.FindString(definition); start != "" {
+			if id := strictXMLAttributeValue(start, "w:abstractNumId"); id != "" {
+				catalog.Abstract[id] = definition
+			}
+		}
+	}
+	for _, definition := range strictNumberingInstancePattern.FindAllString(numberingXML, -1) {
+		if start := strictNumberingInstanceStartPattern.FindString(definition); start != "" {
+			if id := strictXMLAttributeValue(start, "w:numId"); id != "" {
+				catalog.Numbers[id] = definition
+			}
+		}
+	}
+	return catalog
+}
+
+func strictAbstractNumberingID(numberDefinition string) string {
+	tag := strictAbstractNumberingIDPattern.FindString(numberDefinition)
+	return strictXMLAttributeValue(tag, "w:val")
+}
+
+func collectStrictNumberingReferences(content string) []string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, tag := range strictNumberingIDPattern.FindAllString(content, -1) {
+		id := strictXMLAttributeValue(tag, "w:val")
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func rewriteStrictNumberingReferences(content string, idMap map[string]string) string {
+	return strictNumberingIDPattern.ReplaceAllStringFunc(content, func(tag string) string {
+		if mapped := idMap[strictXMLAttributeValue(tag, "w:val")]; mapped != "" {
+			return replaceStrictXMLAttribute(tag, "w:val", mapped)
+		}
+		return tag
+	})
+}
+
+func rewriteStrictNumberingStyleReferences(content string, idMap map[string]string) string {
+	return strictNumberingStyleReferencePattern.ReplaceAllStringFunc(content, func(tag string) string {
+		if mapped := idMap[strictXMLAttributeValue(tag, "w:val")]; mapped != "" {
+			return replaceStrictXMLAttribute(tag, "w:val", mapped)
+		}
+		return tag
+	})
+}
+
+func collectStrictNumberingPictureBulletReferences(content string) []string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, tag := range strictNumberingPictureBulletIDPattern.FindAllString(content, -1) {
+		id := strictXMLAttributeValue(tag, "w:val")
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func rewriteStrictNumberingPictureBulletReferences(content string, idMap map[string]string) string {
+	return strictNumberingPictureBulletIDPattern.ReplaceAllStringFunc(content, func(tag string) string {
+		if mapped := idMap[strictXMLAttributeValue(tag, "w:val")]; mapped != "" {
+			return replaceStrictXMLAttribute(tag, "w:val", mapped)
+		}
+		return tag
+	})
+}
+
+func allocateStrictDecimalID(source string, used map[string]bool, first int) string {
+	if _, err := strconv.Atoi(source); err == nil && !used[source] {
+		used[source] = true
+		return source
+	}
+	for candidate := first; ; candidate++ {
+		id := strconv.Itoa(candidate)
+		if !used[id] {
+			used[id] = true
+			return id
+		}
+	}
+}
+
+func appendStrictNumberingDefinitions(numberingXML string, pictureBullets, abstracts, numbers []string) (string, error) {
+	closing := strings.LastIndex(numberingXML, "</w:numbering>")
+	if closing < 0 {
+		return "", fmt.Errorf("output numbering part is malformed")
+	}
+	if len(pictureBullets) > 0 {
+		insertAt := closing
+		if firstAbstract := strictAbstractNumberingPattern.FindStringIndex(numberingXML); firstAbstract != nil {
+			insertAt = firstAbstract[0]
+		} else if firstNumber := strictNumberingInstancePattern.FindStringIndex(numberingXML); firstNumber != nil {
+			insertAt = firstNumber[0]
+		}
+		numberingXML = numberingXML[:insertAt] + strings.Join(pictureBullets, "") + numberingXML[insertAt:]
+	}
+	if len(abstracts) > 0 {
+		insertAt := closing
+		if firstNumber := strictNumberingInstancePattern.FindStringIndex(numberingXML); firstNumber != nil {
+			insertAt = firstNumber[0]
+		}
+		numberingXML = numberingXML[:insertAt] + strings.Join(abstracts, "") + numberingXML[insertAt:]
+	}
+	closing = strings.LastIndex(numberingXML, "</w:numbering>")
+	return numberingXML[:closing] + strings.Join(numbers, "") + numberingXML[closing:], nil
+}
+
+func mergeStrictNumberingRootNamespaces(outputXML, templateXML string) string {
+	outputRoot := strictNumberingRootPattern.FindString(outputXML)
+	templateRoot := strictNumberingRootPattern.FindString(templateXML)
+	if outputRoot == "" || templateRoot == "" {
+		return outputXML
+	}
+	updatedRoot := outputRoot
+	for _, match := range strictXMLAttributePattern.FindAllStringSubmatch(templateRoot, -1) {
+		if len(match) < 5 || !strings.HasPrefix(match[1], "xmlns") || strictXMLAttributeValueFold(updatedRoot, match[1]) != "" {
+			continue
+		}
+		value := match[3]
+		if value == "" {
+			value = match[4]
+		}
+		updatedRoot = addStrictXMLAttribute(updatedRoot, match[1], value)
+	}
+	return strings.Replace(outputXML, outputRoot, updatedRoot, 1)
+}
+
+func strictDocumentRelationshipPart(entries map[string][]byte, relationshipSuffix string) string {
+	var relationships strictRelationshipSet
+	if xml.Unmarshal(entries["word/_rels/document.xml.rels"], &relationships) != nil {
+		return ""
+	}
+	for _, relationship := range relationships.Relationships {
+		if strings.HasSuffix(strings.TrimSpace(relationship.Type), relationshipSuffix) &&
+			!strings.EqualFold(relationship.TargetMode, "External") {
+			return resolveRelationshipPart("word/document.xml", relationship.Target)
+		}
+	}
+	return ""
+}
+
+func nextTemplateStyleID(sourceID string, used map[string]bool) string {
+	base := sourceID + "_template"
+	for suffix := 1; ; suffix++ {
+		candidate := base + strconv.Itoa(suffix)
+		if !used[candidate] {
+			return candidate
+		}
+	}
+}
+
+func rewriteStrictStyleReferences(content string, idMap map[string]string) string {
+	return strictStyleReferencePattern.ReplaceAllStringFunc(content, func(tag string) string {
+		id := strictXMLAttributeValue(tag, "w:val")
+		if mapped := idMap[id]; mapped != "" {
+			return replaceStrictXMLAttribute(tag, "w:val", mapped)
+		}
+		return tag
+	})
+}
+
+func rewriteStrictStyleDependencies(definition string, idMap map[string]string) string {
+	return strictStyleDependencyPattern.ReplaceAllStringFunc(definition, func(tag string) string {
+		id := strictXMLAttributeValue(tag, "w:val")
+		if mapped := idMap[id]; mapped != "" {
+			return replaceStrictXMLAttribute(tag, "w:val", mapped)
+		}
+		return tag
+	})
+}
+
+func appendStrictStyleDefinitions(stylesXML string, definitions []string) (string, error) {
+	if len(definitions) == 0 {
+		return stylesXML, nil
+	}
+	if strings.TrimSpace(stylesXML) == "" {
+		return `<?xml version="1.0" encoding="UTF-8"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+			strings.Join(definitions, "") + `</w:styles>`, nil
+	}
+	closeAt := strings.LastIndex(stylesXML, "</w:styles>")
+	if closeAt == -1 {
+		return "", fmt.Errorf("output word/styles.xml is malformed")
+	}
+	return stylesXML[:closeAt] + strings.Join(definitions, "") + stylesXML[closeAt:], nil
+}
+
+type strictThemeFontFamily struct {
+	Latin, EastAsia, Complex string
+	Scripts                  map[string]string
+}
+
+type strictThemeFontSet struct {
+	Major, Minor   strictThemeFontFamily
+	EastAsiaScript string
+	ComplexScript  string
+}
+
+func parseStrictThemeFonts(themeXML []byte, stylesXML string) strictThemeFontSet {
+	result := strictThemeFontSet{
+		Major: strictThemeFontFamily{Scripts: map[string]string{}},
+		Minor: strictThemeFontFamily{Scripts: map[string]string{}},
+	}
+	result.EastAsiaScript, result.ComplexScript = strictThemeScripts(stylesXML)
+	decoder := xml.NewDecoder(bytes.NewReader(themeXML))
+	var family *strictThemeFontFamily
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			break
+		}
+		switch value := token.(type) {
+		case xml.StartElement:
+			switch value.Name.Local {
+			case "majorFont":
+				family = &result.Major
+			case "minorFont":
+				family = &result.Minor
+			case "latin", "ea", "cs", "font":
+				if family == nil {
+					continue
+				}
+				typeface := strictXMLLocalAttribute(value.Attr, "typeface")
+				switch value.Name.Local {
+				case "latin":
+					family.Latin = typeface
+				case "ea":
+					family.EastAsia = typeface
+				case "cs":
+					family.Complex = typeface
+				case "font":
+					if script := strictXMLLocalAttribute(value.Attr, "script"); script != "" {
+						family.Scripts[script] = typeface
+					}
+				}
+			}
+		case xml.EndElement:
+			if value.Name.Local == "majorFont" || value.Name.Local == "minorFont" {
+				family = nil
+			}
+		}
+	}
+	return result
+}
+
+func strictXMLLocalAttribute(attributes []xml.Attr, name string) string {
+	for _, attribute := range attributes {
+		if attribute.Name.Local == name {
+			return attribute.Value
+		}
+	}
+	return ""
+}
+
+func strictThemeScripts(stylesXML string) (string, string) {
+	eastAsiaLanguage, bidiLanguage := "", ""
+	for _, tag := range regexp.MustCompile(`<w:lang\b[^>]*>`).FindAllString(stylesXML, -1) {
+		if eastAsiaLanguage == "" {
+			eastAsiaLanguage = strictXMLAttributeValue(tag, "w:eastAsia")
+		}
+		if bidiLanguage == "" {
+			bidiLanguage = strictXMLAttributeValue(tag, "w:bidi")
+		}
+	}
+	return strictLanguageThemeScript(eastAsiaLanguage), strictLanguageThemeScript(bidiLanguage)
+}
+
+func strictLanguageThemeScript(language string) string {
+	language = strings.ToLower(strings.TrimSpace(language))
+	switch {
+	case strings.HasPrefix(language, "zh-cn"), strings.HasPrefix(language, "zh-sg"):
+		return "Hans"
+	case strings.HasPrefix(language, "zh"):
+		return "Hant"
+	case strings.HasPrefix(language, "ja"):
+		return "Jpan"
+	case strings.HasPrefix(language, "ko"):
+		return "Hang"
+	case strings.HasPrefix(language, "ar"), strings.HasPrefix(language, "fa"), strings.HasPrefix(language, "ur"):
+		return "Arab"
+	case strings.HasPrefix(language, "he"):
+		return "Hebr"
+	case strings.HasPrefix(language, "th"):
+		return "Thai"
+	default:
+		return ""
+	}
+}
+
+func (fonts strictThemeFontSet) resolve(reference string) string {
+	reference = strings.ToLower(strings.TrimSpace(reference))
+	var family strictThemeFontFamily
+	switch {
+	case strings.HasPrefix(reference, "major"):
+		family = fonts.Major
+	case strings.HasPrefix(reference, "minor"):
+		family = fonts.Minor
+	default:
+		return ""
+	}
+	switch {
+	case strings.Contains(reference, "eastasia"):
+		if family.EastAsia != "" {
+			return family.EastAsia
+		}
+		if font := family.Scripts[fonts.EastAsiaScript]; font != "" {
+			return font
+		}
+	case strings.Contains(reference, "bidi"):
+		if family.Complex != "" {
+			return family.Complex
+		}
+		if font := family.Scripts[fonts.ComplexScript]; font != "" {
+			return font
+		}
+	default:
+		return family.Latin
+	}
+	return family.Latin
+}
+
+func materializeStrictThemeFonts(content string, fonts strictThemeFontSet) (string, bool) {
+	unresolved := false
+	content = strictRunFontsPattern.ReplaceAllStringFunc(content, func(tag string) string {
+		slots := []struct {
+			themeNames []string
+			fontName   string
+		}{
+			{[]string{"w:asciiTheme"}, "w:ascii"},
+			{[]string{"w:hAnsiTheme"}, "w:hAnsi"},
+			{[]string{"w:eastAsiaTheme"}, "w:eastAsia"},
+			{[]string{"w:cstheme", "w:csTheme"}, "w:cs"},
+		}
+		for _, slot := range slots {
+			reference := ""
+			for _, themeName := range slot.themeNames {
+				reference = strictXMLAttributeValueFold(tag, themeName)
+				if reference != "" {
+					break
+				}
+			}
+			if reference == "" {
+				continue
+			}
+			font := fonts.resolve(reference)
+			if font == "" {
+				unresolved = true
+				continue
+			}
+			if strictXMLAttributeValueFold(tag, slot.fontName) == "" {
+				tag = addStrictXMLAttribute(tag, slot.fontName, font)
+			}
+			for _, themeName := range slot.themeNames {
+				tag = removeStrictXMLAttributeFold(tag, themeName)
+			}
+		}
+		return tag
+	})
+	return content, unresolved
+}
+
+func strictXMLAttributeValueFold(tag, name string) string {
+	for _, match := range strictXMLAttributePattern.FindAllStringSubmatch(tag, -1) {
+		if len(match) < 5 || !strings.EqualFold(match[1], name) {
+			continue
+		}
+		if match[3] != "" {
+			return match[3]
+		}
+		return match[4]
+	}
+	return ""
+}
+
+func addStrictXMLAttribute(tag, name, value string) string {
+	insertAt := strings.LastIndex(tag, "/>")
+	if insertAt == -1 {
+		insertAt = strings.LastIndex(tag, ">")
+	}
+	if insertAt == -1 {
+		return tag
+	}
+	var escaped bytes.Buffer
+	_ = xml.EscapeText(&escaped, []byte(value))
+	return tag[:insertAt] + ` ` + name + `="` + escaped.String() + `"` + tag[insertAt:]
+}
+
+func removeStrictXMLAttributeFold(tag, name string) string {
+	pattern := regexp.MustCompile(`(?i)\s+` + regexp.QuoteMeta(name) + `\s*=\s*("[^"]*"|'[^']*')`)
+	return pattern.ReplaceAllString(tag, "")
+}
+
+func mergeRequiredTemplateFonts(
+	outputEntries,
+	templateEntries map[string][]byte,
+	materializedXML []string,
+) {
+	outputFontTable, ok := outputEntries["word/fontTable.xml"]
+	if !ok {
+		return
+	}
+	templateFontTable, ok := templateEntries["word/fontTable.xml"]
+	if !ok {
+		return
+	}
+
+	required := map[string]bool{}
+	for _, content := range materializedXML {
+		for _, tag := range strictRunFontsPattern.FindAllString(content, -1) {
+			for _, attribute := range []string{"w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"} {
+				if font := strictXMLAttributeValue(tag, attribute); font != "" {
+					required[font] = true
+				}
+			}
+		}
+	}
+	existing := map[string]bool{}
+	for _, block := range strictFontBlockPattern.FindAllString(string(outputFontTable), -1) {
+		existing[strictXMLAttributeValue(block, "w:name")] = true
+	}
+	var additions []string
+	for _, block := range strictFontBlockPattern.FindAllString(string(templateFontTable), -1) {
+		name := strictXMLAttributeValue(block, "w:name")
+		if required[name] && !existing[name] {
+			existing[name] = true
+			additions = append(additions, block)
+		}
+	}
+	if len(additions) == 0 {
+		return
+	}
+	content := string(outputFontTable)
+	if closeAt := strings.LastIndex(content, "</w:fonts>"); closeAt != -1 {
+		outputEntries["word/fontTable.xml"] = []byte(content[:closeAt] + strings.Join(additions, "") + content[closeAt:])
+	}
+}
+
+func strictXMLAttributeValue(tag, name string) string {
+	for _, match := range strictXMLAttributePattern.FindAllStringSubmatch(tag, -1) {
+		if len(match) < 5 || match[1] != name {
+			continue
+		}
+		if match[3] != "" {
+			return match[3]
+		}
+		return match[4]
+	}
+	return ""
+}
+
+func replaceStrictXMLAttribute(tag, name, value string) string {
+	pattern := regexp.MustCompile(`(\s+` + regexp.QuoteMeta(name) + `\s*=\s*)("[^"]*"|'[^']*')`)
+	return pattern.ReplaceAllString(tag, `${1}"`+value+`"`)
+}
+
 func nextFreeRelationshipID(used map[string]bool) string {
 	for number := 1; ; number++ {
 		candidate := "rId" + strconv.Itoa(number)
@@ -2371,24 +3712,179 @@ func mergeDocumentSectionHeaderFooterRefs(outputEntries, templateEntries map[str
 		return
 	}
 
-	outputXML := string(outputContent)
-	templateXML := string(templateContent)
+	sectionRefs := mapTemplateSectionHeaderFooterRefs(string(outputContent), string(templateContent))
+	mergeDocumentSectionHeaderFooterRefsWithPlan(outputEntries, sectionRefs, relationshipIDs)
+}
 
-	templateSectPrBlocks := extractSectPrBlocks(templateXML)
-	if len(templateSectPrBlocks) == 0 {
+func mergeDocumentSectionHeaderFooterRefsWithPlan(
+	outputEntries map[string][]byte,
+	sectionRefs [][]string,
+	relationshipIDs map[string]string,
+) {
+	outputContent, ok := outputEntries["word/document.xml"]
+	if !ok {
+		return
+	}
+	outputXML := string(outputContent)
+	sectPrPattern := regexp.MustCompile(`<w:sectPr(?:[^>]*/>|[\s\S]*?</w:sectPr>)`)
+	matches := sectPrPattern.FindAllStringIndex(outputXML, -1)
+	if len(matches) == 0 {
 		return
 	}
 
-	sectPrBlocks := extractSectPrBlocks(outputXML)
-	for idx, sectPr := range sectPrBlocks {
-		templateIdx := idx
-		if templateIdx >= len(templateSectPrBlocks) {
-			templateIdx = len(templateSectPrBlocks) - 1
+	var updated strings.Builder
+	lastEnd := 0
+	for index, match := range matches {
+		updated.WriteString(outputXML[lastEnd:match[0]])
+		sectPr := outputXML[match[0]:match[1]]
+		refs := []string(nil)
+		if index < len(sectionRefs) {
+			refs = sectionRefs[index]
 		}
-		replacement := remapRelationshipIDs(templateSectPrBlocks[templateIdx], relationshipIDs)
-		outputXML = strings.Replace(outputXML, sectPr, replacement, 1)
+		mappedRefs := make([]string, 0, len(refs))
+		for _, ref := range refs {
+			mappedRefs = append(mappedRefs, remapRelationshipIDs(ref, relationshipIDs))
+		}
+		replacement, inserted := insertHeaderFooterRefsIntoSectPr(
+			stripHeaderFooterReferenceTags(sectPr),
+			mappedRefs,
+		)
+		if !inserted {
+			replacement = sectPr
+		}
+		updated.WriteString(replacement)
+		lastEnd = match[1]
 	}
-	outputEntries["word/document.xml"] = []byte(outputXML)
+	updated.WriteString(outputXML[lastEnd:])
+	outputEntries["word/document.xml"] = []byte(updated.String())
+}
+
+type strictSectionRole string
+
+const (
+	strictSectionUnknown      strictSectionRole = ""
+	strictSectionCover        strictSectionRole = "cover"
+	strictSectionAbstractCN   strictSectionRole = "abstract_cn"
+	strictSectionAbstractEN   strictSectionRole = "abstract_en"
+	strictSectionTOC          strictSectionRole = "toc"
+	strictSectionBody         strictSectionRole = "body"
+	strictSectionReferences   strictSectionRole = "references"
+	strictSectionAcknowledged strictSectionRole = "acknowledgements"
+	strictSectionAppendix     strictSectionRole = "appendix"
+)
+
+type strictSectionDescriptor struct {
+	Role strictSectionRole
+	Refs []string
+}
+
+func mapTemplateSectionHeaderFooterRefs(outputXML, templateXML string) [][]string {
+	outputSections := describeStrictSections(outputXML)
+	templateSections := describeStrictSections(templateXML)
+	if len(outputSections) == 0 || len(templateSections) == 0 {
+		return nil
+	}
+
+	firstByRole := make(map[strictSectionRole]int)
+	for index, section := range templateSections {
+		if _, exists := firstByRole[section.Role]; !exists && section.Role != strictSectionUnknown {
+			firstByRole[section.Role] = index
+		}
+	}
+	bodyIndex, hasBody := firstByRole[strictSectionBody]
+
+	result := make([][]string, len(outputSections))
+	for index, section := range outputSections {
+		templateIndex, found := firstByRole[section.Role]
+		if !found {
+			switch section.Role {
+			case strictSectionAbstractEN:
+				templateIndex, found = firstByRole[strictSectionAbstractCN]
+			case strictSectionReferences, strictSectionAcknowledged, strictSectionAppendix:
+				templateIndex, found = bodyIndex, hasBody
+			}
+		}
+		if !found && index == 0 {
+			templateIndex, found = 0, true
+		}
+		if !found && hasBody {
+			templateIndex, found = bodyIndex, true
+		}
+		if !found {
+			templateIndex = len(templateSections) - 1
+		}
+		result[index] = append([]string(nil), templateSections[templateIndex].Refs...)
+	}
+	return result
+}
+
+func describeStrictSections(documentXML string) []strictSectionDescriptor {
+	sectPrPattern := regexp.MustCompile(`<w:sectPr(?:[^>]*/>|[\s\S]*?</w:sectPr>)`)
+	matches := sectPrPattern.FindAllStringIndex(documentXML, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	sections := make([]strictSectionDescriptor, 0, len(matches))
+	previousEnd := 0
+	for index, match := range matches {
+		contextXML := documentXML[previousEnd:match[0]]
+		visibleText := strings.Join(extractDocxTextNodes(contextXML), " ")
+		sectPr := documentXML[match[0]:match[1]]
+		sections = append(sections, strictSectionDescriptor{
+			Role: classifyStrictSectionRole(visibleText, index),
+			Refs: extractHeaderFooterReferenceTags(sectPr),
+		})
+		previousEnd = match[1]
+	}
+	return sections
+}
+
+func classifyStrictSectionRole(text string, index int) strictSectionRole {
+	if index == 0 {
+		return strictSectionCover
+	}
+	normalized := strings.ToLower(strings.Join(strings.Fields(text), " "))
+	compact := strings.ReplaceAll(normalized, " ", "")
+	switch {
+	case strings.Contains(compact, "目录") ||
+		strings.Contains(normalized, "table of contents") ||
+		regexp.MustCompile(`\bcontents\b`).MatchString(normalized):
+		return strictSectionTOC
+	case strings.Contains(compact, "摘要"):
+		return strictSectionAbstractCN
+	case regexp.MustCompile(`\babstract\b`).MatchString(normalized):
+		return strictSectionAbstractEN
+	case regexp.MustCompile(`第[一二三四五六七八九十百\d]+章`).MatchString(compact) ||
+		strings.Contains(compact, "绪论") ||
+		regexp.MustCompile(`(?m)(^|\s)[1-9]\d?(?:\.\d+)*\s+[\p{Han}A-Za-z]`).MatchString(normalized) ||
+		regexp.MustCompile(`\b(chapter|body)\b`).MatchString(normalized):
+		return strictSectionBody
+	case strings.Contains(compact, "参考文献") ||
+		regexp.MustCompile(`\b(references|bibliography)\b`).MatchString(normalized):
+		return strictSectionReferences
+	case strings.Contains(compact, "致谢") ||
+		strings.Contains(normalized, "acknowledg"):
+		return strictSectionAcknowledged
+	case strings.Contains(compact, "附录") ||
+		regexp.MustCompile(`\bappendix\b`).MatchString(normalized):
+		return strictSectionAppendix
+	default:
+		return strictSectionUnknown
+	}
+}
+
+func referencedRelationshipIDs(sectionRefs [][]string) map[string]bool {
+	ids := make(map[string]bool)
+	for _, refs := range sectionRefs {
+		for _, ref := range refs {
+			id := strictXMLAttributeValue(ref, "r:id")
+			if id != "" {
+				ids[id] = true
+			}
+		}
+	}
+	return ids
 }
 
 func remapRelationshipIDs(xmlText string, relationshipIDs map[string]string) string {
@@ -2411,7 +3907,7 @@ func lastSectPrBlock(docXML string) string {
 }
 
 func extractSectPrBlocks(docXML string) []string {
-	re := regexp.MustCompile(`<w:sectPr(?:[\s\S]*?</w:sectPr>|[^>]*/>)`)
+	re := regexp.MustCompile(`<w:sectPr(?:[^>]*/>|[\s\S]*?</w:sectPr>)`)
 	return re.FindAllString(docXML, -1)
 }
 

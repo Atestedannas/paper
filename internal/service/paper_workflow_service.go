@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -67,6 +68,8 @@ var renderedHeadingPattern = regexp.MustCompile(`^(\d+(?:\.\d+){0,2})\s*(\S.*)$`
 var renderedHeadingNumberPattern = regexp.MustCompile(`^\d+(?:\.\d+){0,2}$`)
 var renderedTOCEntryWithPagePattern = regexp.MustCompile(`\s[1-9]\d*$`)
 var formulaNumberLinePattern = regexp.MustCompile(`^\s*[\(（](\d+)[-.．](\d+)[\)）]\s*$`)
+var workflowTemplateAnchorPattern = regexp.MustCompile(`\{\{[a-z][a-z0-9_]*\}\}`)
+var workflowReviewMarkupPattern = regexp.MustCompile(`<w:(?:ins|del|moveFrom|moveTo|commentRangeStart|commentReference)\b`)
 
 type WorkflowJobView struct {
 	ID                 uuid.UUID `json:"id"`
@@ -233,43 +236,75 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 	templateID := uuid.New()
 	jobID := uuid.New()
 	var selectedTemplateID *uuid.UUID
-	templatePath := ""
 	templateName := "single-template-runtime"
 	templateVersion := "runtime"
 	schoolID := "single-template"
-	formatRules := ""
+	compiledSource := input.FilePath
+	var profile *templateprofile.Profile
+	var administratorOverrides string
+
 	if input.FormatTemplateID != uuid.Nil {
 		var formatTemplate model.FormatTemplate
 		if err := s.db.WithContext(ctx).Preload("University").First(&formatTemplate, "id = ? AND is_active = ?", input.FormatTemplateID, true).Error; err != nil {
 			return nil, err
 		}
-		templatePath = WorkflowTemplatePath(formatTemplate)
-		if templatePath == "" && formatTemplate.University != nil && strings.Contains(formatTemplate.University.Name, "重庆人文科技学院") {
-			templatePath = resolveCQRWSTTemplatePath()
-		}
-		if templatePath == "" {
-			log.Printf("[WORKFLOW_TEMPLATE] template %s has no readable DOCX; using uploaded paper as skeleton", formatTemplate.ID)
-			templatePath = input.FilePath
-		}
 		selectedTemplateID = &formatTemplate.ID
 		templateName = formatTemplate.Name
 		templateVersion = formatTemplate.Version
 		schoolID = formatTemplate.TemplateID
-		formatRules = formatTemplate.FormatRules
+		templatePath := WorkflowTemplatePath(formatTemplate)
+		if templatePath == "" {
+			log.Printf("[WORKFLOW_TEMPLATE] template %s has no readable DOCX; rejecting paper job", formatTemplate.ID)
+			return nil, ErrTemplateDOCXMissing
+		}
+		compiledSource = templatePath
+
+		// Profile JSON is only a cache. The selected DOCX always remains the
+		// template skeleton, and a stale cache is rebuilt from that DOCX.
+		if strings.TrimSpace(formatTemplate.FormatRules) != "" {
+			if p, err := templateprofile.Parse(formatTemplate.FormatRules); err == nil {
+				if templateSHA, hashErr := workflowTemplateSHA(templatePath); hashErr != nil {
+					return nil, hashErr
+				} else if p.TemplateSHA == templateSHA {
+					profile = p
+				} else {
+					log.Printf("[WORKFLOW_TEMPLATE] cached Profile for template %s is stale; rebuilding from DOCX", formatTemplate.ID)
+				}
+			} else {
+				log.Printf("[WORKFLOW_TEMPLATE] failed to parse FormatRules for template %s: %v — falling back to DOCX", formatTemplate.ID, err)
+				administratorOverrides = formatTemplate.FormatRules
+			}
+		}
+		// First use or changed DOCX: extract deterministic rules and refresh the cache.
+		if profile == nil {
+			profile = buildWorkflowTemplateProfile(ctx, templatePath)
+			if profile == nil {
+				return nil, fmt.Errorf("build selected template profile failed")
+			}
+			if administratorOverrides != "" {
+				if err := templateprofile.ApplyFormatRules(profile, administratorOverrides); err != nil {
+					return nil, fmt.Errorf("apply selected template format rule overrides: %w", err)
+				}
+			}
+
+			// Persist the refreshed cache; the DOCX remains the source of truth.
+			rulesJSON := templateprofile.Marshal(profile)
+			if rulesJSON != "" {
+				if err := s.db.WithContext(ctx).Model(&formatTemplate).Update("format_rules", rulesJSON).Error; err != nil {
+					log.Printf("[WORKFLOW_TEMPLATE] failed to persist FormatRules for template %s: %v", formatTemplate.ID, err)
+				} else {
+					log.Printf("[WORKFLOW_TEMPLATE] persisted FormatRules (%d bytes) for template %s — future jobs will skip DOCX parsing",
+						len(rulesJSON), formatTemplate.ID)
+				}
+			}
+		}
 	} else if configured := resolveCQRWSTTemplatePath(); configured != "" {
 		// Compatibility for older clients; new clients must submit template_id.
-		templatePath = configured
-	}
-
-	var profile *templateprofile.Profile
-	if templatePath != "" {
-		profile = buildWorkflowTemplateProfile(ctx, templatePath)
+		profile = buildWorkflowTemplateProfile(ctx, configured)
 		if profile == nil {
-			return nil, fmt.Errorf("build selected template profile failed")
+			return nil, fmt.Errorf("build default template profile failed")
 		}
-		if err := templateprofile.ApplyFormatRules(profile, formatRules); err != nil {
-			return nil, err
-		}
+		compiledSource = configured
 	}
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -290,10 +325,6 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 			return err
 		}
 
-		compiledSource := input.FilePath
-		if templatePath != "" {
-			compiledSource = templatePath
-		}
 		compiled := model.CompiledTemplate{
 			ID:                    templateID,
 			SchoolID:              schoolID,
@@ -331,12 +362,13 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 	return s.GetJobForUser(jobID.String(), input.UserID)
 }
 
-func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uuid.UUID) (*WorkflowJobView, error) {
-	// 诊断日志：追踪模板解析 → 移植 → 样式覆盖 → 页眉页脚 完整数据流
-	if err := fileprocessor.InitDiagLog("D:\\workpace\\diag_output.log"); err != nil {
-		log.Printf("[DIAG] 初始化诊断日志失败（继续执行）: %v", err)
-	} else {
-		defer fileprocessor.CloseDiagLog()
+func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uuid.UUID) (view *WorkflowJobView, retErr error) {
+	if diagnosticPath := strings.TrimSpace(os.Getenv("PAPER_DIAG_LOG_PATH")); diagnosticPath != "" {
+		if err := fileprocessor.InitDiagLog(diagnosticPath); err != nil {
+			log.Printf("[DIAG] 初始化诊断日志失败（继续执行）: %v", err)
+		} else {
+			defer fileprocessor.CloseDiagLog()
+		}
 	}
 
 	if err := s.validateReady(ctx); err != nil {
@@ -358,14 +390,36 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		return nil, ErrInvalidPaperUpload
 	}
 
+	runCtx, runLogPath, runLogErr := fileprocessor.BeginFormatRunLog(
+		ctx, job.Paper.FilePath, job.CompiledTemplate.SourceFilePath, job.ID.String(),
+	)
+	if runLogErr != nil {
+		return nil, fmt.Errorf("create required format diagnostic log: %w", runLogErr)
+	}
+	ctx = runCtx
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			fileprocessor.FinishFormatRunLog(ctx, fmt.Errorf("panic: %v", recovered))
+			panic(recovered)
+		}
+		fileprocessor.FinishFormatRunLog(ctx, retErr)
+	}()
+	log.Printf("[格式诊断日志] job=%s path=%s", job.ID, runLogPath)
+	fileprocessor.FormatLogSection(ctx, "真实 POST /api/v2/jobs/:job_id/run 工作流入口")
+	fileprocessor.FormatLogPrintf(ctx, "任务编号：%s", job.ID)
+	fileprocessor.FormatLogPrintf(ctx, "学生论文：%s", job.Paper.FilePath)
+	fileprocessor.FormatLogPrintf(ctx, "学校模板：%s", job.CompiledTemplate.SourceFilePath)
+
 	outputPath, err := s.workflowOutputPath(job.ID)
 	if err != nil {
 		return nil, err
 	}
+	fileprocessor.FormatLogPrintf(ctx, "输出文件：%s", outputPath)
 	profile, err := templateprofile.Parse(job.CompiledTemplate.StyleProfilesJSON)
 	if err != nil {
 		return nil, err
 	}
+	fileprocessor.FormatLogProfile(ctx, profile, "第1步：学校模板 Profile")
 	fileprocessor.DiagPrintf("========== [Node 1] Template Profile Parsed ==========\n")
 	if profile != nil {
 		if data, err := json.MarshalIndent(profile, "", "  "); err == nil {
@@ -376,9 +430,31 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	if err != nil {
 		return nil, err
 	}
+	sourceStructure, err := repaircontract.CaptureStructure(job.Paper.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("capture source OOXML structure: %w", err)
+	}
+	fileprocessor.FormatLogSection(ctx, "第2步：学生论文结构识别")
+	fileprocessor.FormatLogPrintf(ctx, "段落=%d；空段落=%d；表格=%d；标题=%d",
+		ast.Stats.Paragraphs, ast.Stats.BlankParagraphs, ast.Stats.Tables, ast.Stats.Headings)
+	for _, node := range ast.Nodes {
+		if node.NodeType == "paragraph" {
+			fileprocessor.FormatLogPrintf(ctx, "段落 #%04d -> %s（层级=%d，置信度=%.2f，样式=%s）| %q",
+				node.Index+1, node.SemanticRole, node.LogicalLevel, node.Confidence,
+				node.CurrentStyle, compactWorkflowLogText(node.Text, 160))
+		}
+	}
 	rules := templatecontract.Build(profile)
 	contract := repaircontract.Build(rules, ast)
-	profile, err = s.buildWorkflowOutput(ctx, job.Paper.FilePath, outputPath, job.CompiledTemplate, profile, &contract)
+	fileprocessor.FormatLogSection(ctx, "第3步：模板规则与修复合同")
+	fileprocessor.FormatLogPrintf(ctx, "模板样式=%d；区段规则=%d；修复步骤=%d；受保护内容节点=%d",
+		len(rules.Styles), len(rules.Sections), len(contract.Steps), len(contract.Targets))
+	transplantEnabled := templateTransplantEnabled(job.CompiledTemplate.SourceFilePath, profile)
+	if transplantEnabled && structureRequiresInPlaceRepair(sourceStructure) {
+		transplantEnabled = false
+		fileprocessor.FormatLogPrintf(ctx, "源文档含书签、域、公式、图片、批注或其他受保护对象；改用就地格式修复，避免重建模板骨架时丢失 OOXML 结构。")
+	}
+	profile, err = s.buildWorkflowOutput(ctx, job.Paper.FilePath, outputPath, job.CompiledTemplate, profile, &contract, transplantEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -400,6 +476,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		if err := workflow.NewStore(s.db).UpdateJobResult(ctx, job.ID, workflow.StatusManualReview, workflow.StageManualReview, outputPath, result); err != nil {
 			return nil, err
 		}
+		fileprocessor.SetFormatRunLogResult(ctx, string(workflow.StatusManualReview), string(workflow.StageManualReview))
 		return s.GetJobForUser(id, userID)
 	}
 	contractBackup := outputPath + ".contract-backup"
@@ -410,7 +487,6 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		defer os.Remove(contractBackup)
 	}
 
-	transplantEnabled := templateTransplantEnabled(job.CompiledTemplate.SourceFilePath, profile)
 	if !transplantEnabled {
 		if _, err := cqrwst.FixDOCXWithTemplateProfileAndSemanticAI(ctx, outputPath, profile, newDeepSeekSemanticBlockClient()); err != nil {
 			return nil, err
@@ -427,6 +503,15 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 				profile.RulePack.BodyPageStart, profile.RulePack.BodyPageWrapper)
 		}
 	}
+	normalized, err := transplant.NormalizeFinalDOCX(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("normalize final OOXML: %w", err)
+	}
+	reordered, err := ooxmlpkg.RepairPropertyOrder(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("repair final OOXML property order: %w", err)
+	}
+	fileprocessor.FormatLogPrintf(ctx, "最终 OOXML 清理：归一化部件=%d；属性顺序修复=%d。", normalized, reordered)
 
 	verifier := verify.NewVerifierWithTemplateProfileAndClosure(profile, rules, ast, contract)
 	if transplantEnabled {
@@ -436,6 +521,8 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	if err != nil {
 		return nil, err
 	}
+	fileprocessor.FormatLogSection(ctx, "第5步：确定性验证")
+	logWorkflowVerifyResult(ctx, "首次验证", result.VerifyResult)
 	if repaired, repairErr := repairManualCaptionFields(outputPath, result.VerifyResult); repairErr != nil {
 		return nil, repairErr
 	} else if repaired {
@@ -477,22 +564,56 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			}
 			return nil, extractErr
 		}
-		if issues := repaircontract.ValidateVisibleContentPreserved(ast, finalAST); len(issues) > 0 {
-			if restoreErr := copyFile(contractBackup, outputPath); restoreErr != nil {
-				return nil, fmt.Errorf("repair contract violation: %s; restore backup: %w", issues[0].Message, restoreErr)
+		contentIssues := repaircontract.ValidateVisibleContentPreserved(ast, finalAST)
+		if transplantEnabled {
+			templateAST, templateErr := paperast.Extract(job.CompiledTemplate.SourceFilePath)
+			if templateErr != nil {
+				return nil, fmt.Errorf("extract selected template content contract: %w", templateErr)
 			}
-			return nil, fmt.Errorf("repair contract violation: %s", issues[0].Message)
+			contentIssues = repaircontract.ValidateVisibleContentPreservedWithTemplate(ast, finalAST, templateAST)
+		}
+		if len(contentIssues) > 0 {
+			if restoreErr := copyFile(contractBackup, outputPath); restoreErr != nil {
+				return nil, fmt.Errorf("repair contract violation: %s; restore backup: %w", contentIssues[0].Message, restoreErr)
+			}
+			return nil, fmt.Errorf("repair contract violation: %s", contentIssues[0].Message)
+		}
+		fileprocessor.FormatLogPrintf(ctx, "内容保全检查：通过；输出可见内容未删除、重排或改写。")
+	}
+	finalStructure, structureErr := repaircontract.CaptureStructure(outputPath)
+	if structureErr == nil {
+		if issues := repaircontract.ValidateStructurePreserved(sourceStructure, finalStructure); len(issues) > 0 {
+			structureErr = fmt.Errorf("repair contract violation: %s", issues[0].Message)
 		}
 	}
+	if structureErr != nil {
+		if _, statErr := os.Stat(contractBackup); statErr == nil {
+			if restoreErr := copyFile(contractBackup, outputPath); restoreErr != nil {
+				return nil, fmt.Errorf("%v; restore backup: %w", structureErr, restoreErr)
+			}
+		}
+		return nil, structureErr
+	}
+	fileprocessor.FormatLogPrintf(ctx, "OOXML 结构保全检查：通过；节和受保护对象均未减少。")
 
 	stage := workflow.StageManualReview
 	downloadPath := outputPath
 	if result.Status == workflow.StatusVerifiedPass {
 		stage = workflow.StageVerified
 	}
+	logWorkflowVerifyResult(ctx, "最终验证", result.VerifyResult)
 	if err := workflow.NewStore(s.db).UpdateJobResult(ctx, job.ID, result.Status, stage, downloadPath, result.VerifyResult); err != nil {
 		return nil, err
 	}
+	if sourceSHA, sourceErr := workflowTemplateSHA(job.Paper.FilePath); sourceErr == nil {
+		if outputSHA, outputErr := workflowTemplateSHA(outputPath); outputErr == nil {
+			fileprocessor.FormatLogPrintf(ctx, "源文件 SHA256：%s", sourceSHA)
+			fileprocessor.FormatLogPrintf(ctx, "输出文件 SHA256：%s", outputSHA)
+			fileprocessor.FormatLogPrintf(ctx, "输出是否仍是原稿逐字节副本：%t", sourceSHA == outputSHA)
+		}
+	}
+	fileprocessor.FormatLogPrintf(ctx, "最终状态=%s；下载阶段=%s；下载路径=%s", result.Status, stage, downloadPath)
+	fileprocessor.SetFormatRunLogResult(ctx, string(result.Status), string(stage))
 
 	return s.GetJobForUser(id, userID)
 }
@@ -1168,15 +1289,38 @@ func (s *paperWorkflowService) workflowOutputPath(jobID uuid.UUID) (string, erro
 	return filepath.Join(root, jobID.String(), "final.docx"), nil
 }
 
-func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePath string, outputPath string, record model.CompiledTemplate, profile *templateprofile.Profile, contract *repaircontract.Contract) (*templateprofile.Profile, error) {
+func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePath string, outputPath string, record model.CompiledTemplate, profile *templateprofile.Profile, contract *repaircontract.Contract, useTransplant bool) (*templateprofile.Profile, error) {
 	templatePath := strings.TrimSpace(record.SourceFilePath)
-	if templatePath == "" || templatePath == sourcePath || profile == nil {
+	if profile == nil {
 		return nil, copyFile(sourcePath, outputPath)
 	}
-	if !templateTransplantEnabled(templatePath, profile) {
+	if templatePath == "" {
+		return profile, fmt.Errorf("selected template path is empty")
+	}
+	if templatePath == sourcePath {
+		return profile, fmt.Errorf("selected template path incorrectly points to the student paper")
+	}
+	fileprocessor.FormatLogSection(ctx, "第4步：确定性模板移植")
+	fileprocessor.FormatLogPrintf(ctx, "模板骨架=%s", templatePath)
+	fileprocessor.FormatLogPrintf(ctx, "学生内容=%s", sourcePath)
+	if !useTransplant {
+		fileprocessor.FormatLogPrintf(ctx, "模板没有可验证的内容槽位；保留学生全文，进入模板 Profile 确定性格式应用路径。")
 		if err := copyFile(sourcePath, outputPath); err != nil {
 			return profile, err
 		}
+		applied, err := cqrwst.ApplyTemplateProfileStylesAndPageSetup(ctx, outputPath, profile)
+		if err != nil {
+			return profile, fmt.Errorf("apply selected template profile to student paper: %w", err)
+		}
+		fileprocessor.FormatLogPrintf(ctx, "模板 Profile 格式应用：已修改段落或页面设置 %d 处。", applied)
+		parsed, err := paperparse.NewParser().Parse(ctx, sourcePath)
+		if err != nil {
+			return profile, fmt.Errorf("parse student cover fields: %w", err)
+		}
+		if err := fileprocessor.CopyTemplateHeaderFooter(templatePath, outputPath, parsed.CoverFields); err != nil {
+			return profile, fmt.Errorf("copy template header/footer: %w", err)
+		}
+		fileprocessor.FormatLogPrintf(ctx, "页眉页脚：已从学校模板复制，并使用学生封面字段替换模板占位符。")
 		return profile, nil
 	}
 
@@ -1187,17 +1331,30 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 		OutputDir:    filepath.Join(s.outputRoot, "_compiled_templates"),
 	})
 	if err != nil {
-		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("compile selected template skeleton: %w", err))
+		return profile, fmt.Errorf("compile selected template skeleton: %w", err)
 	}
+	fileprocessor.FormatLogPrintf(ctx, "模板编译完成：区块=%d；样式画像=%d；校验规则=%d；骨架=%s",
+		len(compiled.BlockCatalog), len(compiled.StyleProfiles), len(compiled.VerificationRules), compiled.SkeletonPath)
 
 	parsed, err := paperparse.NewParser().Parse(ctx, sourcePath)
 	if err != nil {
-		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("parse source paper for template transplant: %w", err))
+		return profile, fmt.Errorf("parse source paper for template transplant: %w", err)
 	}
+	fileprocessor.FormatLogPrintf(ctx, "学生论文解析完成：内容块=%d；标题=%d；正文段=%d；参考文献=%d；异常=%d",
+		len(parsed.ContentBlocks), len(parsed.Headings), len(parsed.Body), len(parsed.References), len(parsed.Abnormal))
 
 	mapping, err := blockmap.NewMapper().Map(compiled, parsed)
 	if err != nil {
-		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("map source paper blocks to template skeleton: %w", err))
+		return profile, fmt.Errorf("map source paper blocks to template skeleton: %w", err)
+	}
+	fileprocessor.FormatLogPrintf(ctx, "内容映射完成：绑定=%d；生成区块=%d；未映射=%d；歧义=%d；检测到目录=%t",
+		len(mapping.Bindings), len(mapping.GeneratedBlocks), len(mapping.UnmappedBlocks),
+		len(mapping.AmbiguousBlocks), mapping.HasTOC)
+	for _, item := range mapping.UnmappedBlocks {
+		fileprocessor.FormatLogPrintf(ctx, "  未映射：%s", item)
+	}
+	for _, item := range mapping.AmbiguousBlocks {
+		fileprocessor.FormatLogPrintf(ctx, "  歧义：%s", item)
 	}
 
 	if err := transplant.NewTransplanter().Generate(ctx, transplant.GenerateInput{
@@ -1207,8 +1364,9 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 		RepairContract:   contract,
 		TemplateProfile:  profile,
 	}); err != nil {
-		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("generate final paper from template skeleton: %w", err))
+		return profile, fmt.Errorf("generate final paper from template skeleton: %w", err)
 	}
+	fileprocessor.FormatLogPrintf(ctx, "模板移植写入完成：%s", outputPath)
 	fileprocessor.DiagPrintf("========== [Node 2] Transplant Generate Complete ==========\nOutputPath=%s\n", outputPath)
 	if profile != nil && profile.Styles != nil {
 		fileprocessor.DiagPrintf("StyleProfiles count=%d\n", len(profile.Styles))
@@ -1217,11 +1375,16 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 				k, v.FontEastAsia, v.FontASCII, v.FontSizeHalfPt, v.Bold, v.Alignment, v.Line, v.LineRule, v.BeforeLines, v.AfterLines)
 		}
 	}
-	if err := preserveSourceDrawingGroups(sourcePath, outputPath); err != nil {
-		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("preserve source drawings: %w", err))
+	if err := preserveSourceDrawingGroups(sourcePath, outputPath, profile); err != nil {
+		return profile, fmt.Errorf("preserve source drawings: %w", err)
 	}
 	if missing := missingGeneratedSourceContent(ctx, parsed, outputPath); len(missing) > 0 {
-		return profile, copyFileWithTemplateFallbackNotice(sourcePath, outputPath, fmt.Errorf("generated template output lost source content: %s", strings.Join(missing, " | ")))
+		return profile, fmt.Errorf("generated template output lost source content: %s", strings.Join(missing, " | "))
+	}
+	if sourceSHA, sourceErr := workflowTemplateSHA(sourcePath); sourceErr == nil {
+		if outputSHA, outputErr := workflowTemplateSHA(outputPath); outputErr == nil && sourceSHA == outputSHA {
+			return profile, fmt.Errorf("template transplant produced a byte-identical copy of the student paper")
+		}
 	}
 	if !transplant.UsesCQRWSTNormalizers(templatePath) {
 		if _, err := cqrwst.ApplyTemplateProfileStylesAndPageSetup(ctx, outputPath, profile); err != nil {
@@ -1257,19 +1420,82 @@ func WorkflowTemplatePath(template model.FormatTemplate) string {
 	return ""
 }
 
+func workflowTemplateSHA(path string) (string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read selected template for hash: %w", err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(content)), nil
+}
+
 func templateTransplantEnabled(templatePath string, profile *templateprofile.Profile) bool {
 	if strings.TrimSpace(templatePath) == "" || profile == nil {
+		return false
+	}
+	if templateContainsReviewMarkup(templatePath) {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(cqrwstTemplateTransplantEnabledEnv))) {
 	case "0", "false", "no", "off":
 		return false
 	default:
-		return true
+		return transplant.UsesCQRWSTNormalizers(templatePath) || templateHasMappingAnchors(templatePath)
 	}
 }
 
-func preserveSourceDrawingGroups(sourcePath string, outputPath string) error {
+func templateContainsReviewMarkup(templatePath string) bool {
+	pkg, err := ooxmlpkg.Open(templatePath)
+	if err != nil {
+		return true
+	}
+	if _, ok := pkg.Get("word/comments.xml"); ok {
+		return true
+	}
+	for _, name := range pkg.Names() {
+		if !strings.HasPrefix(name, "word/") || !strings.HasSuffix(name, ".xml") {
+			continue
+		}
+		content, ok := pkg.Get(name)
+		if ok && workflowReviewMarkupPattern.Match(content) {
+			return true
+		}
+	}
+	return false
+}
+
+func structureRequiresInPlaceRepair(snapshot repaircontract.StructureSnapshot) bool {
+	return len(snapshot.Bookmarks) > 0 ||
+		len(snapshot.BookmarkEnds) > 0 ||
+		len(snapshot.Fields) > 0 ||
+		snapshot.Formulas > 0 ||
+		snapshot.Drawings > 0 ||
+		snapshot.Pictures > 0 ||
+		snapshot.FootnoteReferences > 0 ||
+		snapshot.EndnoteReferences > 0 ||
+		snapshot.CommentReferences > 0 ||
+		snapshot.CommentRangeStarts > 0 ||
+		snapshot.CommentRangeEnds > 0 ||
+		snapshot.FootnoteDefinitions > 0 ||
+		snapshot.EndnoteDefinitions > 0 ||
+		snapshot.CommentDefinitions > 0 ||
+		len(snapshot.Hyperlinks) > 0 ||
+		len(snapshot.VerticalAlignments) > 0 ||
+		len(snapshot.MediaHashes) > 0 ||
+		len(snapshot.ReferencedImageHashes) > 0 ||
+		len(snapshot.RelationshipTargets) > 0 ||
+		len(snapshot.ProtectedPartHashes) > 0
+}
+
+func templateHasMappingAnchors(path string) bool {
+	pkg, err := ooxmlpkg.Open(path)
+	if err != nil {
+		return false
+	}
+	documentXML, ok := pkg.Get("word/document.xml")
+	return ok && workflowTemplateAnchorPattern.Match(documentXML)
+}
+
+func preserveSourceDrawingGroups(sourcePath string, outputPath string, profile *templateprofile.Profile) error {
 	source, err := ooxmlpkg.Open(sourcePath)
 	if err != nil {
 		return err
@@ -1285,8 +1511,9 @@ func preserveSourceDrawingGroups(sourcePath string, outputPath string) error {
 	}
 	updated := string(outputXML)
 	figureOrdinals := map[string]int{}
+	maxWidth := templateUsableWidthEMU(profile)
 	for _, bounds := range workflowAlternateContentPattern.FindAllStringIndex(string(sourceXML), -1) {
-		block := normalizeWorkflowDrawingWidth(string(sourceXML)[bounds[0]:bounds[1]])
+		block := normalizeWorkflowDrawingWidth(string(sourceXML)[bounds[0]:bounds[1]], maxWidth)
 		if !strings.Contains(block, "<w:drawing") {
 			continue
 		}
@@ -1311,10 +1538,8 @@ func preserveSourceDrawingGroups(sourcePath string, outputPath string) error {
 				return paragraph
 			}
 			return paragraph +
-				`<w:p><w:pPr><w:jc w:val="center"/><w:keepNext/></w:pPr><w:r>` + block + `</w:r></w:p>` +
-				`<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:line="300" w:lineRule="auto"/></w:pPr>` +
-				workflowTextRun(caption, `<w:rPr><w:rFonts w:ascii="宋体" w:eastAsia="宋体" w:hAnsi="宋体"/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr>`) +
-				`</w:p>`
+				`<w:p><w:r>` + block + `</w:r></w:p>` +
+				`<w:p>` + workflowTextRun(caption, "") + `</w:p>`
 		})
 	}
 	if updated == string(outputXML) {
@@ -1324,8 +1549,10 @@ func preserveSourceDrawingGroups(sourcePath string, outputPath string) error {
 	return output.Write(outputPath)
 }
 
-func normalizeWorkflowDrawingWidth(block string) string {
-	const maxWidth = 5800000
+func normalizeWorkflowDrawingWidth(block string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return block
+	}
 	extentIndex := 0
 	return workflowDrawingExtentPattern.ReplaceAllStringFunc(block, func(extent string) string {
 		extentIndex++
@@ -1347,6 +1574,19 @@ func normalizeWorkflowDrawingWidth(block string) string {
 	})
 }
 
+func templateUsableWidthEMU(profile *templateprofile.Profile) int {
+	if profile == nil {
+		return 0
+	}
+	width, widthErr := strconv.Atoi(profile.PageSetup.PageWidthTwips)
+	left, leftErr := strconv.Atoi(profile.PageSetup.MarginLeftTwips)
+	right, rightErr := strconv.Atoi(profile.PageSetup.MarginRightTwips)
+	if widthErr != nil || leftErr != nil || rightErr != nil || width <= left+right {
+		return 0
+	}
+	return (width - left - right) * 635
+}
+
 func precedingWorkflowHeading(prefix string) string {
 	paragraphs := workflowParagraphPattern.FindAllString(prefix, -1)
 	for index := len(paragraphs) - 1; index >= 0; index-- {
@@ -1360,6 +1600,30 @@ func precedingWorkflowHeading(prefix string) string {
 
 func compactWorkflowText(text string) string {
 	return strings.Join(strings.Fields(text), "")
+}
+
+func compactWorkflowLogText(text string, max int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if len(runes) > max {
+		return string(runes[:max]) + "…"
+	}
+	return text
+}
+
+func logWorkflowVerifyResult(ctx context.Context, label string, result verify.Result) {
+	fileprocessor.FormatLogPrintf(ctx, "%s：通过=%t；合规状态=%s；原因=%s；可修复=%d；阻断=%d；警告=%d",
+		label, result.Passed, result.ComplianceStatus, result.ComplianceReason,
+		len(result.RepairableIssues), len(result.FatalIssues), len(result.Warnings))
+	for _, issue := range result.FatalIssues {
+		fileprocessor.FormatLogPrintf(ctx, "  [阻断] %s | %s | %s", issue.Kind, issue.Target, issue.Message)
+	}
+	for _, issue := range result.RepairableIssues {
+		fileprocessor.FormatLogPrintf(ctx, "  [可修复] %s | %s | %s", issue.Kind, issue.Target, issue.Message)
+	}
+	for _, issue := range result.Warnings {
+		fileprocessor.FormatLogPrintf(ctx, "  [警告] %s | %s | %s", issue.Kind, issue.Target, issue.Message)
+	}
 }
 
 func cqrwstTemplateTransplantEnabled() bool {
@@ -1388,30 +1652,27 @@ func shouldRunCQRWSTPostFix() bool {
 }
 
 func buildWorkflowTemplateProfile(ctx context.Context, templatePath string) *templateprofile.Profile {
-	profile, err := templateprofile.Build(ctx, templatePath, templateprofile.Options{
-		AIEnabled: deepSeekTemplateProfileEnabled(),
-		AIClient:  newDeepSeekTemplateProfileClient(),
-	})
+	profile, err := templateprofile.Build(ctx, templatePath, templateprofile.Options{})
 	if err != nil {
 		log.Printf("[WORKFLOW_TEMPLATE_PROFILE] build failed: %v", err)
 		return nil
 	}
 	log.Printf("[WORKFLOW_TEMPLATE_PROFILE] built source=%s confidence=%.2f sections=%d styles=%d",
 		profile.Source, profile.Confidence, len(profile.Sections), len(profile.Styles))
+	logWorkflowTemplateProfile(filepath.Base(templatePath), templatePath, profile)
 	return profile
 }
 
-func deepSeekTemplateProfileEnabled() bool {
-	creds := deepSeekCredentialsFromEnvOrFile()
-	return creds.Enabled && creds.Cookie != ""
-}
-
-func newDeepSeekTemplateProfileClient() templateprofile.ChatClient {
-	creds := deepSeekCredentialsFromEnvOrFile()
-	if !creds.Enabled || creds.Cookie == "" {
-		return nil
+func logWorkflowTemplateProfile(templateName, templatePath string, profile *templateprofile.Profile) {
+	if !formatRulesDebugEnabled() || profile == nil {
+		return
 	}
-	return aiclassifier.NewDeepSeekWebClient(creds.Cookie, creds.Bearer)
+	data, err := json.MarshalIndent(profile, "", "  ")
+	if err != nil {
+		log.Printf("[WORKFLOW_TEMPLATE_RULES] marshal failed: %v", err)
+		return
+	}
+	log.Printf("[WORKFLOW_TEMPLATE_RULES] template=%q path=%q final_rules=\n%s", templateName, templatePath, data)
 }
 
 func newDeepSeekSemanticBlockClient() cqrwst.SemanticAIClient {
@@ -1420,15 +1681,6 @@ func newDeepSeekSemanticBlockClient() cqrwst.SemanticAIClient {
 		return nil
 	}
 	return aiclassifier.NewDeepSeekWebClient(creds.Cookie, creds.Bearer)
-}
-
-func copyFileWithTemplateFallbackNotice(sourcePath string, outputPath string, cause error) error {
-	rootCause := cause
-	for errors.Unwrap(rootCause) != nil {
-		rootCause = errors.Unwrap(rootCause)
-	}
-	log.Printf("component=workflow_template stage=fallback error=%q", rootCause.Error())
-	return copyFile(sourcePath, outputPath)
 }
 
 func generatedOutputPreservesSourceContent(ctx context.Context, source *paperparse.ParsedPaper, outputPath string) bool {

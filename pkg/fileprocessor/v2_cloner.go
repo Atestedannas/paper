@@ -15,14 +15,31 @@ import (
 
 // V2TemplateFormat 从模板提取的完整XML格式（零损耗）
 type V2TemplateFormat struct {
-	PPr      *wml.CT_PPr // 段落属性完整XML节点
-	RPr      *wml.CT_RPr // 运行属性完整XML节点（主文本格式）
-	LabelRPr *wml.CT_RPr // 标签格式（如"摘要：""关键词："的格式，可为nil）
+	PPr             *wml.CT_PPr // 段落属性完整XML节点
+	RPr             *wml.CT_RPr // 运行属性完整XML节点（主文本格式）
+	LabelRPr        *wml.CT_RPr // 标签格式（如"摘要：""关键词："的格式，可为nil）
+	SampleText      string
+	SampleParaIndex int
+	SampleSpec      ParagraphFormatSpec
 }
 
 // V2TemplateFormatStore 模板格式库：type -> 完整XML格式
 type V2TemplateFormatStore struct {
 	Formats map[string]*V2TemplateFormat
+}
+
+type styleCloneSummary struct {
+	DocDefaultsCopied bool
+	NamedStylesCopied int
+	Overwritten       int
+	Added             int
+	StyleIDs          []string
+}
+
+type sectionCloneSummary struct {
+	PageSizeCopied                  bool
+	PageMarginsCopied               bool
+	PreservedHeaderFooterReferences int
 }
 
 // ── XML 深拷贝工具 ──
@@ -83,7 +100,10 @@ func ExtractTemplateFormats(templateDoc *document.Document, proc *EnhancedProces
 		}
 
 		format := &V2TemplateFormat{
-			PPr: clonePPr(pPr),
+			PPr:             clonePPr(pPr),
+			SampleText:      cp.Text,
+			SampleParaIndex: cp.ParaIdx,
+			SampleSpec:      extractParaFormatSpec(cp.Para),
 		}
 
 		// 提取运行属性（取第一个有文本的run）
@@ -294,12 +314,13 @@ func getFallbackType(t string) string {
 // ── Section 级别格式克隆 ──
 
 // CloneSectionProperties 从模板复制页面设置、页眉页脚等section级属性
-func CloneSectionProperties(templateDoc, studentDoc *document.Document) {
+func CloneSectionProperties(templateDoc, studentDoc *document.Document) sectionCloneSummary {
+	summary := sectionCloneSummary{}
 	tBody := templateDoc.X().Body
 	sBody := studentDoc.X().Body
 
 	if tBody == nil || sBody == nil {
-		return
+		return summary
 	}
 
 	// 复制文档级 sectPr（最后一个节的属性）
@@ -311,6 +332,7 @@ func CloneSectionProperties(templateDoc, studentDoc *document.Document) {
 				// 保留学生文档的页眉页脚引用（关系ID在不同文档间不通用）
 				if sBody.SectPr != nil {
 					newSectPr.EG_HdrFtrReferences = sBody.SectPr.EG_HdrFtrReferences
+					summary.PreservedHeaderFooterReferences = len(sBody.SectPr.EG_HdrFtrReferences)
 				}
 				// 复制页面尺寸和边距
 				if sBody.SectPr == nil {
@@ -318,23 +340,27 @@ func CloneSectionProperties(templateDoc, studentDoc *document.Document) {
 				}
 				if newSectPr.PgSz != nil {
 					sBody.SectPr.PgSz = newSectPr.PgSz
+					summary.PageSizeCopied = true
 				}
 				if newSectPr.PgMar != nil {
 					sBody.SectPr.PgMar = newSectPr.PgMar
+					summary.PageMarginsCopied = true
 				}
 				log.Printf("[V2] 已从模板复制页面尺寸和边距")
 			}
 		}
 	}
+	return summary
 }
 
 // CloneStyles 从模板复制样式定义到学生文档
-func CloneStyles(templateDoc, studentDoc *document.Document) {
+func CloneStyles(templateDoc, studentDoc *document.Document) styleCloneSummary {
+	summary := styleCloneSummary{}
 	tStyles := templateDoc.Styles
 	sStyles := studentDoc.Styles
 
 	if tStyles.X() == nil || sStyles.X() == nil {
-		return
+		return summary
 	}
 
 	// 复制默认段落属性
@@ -343,6 +369,7 @@ func CloneStyles(templateDoc, studentDoc *document.Document) {
 		dst := &wml.CT_DocDefaults{}
 		if xml.Unmarshal(data, dst) == nil {
 			sStyles.X().DocDefaults = dst
+			summary.DocDefaultsCopied = true
 			log.Printf("[V2] 已复制 DocDefaults 样式")
 		}
 	}
@@ -371,6 +398,7 @@ func CloneStyles(templateDoc, studentDoc *document.Document) {
 			}
 
 			if styleMap[*tStyle.StyleIdAttr] {
+				summary.Overwritten++
 				// 覆盖已有样式
 				for j, s := range sStyles.X().Style {
 					if s.StyleIdAttr != nil && *s.StyleIdAttr == *tStyle.StyleIdAttr {
@@ -380,11 +408,15 @@ func CloneStyles(templateDoc, studentDoc *document.Document) {
 				}
 			} else {
 				sStyles.X().Style = append(sStyles.X().Style, newStyle)
+				summary.Added++
 			}
 			copied++
+			summary.StyleIDs = append(summary.StyleIDs, *tStyle.StyleIdAttr)
 		}
+		summary.NamedStylesCopied = copied
 		log.Printf("[V2] 已复制/覆盖 %d 个命名样式", copied)
 	}
+	return summary
 }
 
 // ApplyProfilePageMargins 将 Profile.PageSetup 的页边距应用到学生文档。

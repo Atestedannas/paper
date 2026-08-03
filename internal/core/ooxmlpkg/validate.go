@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"path"
 	"strings"
 )
 
@@ -30,10 +29,9 @@ func Validate(pathname string) error {
 	var total, xmlTotal uint64
 	hasContentTypes, hasDocument := false, false
 	for _, file := range reader.File {
-		name := strings.ReplaceAll(file.Name, "\\", "/")
-		clean := path.Clean(name)
-		if strings.HasPrefix(name, "/") || clean == ".." || strings.HasPrefix(clean, "../") || clean != name {
-			return fmt.Errorf("unsafe DOCX entry path: %q", file.Name)
+		name := file.Name
+		if err := validateEntryName(name); err != nil {
+			return err
 		}
 		lower := strings.ToLower(name)
 		if lower == "word/vbaproject.bin" || strings.HasPrefix(lower, "word/activex/") {

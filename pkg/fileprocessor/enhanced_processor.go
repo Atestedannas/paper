@@ -664,7 +664,7 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 			}
 
 		case FormatStepClassify:
-			classified = p.classifyParagraphs(doc.Paragraphs())
+			classified = NewV2DeterministicClassifier(p).ClassifyToMap(BodyLevelParagraphsOnly(doc))
 			// 9c: 验证分类覆盖率
 			p.verifyClassificationCoverage(doc, classified)
 

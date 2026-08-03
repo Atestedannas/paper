@@ -111,8 +111,13 @@ type paragraphStyle struct {
 	message        string
 	eastAsiaFont   string
 	asciiFont      string
+	hAnsiFont      string
+	complexFont    string
 	fontSize       string
 	bold           bool
+	boldSet        bool
+	italic         bool
+	italicSet      bool
 	firstLineChars *int
 	beforeTwips    *int
 	afterTwips     *int
@@ -177,17 +182,31 @@ func getFooterFromProfile() templateprofile.HeaderFooterRule {
 // cqrwst paragraphStyle, filling missing fields from the provided defaults.
 func profileRuleToParagraphStyle(pr *templateprofile.StyleRule, defaults paragraphStyle) paragraphStyle {
 	ps := defaults
+	if pr == nil {
+		return ps
+	}
 	if pr.FontEastAsia != "" {
 		ps.eastAsiaFont = pr.FontEastAsia
 	}
 	if pr.FontASCII != "" {
 		ps.asciiFont = pr.FontASCII
 	}
+	if pr.FontHAnsi != "" {
+		ps.hAnsiFont = pr.FontHAnsi
+	}
+	if pr.FontCS != "" {
+		ps.complexFont = pr.FontCS
+	}
 	if pr.FontSizeHalfPt != "" {
 		ps.fontSize = pr.FontSizeHalfPt
 	}
 	if pr.BoldSet {
 		ps.bold = pr.Bold
+		ps.boldSet = true
+	}
+	if pr.ItalicSet {
+		ps.italic = pr.Italic
+		ps.italicSet = true
 	}
 	if pr.Alignment != "" {
 		ps.alignment = pr.Alignment
@@ -214,6 +233,26 @@ func profileRuleToParagraphStyle(pr *templateprofile.StyleRule, defaults paragra
 		ps.firstLineChars = parseStyleInt(pr.FirstLineChars)
 	}
 	return ps
+}
+
+// templateOrDefaultParagraphStyle keeps the legacy rule pack available only
+// when no school template profile was supplied. Once a template is active,
+// an absent template value stays absent so an unrelated school's fallback
+// cannot leak into the output.
+func templateOrDefaultParagraphStyle(defaults paragraphStyle, keys ...string) paragraphStyle {
+	if rulePackProfile == nil {
+		return defaults
+	}
+	templateStyle := paragraphStyle{
+		ruleID:  defaults.ruleID,
+		message: defaults.message,
+	}
+	for _, key := range keys {
+		if rule := getStyleFromProfile(key); rule != nil {
+			return profileRuleToParagraphStyle(rule, templateStyle)
+		}
+	}
+	return templateStyle
 }
 
 // parseStyleInt parses a string to int and returns a pointer, or nil on failure.
@@ -1997,11 +2036,7 @@ func styleForParagraph(text string, section *string) (paragraphStyle, bool) {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func abstractCNTitleStyle() paragraphStyle {
-	defaults := defaultAbstractCNTitleStyle()
-	if pr := getStyleFromProfile("abstract_cn"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultAbstractCNTitleStyle(), "abstract_cn")
 }
 func defaultAbstractCNTitleStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-abstract-cn-title-style", message: "Chinese abstract title style", eastAsiaFont: "\u9ed1\u4f53", asciiFont: "Times New Roman", fontSize: "32", bold: true, line: "360", alignment: "center"}
@@ -2009,11 +2044,7 @@ func defaultAbstractCNTitleStyle() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func abstractCNLabelStyle() paragraphStyle {
-	defaults := defaultAbstractCNLabelStyle()
-	if pr := getStyleFromProfile("abstract_cn"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultAbstractCNLabelStyle(), "abstract_cn")
 }
 func defaultAbstractCNLabelStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-abstract-cn-label-style", message: "Chinese abstract label style", eastAsiaFont: "\u9ed1\u4f53", asciiFont: "Times New Roman", fontSize: "30", bold: true, firstLineChars: intPtr(200), afterLines: intPtr(200), line: "360"}
@@ -2021,11 +2052,7 @@ func defaultAbstractCNLabelStyle() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func abstractCNBodyStyle() paragraphStyle {
-	defaults := defaultAbstractCNBodyStyle()
-	if pr := getStyleFromProfile("abstract_cn"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultAbstractCNBodyStyle(), "abstract_cn_body", "abstract_cn")
 }
 func defaultAbstractCNBodyStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-abstract-cn-body-style", message: "Chinese abstract body style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "24", firstLineChars: intPtr(200), afterLines: intPtr(200), line: "360", alignment: "both"}
@@ -2033,11 +2060,7 @@ func defaultAbstractCNBodyStyle() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func keywordCNLabelStyle() paragraphStyle {
-	defaults := defaultKeywordCNLabelStyle()
-	if pr := getStyleFromProfile("keywords_cn"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultKeywordCNLabelStyle(), "keywords_cn")
 }
 func defaultKeywordCNLabelStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-keyword-cn-label-style", message: "Chinese keywords label style", eastAsiaFont: "\u9ed1\u4f53", asciiFont: "Times New Roman", fontSize: "24", bold: true}
@@ -2045,27 +2068,23 @@ func defaultKeywordCNLabelStyle() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func keywordCNBodyStyle() paragraphStyle {
-	defaults := defaultKeywordCNBodyStyle()
-	if pr := getStyleFromProfile("keywords_cn"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultKeywordCNBodyStyle(), "keywords_cn_body", "keywords_cn")
 }
 func defaultKeywordCNBodyStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-keyword-cn-body-style", message: "Chinese keywords body style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "24"}
 }
 
-func keywordParagraphStyle() paragraphStyle {
-	return paragraphStyle{ruleID: "cqrwst-keyword-paragraph-style", message: "Keywords paragraph style", line: "360", alignment: "both"}
+func keywordParagraphStyle(chinese bool) paragraphStyle {
+	defaults := paragraphStyle{ruleID: "cqrwst-keyword-paragraph-style", message: "Keywords paragraph style", line: "360", alignment: "both"}
+	if chinese {
+		return templateOrDefaultParagraphStyle(defaults, "keywords_cn_body", "keywords_cn")
+	}
+	return templateOrDefaultParagraphStyle(defaults, "keywords_en_body", "keywords_en")
 }
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func abstractENTitleStyle() paragraphStyle {
-	defaults := defaultAbstractENTitleStyle()
-	if pr := getStyleFromProfile("abstract_en"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultAbstractENTitleStyle(), "abstract_en")
 }
 func defaultAbstractENTitleStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-abstract-en-title-style", message: "English abstract title style", eastAsiaFont: "Times New Roman", asciiFont: "Times New Roman", fontSize: "30", bold: true, line: "360", alignment: "center"}
@@ -2073,11 +2092,7 @@ func defaultAbstractENTitleStyle() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func abstractENLabelStyle() paragraphStyle {
-	defaults := defaultAbstractENLabelStyle()
-	if pr := getStyleFromProfile("abstract_en"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultAbstractENLabelStyle(), "abstract_en")
 }
 func defaultAbstractENLabelStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-abstract-en-label-style", message: "English abstract label style", eastAsiaFont: "Times New Roman", asciiFont: "Times New Roman", fontSize: "30", bold: true, firstLineChars: intPtr(200), afterLines: intPtr(200), line: "360"}
@@ -2085,11 +2100,7 @@ func defaultAbstractENLabelStyle() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func keywordENLabelStyle() paragraphStyle {
-	defaults := defaultKeywordENLabelStyle()
-	if pr := getStyleFromProfile("keywords_en"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultKeywordENLabelStyle(), "keywords_en")
 }
 func defaultKeywordENLabelStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-keyword-en-label-style", message: "English keywords label style", eastAsiaFont: "Times New Roman", asciiFont: "Times New Roman", fontSize: "24", bold: true}
@@ -2097,11 +2108,7 @@ func defaultKeywordENLabelStyle() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func keywordENBodyStyle() paragraphStyle {
-	defaults := defaultKeywordENBodyStyle()
-	if pr := getStyleFromProfile("keywords_en"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultKeywordENBodyStyle(), "keywords_en_body", "keywords_en")
 }
 func defaultKeywordENBodyStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-keyword-en-body-style", message: "English keywords body style", eastAsiaFont: "Times New Roman", asciiFont: "Times New Roman", fontSize: "24"}
@@ -2109,11 +2116,7 @@ func defaultKeywordENBodyStyle() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func abstractENBodyStyle() paragraphStyle {
-	defaults := defaultAbstractENBodyStyle()
-	if pr := getStyleFromProfile("abstract_en"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultAbstractENBodyStyle(), "abstract_en_body", "abstract_en")
 }
 func defaultAbstractENBodyStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-abstract-en-body-style", message: "English abstract body style", eastAsiaFont: "Times New Roman", asciiFont: "Times New Roman", fontSize: "24", afterLines: intPtr(200), line: "360", alignment: "both"}
@@ -2121,11 +2124,7 @@ func defaultAbstractENBodyStyle() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func heading1Style() paragraphStyle {
-	defaults := defaultHeading1Style()
-	if pr := getStyleFromProfile("heading_1"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultHeading1Style(), "heading_1")
 }
 func defaultHeading1Style() paragraphStyle {
 	// 🔒 LOCKED: 一级标题 eastAsiaFont 黑体
@@ -2134,11 +2133,7 @@ func defaultHeading1Style() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func heading2Style() paragraphStyle {
-	defaults := defaultHeading2Style()
-	if pr := getStyleFromProfile("heading_2"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultHeading2Style(), "heading_2")
 }
 func defaultHeading2Style() paragraphStyle {
 	// 🔒 LOCKED: 二级标题 eastAsiaFont 黑体
@@ -2147,11 +2142,7 @@ func defaultHeading2Style() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func heading3Style() paragraphStyle {
-	defaults := defaultHeading3Style()
-	if pr := getStyleFromProfile("heading_3"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultHeading3Style(), "heading_3")
 }
 func defaultHeading3Style() paragraphStyle {
 	// 🔒 LOCKED: 三级标题 eastAsiaFont 黑体
@@ -2160,11 +2151,7 @@ func defaultHeading3Style() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func heading4Style() paragraphStyle {
-	defaults := defaultHeading4Style()
-	if pr := getStyleFromProfile("heading_4"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultHeading4Style(), "heading_4")
 }
 func defaultHeading4Style() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-heading4-style", message: "Heading 4 style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "28", line: "360", alignment: "left"}
@@ -2172,11 +2159,7 @@ func defaultHeading4Style() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func bodyStyle() paragraphStyle {
-	defaults := defaultBodyStyle()
-	if pr := getStyleFromProfile("body"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultBodyStyle(), "body")
 }
 func defaultBodyStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-body-style", message: "Body style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "24", firstLineChars: intPtr(200), line: "360", alignment: "both"}
@@ -2184,11 +2167,7 @@ func defaultBodyStyle() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func referenceStyle() paragraphStyle {
-	defaults := defaultReferenceStyle()
-	if pr := getStyleFromProfile("references"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultReferenceStyle(), "references")
 }
 func defaultReferenceStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-reference-style", message: "Reference entry style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "21", firstLineChars: intPtr(0), line: "360"}
@@ -2196,11 +2175,7 @@ func defaultReferenceStyle() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func referencesTitleStyle() paragraphStyle {
-	defaults := defaultReferencesTitleStyle()
-	if pr := getStyleFromProfile("references_title"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultReferencesTitleStyle(), "references_title", "heading_1")
 }
 func defaultReferencesTitleStyle() paragraphStyle {
 	// 🔒 LOCKED: 参考文献标题 eastAsiaFont 黑体
@@ -2209,11 +2184,7 @@ func defaultReferencesTitleStyle() paragraphStyle {
 
 // 🔒 LOCKED: uses profile/template value; hardcoded values are fallback only.
 func captionStyle() paragraphStyle {
-	defaults := defaultCaptionStyle()
-	if pr := getStyleFromProfile("caption"); pr != nil {
-		return profileRuleToParagraphStyle(pr, defaults)
-	}
-	return defaults
+	return templateOrDefaultParagraphStyle(defaultCaptionStyle(), "caption")
 }
 func defaultCaptionStyle() paragraphStyle {
 	return paragraphStyle{ruleID: "cqrwst-figure-table-caption-style", message: "Figure and table caption style", eastAsiaFont: "\u5b8b\u4f53", asciiFont: "Times New Roman", fontSize: "21", firstLineChars: intPtr(0), line: "360", alignment: "center"}
@@ -2357,13 +2328,21 @@ func paragraphStyleToRunPatchSpec(style paragraphStyle) ooxmlpatch.RunProperties
 	if asciiFont == "" {
 		asciiFont = style.eastAsiaFont
 	}
+	hAnsiFont := style.hAnsiFont
+	if hAnsiFont == "" {
+		hAnsiFont = asciiFont
+	}
 	return ooxmlpatch.RunPropertiesSpec{
 		EastAsiaFont:       style.eastAsiaFont,
 		AsciiFont:          asciiFont,
-		HAnsiFont:          asciiFont,
+		HAnsiFont:          hAnsiFont,
+		ComplexFont:        style.complexFont,
 		FontSizeHalfPoints: size,
 		ComplexSizeHalfPts: size,
 		Bold:               style.bold,
+		BoldSet:            style.boldSet,
+		Italic:             style.italic,
+		ItalicSet:          style.italicSet,
 	}
 }
 
@@ -2381,16 +2360,37 @@ func buildRunProperties(style paragraphStyle) string {
 	if asciiFont == "" {
 		asciiFont = eastAsiaFont
 	}
-	if eastAsiaFont != "" || asciiFont != "" {
-		builder.WriteString(fmt.Sprintf(
-			`<w:rFonts w:ascii="%s" w:hAnsi="%s" w:eastAsia="%s"/>`,
-			asciiFont,
-			asciiFont,
-			eastAsiaFont,
-		))
+	hAnsiFont := style.hAnsiFont
+	if hAnsiFont == "" {
+		hAnsiFont = asciiFont
 	}
-	if style.bold {
-		builder.WriteString(`<w:b/><w:bCs/>`)
+	if eastAsiaFont != "" || asciiFont != "" || hAnsiFont != "" || style.complexFont != "" {
+		builder.WriteString(`<w:rFonts`)
+		for _, font := range []struct{ attribute, value string }{
+			{"w:ascii", asciiFont},
+			{"w:hAnsi", hAnsiFont},
+			{"w:eastAsia", eastAsiaFont},
+			{"w:cs", style.complexFont},
+		} {
+			if font.value != "" {
+				builder.WriteString(fmt.Sprintf(` %s="%s"`, font.attribute, font.value))
+			}
+		}
+		builder.WriteString(`/>`)
+	}
+	if style.boldSet || style.bold {
+		if style.bold {
+			builder.WriteString(`<w:b/><w:bCs/>`)
+		} else {
+			builder.WriteString(`<w:b w:val="false"/><w:bCs w:val="false"/>`)
+		}
+	}
+	if style.italicSet || style.italic {
+		if style.italic {
+			builder.WriteString(`<w:i/><w:iCs/>`)
+		} else {
+			builder.WriteString(`<w:i w:val="false"/><w:iCs w:val="false"/>`)
+		}
 	}
 	if style.fontSize != "" {
 		builder.WriteString(fmt.Sprintf(`<w:sz w:val="%s"/><w:szCs w:val="%s"/>`, style.fontSize, style.fontSize))
@@ -2415,7 +2415,7 @@ func buildKeywordParagraphXML(label string, body string, chinese bool) string {
 	if !chinese && content != "" {
 		content = " " + content
 	}
-	return buildLabeledParagraphXML(label, content, labelStyle, bodyStyle, keywordParagraphStyle())
+	return buildLabeledParagraphXML(label, content, labelStyle, bodyStyle, keywordParagraphStyle(chinese))
 }
 
 func buildLabeledParagraphXML(label string, body string, labelStyle paragraphStyle, bodyStyle paragraphStyle, paragraphLayout paragraphStyle) string {

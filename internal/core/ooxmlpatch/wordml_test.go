@@ -138,13 +138,21 @@ func TestApplyParagraphAndRunPropertiesWritesPreciseWordprocessingML(t *testing.
 	}
 	for _, want := range []string{
 		`<w:jc w:val="center"/>`,
-		`<w:spacing w:before="240" w:after="240" w:line="400" w:lineRule="exact"/>`,
+		`<w:spacing`,
+		`w:before="240"`,
+		`w:after="240"`,
+		`w:line="400"`,
+		`w:lineRule="exact"`,
 		`<w:ind w:firstLineChars="200" w:firstLine="480"/>`,
 		`<w:pageBreakBefore/>`,
 		`<w:keepNext/>`,
 		`<w:snapToGrid w:val="0"/>`,
 		`<w:adjustRightInd w:val="0"/>`,
-		`<w:rFonts w:eastAsia="黑体" w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:hint="eastAsia"/>`,
+		`<w:rFonts`,
+		`w:eastAsia="黑体"`,
+		`w:ascii="Times New Roman"`,
+		`w:hAnsi="Times New Roman"`,
+		`w:hint="eastAsia"`,
 		`<w:sz w:val="32"/>`,
 		`<w:szCs w:val="32"/>`,
 		`<w:b/>`,
@@ -170,13 +178,189 @@ func TestApplyRunPropertiesCanWriteSuperscriptCitation(t *testing.T) {
 		t.Fatal("ApplyRunProperties() changed = false, want true")
 	}
 	for _, want := range []string{
-		`<w:rFonts w:eastAsia="宋体" w:ascii="Times New Roman" w:hAnsi="Times New Roman"/>`,
+		`<w:rFonts`,
+		`w:eastAsia="宋体"`,
+		`w:ascii="Times New Roman"`,
+		`w:hAnsi="Times New Roman"`,
 		`<w:sz w:val="18"/>`,
 		`<w:vertAlign w:val="superscript"/>`,
 	} {
 		if !strings.Contains(updated, want) {
 			t.Fatalf("updated run missing %s:\n%s", want, updated)
 		}
+	}
+}
+
+func TestApplyRunPropertiesOnlyReplacesSpecifiedProperties(t *testing.T) {
+	run := `<w:r><w:rPr><w:rFonts w:eastAsia="宋体"/><w:b/><w:i/><w:color w:val="FF0000"/><w:sz w:val="24"/><w:szCs w:val="24"/><w:vertAlign w:val="superscript"/></w:rPr><w:t>[1]</w:t></w:r>`
+
+	unchanged, changed := ApplyRunProperties(run, RunPropertiesSpec{})
+	if changed || unchanged != run {
+		t.Fatalf("empty spec changed run properties:\n%s", unchanged)
+	}
+
+	updated, changed := ApplyRunProperties(run, RunPropertiesSpec{FontSizeHalfPoints: 28})
+	if !changed {
+		t.Fatal("ApplyRunProperties() changed = false, want true")
+	}
+	for _, preserved := range []string{
+		`<w:rFonts w:eastAsia="宋体"/>`,
+		`<w:b/>`,
+		`<w:i/>`,
+		`<w:color w:val="FF0000"/>`,
+		`<w:szCs w:val="24"/>`,
+		`<w:vertAlign w:val="superscript"/>`,
+	} {
+		if !strings.Contains(updated, preserved) {
+			t.Fatalf("updated run removed unspecified property %s:\n%s", preserved, updated)
+		}
+	}
+	if !strings.Contains(updated, `<w:sz w:val="28"/>`) || strings.Contains(updated, `<w:sz w:val="24"/>`) {
+		t.Fatalf("updated run did not replace specified properties:\n%s", updated)
+	}
+
+	updated, changed = ApplyRunProperties(run, RunPropertiesSpec{VerticalAlign: "subscript"})
+	if !changed ||
+		!strings.Contains(updated, `<w:vertAlign w:val="subscript"/>`) ||
+		strings.Contains(updated, `<w:vertAlign w:val="superscript"/>`) {
+		t.Fatalf("updated run did not replace explicit vertical alignment:\n%s", updated)
+	}
+}
+
+func TestApplyParagraphPropertiesPreservesUnspecifiedPropertiesAndAttributes(t *testing.T) {
+	paragraph := `<w:p><w:pPr><w:keepNext w:val="false" data-custom="keep"/><w:spacing w:before="120" w:after="240" w:line="360" data-custom="spacing"/><w:ind w:left="720" w:firstLine="480" data-custom="indent"/><w:jc w:val="left"/><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsiaTheme="minorEastAsia" w:cs="Arial" data-custom="fonts"/><w:vertAlign w:val="superscript"/></w:rPr></w:pPr><w:r><w:t>x</w:t></w:r></w:p>`
+
+	updated, changed := ApplyParagraphProperties(paragraph, ParagraphPropertiesSpec{Alignment: "center"})
+	if !changed {
+		t.Fatal("ApplyParagraphProperties() changed = false, want true")
+	}
+	for _, preserved := range []string{
+		`<w:keepNext w:val="false" data-custom="keep"/>`,
+		`w:before="120"`,
+		`w:after="240"`,
+		`w:line="360"`,
+		`data-custom="spacing"`,
+		`w:left="720"`,
+		`w:firstLine="480"`,
+		`data-custom="indent"`,
+		`w:ascii="Calibri"`,
+		`w:hAnsi="Calibri"`,
+		`w:eastAsiaTheme="minorEastAsia"`,
+		`w:cs="Arial"`,
+		`data-custom="fonts"`,
+		`<w:vertAlign w:val="superscript"/>`,
+	} {
+		if !strings.Contains(updated, preserved) {
+			t.Fatalf("alignment-only patch removed unspecified property %s:\n%s", preserved, updated)
+		}
+	}
+	if !strings.Contains(updated, `<w:jc w:val="center"/>`) {
+		t.Fatalf("alignment was not updated:\n%s", updated)
+	}
+}
+
+func TestApplyRunPropertiesMergesFontSlotsAndPreservesUnknownAttributes(t *testing.T) {
+	run := `<w:r><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsi="Old Latin" w:eastAsiaTheme="minorEastAsia" w:csTheme="minorBidi" w:hint="eastAsia" data-custom="keep"/><w:vertAlign w:val="subscript"/></w:rPr><w:t>x</w:t></w:r>`
+
+	updated, changed := ApplyRunProperties(run, RunPropertiesSpec{
+		AsciiFont:   "Template Latin",
+		ComplexFont: "Template Complex",
+	})
+	if !changed {
+		t.Fatal("ApplyRunProperties() changed = false, want true")
+	}
+	for _, want := range []string{
+		`w:ascii="Template Latin"`,
+		`w:hAnsi="Old Latin"`,
+		`w:eastAsiaTheme="minorEastAsia"`,
+		`w:cs="Template Complex"`,
+		`w:hint="eastAsia"`,
+		`data-custom="keep"`,
+		`<w:vertAlign w:val="subscript"/>`,
+	} {
+		if !strings.Contains(updated, want) {
+			t.Fatalf("font-slot patch removed or missed %s:\n%s", want, updated)
+		}
+	}
+	for _, removed := range []string{`w:asciiTheme=`, `w:csTheme=`, `w:cstheme=`} {
+		if strings.Contains(updated, removed) {
+			t.Fatalf("concrete font must remove only its competing theme slot %s:\n%s", removed, updated)
+		}
+	}
+}
+
+func TestApplySectionPropertiesMergesOnlyRequestedPageAttributes(t *testing.T) {
+	document := `<w:document><w:body><w:sectPr><w:pgSz w:w="12240" w:h="15840" w:orient="landscape" data-custom="size"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" data-custom="margin"/><w:pgNumType w:fmt="lowerRoman" w:start="3"/></w:sectPr></w:body></w:document>`
+
+	updated, changed := ApplySectionProperties(document, SectionPropertiesSpec{MarginTopTwips: 720})
+	if !changed {
+		t.Fatal("ApplySectionProperties() changed = false, want true")
+	}
+	for _, want := range []string{
+		`w:top="720"`,
+		`w:right="1440"`,
+		`w:bottom="1440"`,
+		`w:left="1440"`,
+		`w:header="720"`,
+		`w:footer="720"`,
+		`data-custom="margin"`,
+		`w:w="12240"`,
+		`w:h="15840"`,
+		`w:orient="landscape"`,
+		`data-custom="size"`,
+		`w:fmt="lowerRoman"`,
+		`w:start="3"`,
+	} {
+		if !strings.Contains(updated, want) {
+			t.Fatalf("partial section patch removed %s:\n%s", want, updated)
+		}
+	}
+}
+
+func TestApplyRunPropertiesHonorsBooleanTriState(t *testing.T) {
+	run := `<w:r><w:rPr><w:b/><w:bCs/><w:i/><w:iCs/><w:vertAlign w:val="superscript"/></w:rPr><w:t>x</w:t></w:r>`
+
+	updated, changed := ApplyRunProperties(run, RunPropertiesSpec{
+		BoldSet: true, ItalicSet: true,
+	})
+	if !changed {
+		t.Fatal("ApplyRunProperties() changed = false, want true")
+	}
+	for _, want := range []string{
+		`<w:b w:val="false"/>`,
+		`<w:bCs w:val="false"/>`,
+		`<w:i w:val="false"/>`,
+		`<w:iCs w:val="false"/>`,
+		`<w:vertAlign w:val="superscript"/>`,
+	} {
+		if !strings.Contains(updated, want) {
+			t.Fatalf("explicit false missing %s:\n%s", want, updated)
+		}
+	}
+	for _, unwanted := range []string{`<w:b/>`, `<w:bCs/>`, `<w:i/>`, `<w:iCs/>`} {
+		if strings.Contains(updated, unwanted) {
+			t.Fatalf("old true property remained %s:\n%s", unwanted, updated)
+		}
+	}
+
+	updated, _ = ApplyRunProperties(updated, RunPropertiesSpec{
+		Bold: true, BoldSet: true, Italic: true, ItalicSet: true,
+	})
+	for _, want := range []string{`<w:b/>`, `<w:bCs/>`, `<w:i/>`, `<w:iCs/>`} {
+		if !strings.Contains(updated, want) {
+			t.Fatalf("explicit true missing %s:\n%s", want, updated)
+		}
+	}
+
+	paragraph, changed := ApplyParagraphProperties(`<w:p><w:pPr/><w:r><w:t>x</w:t></w:r></w:p>`, ParagraphPropertiesSpec{
+		RunPropertiesInPPr: true,
+		BoldSet:            true,
+		ItalicSet:          true,
+	})
+	if !changed ||
+		!strings.Contains(paragraph, `<w:b w:val="false"/>`) ||
+		!strings.Contains(paragraph, `<w:iCs w:val="false"/>`) {
+		t.Fatalf("paragraph run properties lost explicit false state:\n%s", paragraph)
 	}
 }
 

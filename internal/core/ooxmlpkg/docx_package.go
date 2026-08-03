@@ -198,8 +198,9 @@ func validateEntryName(name string) error {
 	if name == "" || strings.Contains(name, "\\") {
 		return fmt.Errorf("unsafe DOCX entry path: %q", name)
 	}
-	clean := path.Clean(name)
-	if strings.HasPrefix(name, "/") || clean == ".." || strings.HasPrefix(clean, "../") || clean != name {
+	checkName := strings.TrimSuffix(name, "/")
+	clean := path.Clean(checkName)
+	if checkName == "" || strings.HasPrefix(name, "/") || clean == ".." || strings.HasPrefix(clean, "../") || clean != checkName {
 		return fmt.Errorf("unsafe DOCX entry path: %q", name)
 	}
 	return nil

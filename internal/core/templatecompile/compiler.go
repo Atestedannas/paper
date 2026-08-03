@@ -214,6 +214,12 @@ func compileStyleProfiles(profile *templateprofile.Profile) []StyleProfile {
 			Properties: StyleProperties{
 				EastAsiaFont:          style.FontEastAsia,
 				ASCIIFont:             style.FontASCII,
+				HAnsiFont:             style.FontHAnsi,
+				ComplexFont:           style.FontCS,
+				ASCIITheme:            style.FontASCIITheme,
+				HAnsiTheme:            style.FontHAnsiTheme,
+				EastAsiaTheme:         style.FontEastAsiaTheme,
+				ComplexTheme:          style.FontCSTheme,
 				FontHint:              style.FontHint,
 				FontSizeHalfPoints:    atoi(style.FontSizeHalfPt),
 				ComplexSizeHalfPoints: atoi(style.ComplexSizeHalfPt),
@@ -249,30 +255,6 @@ func compileStyleProfiles(profile *templateprofile.Profile) []StyleProfile {
 		}
 	}
 
-	// Synthesize entries for keys not extracted by classifier but needed by transplanter.
-	profiles = append(profiles,
-		StyleProfile{
-			StyleProfileID: styleProfileID("toc_entry"),
-			Name:           "toc_entry",
-			BasedOn:        "Normal",
-			Properties: StyleProperties{
-				FontSizeHalfPoints: 20,
-				LineTwips:          240,
-				EastAsiaFont:       "宋体",
-				ASCIIFont:          "宋体",
-			},
-		},
-		StyleProfile{
-			StyleProfileID: styleProfileID("table_caption"),
-			Name:           "table_caption",
-			BasedOn:        "Normal",
-			Properties: StyleProperties{
-				FontSizeHalfPoints: 21,
-				LineTwips:          300,
-				Alignment:          "center",
-			},
-		},
-	)
 	return profiles
 }
 

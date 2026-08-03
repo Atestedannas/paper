@@ -94,3 +94,47 @@ func TestExtractDocumentXMLRecognizesChineseHeadingsAndSpacing(t *testing.T) {
 		t.Fatalf("chapter metadata not extracted: %#v", snapshot.Nodes[0])
 	}
 }
+
+func TestExtractDocumentXMLRecognizesCompactAndOutlineHeadings(t *testing.T) {
+	xml := `<w:document><w:body>` +
+		`<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>3Results</w:t></w:r></w:p>` +
+		`<w:p><w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:r><w:t>4.2Analysis</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>5.3Conclusion</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+
+	snapshot := ExtractDocumentXML(xml)
+
+	if snapshot.Stats.Headings != 3 {
+		t.Fatalf("Headings = %d, want 3", snapshot.Stats.Headings)
+	}
+	for index, wantLevel := range []int{1, 2, 2} {
+		node := snapshot.Nodes[index]
+		if node.SemanticRole != "heading" || node.LogicalLevel != wantLevel {
+			t.Fatalf("node %d = %#v, want heading level %d", index, node, wantLevel)
+		}
+	}
+}
+
+func TestExtractDocumentXMLKeepsTOCStylesOutOfBodyHeadings(t *testing.T) {
+	xml := `<w:document><w:body>` +
+		`<w:p><w:r><w:t>&#30446;&#24405;</w:t></w:r></w:p>` +
+		`<w:p><w:pPr><w:pStyle w:val="TOC1"/></w:pPr><w:r><w:t>3Results4</w:t></w:r></w:p>` +
+		`<w:p><w:pPr><w:pStyle w:val="TOC2"/></w:pPr><w:r><w:t>3.1Analysis5</w:t></w:r></w:p>` +
+		`<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>3Results</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+
+	snapshot := ExtractDocumentXML(xml)
+
+	if snapshot.Nodes[1].SemanticRole != "toc_entry" || snapshot.Nodes[1].SectionID != "toc" {
+		t.Fatalf("first TOC node = %#v, want toc_entry in toc", snapshot.Nodes[1])
+	}
+	if snapshot.Nodes[2].SemanticRole != "toc_entry" || snapshot.Nodes[2].SectionID != "toc" {
+		t.Fatalf("second TOC node = %#v, want toc_entry in toc", snapshot.Nodes[2])
+	}
+	if snapshot.Nodes[3].SemanticRole != "heading" || snapshot.Nodes[3].SectionID != "body" {
+		t.Fatalf("body heading = %#v, want heading in body", snapshot.Nodes[3])
+	}
+	if snapshot.Stats.Headings != 1 {
+		t.Fatalf("Headings = %d, want only the real body heading", snapshot.Stats.Headings)
+	}
+}

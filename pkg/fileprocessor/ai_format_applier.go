@@ -3,7 +3,9 @@ package fileprocessor
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
+	"unicode"
 
 	"gitee.com/greatmusicians/unioffice/document"
 	"gitee.com/greatmusicians/unioffice/measurement"
@@ -93,16 +95,15 @@ func isProtectedFormatCategory(category string) bool {
 // ApplySpecToPara 将格式规范直接写入段落的OOXML，无JSON解析
 // 按照Word格式优先级链从低到高逐层覆写：段落级→段落RPr→Run级
 func (a *AIFormatApplier) ApplySpecToPara(para document.Paragraph, spec ParagraphFormatSpec) {
-	// 清除 Word 样式引用，避免样式定义覆盖直接设置的格式
-	if pPr := para.X().PPr; pPr != nil {
-		pPr.PStyle = nil
+	patch := buildParagraphSpecPatch(para, spec)
+	if !hasParagraphSpecFields(patch) {
+		return
 	}
-	for _, run := range para.Runs() {
-		if rPr := run.X().RPr; rPr != nil {
-			rPr.RStyle = nil
-		}
-	}
+	a.applySpecPatchToPara(para, patch)
+}
 
+func (a *AIFormatApplier) applySpecPatchToPara(para document.Paragraph, spec ParagraphFormatSpec) {
+	// 清除 Word 样式引用，避免样式定义覆盖直接设置的格式
 	paraProps := para.Properties()
 	pPr := para.X().PPr
 	if pPr == nil {
@@ -126,32 +127,19 @@ func (a *AIFormatApplier) ApplySpecToPara(para document.Paragraph, spec Paragrap
 		}
 		pPr.Spacing.LineAttr.Int64 = &lv
 		pPr.Spacing.LineRuleAttr = spec.LineSpacingRule
-	} else if pPr.Spacing != nil {
-		pPr.Spacing.LineAttr = nil
 	}
 
 	// 3. 段前段后间距
 	if spec.SpaceBefore > 0 {
 		paraProps.Spacing().SetBefore(measurement.Distance(spec.SpaceBefore) * measurement.Twips)
-	} else if pPr.Spacing != nil {
-		pPr.Spacing.BeforeAttr = nil
-		pPr.Spacing.BeforeLinesAttr = nil
 	}
 	if spec.SpaceAfter > 0 {
 		paraProps.Spacing().SetAfter(measurement.Distance(spec.SpaceAfter) * measurement.Twips)
-	} else if pPr.Spacing != nil {
-		pPr.Spacing.AfterAttr = nil
-		pPr.Spacing.AfterLinesAttr = nil
 	}
 
 	// 4. 首行缩进（twips → measurement.Distance）
 	if spec.FirstLineIndent > 0 {
 		paraProps.SetFirstLineIndent(measurement.Distance(spec.FirstLineIndent) * measurement.Twips)
-	} else if pPr.Ind != nil {
-		pPr.Ind.FirstLineAttr = nil
-		pPr.Ind.FirstLineCharsAttr = nil
-		pPr.Ind.HangingAttr = nil
-		pPr.Ind.HangingCharsAttr = nil
 	}
 
 	// 4b. 左右缩进（twips）
@@ -162,14 +150,10 @@ func (a *AIFormatApplier) ApplySpecToPara(para document.Paragraph, spec Paragrap
 		if spec.IndentLeft > 0 {
 			left := int64(spec.IndentLeft)
 			pPr.Ind.LeftAttr = &wml.ST_SignedTwipsMeasure{Int64: &left}
-		} else {
-			pPr.Ind.LeftAttr = nil
 		}
 		if spec.IndentRight > 0 {
 			right := int64(spec.IndentRight)
 			pPr.Ind.RightAttr = &wml.ST_SignedTwipsMeasure{Int64: &right}
-		} else {
-			pPr.Ind.RightAttr = nil
 		}
 	}
 
@@ -187,13 +171,9 @@ func (a *AIFormatApplier) ApplySpecToPara(para document.Paragraph, spec Paragrap
 		}
 		if spec.KeepWithNext {
 			pPr.KeepNext = wml.NewCT_OnOff()
-		} else {
-			pPr.KeepNext = nil
 		}
 		if spec.KeepLines {
 			pPr.KeepLines = wml.NewCT_OnOff()
-		} else {
-			pPr.KeepLines = nil
 		}
 	}
 
@@ -219,12 +199,11 @@ func (a *AIFormatApplier) applyFontToParaRPr(rPr *wml.CT_ParaRPr, spec Paragraph
 		}
 		// EastAsia 用中文名，Ascii/HAnsi/Cs 用英文名，避免 WPS 显示 "黑体;SimHei"
 		eastAsiaPtr := a.processor.getCachedFontName(spec.FontEastAsia)
-		englishName := getEnglishFontName(spec.FontEastAsia)
+		englishName := normalizedAsciiFont(spec.FontAscii, spec.FontEastAsia)
 		asciiPtr := a.processor.getCachedFontName(englishName)
 		rPr.RFonts.EastAsiaAttr = eastAsiaPtr
 		rPr.RFonts.AsciiAttr = asciiPtr
 		rPr.RFonts.HAnsiAttr = asciiPtr
-		rPr.RFonts.CsAttr = asciiPtr
 	}
 	if spec.FontAscii != "" && spec.FontEastAsia == "" {
 		// 纯ASCII字体（如英文参考文献条目）
@@ -240,29 +219,23 @@ func (a *AIFormatApplier) applyFontToParaRPr(rPr *wml.CT_ParaRPr, spec Paragraph
 		rPr.Sz = wml.NewCT_HpsMeasure()
 		rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPt
 	}
-	csHalfPt := spec.FontSizeCSHalfPt
-	if csHalfPt == 0 {
-		csHalfPt = spec.FontSizeHalfPt
-	}
-	if csHalfPt > 0 {
+	if spec.FontSizeCSHalfPt > 0 {
 		rPr.SzCs = wml.NewCT_HpsMeasure()
-		rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &csHalfPt
+		rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &spec.FontSizeCSHalfPt
 	}
 	if spec.Bold {
 		rPr.B = wml.NewCT_OnOff()
-	} else {
-		rPr.B = nil
 	}
 	if spec.Underline {
 		rPr.U = wml.NewCT_Underline()
 		rPr.U.ValAttr = wml.ST_UnderlineSingle
-	} else {
-		rPr.U = nil
 	}
 }
 
 // applySpecToRun 将格式规范应用到单个Run（Run级优先级最高）
 func (a *AIFormatApplier) applySpecToRun(run document.Run, spec ParagraphFormatSpec) {
+	text := run.Text()
+	hasCJK, hasASCII, hasComplex, hasNonComplex := textScriptKinds(text)
 	rPr := run.X().RPr
 	if rPr == nil {
 		rPr = wml.NewCT_RPr()
@@ -270,74 +243,245 @@ func (a *AIFormatApplier) applySpecToRun(run document.Run, spec ParagraphFormatS
 	}
 
 	// 字体
-	if spec.FontEastAsia != "" {
+	if spec.FontEastAsia != "" && hasCJK {
 		if rPr.RFonts == nil {
 			rPr.RFonts = wml.NewCT_Fonts()
 		}
 		eastAsiaPtr := a.processor.getCachedFontName(spec.FontEastAsia)
-		englishName := spec.FontAscii
-		if englishName == "" {
-			englishName = getEnglishFontName(spec.FontEastAsia)
-		}
-		asciiPtr := a.processor.getCachedFontName(englishName)
 		rPr.RFonts.EastAsiaAttr = eastAsiaPtr
-		rPr.RFonts.AsciiAttr = asciiPtr
-		rPr.RFonts.HAnsiAttr = asciiPtr
-		rPr.RFonts.CsAttr = asciiPtr
 	}
-	if spec.FontAscii != "" && spec.FontEastAsia == "" {
+	if hasASCII && (spec.FontAscii != "" || spec.FontEastAsia != "") {
 		if rPr.RFonts == nil {
 			rPr.RFonts = wml.NewCT_Fonts()
 		}
-		asciiPtr := a.processor.getCachedFontName(spec.FontAscii)
+		asciiPtr := a.processor.getCachedFontName(normalizedAsciiFont(spec.FontAscii, spec.FontEastAsia))
 		rPr.RFonts.AsciiAttr = asciiPtr
 		rPr.RFonts.HAnsiAttr = asciiPtr
 	}
+	if hasComplex && spec.FontAscii != "" {
+		if rPr.RFonts == nil {
+			rPr.RFonts = wml.NewCT_Fonts()
+		}
+		rPr.RFonts.CsAttr = a.processor.getCachedFontName(normalizedAsciiFont(spec.FontAscii, spec.FontEastAsia))
+	}
 
 	// 字号（半磅单位，直接写w:sz，避免单位转换问题）
-	if spec.FontSizeHalfPt > 0 {
+	if spec.FontSizeHalfPt > 0 && hasNonComplex {
 		halfPt := spec.FontSizeHalfPt
 		if rPr.Sz == nil {
 			rPr.Sz = wml.NewCT_HpsMeasure()
 		}
 		rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPt
 	}
-	csHalfPt := spec.FontSizeCSHalfPt
-	if csHalfPt == 0 {
-		csHalfPt = spec.FontSizeHalfPt
-	}
-	if csHalfPt > 0 {
+	if spec.FontSizeCSHalfPt > 0 && hasComplex {
 		if rPr.SzCs == nil {
 			rPr.SzCs = wml.NewCT_HpsMeasure()
 		}
-		rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &csHalfPt
+		rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &spec.FontSizeCSHalfPt
 	}
 
 	// 加粗
 	if spec.Bold {
 		rPr.B = wml.NewCT_OnOff()
 		rPr.BCs = wml.NewCT_OnOff()
-	} else {
-		rPr.B = nil
-		rPr.BCs = nil
 	}
 
 	// 斜体
 	if spec.Italic {
 		rPr.I = wml.NewCT_OnOff()
 		rPr.ICs = wml.NewCT_OnOff()
-	} else {
-		rPr.I = nil
-		rPr.ICs = nil
 	}
 
 	// 下划线
 	if spec.Underline {
 		rPr.U = wml.NewCT_Underline()
 		rPr.U.ValAttr = wml.ST_UnderlineSingle
-	} else {
-		rPr.U = nil
 	}
+}
+
+func buildParagraphSpecPatch(para document.Paragraph, expected ParagraphFormatSpec) ParagraphFormatSpec {
+	actual := extractParaFormatSpec(para)
+	patch := ParagraphFormatSpec{}
+	pPr := para.X().PPr
+	hasNamedStyle := pPr != nil && pPr.PStyle != nil
+	var visibleText strings.Builder
+	for _, run := range para.Runs() {
+		visibleText.WriteString(run.Text())
+	}
+	hasCJK, hasASCII, hasComplex, _ := textScriptKinds(visibleText.String())
+	typographyAbsent := actual.FontEastAsia == "" && actual.FontAscii == "" && actual.FontSizeHalfPt == 0
+	listLike := listLikeParagraphPattern.MatchString(strings.TrimSpace(visibleText.String()))
+
+	if !listLike && hasCJK && expected.FontEastAsia != "" &&
+		(typographyAbsent || (actual.FontEastAsia != "" && getChineseFontName(actual.FontEastAsia) != getChineseFontName(expected.FontEastAsia))) {
+		patch.FontEastAsia = expected.FontEastAsia
+	}
+	if !listLike && hasASCII && expected.FontAscii != "" &&
+		(typographyAbsent || (actual.FontAscii != "" && !strings.EqualFold(normalizedAsciiFont(actual.FontAscii, actual.FontEastAsia), normalizedAsciiFont(expected.FontAscii, expected.FontEastAsia)))) {
+		patch.FontAscii = expected.FontAscii
+	}
+	if expected.FontSizeHalfPt > 0 && (actual.FontSizeHalfPt > 0 || typographyAbsent) {
+		delta := int64(expected.FontSizeHalfPt) - int64(actual.FontSizeHalfPt)
+		if delta > 1 || delta < -1 {
+			patch.FontSizeHalfPt = expected.FontSizeHalfPt
+		}
+	}
+	if hasComplex && expected.FontSizeCSHalfPt > 0 && actual.FontSizeCSHalfPt != expected.FontSizeCSHalfPt {
+		patch.FontSizeCSHalfPt = expected.FontSizeCSHalfPt
+	}
+	if expected.Bold && !actual.Bold && (typographyAbsent || paragraphHasExplicitBoldOff(para)) {
+		patch.Bold = true
+	}
+	if expected.Italic && !actual.Italic && !hasNamedStyle {
+		patch.Italic = true
+	}
+	if expected.Underline && !actual.Underline {
+		patch.Underline = true
+	}
+	if expected.AlignmentSet && (!actual.AlignmentSet || actual.Alignment != expected.Alignment) &&
+		!(hasNamedStyle && !actual.AlignmentSet) {
+		patch.AlignmentSet = true
+		patch.Alignment = expected.Alignment
+	}
+	if expected.LineSpacingVal > 0 && (actual.LineSpacingVal > 0 || typographyAbsent) {
+		delta := expected.LineSpacingVal - actual.LineSpacingVal
+		if delta > 20 || delta < -20 {
+			patch.LineSpacingVal = expected.LineSpacingVal
+			patch.LineSpacingRule = expected.LineSpacingRule
+		}
+	}
+	if expected.SpaceBefore > 0 && actual.SpaceBefore > 0 && actual.SpaceBefore != expected.SpaceBefore {
+		patch.SpaceBefore = expected.SpaceBefore
+	}
+	if expected.SpaceAfter > 0 && actual.SpaceAfter > 0 && actual.SpaceAfter != expected.SpaceAfter {
+		patch.SpaceAfter = expected.SpaceAfter
+	}
+	if expected.FirstLineIndent > 0 && !listLike {
+		hasCharacterIndent := pPr != nil && pPr.Ind != nil && pPr.Ind.FirstLineCharsAttr != nil
+		delta := int64(expected.FirstLineIndent) - int64(actual.FirstLineIndent)
+		tolerance := int64(expected.FontSizeHalfPt * 3)
+		if tolerance < 40 {
+			tolerance = 40
+		}
+		if !hasCharacterIndent && (actual.FirstLineIndent == 0 || delta > tolerance || delta < -tolerance) {
+			patch.FirstLineIndent = expected.FirstLineIndent
+		}
+	}
+	if expected.PageBreak && !actual.PageBreak && !hasNamedStyle {
+		patch.PageBreak = true
+	}
+	if expected.KeepWithNext && !actual.KeepWithNext && !hasNamedStyle {
+		patch.KeepWithNext = true
+	}
+	if expected.KeepLines && !actual.KeepLines && !hasNamedStyle {
+		patch.KeepLines = true
+	}
+	return patch
+}
+
+var listLikeParagraphPattern = regexp.MustCompile(`^(?:[\(（]?\d+[\)）、.]|[①-⑳]|[一二三四五六七八九十]+[、）])`)
+
+func paragraphHasExplicitBoldOff(para document.Paragraph) bool {
+	isOff := func(value *wml.CT_OnOff) bool {
+		return value != nil && value.ValAttr != nil && !styleOnOffEnabled(value)
+	}
+	if pPr := para.X().PPr; pPr != nil && pPr.RPr != nil && isOff(pPr.RPr.B) {
+		return true
+	}
+	for _, run := range para.Runs() {
+		if rPr := run.X().RPr; rPr != nil && (isOff(rPr.B) || isOff(rPr.BCs)) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTypographySpecFields(spec ParagraphFormatSpec) bool {
+	return spec.FontEastAsia != "" || spec.FontAscii != "" || spec.FontSizeHalfPt > 0 ||
+		spec.FontSizeCSHalfPt > 0 || spec.Bold || spec.Italic || spec.Underline || spec.ColorHex != ""
+}
+
+func hasParagraphSpecFields(spec ParagraphFormatSpec) bool {
+	return hasTypographySpecFields(spec) || spec.AlignmentSet || spec.LineSpacingVal > 0 ||
+		spec.SpaceBefore > 0 || spec.SpaceAfter > 0 || spec.FirstLineIndent > 0 ||
+		spec.IndentLeft > 0 || spec.IndentRight > 0 || spec.PageBreak ||
+		spec.KeepWithNext || spec.KeepLines || spec.OutlineLevel > 0
+}
+
+func specManagesDiffField(spec ParagraphFormatSpec, field string) bool {
+	switch field {
+	case "font_east_asia":
+		return spec.FontEastAsia != ""
+	case "font_ascii":
+		return spec.FontAscii != ""
+	case "font_size_half_pt":
+		return spec.FontSizeHalfPt > 0
+	case "font_size_cs_half_pt":
+		return spec.FontSizeCSHalfPt > 0
+	case "bold":
+		return spec.Bold
+	case "italic":
+		return spec.Italic
+	case "underline":
+		return spec.Underline
+	case "alignment":
+		return spec.AlignmentSet
+	case "line_spacing", "line_spacing_rule":
+		return spec.LineSpacingVal > 0
+	case "space_before":
+		return spec.SpaceBefore > 0
+	case "space_after":
+		return spec.SpaceAfter > 0
+	case "first_line_indent":
+		return spec.FirstLineIndent > 0
+	case "indent_left":
+		return spec.IndentLeft > 0
+	case "indent_right":
+		return spec.IndentRight > 0
+	case "color":
+		return spec.ColorHex != ""
+	case "outline_level":
+		return spec.OutlineLevel > 0
+	case "page_break":
+		return spec.PageBreak
+	case "keep_with_next":
+		return spec.KeepWithNext
+	case "keep_lines":
+		return spec.KeepLines
+	default:
+		return false
+	}
+}
+
+func normalizedAsciiFont(ascii, eastAsia string) string {
+	if ascii == "" || (eastAsia != "" && strings.EqualFold(strings.TrimSpace(ascii), strings.TrimSpace(eastAsia))) {
+		return getEnglishFontName(eastAsia)
+	}
+	return ascii
+}
+
+func textScriptKinds(text string) (hasCJK, hasASCII, hasComplex, hasNonComplex bool) {
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		complex := (r >= 0x0590 && r <= 0x08ff) ||
+			(r >= 0xfb1d && r <= 0xfdff) ||
+			(r >= 0xfe70 && r <= 0xfeff) ||
+			(r >= 0x1ee00 && r <= 0x1eeff)
+		if complex {
+			hasComplex = true
+			continue
+		}
+		hasNonComplex = true
+		if unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul) {
+			hasCJK = true
+		}
+		if r <= unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
+			hasASCII = true
+		}
+	}
+	return
 }
 
 func isAbstractCategory(category string) bool {

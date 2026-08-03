@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"html"
+	"io"
 	"os"
 	pathpkg "path"
 	"regexp"
@@ -16,7 +18,9 @@ import (
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 )
 
-const Version = "template-profile-v1"
+// Version is also the deterministic extractor revision. Bumping it invalidates
+// cached profiles when extraction semantics change, even when the DOCX bytes do not.
+const Version = "template-profile-v2"
 
 const templateProfileAIPromptTemplate = `你是“本科毕业论文 DOCX 模板格式规范解析专家”，任务是把 OOXML 本地解析结果转成可执行的论文格式画像 JSON。
 
@@ -82,23 +86,28 @@ type ChatClient interface {
 }
 
 type Profile struct {
-	Version     string                 `json:"version"`
-	Source      string                 `json:"source"`
-	TemplateSHA string                 `json:"template_sha"`
-	Sections    map[string]SectionRule `json:"sections"`
-	Styles      map[string]StyleRule   `json:"styles"`
-	PageSetup   PageSetupRule          `json:"page_setup,omitempty"`
-	RulePack    RulePack               `json:"rule_pack,omitempty"`
-	Header      HeaderFooterRule       `json:"header"`
-	Footer      HeaderFooterRule       `json:"footer"`
-	HeaderFirst HeaderFooterRule       `json:"header_first,omitempty"`
-	HeaderEven  HeaderFooterRule       `json:"header_even,omitempty"`
-	FooterFirst HeaderFooterRule       `json:"footer_first,omitempty"`
-	FooterEven  HeaderFooterRule       `json:"footer_even,omitempty"`
-	AI          *AIProfile             `json:"ai,omitempty"`
-	Numbering   *NumberingProfile      `json:"numbering,omitempty"` // OOXML numbering.xml 精确提取
-	Confidence  float64                `json:"confidence"`
+	Version        string                 `json:"version"`
+	Source         string                 `json:"source"`
+	TemplateSHA    string                 `json:"template_sha"`
+	Sections       map[string]SectionRule `json:"sections"`
+	Styles         map[string]StyleRule   `json:"styles"`
+	SectionFormats SectionFormatMap       `json:"section_formats,omitempty"`
+	PageSetup      PageSetupRule          `json:"page_setup,omitempty"`
+	RulePack       RulePack               `json:"rule_pack,omitempty"`
+	Header         HeaderFooterRule       `json:"header"`
+	Footer         HeaderFooterRule       `json:"footer"`
+	HeaderFirst    HeaderFooterRule       `json:"header_first,omitempty"`
+	HeaderEven     HeaderFooterRule       `json:"header_even,omitempty"`
+	FooterFirst    HeaderFooterRule       `json:"footer_first,omitempty"`
+	FooterEven     HeaderFooterRule       `json:"footer_even,omitempty"`
+	AI             *AIProfile             `json:"ai,omitempty"`
+	Numbering      *NumberingProfile      `json:"numbering,omitempty"` // OOXML numbering.xml 精确提取
+	Confidence     float64                `json:"confidence"`
 }
+
+// SectionFormatMap exposes the semantic template regions used by classifiers.
+// Values still use StyleRule so extraction and application share one schema.
+type SectionFormatMap map[string]StyleRule
 
 type SectionRule struct {
 	Label           string `json:"label"`
@@ -108,26 +117,45 @@ type SectionRule struct {
 }
 
 type StyleRule struct {
-	Label             string `json:"label"`
-	FontEastAsia      string `json:"font_east_asia,omitempty"`
-	FontASCII         string `json:"font_ascii,omitempty"`
-	FontHint          string `json:"font_hint,omitempty"`
-	FontSizeHalfPt    string `json:"font_size_half_pt,omitempty"`
-	ComplexSizeHalfPt string `json:"complex_size_half_pt,omitempty"`
-	Bold              bool   `json:"bold,omitempty"`
-	BoldSet           bool   `json:"-"`
-	Italic            bool   `json:"italic,omitempty"`
-	ItalicSet         bool   `json:"-"`
-	Alignment         string `json:"alignment,omitempty"`
-	Line              string `json:"line,omitempty"`
-	LineRule          string `json:"line_rule,omitempty"`
-	BeforeTwips       string `json:"before_twips,omitempty"`
-	AfterTwips        string `json:"after_twips,omitempty"`
-	BeforeLines       string `json:"before_lines,omitempty"`
-	AfterLines        string `json:"after_lines,omitempty"`
-	FirstLineChars    string `json:"first_line_chars,omitempty"`
-	FirstLineTwips    string `json:"first_line_twips,omitempty"`
-	OutlineLevel      string `json:"outline_level,omitempty"`
+	Label             string        `json:"label"`
+	FontEastAsia      string        `json:"font_east_asia,omitempty"`
+	FontASCII         string        `json:"font_ascii,omitempty"`
+	FontHAnsi         string        `json:"font_hansi,omitempty"`
+	FontCS            string        `json:"font_cs,omitempty"`
+	FontASCIITheme    string        `json:"font_ascii_theme,omitempty"`
+	FontHAnsiTheme    string        `json:"font_hansi_theme,omitempty"`
+	FontEastAsiaTheme string        `json:"font_east_asia_theme,omitempty"`
+	FontCSTheme       string        `json:"font_cs_theme,omitempty"`
+	FontHint          string        `json:"font_hint,omitempty"`
+	FontSizeHalfPt    string        `json:"font_size_half_pt,omitempty"`
+	ComplexSizeHalfPt string        `json:"complex_size_half_pt,omitempty"`
+	Bold              bool          `json:"bold,omitempty"`
+	BoldSet           bool          `json:"bold_set,omitempty"`
+	Italic            bool          `json:"italic,omitempty"`
+	ItalicSet         bool          `json:"italic_set,omitempty"`
+	Alignment         string        `json:"alignment,omitempty"`
+	Line              string        `json:"line,omitempty"`
+	LineRule          string        `json:"line_rule,omitempty"`
+	BeforeTwips       string        `json:"before_twips,omitempty"`
+	AfterTwips        string        `json:"after_twips,omitempty"`
+	BeforeLines       string        `json:"before_lines,omitempty"`
+	AfterLines        string        `json:"after_lines,omitempty"`
+	FirstLineChars    string        `json:"first_line_chars,omitempty"`
+	FirstLineTwips    string        `json:"first_line_twips,omitempty"`
+	OutlineLevel      string        `json:"outline_level,omitempty"`
+	SampleCount       int           `json:"sample_count,omitempty"`
+	Confidence        float64       `json:"confidence,omitempty"`
+	Sources           []StyleSource `json:"sources,omitempty"`
+	InheritanceChain  []string      `json:"inheritance_chain,omitempty"`
+}
+
+type StyleSource struct {
+	Part             string   `json:"part"`
+	ParagraphIndex   int      `json:"paragraph_index"`
+	Text             string   `json:"text,omitempty"`
+	ParagraphStyleID string   `json:"paragraph_style_id,omitempty"`
+	RunStyleID       string   `json:"run_style_id,omitempty"`
+	InheritanceChain []string `json:"inheritance_chain,omitempty"`
 }
 
 type PageSetupRule struct {
@@ -203,19 +231,48 @@ type AIProfile struct {
 // NumberingLevel mirrors a single <w:lvl> element from word/numbering.xml.
 // Extracted directly from OOXML — no AI inference, no guessing.
 type NumberingLevel struct {
-	Level      int    `json:"level"`       // 0-based ilvl
-	NumFmt     string `json:"num_fmt"`     // decimal / chineseCounting / upperLetter / ...
-	LvlText    string `json:"lvl_text"`    // e.g. “%1”, “%1.%2”, “第%1章”
-	Start      int    `json:"start"`       // start value (default 1)
-	PStyle     string `json:"p_style"`     // linked paragraph style (Heading1, Heading2, …)
-	IsLgl      bool   `json:"is_lgl"`      // <w:isLgl/> flag
-	LvlRestart int    `json:"lvl_restart"` // <w:lvlRestart w:val="..."/>  (-1 = never restart)
+	Level      int       `json:"level"`       // 0-based ilvl
+	NumFmt     string    `json:"num_fmt"`     // decimal / chineseCounting / upperLetter / ...
+	LvlText    string    `json:"lvl_text"`    // e.g. “%1”, “%1.%2”, “第%1章”
+	Start      int       `json:"start"`       // start value (default 1)
+	PStyle     string    `json:"p_style"`     // linked paragraph style (Heading1, Heading2, …)
+	IsLgl      bool      `json:"is_lgl"`      // <w:isLgl/> flag
+	LvlRestart int       `json:"lvl_restart"` // <w:lvlRestart w:val="..."/>  (-1 = never restart)
+	Style      StyleRule `json:"style,omitempty"`
 }
 
 // NumberingProfile holds every abstractNum definition found in numbering.xml.
 type NumberingProfile struct {
 	AbstractNums map[int][]NumberingLevel `json:"abstract_nums"` // abstractNumId → levels
 	NumToAbs     map[int]int              `json:"num_to_abs"`    // numId → abstractNumId
+}
+
+type numberingReference struct {
+	NumID, Level       int
+	NumIDSet, LevelSet bool
+}
+
+type styleDefinitionSet struct {
+	Resolved    map[string]StyleRule
+	Local       map[string]StyleRule
+	BasedOn     map[string]string
+	Numbering   map[string]numberingReference
+	NameToID    map[string]string
+	DocDefaults StyleRule
+}
+
+func (definitions styleDefinitionSet) effectiveNumberingReference(styleID string) numberingReference {
+	chain, seen := []string{}, map[string]bool{}
+	for styleID != "" && len(chain) < 64 && !seen[styleID] {
+		seen[styleID] = true
+		chain = append(chain, styleID)
+		styleID = definitions.BasedOn[styleID]
+	}
+	reference := numberingReference{}
+	for index := len(chain) - 1; index >= 0; index-- {
+		reference = mergeNumberingReference(reference, definitions.Numbering[chain[index]])
+	}
+	return reference
 }
 
 // HeadingNumberingLookup returns the heading levels extracted from numbering.xml,
@@ -235,6 +292,71 @@ func (np *NumberingProfile) HeadingNumberingLookup() map[string]NumberingLevel {
 		}
 	}
 	return lookup
+}
+
+func (np *NumberingProfile) effectiveLevel(reference numberingReference, paragraphStyleID string) (NumberingLevel, bool) {
+	if np == nil {
+		return NumberingLevel{}, false
+	}
+	level := 0
+	if reference.LevelSet {
+		level = reference.Level
+	}
+	if reference.NumIDSet {
+		abstractID, ok := np.NumToAbs[reference.NumID]
+		if !ok {
+			return NumberingLevel{}, false
+		}
+		for _, candidate := range np.AbstractNums[abstractID] {
+			if candidate.Level == level {
+				return candidate, true
+			}
+		}
+		return NumberingLevel{}, false
+	}
+	if paragraphStyleID == "" {
+		return NumberingLevel{}, false
+	}
+	bestAbstractID, found := 0, false
+	best := NumberingLevel{}
+	for abstractID, levels := range np.AbstractNums {
+		for _, candidate := range levels {
+			if !strings.EqualFold(candidate.PStyle, paragraphStyleID) || reference.LevelSet && candidate.Level != level {
+				continue
+			}
+			if !found || abstractID < bestAbstractID {
+				bestAbstractID, best, found = abstractID, candidate, true
+			}
+		}
+	}
+	return best, found
+}
+
+func extractNumberingReference(raw string) numberingReference {
+	properties := numberingPropertiesPattern.FindString(raw)
+	if properties == "" {
+		return numberingReference{}
+	}
+	reference := numberingReference{}
+	if match := numberingIDPattern.FindStringSubmatch(properties); len(match) == 2 {
+		reference.NumID, _ = strconv.Atoi(match[1])
+		reference.NumIDSet = true
+	}
+	if match := numberingLevelIDPattern.FindStringSubmatch(properties); len(match) == 2 {
+		reference.Level, _ = strconv.Atoi(match[1])
+		reference.LevelSet = true
+	}
+	return reference
+}
+
+func mergeNumberingReference(base, override numberingReference) numberingReference {
+	if override.NumIDSet {
+		base.NumID, base.NumIDSet = override.NumID, true
+	}
+	if override.LevelSet {
+		base.Level, base.LevelSet = override.Level, true
+	}
+	return base
 }
 
 // BuildHeadingPatterns converts numbering level definitions into compiled regexps.
@@ -343,6 +465,7 @@ type paragraph struct {
 
 var (
 	paragraphPattern             = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
+	textBoxContentPattern        = regexp.MustCompile(`(?s)<w:txbxContent(?:\s[^>]*)?>.*?</w:txbxContent>`)
 	textPattern                  = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
 	fontPattern                  = regexp.MustCompile(`<w:rFonts\b[^>]*/>`)
 	sizePattern                  = regexp.MustCompile(`<w:sz\b[^>]*/>`)
@@ -355,10 +478,15 @@ var (
 	outlinePattern               = regexp.MustCompile(`<w:outlineLvl\b[^>]*/>`)
 	styleElementPattern          = regexp.MustCompile(`(?s)<w:style\b[^>]*>.*?</w:style>`)
 	styleIDPattern               = regexp.MustCompile(`<w:style\b[^>]*\bw:styleId="([^"]+)"`)
+	styleTypePattern             = regexp.MustCompile(`<w:style\b[^>]*\bw:type="([^"]+)"`)
 	styleNamePattern             = regexp.MustCompile(`<w:name\b[^>]*\bw:val="([^"]+)"`)
 	basedOnPattern               = regexp.MustCompile(`<w:basedOn\b[^>]*\bw:val="([^"]+)"`)
 	docDefaultsPattern           = regexp.MustCompile(`(?s)<w:docDefaults\b[^>]*>(.*?)</w:docDefaults>`)
 	paragraphStyleIDPattern      = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
+	runStyleIDPattern            = regexp.MustCompile(`<w:rStyle\b[^>]*\bw:val="([^"]+)"`)
+	numberingPropertiesPattern   = regexp.MustCompile(`(?s)<w:numPr\b[^>]*>.*?</w:numPr>|<w:numPr\b[^>]*/>`)
+	numberingIDPattern           = regexp.MustCompile(`<w:numId\b[^>]*\bw:val="(\d+)"`)
+	numberingLevelIDPattern      = regexp.MustCompile(`<w:ilvl\b[^>]*\bw:val="(\d+)"`)
 	jcPattern                    = regexp.MustCompile(`<w:jc\b[^>]*/>`)
 	sectPrPattern                = regexp.MustCompile(`(?s)<w:sectPr\b[^>]*>.*?</w:sectPr>|<w:sectPr\b[^>]*/>`)
 	pgSzPattern                  = regexp.MustCompile(`<w:pgSz\b[^>]*/>`)
@@ -375,7 +503,56 @@ var (
 	bodyStartChinesePattern      = regexp.MustCompile(`^第[一1]章\s*\S*`)
 	heading1ChineseListPattern   = regexp.MustCompile(`^[一二三四五六七八九十]+[、．.]\s*\S+`)
 	bodyStartChineseListPattern  = regexp.MustCompile(`^一[、．.]\s*\S+`)
+	captionNumberPattern         = regexp.MustCompile(`^(?:\x{8868}|\x{56fe})\s*\d+(?:[.\-]\d+)*`)
+	captionWithSpacePattern      = regexp.MustCompile(`^(?:\x{8868}|\x{56fe})\s*\d+(?:[.\-]\d+)*\s+\S+`)
 )
+
+type themeFontFamily struct {
+	Latin, EastAsia, Complex string
+	Scripts                  map[string]string
+}
+
+type themeFontResolver struct {
+	Major, Minor                  themeFontFamily
+	EastAsiaScript, ComplexScript string
+}
+
+func (resolver themeFontResolver) resolve(reference, slot string) string {
+	reference = strings.ToLower(strings.TrimSpace(reference))
+	var family themeFontFamily
+	switch {
+	case strings.HasPrefix(reference, "major"):
+		family = resolver.Major
+	case strings.HasPrefix(reference, "minor"):
+		family = resolver.Minor
+	default:
+		return ""
+	}
+	switch {
+	case strings.HasSuffix(reference, "ascii"), strings.HasSuffix(reference, "hansi"):
+		slot = "ascii"
+	case strings.HasSuffix(reference, "eastasia"):
+		slot = "eastAsia"
+	case strings.HasSuffix(reference, "bidi"):
+		slot = "cs"
+	}
+	switch slot {
+	case "ascii", "hAnsi":
+		return family.Latin
+	case "eastAsia":
+		if family.EastAsia != "" {
+			return family.EastAsia
+		}
+		return family.Scripts[resolver.EastAsiaScript]
+	case "cs":
+		if family.Complex != "" {
+			return family.Complex
+		}
+		return family.Scripts[resolver.ComplexScript]
+	default:
+		return ""
+	}
+}
 
 func ExtractCollegeName(headerText, fallback string) string {
 	best := ""
@@ -405,15 +582,158 @@ func Build(ctx context.Context, templatePath string, opts Options) (*Profile, er
 	return profile, nil
 }
 
+func extractThemeFontResolver(pkg *ooxmlpkg.DocxPackage, stylesXML string) themeFontResolver {
+	return extractThemeFontResolverFromXML(extractThemePart(pkg).XML, stylesXML)
+}
+
+func extractThemeFontResolverFromXML(themeXML, stylesXML string) themeFontResolver {
+	resolver := themeFontResolver{
+		Major: themeFontFamily{Scripts: map[string]string{}},
+		Minor: themeFontFamily{Scripts: map[string]string{}},
+	}
+	if themeXML == "" {
+		return resolver
+	}
+	decoder := xml.NewDecoder(strings.NewReader(themeXML))
+	current := ""
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return resolver
+		}
+		switch element := token.(type) {
+		case xml.StartElement:
+			switch element.Name.Local {
+			case "majorFont", "minorFont":
+				current = element.Name.Local
+			case "latin", "ea", "cs", "font":
+				if current == "" {
+					continue
+				}
+				family := &resolver.Major
+				if current == "minorFont" {
+					family = &resolver.Minor
+				}
+				typeface, script := "", ""
+				for _, attribute := range element.Attr {
+					switch attribute.Name.Local {
+					case "typeface":
+						typeface = attribute.Value
+					case "script":
+						script = attribute.Value
+					}
+				}
+				switch element.Name.Local {
+				case "latin":
+					family.Latin = typeface
+				case "ea":
+					family.EastAsia = typeface
+				case "cs":
+					family.Complex = typeface
+				case "font":
+					if script != "" && typeface != "" {
+						family.Scripts[script] = typeface
+					}
+				}
+			}
+		case xml.EndElement:
+			if element.Name.Local == "majorFont" || element.Name.Local == "minorFont" {
+				current = ""
+			}
+		}
+	}
+	for _, tag := range regexp.MustCompile(`<w:lang\b[^>]*/>`).FindAllString(stylesXML, -1) {
+		values := attrs(tag)
+		if resolver.EastAsiaScript == "" {
+			resolver.EastAsiaScript = languageThemeScript(values["w:eastAsia"])
+		}
+		if resolver.ComplexScript == "" {
+			resolver.ComplexScript = languageThemeScript(values["w:bidi"])
+		}
+		if resolver.EastAsiaScript != "" && resolver.ComplexScript != "" {
+			break
+		}
+	}
+	return resolver
+}
+
+func languageThemeScript(language string) string {
+	language = strings.ToLower(strings.TrimSpace(language))
+	switch {
+	case strings.HasPrefix(language, "zh-hant"),
+		strings.HasPrefix(language, "zh-tw"),
+		strings.HasPrefix(language, "zh-hk"),
+		strings.HasPrefix(language, "zh-mo"):
+		return "Hant"
+	case strings.HasPrefix(language, "zh"):
+		return "Hans"
+	case strings.HasPrefix(language, "ja"):
+		return "Jpan"
+	case strings.HasPrefix(language, "ko"):
+		return "Hang"
+	case strings.HasPrefix(language, "ar"):
+		return "Arab"
+	case strings.HasPrefix(language, "he"), strings.HasPrefix(language, "iw"):
+		return "Hebr"
+	case strings.HasPrefix(language, "th"):
+		return "Thai"
+	default:
+		return ""
+	}
+}
+
+func materializeThemeFonts(raw string, resolver themeFontResolver) string {
+	return fontPattern.ReplaceAllStringFunc(raw, func(tag string) string {
+		values := attrs(tag)
+		for _, slot := range []struct {
+			fontAttribute, themeAttribute, resolverSlot string
+		}{
+			{"w:ascii", "w:asciiTheme", "ascii"},
+			{"w:hAnsi", "w:hAnsiTheme", "hAnsi"},
+			{"w:eastAsia", "w:eastAsiaTheme", "eastAsia"},
+			{"w:cs", "w:cstheme", "cs"},
+		} {
+			if font := resolver.resolve(values[slot.themeAttribute], slot.resolverSlot); font != "" {
+				tag = setXMLAttribute(tag, slot.fontAttribute, font)
+			}
+		}
+		return tag
+	})
+}
+
+func setXMLAttribute(tag, name, value string) string {
+	needle := " " + name + `="`
+	if start := strings.Index(tag, needle); start >= 0 {
+		valueStart := start + len(needle)
+		if valueEnd := strings.Index(tag[valueStart:], `"`); valueEnd >= 0 {
+			return tag[:valueStart] + html.EscapeString(value) + tag[valueStart+valueEnd:]
+		}
+	}
+	if end := strings.LastIndex(tag, "/>"); end >= 0 {
+		return tag[:end] + needle + html.EscapeString(value) + `"` + tag[end:]
+	}
+	return tag
+}
+
 // parseNumberingXML reads word/numbering.xml from the DOCX package and extracts
 // all abstractNum definitions into a NumberingProfile.
 // Returns nil, nil if numbering.xml is absent (template has no numbering definitions).
 func parseNumberingXML(pkg *ooxmlpkg.DocxPackage) (*NumberingProfile, error) {
-	xmlBytes, ok := pkg.Get("word/numbering.xml")
-	if !ok {
-		return nil, nil
+	return parseNumberingXMLWithTheme(pkg, themeFontResolver{})
+}
+
+func parseNumberingXMLWithTheme(pkg *ooxmlpkg.DocxPackage, themeFonts themeFontResolver) (*NumberingProfile, error) {
+	return parseNumberingPartWithTheme(extractNumberingPart(pkg), themeFonts), nil
+}
+
+func parseNumberingPartWithTheme(part templatePart, themeFonts themeFontResolver) *NumberingProfile {
+	if part.Name == "" {
+		return nil
 	}
-	return ParseNumberingFromRawXML(string(xmlBytes)), nil
+	return ParseNumberingFromRawXML(materializeThemeFonts(part.XML, themeFonts))
 }
 
 // ParseNumberingFromRawXML extracts numbering profile from raw numbering.xml content.
@@ -462,6 +782,7 @@ func ParseNumberingFromRawXML(xmlStr string) *NumberingProfile {
 			if m := regexp.MustCompile(`<w:lvlRestart\s+[^>]*?w:val="(\d+)"`).FindStringSubmatch(lvlBody); m != nil {
 				level.LvlRestart, _ = strconv.Atoi(m[1])
 			}
+			level.Style = extractNumberingLevelStyle(absID, ilvl, lvlBody)
 
 			levels = append(levels, level)
 		}
@@ -482,6 +803,21 @@ func ParseNumberingFromRawXML(xmlStr string) *NumberingProfile {
 	return np
 }
 
+func extractNumberingLevelStyle(abstractID, level int, raw string) StyleRule {
+	label := fmt.Sprintf("numbering:%d:%d", abstractID, level)
+	style := extractStyle(label, raw)
+	if runProperties := runPropertiesPattern.FindString(raw); runProperties != "" {
+		if hasBoldDeclaration(runProperties) {
+			style.Bold, style.BoldSet = enabledBold(runProperties), true
+		}
+		if hasItalicDeclaration(runProperties) {
+			style.Italic, style.ItalicSet = enabledProperty(runProperties, "i"), true
+		}
+	}
+	style.InheritanceChain = []string{label}
+	return style
+}
+
 func Extract(templatePath string) (*Profile, error) {
 	content, err := os.ReadFile(templatePath)
 	if err != nil {
@@ -492,10 +828,15 @@ func Extract(templatePath string) (*Profile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open template docx: %w", err)
 	}
-	documentXML, ok := pkg.Get("word/document.xml")
-	if !ok {
-		return nil, fmt.Errorf("word/document.xml missing")
+	parts, err := extractTemplateParts(pkg)
+	if err != nil {
+		return nil, err
 	}
+	documentXML := parts.Document.XML
+	stylesText := parts.Styles.XML
+	themeFonts := extractThemeFontResolverFromXML(parts.Theme.XML, stylesText)
+	documentXML = materializeThemeFonts(documentXML, themeFonts)
+	stylesText = materializeThemeFonts(stylesText, themeFonts)
 
 	profile := &Profile{
 		Version:     Version,
@@ -503,22 +844,25 @@ func Extract(templatePath string) (*Profile, error) {
 		TemplateSHA: hex.EncodeToString(sum[:]),
 		Sections:    map[string]SectionRule{},
 		Styles:      map[string]StyleRule{},
-		PageSetup:   extractPageSetup(string(documentXML)),
-		Header:      extractHeaderFooter(pkg, true),
-		Footer:      extractHeaderFooter(pkg, false),
+		PageSetup:   extractPageSetup(documentXML),
+		Header:      extractHeaderFooterParts(parts.Headers, themeFonts),
+		Footer:      extractHeaderFooterParts(parts.Footers, themeFonts),
 		Confidence:  0.76,
 	}
-	paras := collectParagraphs(string(documentXML))
-	styleDefinitions := map[string]StyleRule{}
-	styleNameToID := map[string]string{}
-	if stylesXML, ok := pkg.Get("word/styles.xml"); ok {
-		styleDefinitions, styleNameToID = extractStyleDefinitions(string(stylesXML))
-	}
-	if numbering, err := parseNumberingXML(pkg); err == nil && numbering != nil {
+	paras := collectParagraphs(documentXML)
+	if numbering := parseNumberingPartWithTheme(parts.Numbering, themeFonts); numbering != nil {
 		profile.Numbering = numbering
 	}
+	styleSet := emptyStyleDefinitionSet()
+	styleDefinitions := styleSet.Resolved
+	tocStyleKeys := map[string]string{}
+	if stylesText != "" {
+		styleSet = parseStyleDefinitions(stylesText)
+		styleDefinitions = styleSet.Resolved
+		tocStyleKeys = buildTOCStyleKeys(styleSet.NameToID)
+	}
 	profile.RulePack = extractLocalRulePack(paras)
-	extractHeaderFooterVariants(profile, pkg, string(documentXML))
+	extractHeaderFooterVariantsFromParts(profile, parts, documentXML, themeFonts)
 
 	// Build numbering-derived heading patterns (OOXML precise, no AI guessing)
 	numberingPatterns := map[string]*regexp.Regexp{}
@@ -529,16 +873,49 @@ func Extract(templatePath string) (*Profile, error) {
 	styleSamples := map[string][]StyleRule{}
 	bodyStarted := false
 	inTOC := false
+	coverTitlePending := false
+	sampleRegionStarted := false
+	abstractBodyKey := ""
 	for index, para := range paras {
+		normalized := normalizeLabel(para.Text)
+		lower := strings.ToLower(strings.TrimSpace(para.Text))
+		if !sampleRegionStarted && (normalized == "摘要" || lower == "abstract") {
+			sampleRegionStarted = true
+			coverSamples := styleSamples["cover_title"]
+			styleSamples = map[string][]StyleRule{}
+			if len(coverSamples) > 0 {
+				styleSamples["cover_title"] = coverSamples
+			}
+			profile.Sections = map[string]SectionRule{}
+			bodyStarted, inTOC, coverTitlePending = false, false, false
+		}
 		key := classifyParagraphNumberingAware(para.Text, numberingPatterns)
+		if key == "" {
+			key = classifyCaptionParagraph(para.Text, para.XML, styleDefinitions)
+		}
+		if (key == "body_start" || strings.HasPrefix(key, "heading_")) &&
+			!hasSemanticOutlineLevel(para.XML) && isBodyStyleCandidate(para) {
+			key = ""
+		}
+		if abstractBodyKey != "" && key == "" && isBodyStyleCandidate(para) {
+			key = abstractBodyKey
+		}
+		if normalized == "题目" {
+			coverTitlePending = true
+		} else if coverTitlePending && key == "" && len([]rune(strings.TrimSpace(para.Text))) >= 4 {
+			key = "cover_title"
+			coverTitlePending = false
+		}
 		if key == "toc_title" {
 			inTOC = true
-		} else if inTOC && (key == "body_start" || strings.HasPrefix(key, "heading_")) {
-			pageBreak, _ := detectPageBreakBefore(paras, index)
-			if !pageBreak {
-				continue
+		} else if inTOC {
+			if tocKey, ok := tocStyleKey(para.XML, tocStyleKeys); ok {
+				key = tocKey
+			} else if hasTOCLeader(para.Text) {
+				key = "toc_entry"
+			} else if key == "body_start" || strings.HasPrefix(key, "heading_") {
+				inTOC = false
 			}
-			inTOC = false
 		}
 		if key == "body_start" {
 			bodyStarted = true
@@ -553,10 +930,38 @@ func Extract(templatePath string) (*Profile, error) {
 		if key == "" {
 			continue
 		}
-		style := extractStyleWithDefinitions(key, para.XML, styleDefinitions)
-		styleSamples[key] = append(styleSamples[key], extractLeadingLabelRunStyle(key, para.XML, style))
+		style := extractEffectiveParagraphStyle(key, para.XML, styleSet, profile.Numbering)
+		style = extractRepresentativeRunStyleWithDefinitions(key, para.XML, style, styleDefinitions)
+		style = extractLeadingLabelRunStyleWithDefinitions(key, para.XML, style, styleDefinitions)
+		style = recordStyleSource(style, index, para)
+		styleSamples[key] = append(styleSamples[key], style)
+		if key == "abstract_cn" {
+			abstractBodyKey = "abstract_body"
+			if content, ok := extractTrailingContentRunStyleWithDefinitions("abstract_body", para.XML, styleDefinitions); ok {
+				styleSamples["abstract_body"] = append(styleSamples["abstract_body"], recordStyleSource(content, index, para))
+			}
+		} else if key == "abstract_en" {
+			abstractBodyKey = "abstract_en_body"
+			if content, ok := extractTrailingContentRunStyleWithDefinitions("abstract_en_body", para.XML, styleDefinitions); ok {
+				styleSamples["abstract_en_body"] = append(styleSamples["abstract_en_body"], recordStyleSource(content, index, para))
+			}
+		} else if key == "keywords_cn" {
+			if content, ok := extractTrailingContentRunStyleWithDefinitions("keywords_cn_body", para.XML, styleDefinitions); ok {
+				styleSamples["keywords_cn_body"] = append(styleSamples["keywords_cn_body"], recordStyleSource(content, index, para))
+			}
+			abstractBodyKey = ""
+		} else if key == "keywords_en" {
+			if content, ok := extractTrailingContentRunStyleWithDefinitions("keywords_en_body", para.XML, styleDefinitions); ok {
+				styleSamples["keywords_en_body"] = append(styleSamples["keywords_en_body"], recordStyleSource(content, index, para))
+			}
+			abstractBodyKey = ""
+		} else if key == "toc_title" {
+			abstractBodyKey = ""
+		}
 		if key == "body_start" {
-			styleSamples["heading_1"] = append(styleSamples["heading_1"], extractStyleWithDefinitions("heading_1", para.XML, styleDefinitions))
+			headingStyle := style
+			headingStyle.Label = "heading_1"
+			styleSamples["heading_1"] = append(styleSamples["heading_1"], headingStyle)
 		}
 		if isSectionKey(key) {
 			breakBefore, detectedFrom := detectPageBreakBefore(paras, index)
@@ -567,92 +972,44 @@ func Extract(templatePath string) (*Profile, error) {
 				DetectedFrom:    detectedFrom,
 			}
 		}
+		// A template may contain several complete example papers. Mixing later
+		// examples into the first one produces a synthetic style that exists in
+		// none of them. The first abstract-to-acknowledgements sequence is the
+		// nearest complete, internally consistent formatting example.
+		if sampleRegionStarted && key == "acknowledgements_title" {
+			break
+		}
 	}
 	for key, samples := range styleSamples {
 		profile.Styles[key] = aggregateStyleRules(key, samples)
 	}
 
-	// Fill paragraph-sampled gaps from resolved named styles. Direct paragraph/run
-	// formatting remains authoritative because templates commonly override Heading styles.
-	keyToStyleName := map[string]string{
-		"heading_1": "heading1",
-		"heading_2": "heading2",
-		"heading_3": "heading3",
-		"heading_4": "heading4",
-	}
-	for profileKey, styleName := range keyToStyleName {
-		if existing, ok := profile.Styles[profileKey]; !ok {
-			continue
-		} else {
-			styleID := styleNameToID[styleName]
-			if styleID == "" {
-				// A4 fix: case-insensitive fallback for style name normalization.
-				// Templates may have "Normal" (capital N) instead of "normal".
-				lowerName := strings.ToLower(styleName)
-				for altName, altID := range styleNameToID {
-					if strings.EqualFold(altName, lowerName) {
-						styleID = altID
-						break
-					}
-				}
+	profile.SectionFormats = buildSectionFormatMap(profile.Styles)
+	return profile, nil
+}
+
+func buildSectionFormatMap(styles map[string]StyleRule) SectionFormatMap {
+	result := SectionFormatMap{}
+	for section, keys := range map[string][]string{
+		"cover_title":      {"cover_title"},
+		"chapter_title":    {"heading_1", "body_start"},
+		"section_title":    {"heading_2"},
+		"subsection_title": {"heading_3"},
+		"body_text":        {"body"},
+		"abstract_body":    {"abstract_body", "abstract_cn"},
+		"reference_item":   {"references"},
+		"toc_entry":        {"toc_entry", "toc_entry_1"},
+		"table_caption":    {"table_caption"},
+		"figure_caption":   {"figure_caption"},
+	} {
+		for _, key := range keys {
+			if style, ok := styles[key]; ok {
+				result[section] = style
+				break
 			}
-			if styleID == "" {
-				continue
-			}
-			def, ok := styleDefinitions[styleID]
-			if !ok {
-				continue
-			}
-			override := StyleRule{Label: existing.Label}
-			if !existing.BoldSet && def.BoldSet {
-				override.BoldSet = true
-				override.Bold = def.Bold
-			}
-			if existing.FontEastAsia == "" && def.FontEastAsia != "" {
-				override.FontEastAsia = def.FontEastAsia
-			}
-			if existing.FontASCII == "" && def.FontASCII != "" {
-				override.FontASCII = def.FontASCII
-			}
-			if existing.FontHint == "" && def.FontHint != "" {
-				override.FontHint = def.FontHint
-			}
-			if existing.FontSizeHalfPt == "" && def.FontSizeHalfPt != "" {
-				override.FontSizeHalfPt = def.FontSizeHalfPt
-			}
-			if existing.ComplexSizeHalfPt == "" && def.ComplexSizeHalfPt != "" {
-				override.ComplexSizeHalfPt = def.ComplexSizeHalfPt
-			}
-			if !existing.ItalicSet && def.ItalicSet {
-				override.ItalicSet = true
-				override.Italic = def.Italic
-			}
-			if existing.Alignment == "" && def.Alignment != "" {
-				override.Alignment = def.Alignment
-			}
-			if existing.Line == "" && def.Line != "" {
-				override.Line = def.Line
-			}
-			if existing.LineRule == "" && def.LineRule != "" {
-				override.LineRule = def.LineRule
-			}
-			if existing.FirstLineTwips == "" && def.FirstLineTwips != "" {
-				override.FirstLineTwips = def.FirstLineTwips
-			}
-			if existing.FirstLineChars == "" && def.FirstLineChars != "" {
-				override.FirstLineChars = def.FirstLineChars
-			}
-			if existing.BeforeTwips == "" && def.BeforeTwips != "" {
-				override.BeforeTwips = def.BeforeTwips
-			}
-			if existing.AfterTwips == "" && def.AfterTwips != "" {
-				override.AfterTwips = def.AfterTwips
-			}
-			profile.Styles[profileKey] = mergeExtractedStyle(existing, override, "")
 		}
 	}
-
-	return profile, nil
+	return result
 }
 
 func extractLocalRulePack(paras []paragraph) RulePack {
@@ -778,8 +1135,10 @@ func mergeAISummary(profile *Profile, raw map[string]interface{}) {
 		}
 		if aiWins && jsonStyleFieldPresent(data, key, "bold") {
 			merged.Bold = style.Bold
+			merged.BoldSet = true
 		} else if exists {
 			merged.Bold = local.Bold
+			merged.BoldSet = local.BoldSet
 		}
 		if aiWins && jsonStyleFieldPresent(data, key, "italic") {
 			merged.Italic = style.Italic
@@ -818,21 +1177,47 @@ func belongsToBodyFamily(key string) bool {
 	return false
 }
 
+func recordStyleSource(style StyleRule, paragraphIndex int, para paragraph) StyleRule {
+	source := StyleSource{
+		Part:             "word/document.xml",
+		ParagraphIndex:   paragraphIndex + 1,
+		Text:             summarizeSourceText(para.Text),
+		InheritanceChain: append([]string(nil), style.InheritanceChain...),
+	}
+	if match := paragraphStyleIDPattern.FindStringSubmatch(para.XML); len(match) == 2 {
+		source.ParagraphStyleID = match[1]
+	}
+	if match := runStyleIDPattern.FindStringSubmatch(para.XML); len(match) == 2 {
+		source.RunStyleID = match[1]
+	}
+	style.SampleCount = 1
+	style.Confidence = 1
+	style.Sources = []StyleSource{source}
+	return style
+}
+
+func summarizeSourceText(text string) string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) > 80 {
+		runes = runes[:80]
+	}
+	return string(runes)
+}
+
 func mergeStyleRule(base StyleRule, override StyleRule) StyleRule {
 	if override.Label != "" {
 		base.Label = override.Label
 	}
-	if override.FontEastAsia != "" {
-		base.FontEastAsia = override.FontEastAsia
-	}
-	if override.FontASCII != "" {
-		base.FontASCII = override.FontASCII
-	}
+	mergeFontSlot(&base.FontEastAsia, &base.FontEastAsiaTheme, override.FontEastAsia, override.FontEastAsiaTheme)
+	mergeFontSlot(&base.FontASCII, &base.FontASCIITheme, override.FontASCII, override.FontASCIITheme)
+	mergeFontSlot(&base.FontHAnsi, &base.FontHAnsiTheme, override.FontHAnsi, override.FontHAnsiTheme)
+	mergeFontSlot(&base.FontCS, &base.FontCSTheme, override.FontCS, override.FontCSTheme)
 	if override.FontSizeHalfPt != "" {
 		base.FontSizeHalfPt = override.FontSizeHalfPt
 	}
-	if override.Bold {
-		base.Bold = true
+	if override.BoldSet || override.Bold {
+		base.BoldSet = true
+		base.Bold = override.Bold
 	}
 	if override.ItalicSet {
 		base.ItalicSet = true
@@ -862,6 +1247,12 @@ func mergeStyleRule(base StyleRule, override StyleRule) StyleRule {
 	if override.FirstLineChars != "" {
 		base.FirstLineChars = override.FirstLineChars
 	}
+	if override.SampleCount > 0 {
+		base.SampleCount = override.SampleCount
+		base.Confidence = override.Confidence
+		base.Sources = append([]StyleSource(nil), override.Sources...)
+		base.InheritanceChain = append([]string(nil), override.InheritanceChain...)
+	}
 	return base
 }
 
@@ -880,6 +1271,12 @@ func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
 	style := StyleRule{Label: label}
 	style.FontEastAsia = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontEastAsia })
 	style.FontASCII = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontASCII })
+	style.FontHAnsi = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontHAnsi })
+	style.FontCS = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontCS })
+	style.FontASCIITheme = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontASCIITheme })
+	style.FontHAnsiTheme = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontHAnsiTheme })
+	style.FontEastAsiaTheme = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontEastAsiaTheme })
+	style.FontCSTheme = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontCSTheme })
 	style.FontHint = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontHint })
 	style.FontSizeHalfPt = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontSizeHalfPt })
 	style.ComplexSizeHalfPt = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.ComplexSizeHalfPt })
@@ -901,9 +1298,6 @@ func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
 		lineRuleSamples = append(lineRuleSamples, sample)
 	}
 	style.Line = mostCommonStyleValue(lineSamples, func(sample StyleRule) string { return sample.Line })
-	if style.Line == "" {
-		style.Line = "360" // default 1.5x line spacing
-	}
 	style.LineRule = mostCommonStyleValue(lineRuleSamples, func(sample StyleRule) string { return sample.LineRule })
 	style.BeforeTwips = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.BeforeTwips })
 	style.AfterTwips = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.AfterTwips })
@@ -939,14 +1333,53 @@ func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
 	}
 	style.ItalicSet = italicSamples > 0
 	style.Italic = italicSamples > 0 && italicCount*5 > italicSamples*3
-	// BugFix: If font_ascii was copied from font_east_asia (common template author mistake),
-	// correct it to Times New Roman for body/references/heading styles.
-	if style.FontEastAsia != "" && style.FontASCII == style.FontEastAsia {
-		if isChineseFont(style.FontEastAsia) {
-			style.FontASCII = "Times New Roman"
+	style.SampleCount = len(samples)
+	for _, sample := range samples {
+		style.Sources = append(style.Sources, sample.Sources...)
+		style.InheritanceChain = appendUniqueStrings(style.InheritanceChain, sample.InheritanceChain...)
+	}
+	style.Confidence = styleConsensusConfidence(samples, style)
+	return style
+}
+
+func styleConsensusConfidence(samples []StyleRule, consensus StyleRule) float64 {
+	matches, compared := 0, 0
+	for _, sample := range samples {
+		for _, pair := range [][2]string{
+			{sample.FontEastAsia, consensus.FontEastAsia},
+			{sample.FontASCII, consensus.FontASCII},
+			{sample.FontHAnsi, consensus.FontHAnsi},
+			{sample.FontCS, consensus.FontCS},
+			{sample.FontSizeHalfPt, consensus.FontSizeHalfPt},
+			{sample.Alignment, consensus.Alignment},
+			{sample.Line, consensus.Line},
+			{sample.FirstLineChars, consensus.FirstLineChars},
+		} {
+			if pair[0] == "" || pair[1] == "" {
+				continue
+			}
+			compared++
+			if pair[0] == pair[1] {
+				matches++
+			}
+		}
+		if sample.BoldSet && consensus.BoldSet {
+			compared++
+			if sample.Bold == consensus.Bold {
+				matches++
+			}
+		}
+		if sample.ItalicSet && consensus.ItalicSet {
+			compared++
+			if sample.Italic == consensus.Italic {
+				matches++
+			}
 		}
 	}
-	return style
+	if compared == 0 {
+		return 0
+	}
+	return float64(matches) / float64(compared)
 }
 
 func mostCommonStyleValue(samples []StyleRule, value func(StyleRule) string) string {
@@ -954,6 +1387,9 @@ func mostCommonStyleValue(samples []StyleRule, value func(StyleRule) string) str
 	best := ""
 	for _, sample := range samples {
 		current := value(sample)
+		if current == "" {
+			continue
+		}
 		counts[current]++
 		if counts[current] > counts[best] {
 			best = current
@@ -1153,8 +1589,8 @@ func ApplyFormatRules(profile *Profile, data string) error {
 		}
 	}
 	for _, item := range []struct{ source, part, target string }{
-		{"abstract", "content", "abstract_cn"},
-		{"english_abstract", "content", "abstract_en"},
+		{"abstract", "content", "abstract_body"},
+		{"english_abstract", "content", "abstract_en_body"},
 		{"references", "content", "references"},
 		{"references", "label", "references_title"},
 		{"acknowledgements", "label", "acknowledgements_title"},
@@ -1170,6 +1606,7 @@ func ApplyFormatRules(profile *Profile, data string) error {
 			profile.RulePack = mergeRulePack(profile.RulePack, override)
 		}
 	}
+	profile.SectionFormats = buildSectionFormatMap(profile.Styles)
 	return nil
 }
 
@@ -1208,16 +1645,22 @@ func applyStyleOverride(profile *Profile, key string, raw map[string]interface{}
 	style := profile.Styles[key]
 	style.Label = key
 	if value := stringRule(raw["font_name"]); value != "" {
-		style.FontEastAsia = value
+		style.FontEastAsia, style.FontEastAsiaTheme = value, ""
 	}
 	if value := stringRule(raw["font_name_latin"]); value != "" {
-		style.FontASCII = value
+		style.FontASCII, style.FontASCIITheme = value, ""
+		style.FontHAnsi, style.FontHAnsiTheme = value, ""
 	}
 	if points, ok := fontPoints(raw); ok {
 		style.FontSizeHalfPt = strconv.Itoa(int(points * 2))
 	}
 	if value, exists := raw["bold"].(bool); exists {
 		style.Bold = value
+		style.BoldSet = true
+	}
+	if value, exists := raw["italic"].(bool); exists {
+		style.Italic = value
+		style.ItalicSet = true
 	}
 	if value := stringRule(raw["alignment"]); value != "" {
 		if value == "justify" {
@@ -1225,8 +1668,16 @@ func applyStyleOverride(profile *Profile, key string, raw map[string]interface{}
 		}
 		style.Alignment = value
 	}
-	if multiple, ok := numberRule(raw["line_space"]); ok {
+	if strings.EqualFold(stringRule(raw["line_space"]), "fixed") {
+		if points, ok := numberRule(raw["line_space_value"]); ok {
+			style.Line = strconv.Itoa(int(points * 20))
+			style.LineRule = "exact"
+		}
+	} else if multiple, ok := numberRule(raw["line_space"]); ok {
 		style.Line = strconv.Itoa(int(multiple * 240))
+		if value := stringRule(raw["line_rule"]); value != "" {
+			style.LineRule = value
+		}
 	}
 	if chars, ok := numberRule(raw["first_line_indent"]); ok {
 		if strings.EqualFold(stringRule(raw["first_line_indent_unit"]), "cm") {
@@ -1396,9 +1847,48 @@ func extractPageSetup(documentXML string) PageSetupRule {
 }
 
 func collectParagraphs(documentXML string) []paragraph {
+	decoder := xml.NewDecoder(strings.NewReader(documentXML))
+	paras := make([]paragraph, 0, 64)
+	depth, textBoxDepth := 0, 0
+	paragraphStart, paragraphDepth := -1, -1
+	for {
+		start := int(decoder.InputOffset())
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return paras
+		}
+		if err != nil {
+			break
+		}
+		switch typed := token.(type) {
+		case xml.StartElement:
+			depth++
+			if typed.Name.Local == "txbxContent" {
+				textBoxDepth++
+			}
+			if typed.Name.Local == "p" && paragraphStart < 0 && textBoxDepth == 0 {
+				paragraphStart, paragraphDepth = start, depth
+			}
+		case xml.EndElement:
+			if typed.Name.Local == "p" && paragraphStart >= 0 && depth == paragraphDepth {
+				raw := documentXML[paragraphStart:int(decoder.InputOffset())]
+				raw = textBoxContentPattern.ReplaceAllString(raw, "")
+				paras = append(paras, paragraph{Text: extractText(raw), XML: raw})
+				paragraphStart, paragraphDepth = -1, -1
+			}
+			if typed.Name.Local == "txbxContent" {
+				textBoxDepth--
+			}
+			depth--
+		}
+	}
+
+	// Keep the legacy fallback for malformed fixtures; valid DOCX XML always
+	// follows the structural path above.
 	matches := paragraphPattern.FindAllString(documentXML, -1)
-	paras := make([]paragraph, 0, len(matches))
+	paras = make([]paragraph, 0, len(matches))
 	for _, raw := range matches {
+		raw = textBoxContentPattern.ReplaceAllString(raw, "")
 		paras = append(paras, paragraph{Text: extractText(raw), XML: raw})
 	}
 	return paras
@@ -1412,6 +1902,62 @@ func extractText(raw string) string {
 		}
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func buildTOCStyleKeys(nameToID map[string]string) map[string]string {
+	result := map[string]string{}
+	for name, id := range nameToID {
+		normalized := strings.ToLower(strings.NewReplacer(" ", "", "_", "", "-", "").Replace(name))
+		if !strings.HasPrefix(normalized, "toc") {
+			continue
+		}
+		level, err := strconv.Atoi(strings.TrimPrefix(normalized, "toc"))
+		if err != nil || level < 1 || level > 9 {
+			continue
+		}
+		key := "toc_entry"
+		if level > 1 {
+			key = fmt.Sprintf("toc_entry_%d", level)
+		}
+		result[id] = key
+	}
+	return result
+}
+
+func tocStyleKey(paragraphXML string, keys map[string]string) (string, bool) {
+	match := paragraphStyleIDPattern.FindStringSubmatch(paragraphXML)
+	if len(match) != 2 {
+		return "", false
+	}
+	key, ok := keys[match[1]]
+	return key, ok
+}
+
+func classifyCaptionParagraph(text, paragraphXML string, definitions map[string]StyleRule) string {
+	trimmed := strings.TrimSpace(text)
+	match := captionNumberPattern.FindStringIndex(trimmed)
+	if match == nil || match[1] >= len(trimmed) {
+		return ""
+	}
+	if !captionWithSpacePattern.MatchString(trimmed) {
+		style := extractStyleWithDefinitions("caption", paragraphXML, definitions)
+		if !strings.EqualFold(style.Alignment, "center") {
+			return ""
+		}
+	}
+	if strings.HasPrefix(trimmed, "\u8868") {
+		return "table_caption"
+	}
+	return "figure_caption"
+}
+
+func hasSemanticOutlineLevel(paragraphXML string) bool {
+	tag := outlinePattern.FindString(paragraphXML)
+	if tag == "" {
+		return false
+	}
+	value, err := strconv.Atoi(attrs(tag)["w:val"])
+	return err == nil && value >= 0 && value <= 8
 }
 
 // classifyParagraphNumberingAware first tries numbering-derived patterns (precise
@@ -1506,10 +2052,18 @@ func detectPageBreakBefore(paras []paragraph, index int) (bool, string) {
 
 func extractStyle(label string, raw string) StyleRule {
 	style := StyleRule{Label: label}
+	trimmed := strings.TrimSpace(raw)
+	singleRun := strings.HasPrefix(trimmed, "<w:r>") || strings.HasPrefix(trimmed, "<w:r ")
 	if font := fontPattern.FindString(raw); font != "" {
 		attrs := attrs(font)
 		style.FontEastAsia = attrs["w:eastAsia"]
 		style.FontASCII = attrs["w:ascii"]
+		style.FontHAnsi = attrs["w:hAnsi"]
+		style.FontCS = attrs["w:cs"]
+		style.FontASCIITheme = attrs["w:asciiTheme"]
+		style.FontHAnsiTheme = attrs["w:hAnsiTheme"]
+		style.FontEastAsiaTheme = attrs["w:eastAsiaTheme"]
+		style.FontCSTheme = attrs["w:cstheme"]
 		style.FontHint = attrs["w:hint"]
 	}
 	if size := sizePattern.FindString(raw); size != "" {
@@ -1521,7 +2075,7 @@ func extractStyle(label string, raw string) StyleRule {
 		style.ComplexSizeHalfPt = attrs(size)["w:val"]
 	}
 	boldScope := paragraphRunPropsPattern.FindString(raw)
-	if boldScope == "" && strings.Contains(raw, "<w:style") {
+	if boldScope == "" && (strings.Contains(raw, "<w:style") || singleRun) {
 		boldScope = runPropertiesPattern.FindString(raw)
 	}
 	if hasBoldDeclaration(boldScope) {
@@ -1542,11 +2096,11 @@ func extractStyle(label string, raw string) StyleRule {
 				enabled++
 			}
 		}
-		style.BoldSet = totalRuns > 0
+		style.BoldSet = declaredRuns > 0
 		style.Bold = declaredRuns > 0 && enabled*5 > totalRuns*3
 	}
 	italicScope := paragraphRunPropsPattern.FindString(raw)
-	if italicScope == "" && strings.Contains(raw, "<w:style") {
+	if italicScope == "" && (strings.Contains(raw, "<w:style") || singleRun) {
 		italicScope = runPropertiesPattern.FindString(raw)
 	}
 	if hasItalicDeclaration(italicScope) {
@@ -1586,6 +2140,10 @@ func extractStyle(label string, raw string) StyleRule {
 }
 
 func extractLeadingLabelRunStyle(label, paragraphXML string, base StyleRule) StyleRule {
+	return extractLeadingLabelRunStyleWithDefinitions(label, paragraphXML, base, nil)
+}
+
+func extractLeadingLabelRunStyleWithDefinitions(label, paragraphXML string, base StyleRule, definitions map[string]StyleRule) StyleRule {
 	switch label {
 	case "abstract_cn", "keywords_cn", "abstract_en", "keywords_en":
 	default:
@@ -1600,10 +2158,77 @@ func extractLeadingLabelRunStyle(label, paragraphXML string, base StyleRule) Sty
 			label == "abstract_en" && strings.HasPrefix(lower, "abstract") ||
 			label == "keywords_en" && (strings.HasPrefix(lower, "keywords") || strings.HasPrefix(lower, "key words"))
 		if matches {
-			return mergeExtractedStyle(base, extractStyle(label, run), run)
+			return mergeExtractedStyle(base, extractEffectiveRunStyle(label, run, definitions), run)
 		}
 	}
 	return base
+}
+
+func extractRepresentativeRunStyle(label, paragraphXML string, base StyleRule) StyleRule {
+	return extractRepresentativeRunStyleWithDefinitions(label, paragraphXML, base, nil)
+}
+
+func extractRepresentativeRunStyleWithDefinitions(label, paragraphXML string, base StyleRule, definitions map[string]StyleRule) StyleRule {
+	switch {
+	case strings.HasPrefix(label, "heading_"),
+		label == "body_start",
+		label == "body",
+		label == "abstract_body",
+		label == "references",
+		strings.HasPrefix(label, "toc_entry"),
+		label == "table_caption",
+		label == "figure_caption":
+	default:
+		return base
+	}
+	bestRun, bestLength := "", 0
+	for _, run := range runElementPattern.FindAllString(paragraphXML, -1) {
+		length := len([]rune(strings.TrimSpace(extractText(run))))
+		if length > bestLength {
+			bestRun, bestLength = run, length
+		}
+	}
+	if bestRun == "" {
+		return base
+	}
+	return mergeExtractedStyle(base, extractEffectiveRunStyle(label, bestRun, definitions), bestRun)
+}
+
+func extractTrailingContentRunStyle(label, paragraphXML string) (StyleRule, bool) {
+	return extractTrailingContentRunStyleWithDefinitions(label, paragraphXML, nil)
+}
+
+func extractTrailingContentRunStyleWithDefinitions(label, paragraphXML string, definitions map[string]StyleRule) (StyleRule, bool) {
+	seenLabel := false
+	for _, run := range runElementPattern.FindAllString(paragraphXML, -1) {
+		text := strings.TrimSpace(extractText(run))
+		if text == "" {
+			continue
+		}
+		if !seenLabel {
+			seenLabel = true
+			continue
+		}
+		if strings.Trim(text, "：:；;，,。 ") == "" {
+			continue
+		}
+		return extractEffectiveRunStyle(label, run, definitions), true
+	}
+	return StyleRule{}, false
+}
+
+func extractEffectiveRunStyle(label, runXML string, definitions map[string]StyleRule) StyleRule {
+	direct := extractStyle(label, runXML)
+	match := runStyleIDPattern.FindStringSubmatch(runXML)
+	if len(match) != 2 {
+		return direct
+	}
+	base, ok := definitions[match[1]]
+	if !ok {
+		return direct
+	}
+	base.Label = label
+	return mergeExtractedStyle(base, direct, runXML)
 }
 
 func extractStyleWithDefinitions(label, paragraphXML string, definitions map[string]StyleRule) StyleRule {
@@ -1620,118 +2245,116 @@ func extractStyleWithDefinitions(label, paragraphXML string, definitions map[str
 	return mergeExtractedStyle(base, direct, paragraphXML)
 }
 
+func extractEffectiveParagraphStyle(label, paragraphXML string, definitions styleDefinitionSet, numbering *NumberingProfile) StyleRule {
+	direct := extractStyle(label, paragraphXML)
+	paragraphStyleID := ""
+	if match := paragraphStyleIDPattern.FindStringSubmatch(paragraphXML); len(match) == 2 {
+		paragraphStyleID = match[1]
+	}
+
+	base := definitions.DocDefaults
+	reference := numberingReference{}
+	if paragraphStyleID != "" {
+		if parentID := definitions.BasedOn[paragraphStyleID]; parentID != "" {
+			base = definitions.Resolved[parentID]
+		}
+		reference = definitions.effectiveNumberingReference(paragraphStyleID)
+	}
+	reference = mergeNumberingReference(reference, extractNumberingReference(paragraphXML))
+	if level, ok := numbering.effectiveLevel(reference, paragraphStyleID); ok {
+		base = mergeExtractedStyle(base, level.Style, paragraphXML)
+	}
+	if local, ok := definitions.Local[paragraphStyleID]; ok {
+		base = mergeExtractedStyle(base, local, paragraphXML)
+	}
+	base.Label = label
+	return mergeExtractedStyle(base, direct, paragraphXML)
+}
+
 func extractStyleDefinitions(stylesXML string) (map[string]StyleRule, map[string]string) {
+	definitions := parseStyleDefinitions(stylesXML)
+	return definitions.Resolved, definitions.NameToID
+}
+
+func emptyStyleDefinitionSet() styleDefinitionSet {
+	return styleDefinitionSet{
+		Resolved:  map[string]StyleRule{},
+		Local:     map[string]StyleRule{},
+		BasedOn:   map[string]string{},
+		Numbering: map[string]numberingReference{},
+		NameToID:  map[string]string{},
+	}
+}
+
+func parseStyleDefinitions(stylesXML string) styleDefinitionSet {
+	definitions := emptyStyleDefinitionSet()
 	// Parse docDefaults as the ultimate style inheritance base.
-	docDefaults := StyleRule{}
 	if ddMatch := docDefaultsPattern.FindStringSubmatch(stylesXML); len(ddMatch) == 2 {
-		docDefaults = extractStyle("docDefaults", ddMatch[1])
+		definitions.DocDefaults = extractStyle("docDefaults", ddMatch[1])
 	}
 
 	rawByID := map[string]string{}
-	nameToID := map[string]string{}
+	typeByID := map[string]string{}
 	for _, element := range styleElementPattern.FindAllString(stylesXML, -1) {
 		if match := styleIDPattern.FindStringSubmatch(element); len(match) == 2 {
 			id := match[1]
 			rawByID[id] = element
+			local := extractStyle(id, element)
+			local.InheritanceChain = []string{id}
+			definitions.Local[id] = local
+			definitions.Numbering[id] = extractNumberingReference(element)
+			if basedOn := basedOnPattern.FindStringSubmatch(element); len(basedOn) == 2 {
+				definitions.BasedOn[id] = basedOn[1]
+			}
+			if typeMatch := styleTypePattern.FindStringSubmatch(element); len(typeMatch) == 2 {
+				typeByID[id] = typeMatch[1]
+			}
 			if nmMatch := styleNamePattern.FindStringSubmatch(element); len(nmMatch) == 2 {
-				nameToID[normalizeLabel(nmMatch[1])] = id
+				definitions.NameToID[normalizeLabel(nmMatch[1])] = id
 			}
 		}
 	}
 
-	// Apply docDefaults font to the "Normal" style entry if Normal doesn't have its own font.
-	// A4 fix: case-insensitive lookup — templates may have name="Normal" (capital N).
-	normalID := ""
-	for name, id := range nameToID {
-		if strings.EqualFold(name, "normal") {
-			normalID = id
-			break
-		}
-	}
-	if normalID != "" {
-		if normalRaw, ok := rawByID[normalID]; ok {
-			style := extractStyle("Normal", normalRaw)
-			if style.FontEastAsia == "" {
-				style.FontEastAsia = docDefaults.FontEastAsia
-			}
-			if style.FontASCII == "" {
-				style.FontASCII = docDefaults.FontASCII
-			}
-			rawByID[normalID] = rebuildStyleRaw(rawByID[normalID], style)
-		}
-	}
-
-	resolved := map[string]StyleRule{}
+	// Resolve basedOn first; docDefaults is applied below as the final layer.
 	var resolve func(string, map[string]bool, int) StyleRule
 	resolve = func(id string, seen map[string]bool, depth int) StyleRule {
-		if style, ok := resolved[id]; ok {
+		if style, ok := definitions.Resolved[id]; ok {
 			return style
 		}
 		if depth > 64 || seen[id] {
 			return StyleRule{}
 		}
 		seen[id] = true
-		raw := rawByID[id]
 		style := StyleRule{}
-		if match := basedOnPattern.FindStringSubmatch(raw); len(match) == 2 {
-			style = resolve(match[1], seen, depth+1)
+		if parentID := definitions.BasedOn[id]; parentID != "" {
+			style = resolve(parentID, seen, depth+1)
 		}
-		style = mergeExtractedStyle(style, extractStyle(id, raw), raw)
+		style = mergeExtractedStyle(style, definitions.Local[id], rawByID[id])
 
-		// docDefaults fallback: fill gaps with docDefaults values.
-		if style.FontEastAsia == "" && docDefaults.FontEastAsia != "" {
-			style.FontEastAsia = docDefaults.FontEastAsia
-		}
-		if style.FontASCII == "" && docDefaults.FontASCII != "" {
-			style.FontASCII = docDefaults.FontASCII
-		}
-		if style.FontSizeHalfPt == "" && docDefaults.FontSizeHalfPt != "" {
-			style.FontSizeHalfPt = docDefaults.FontSizeHalfPt
+		// Character styles are layered over the paragraph's effective style later;
+		// filling their gaps here would wrongly erase paragraph-level values.
+		if typeByID[id] != "character" {
+			style = mergeExtractedStyle(definitions.DocDefaults, style, rawByID[id])
+			if style.FontSizeHalfPt == "" && definitions.DocDefaults.FontSizeHalfPt != "" {
+				style.FontSizeHalfPt = definitions.DocDefaults.FontSizeHalfPt
+			}
 		}
 
-		resolved[id] = style
+		definitions.Resolved[id] = style
 		return style
 	}
 	for id := range rawByID {
 		resolve(id, map[string]bool{}, 0)
 	}
-	return resolved, nameToID
-}
-
-// rebuildStyleRaw inserts font attributes from style into the raw XML for downstream parsing.
-func rebuildStyleRaw(raw string, style StyleRule) string {
-	if style.FontEastAsia == "" && style.FontASCII == "" {
-		return raw
-	}
-	fontTag := `<w:rFonts`
-	if style.FontEastAsia != "" {
-		fontTag += fmt.Sprintf(` w:eastAsia="%s"`, style.FontEastAsia)
-	}
-	if style.FontASCII != "" {
-		fontTag += fmt.Sprintf(` w:ascii="%s"`, style.FontASCII)
-	}
-	fontTag += `/>`
-	// Insert into rPr if it exists, otherwise append before </w:style>
-	rPrIndex := strings.Index(raw, "<w:rPr")
-	if rPrIndex >= 0 {
-		rPrEnd := strings.Index(raw[rPrIndex:], ">") + rPrIndex + 1
-		return raw[:rPrEnd] + fontTag + raw[rPrEnd:]
-	}
-	styleClose := strings.LastIndex(raw, "</w:style>")
-	if styleClose >= 0 {
-		return raw[:styleClose] + "<w:rPr>" + fontTag + "</w:rPr>" + raw[styleClose:]
-	}
-	return raw
+	return definitions
 }
 
 func mergeExtractedStyle(base, override StyleRule, _ string) StyleRule {
 	base.Label = override.Label
-	if override.FontEastAsia != "" {
-		base.FontEastAsia = override.FontEastAsia
-	}
-	if override.FontASCII != "" {
-		base.FontASCII = override.FontASCII
-	}
+	mergeFontSlot(&base.FontEastAsia, &base.FontEastAsiaTheme, override.FontEastAsia, override.FontEastAsiaTheme)
+	mergeFontSlot(&base.FontASCII, &base.FontASCIITheme, override.FontASCII, override.FontASCIITheme)
+	mergeFontSlot(&base.FontHAnsi, &base.FontHAnsiTheme, override.FontHAnsi, override.FontHAnsiTheme)
+	mergeFontSlot(&base.FontCS, &base.FontCSTheme, override.FontCS, override.FontCSTheme)
 	if override.FontHint != "" {
 		base.FontHint = override.FontHint
 	}
@@ -1779,6 +2402,36 @@ func mergeExtractedStyle(base, override StyleRule, _ string) StyleRule {
 	if override.OutlineLevel != "" {
 		base.OutlineLevel = override.OutlineLevel
 	}
+	base.InheritanceChain = appendUniqueStrings(base.InheritanceChain, override.InheritanceChain...)
+	return base
+}
+
+func mergeFontSlot(baseFont, baseTheme *string, overrideFont, overrideTheme string) {
+	if overrideTheme != "" {
+		*baseFont, *baseTheme = overrideFont, overrideTheme
+		return
+	}
+	if overrideFont != "" {
+		*baseFont, *baseTheme = overrideFont, ""
+	}
+}
+
+func appendUniqueStrings(base []string, values ...string) []string {
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		found := false
+		for _, existing := range base {
+			if existing == value {
+				found = true
+				break
+			}
+		}
+		if !found {
+			base = append(base, value)
+		}
+	}
 	return base
 }
 
@@ -1801,14 +2454,22 @@ func hasBoldDeclaration(raw string) bool {
 }
 
 func hasItalicDeclaration(raw string) bool {
-	return strings.Contains(raw, "<w:i")
+	// Must match <w:i/> or <w:i w:...> or <w:i> (self-closing, with attributes, or with content).
+	// Cannot use strings.Contains("<w:i") alone because <w:ind> (indentation) etc. also start with <w:i.
+	return strings.Contains(raw, "<w:i/>") ||
+		strings.Contains(raw, "<w:i ") ||
+		strings.Contains(raw, "<w:i>")
 }
 
 func enabledProperty(raw string, property string) bool {
-	index := strings.Index(raw, "<w:"+property)
-	if index < 0 {
+	// Find <w:property not just substring — to avoid <w:ind> matching <w:i>, etc.
+	// Match only if followed by />, /, >, space, or =
+	re := regexp.MustCompile(`<w:` + regexp.QuoteMeta(property) + `(?:/>|/|>|[ =])`)
+	loc := re.FindStringIndex(raw)
+	if loc == nil {
 		return false
 	}
+	index := loc[0]
 	end := strings.Index(raw[index:], ">")
 	if end < 0 {
 		return false
@@ -1819,32 +2480,31 @@ func enabledProperty(raw string, property string) bool {
 
 func isBodyStyleCandidate(para paragraph) bool {
 	text := strings.TrimSpace(para.Text)
-	if len([]rune(text)) < 40 || strings.Contains(para.XML, "<w:pict") || strings.Contains(para.XML, "<w:drawing") {
+	if len([]rune(text)) < 15 || strings.Contains(para.XML, "<w:pict") || strings.Contains(para.XML, "<w:drawing") {
 		return false
 	}
-	return strings.ContainsAny(text, "。！？.!?；;")
+	if strings.Contains(para.XML, `<w:jc w:val="center"`) || strings.Contains(para.XML, `<w:jc w:val="right"`) {
+		return false
+	}
+	return strings.ContainsAny(text, "。！？.!?；;：:")
 }
 
 func hasTOCLeader(text string) bool {
 	return strings.Count(text, "．")+strings.Count(text, "…") >= 3
 }
 
-func extractHeaderFooter(pkg *ooxmlpkg.DocxPackage, header bool) HeaderFooterRule {
-	prefix := "word/footer"
+func extractHeaderFooter(pkg *ooxmlpkg.DocxPackage, header bool, themeFonts themeFontResolver) HeaderFooterRule {
 	if header {
-		prefix = "word/header"
+		return extractHeaderFooterParts(extractHeaderParts(pkg), themeFonts)
 	}
+	return extractHeaderFooterParts(extractFooterParts(pkg), themeFonts)
+}
+
+func extractHeaderFooterParts(parts []templatePart, themeFonts themeFontResolver) HeaderFooterRule {
 	best := HeaderFooterRule{}
 	bestScore := -1
-	for _, name := range pkg.Names() {
-		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".xml") {
-			continue
-		}
-		content, ok := pkg.Get(name)
-		if !ok {
-			continue
-		}
-		rule := extractHeaderFooterRule(string(content))
+	for _, part := range parts {
+		rule := extractHeaderFooterRule(materializeThemeFonts(part.XML, themeFonts))
 		score := len([]rune(rule.Text))
 		if rule.HasPageField {
 			score += 100
@@ -1862,28 +2522,40 @@ func extractHeaderFooter(pkg *ooxmlpkg.DocxPackage, header bool) HeaderFooterRul
 	return best
 }
 
-func extractHeaderFooterVariants(profile *Profile, pkg *ooxmlpkg.DocxPackage, documentXML string) {
-	if profile == nil || pkg == nil {
+func extractHeaderFooterVariants(profile *Profile, pkg *ooxmlpkg.DocxPackage, documentXML string, themeFonts themeFontResolver) {
+	if pkg == nil {
 		return
 	}
-	relsContent, ok := pkg.Get("word/_rels/document.xml.rels")
-	if !ok {
+	parts := templateParts{
+		DocumentRelationships: readOptionalPart(pkg, "word/_rels/document.xml.rels"),
+		Headers:               extractHeaderParts(pkg),
+		Footers:               extractFooterParts(pkg),
+	}
+	extractHeaderFooterVariantsFromParts(profile, parts, documentXML, themeFonts)
+}
+
+func extractHeaderFooterVariantsFromParts(profile *Profile, parts templateParts, documentXML string, themeFonts themeFontResolver) {
+	if profile == nil || parts.DocumentRelationships.Name == "" {
 		return
 	}
 	targets := map[string]string{}
-	for _, relationship := range relationshipPattern.FindAllString(string(relsContent), -1) {
+	for _, relationship := range relationshipPattern.FindAllString(parts.DocumentRelationships.XML, -1) {
 		values := attrs(relationship)
 		if values["Id"] != "" && values["Target"] != "" {
 			targets[values["Id"]] = pathpkg.Clean(pathpkg.Join("word", values["Target"]))
 		}
 	}
+	contents := map[string]string{}
+	for _, part := range append(append([]templatePart{}, parts.Headers...), parts.Footers...) {
+		contents[part.Name] = part.XML
+	}
 	for _, reference := range headerFooterReferencePattern.FindAllString(documentXML, -1) {
 		values := attrs(reference)
-		content, ok := pkg.Get(targets[values["r:id"]])
+		content, ok := contents[targets[values["r:id"]]]
 		if !ok {
 			continue
 		}
-		rule := extractHeaderFooterRule(string(content))
+		rule := extractHeaderFooterRule(materializeThemeFonts(content, themeFonts))
 		kind := values["w:type"]
 		switch {
 		case strings.HasPrefix(reference, "<w:header") && kind == "first":

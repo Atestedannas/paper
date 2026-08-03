@@ -17,7 +17,6 @@ import (
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
-	"github.com/paper-format-checker/backend/internal/service"
 	"github.com/paper-format-checker/backend/internal/utils"
 	"github.com/paper-format-checker/backend/pkg/formatchecker"
 )
@@ -181,9 +180,9 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 	case "description":
 		isSampleMode = false
 	default:
-		if (ext == ".docx" || ext == ".doc") && formatchecker.IsSampleDocument(formatText) {
+		if ext == ".docx" {
 			isSampleMode = true
-			log.Printf("[上传模板] 自动检测：文件为格式范例（缺少格式描述关键词）")
+			log.Printf("[上传模板] DOCX 默认使用 OOXML 分区格式解析")
 		}
 	}
 
@@ -192,6 +191,10 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 		return
 	}
 
+	if ext == ".docx" {
+		h.processTemplateText(c, formatText, tempFilePath)
+		return
+	}
 	h.processTemplateText(c, formatText)
 }
 
@@ -208,7 +211,7 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 	docxRules, err := parser.ParseTemplateToFormatRules(docxPath)
 	if err != nil {
 		log.Printf("[格式范例] DOCX格式解析失败: %v，回退到文本解析模式", err)
-		h.processTemplateText(c, extractedText)
+		h.processTemplateText(c, extractedText, docxPath)
 		return
 	}
 
@@ -256,13 +259,6 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 	}
 	if subject == "" {
 		subject = "综合"
-	}
-
-	// 也尝试文本解析（正则+AI），将可测量属性用DOCX解析结果覆盖
-	textResult, textErr := h.formatParserService.ParseFormatFromTextDetailed(extractedText)
-	if textErr == nil {
-		docxRules = service.MergeFormatRules(docxRules, textResult.Rules)
-		log.Printf("[格式范例] DOCX规则与文本规则合并完成")
 	}
 
 	formatRulesJSON, err := json.Marshal(docxRules)
@@ -359,7 +355,7 @@ func persistTemplateDOCX(templateID uuid.UUID, sourcePath string) (string, error
 }
 
 // processTemplateText 用提取的文本解析并保存格式模板（公共逻辑）
-func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string) {
+func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string, uploadedDOCX ...string) {
 	if strings.TrimSpace(formatText) == "" {
 		utils.ErrorResponse(c, http.StatusBadRequest, "格式文本不能为空", "")
 		return
@@ -378,6 +374,10 @@ func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string) {
 	documentType := c.PostForm("document_type")
 	subject := c.PostForm("subject")
 	description := c.PostForm("description")
+	docxPath := ""
+	if len(uploadedDOCX) > 0 && strings.EqualFold(filepath.Ext(uploadedDOCX[0]), ".docx") {
+		docxPath = uploadedDOCX[0]
+	}
 
 	preview := string(runes)
 	if len(runes) > 500 {
@@ -456,6 +456,15 @@ func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string) {
 			"parse_confidence": parseResult.Quality.QualityScore,
 			"updated_at":       time.Now(),
 		}
+		if docxPath != "" {
+			stablePath, persistErr := persistTemplateDOCX(existingTemplate.ID, docxPath)
+			if persistErr != nil {
+				utils.ErrorResponse(c, http.StatusInternalServerError, "保存模板文件失败", persistErr.Error())
+				return
+			}
+			updates["file_path"] = stablePath
+			updates["golden_template_path"] = stablePath
+		}
 		if description != "" {
 			updates["description"] = description
 		}
@@ -469,18 +478,30 @@ func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string) {
 		return
 	}
 
+	newTemplateID := uuid.New()
+	stablePath := ""
+	if docxPath != "" {
+		stablePath, err = persistTemplateDOCX(newTemplateID, docxPath)
+		if err != nil {
+			utils.ErrorResponse(c, http.StatusInternalServerError, "保存模板文件失败", err.Error())
+			return
+		}
+	}
 	newTemplate := model.FormatTemplate{
-		TemplateID:      uuid.New().String(),
-		Name:            fmt.Sprintf("%s%s格式标准", universityName, documentType),
-		UniversityID:    &university.ID,
-		DocumentType:    documentType,
-		Subject:         subject,
-		Source:          "university_upload",
-		IsActive:        true,
-		IsPublic:        true,
-		FormatRules:     string(formatRulesJSON),
-		ParseConfidence: parseResult.Quality.QualityScore,
-		Description:     description,
+		ID:                 newTemplateID,
+		TemplateID:         uuid.New().String(),
+		Name:               fmt.Sprintf("%s%s格式标准", universityName, documentType),
+		UniversityID:       &university.ID,
+		DocumentType:       documentType,
+		Subject:            subject,
+		Source:             "university_upload",
+		IsActive:           true,
+		IsPublic:           true,
+		FilePath:           stablePath,
+		GoldenTemplatePath: stablePath,
+		FormatRules:        string(formatRulesJSON),
+		ParseConfidence:    parseResult.Quality.QualityScore,
+		Description:        description,
 	}
 	if err := database.DB.Create(&newTemplate).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())

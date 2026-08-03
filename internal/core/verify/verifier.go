@@ -615,7 +615,8 @@ func footerTargetsByRelationshipID(pkg *ooxmlpkg.DocxPackage) map[string]string 
 }
 
 func footerHasDynamicPageField(footerXML string) bool {
-	return strings.Contains(footerXML, "<w:instrText") && strings.Contains(footerXML, "PAGE")
+	return strings.Contains(footerXML, "PAGE") &&
+		(strings.Contains(footerXML, "<w:instrText") || strings.Contains(footerXML, "<w:fldSimple"))
 }
 
 func footerHasVisibleManualPageNumber(footerXML string) bool {
@@ -627,6 +628,9 @@ func footerHasVisibleManualPageNumber(footerXML string) bool {
 }
 
 func footerPageNumberCentered(footerXML string) bool {
+	if !footerHasDynamicPageField(footerXML) && !footerHasVisibleManualPageNumber(footerXML) {
+		return true
+	}
 	return strings.Contains(footerXML, `<w:jc w:val="center"`) ||
 		strings.Contains(footerXML, "<wp:align>center</wp:align>") ||
 		strings.Contains(footerXML, "mso-position-horizontal:center")
@@ -970,7 +974,7 @@ func checkFinalDeliveryOOXML(pkg *ooxmlpkg.DocxPackage, result *Result) {
 			continue
 		}
 		content := string(contentBytes)
-		if strings.HasPrefix(name, "word/") && strings.HasSuffix(name, ".xml") && strings.Contains(content, `w:val="start"`) {
+		if isRenderedLayoutPart(name) && strings.Contains(content, `w:val="start"`) {
 			result.FatalIssues = append(result.FatalIssues, Issue{
 				Kind:     "renderer_incompatible_ooxml",
 				Severity: "fatal",
@@ -979,14 +983,6 @@ func checkFinalDeliveryOOXML(pkg *ooxmlpkg.DocxPackage, result *Result) {
 			})
 		}
 		addWordXMLStructureIssues(name, content, result)
-	}
-	if _, ok := pkg.Get("word/comments.xml"); ok {
-		result.RepairableIssues = append(result.RepairableIssues, Issue{
-			Kind:     "comments_not_finalized",
-			Severity: "error",
-			Message:  "final delivery still contains Word comments",
-			Target:   "word/comments.xml",
-		})
 	}
 	addNotePackageIssues(pkg, result)
 	addStyleNumberingPackageIssues(pkg, result)
@@ -999,6 +995,13 @@ func checkFinalDeliveryOOXML(pkg *ooxmlpkg.DocxPackage, result *Result) {
 	addBookmarkPairingIssues(pkg, result)
 	addBookmarkReferenceIssues(pkg, result)
 	addRelationshipTargetIssues(pkg, result)
+}
+
+func isRenderedLayoutPart(name string) bool {
+	base := path.Base(name)
+	return name == documentTarget ||
+		strings.HasPrefix(base, "header") && strings.HasSuffix(base, ".xml") ||
+		strings.HasPrefix(base, "footer") && strings.HasSuffix(base, ".xml")
 }
 
 func addStyleNumberingPackageIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
@@ -1138,12 +1141,15 @@ func addMediaContentTypeIssues(pkg *ooxmlpkg.DocxPackage, result *Result) {
 		}
 	}
 	for _, name := range pkg.Names() {
-		if !strings.HasPrefix(name, "word/media/") {
+		if !strings.HasPrefix(name, "word/media/") || strings.HasSuffix(name, "/") {
 			continue
 		}
 		ext := ""
 		if dot := strings.LastIndex(name, "."); dot >= 0 {
 			ext = strings.ToLower(name[dot+1:])
+		}
+		if ext == "" {
+			continue
 		}
 		if defaults[ext] || strings.Contains(contentTypes, `PartName="/`+name+`"`) {
 			continue
@@ -1445,8 +1451,6 @@ func addWordXMLStructureIssues(name string, content string, result *Result) {
 				}
 			case "ins", "del", "moveFrom", "moveTo":
 				appendRepairableIssueOnce(result, "tracked_changes_not_finalized", "final delivery still contains tracked changes; accept or reject revisions before proving thesis format compliance.", name)
-			case "commentRangeStart", "commentReference":
-				appendRepairableIssueOnce(result, "comments_not_finalized", "final delivery still contains Word comment anchors; remove comments before proving thesis format compliance.", name)
 			}
 		case xml.EndElement:
 			if typed.Name.Space != wordprocessingMLNamespace {
