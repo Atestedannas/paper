@@ -43,10 +43,19 @@ func verifyAndLockParagraphTypes(
 		locks.Unlock(diff.Category)
 	}
 	for category := range specs {
-		if paragraphs := classified[category]; len(paragraphs) > 0 && !failed[category] {
+		if paragraphs := classified[category]; len(paragraphs) > 0 && !failed[category] && !categoryHasRunFormatMismatch(paragraphs, specs[category]) {
 			locks.Lock(category, len(paragraphs))
 		}
 	}
+}
+
+func categoryHasRunFormatMismatch(paragraphs []document.Paragraph, spec ParagraphFormatSpec) bool {
+	for _, paragraph := range paragraphs {
+		if paragraphHasRunFormatMismatch(paragraph, spec) {
+			return true
+		}
+	}
+	return false
 }
 
 func lockedCategoryMap(locks *FormatLockManager, classified map[string][]document.Paragraph) map[string]bool {

@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/paper-format-checker/backend/internal/config"
 	"github.com/paper-format-checker/backend/internal/model"
@@ -98,8 +99,12 @@ func PerformMigration() error {
 			log.Printf("Failed to add template_id column: %v", err)
 		} else {
 			log.Println("SUCCESS: template_id column check/add completed.")
-			// 尝试填充默认值
-			DB.Exec(`UPDATE format_templates SET template_id = gen_random_uuid()::text WHERE template_id IS NULL`)
+			// template_id was VARCHAR in older installations but UUID in some
+			// already-migrated PostgreSQL databases. Use the matching assignment
+			// expression so this last-resort backfill does not emit a type error.
+			if err := backfillMissingFormatTemplateIDs(DB); err != nil {
+				log.Printf("Failed to backfill missing format template IDs: %v", err)
+			}
 		}
 
 		// 5. 强制删除顽固的错误外键约束
@@ -153,6 +158,30 @@ func normalizeCheckResultTemplateID(db *gorm.DB) error {
 		return err
 	}
 	return db.Exec("ALTER TABLE check_results DROP COLUMN format_template_id").Error
+}
+
+func backfillMissingFormatTemplateIDs(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+	columnTypes, err := db.Migrator().ColumnTypes("format_templates")
+	if err != nil {
+		return err
+	}
+	for _, column := range columnTypes {
+		if column.Name() != "template_id" {
+			continue
+		}
+		return db.Exec(formatTemplateIDBackfillSQL(column.DatabaseTypeName())).Error
+	}
+	return nil
+}
+
+func formatTemplateIDBackfillSQL(databaseType string) string {
+	if strings.EqualFold(databaseType, "UUID") {
+		return `UPDATE format_templates SET template_id = gen_random_uuid() WHERE template_id IS NULL`
+	}
+	return `UPDATE format_templates SET template_id = gen_random_uuid()::text WHERE template_id IS NULL`
 }
 
 // migrateDatabase 迁移数据库表结构（重构后的模型）

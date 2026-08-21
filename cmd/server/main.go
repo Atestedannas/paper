@@ -13,6 +13,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/service"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -25,6 +26,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
+	// The visual client reads this value at call sites; keep the resolved
+	// configuration (including the local default) visible to the whole process.
+	_ = os.Setenv("PYTHON_SERVICE_URL", cfg.PythonServiceURL)
+	log.Printf("[PYTHON_VISUAL] startup configured url=%s", cfg.PythonServiceURL)
 	if err := logger.InitLogrusJSONFile(""); err != nil {
 		log.Printf("Warning: logrus JSON file init failed: %v", err)
 	}
@@ -59,8 +64,11 @@ func main() {
 	}
 
 	// Configure CORS
+	// 注意：AllowCredentials=true 时不能使用 AllowOrigins=["*"]，改用 AllowOriginFunc
 	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*"},
+		AllowOriginFunc: func(origin string) bool {
+			return true // 开发环境允许所有来源，生产环境应限制为具体域名
+		},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},

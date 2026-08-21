@@ -73,6 +73,23 @@ func TestValidateVisibleContentPreservedAllowsFormatOnlyParagraphSplit(t *testin
 	}
 }
 
+func TestValidateVisibleContentPreservedIgnoresNonBodyTemplateParts(t *testing.T) {
+	before := paperast.Snapshot{Nodes: []paperast.Node{
+		{Text: "Student body", SemanticRole: "body"},
+		{Text: "-1-", SemanticRole: "footer"},
+		{Text: "Template instruction", SemanticRole: "instruction_textbox"},
+	}}
+	after := paperast.Snapshot{Nodes: []paperast.Node{
+		{Text: "Student body", SemanticRole: "body"},
+		{Text: "Template instruction", SemanticRole: "instruction_textbox"},
+		{Text: "-1-", SemanticRole: "footer"},
+	}}
+
+	if issues := ValidateVisibleContentPreserved(before, after); len(issues) != 0 {
+		t.Fatalf("non-body template parts were treated as content rewrite: %#v", issues)
+	}
+}
+
 func TestValidateVisibleContentPreservedRejectsInsertedText(t *testing.T) {
 	before := paperast.Snapshot{Nodes: []paperast.Node{{Text: "正文原文", SectionID: "body"}}}
 	after := paperast.Snapshot{Nodes: []paperast.Node{

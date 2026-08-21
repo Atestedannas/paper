@@ -162,7 +162,12 @@ func DiffSpecExact(expected, actual ParagraphFormatSpec) []SpecDiff {
 	if expected.FontSizeCSHalfPt > 0 {
 		add("font_size_cs_half_pt", expected.FontSizeCSHalfPt, actual.FontSizeCSHalfPt)
 	}
-	add("bold", expected.Bold, actual.Bold)
+	// Bold is tri-state in OOXML: absent means "inherit/unspecified", while
+	// w:b and w:b w:val="false" are explicit true/false. Do not report an
+	// error (or trigger a repair) when the template did not define it.
+	if expected.BoldSet || expected.Bold {
+		add("bold", expected.Bold, actual.Bold)
+	}
 	add("italic", expected.Italic, actual.Italic)
 	add("underline", expected.Underline, actual.Underline)
 	if expected.AlignmentSet {

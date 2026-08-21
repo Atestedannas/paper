@@ -1499,86 +1499,9 @@ func v2RunFontMatches(para document.Paragraph, eastAsiaFont string, targetPt flo
 }
 
 func (f *V2SmartFormatter) formatBodyPara(para document.Paragraph) {
-	// 🔒 LOCKED: 正文段落格式全部从模板提取 — 行距、字体、缩进从 bodySpec 取值，不硬编码
-	// 🔒 BODY_SIZE_CAP: 模板为撰写要求文档时采样值偏大(12pt)，上限强制为10.5pt
-	spec := f.bodySpec
-	eastAsiaFont := "宋体"
-	asciiFont := "Times New Roman"
-	fontSizePt := 10.5
-	if spec != nil {
-		if spec.FontEastAsia != "" {
-			eastAsiaFont = spec.FontEastAsia
-		}
-		if spec.FontAscii != "" {
-			asciiFont = spec.FontAscii
-		}
-		if spec.FontSizeHalfPt > 0 {
-			fs := float64(spec.FontSizeHalfPt) / 2.0
-			if fs > 10.5 {
-				fs = 10.5
-			}
-			fontSizePt = fs
-		}
-	}
-	// 先检查 run 格式是否已匹配，决定是否跳过 run 级别覆写
-	runFormatMatched := v2RunFontMatches(para, eastAsiaFont, fontSizePt, 1)
-
-	pPr := para.X().PPr
-	if pPr == nil {
-		pPr = wml.NewCT_PPr()
-		para.X().PPr = pPr
-	}
-	// 🔒 LOCKED: 段落属性（对齐/行距/缩进）必须始终设置，不能因 run 匹配而跳过
-	pPr.Jc = wml.NewCT_Jc()
-	pPr.Jc.ValAttr = wml.ST_JcBoth
-
-	pPr.Spacing = wml.NewCT_Spacing()
-	lineVal := int64(400)
-	lineRule := wml.ST_LineSpacingRuleExact
-	if spec != nil {
-		if spec.LineSpacingVal > 0 {
-			lineVal = spec.LineSpacingVal
-		}
-		if spec.LineSpacingRule != wml.ST_LineSpacingRuleUnset {
-			lineRule = spec.LineSpacingRule
-		}
-	}
-	pPr.Spacing.LineAttr = &wml.ST_SignedTwipsMeasure{}
-	pPr.Spacing.LineAttr.Int64 = &lineVal
-	pPr.Spacing.LineRuleAttr = lineRule
-
-	pPr.Ind = wml.NewCT_Ind()
-	fl := uint64(480)
-	if spec != nil && spec.FirstLineIndent > 0 {
-		fl = spec.FirstLineIndent
-	}
-	pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{}
-	pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber = &fl
-
-	// 仅当 run 格式未匹配时才覆写 run 属性
-	if !runFormatMatched {
-		for _, r := range para.Runs() {
-			rPr := r.X().RPr
-			if rPr == nil {
-				rPr = wml.NewCT_RPr()
-				r.X().RPr = rPr
-			}
-			if rPr.RFonts == nil {
-				rPr.RFonts = wml.NewCT_Fonts()
-			}
-			rPr.RFonts.EastAsiaAttr = f.processor.getCachedFontName(eastAsiaFont)
-			af := f.processor.getCachedFontName(asciiFont)
-			rPr.RFonts.AsciiAttr = af
-			rPr.RFonts.HAnsiAttr = af
-			halfPt := uint64(fontSizePt * 2)
-			rPr.Sz = wml.NewCT_HpsMeasure()
-			rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPt
-			rPr.SzCs = wml.NewCT_HpsMeasure()
-			rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &halfPt
-			rPr.B = nil
-			rPr.BCs = nil
-		}
-	}
+	// 委托给统一的 FormatBodyParagraph，确保与 EnhancedProcessor 行为一致。
+	bodySpec := BodyTextSpecFromParagraphFormatSpec(f.bodySpec)
+	FormatBodyParagraph(para, bodySpec)
 }
 
 // formatCaption 图题/表题：宋体五号，居中
@@ -2008,11 +1931,7 @@ func (f *V2SmartFormatter) formatReferenceItem(para document.Paragraph) {
 			asciiFont = f.refSpec.FontAscii
 		}
 		if f.refSpec.FontSizeHalfPt > 0 {
-			fs := float64(f.refSpec.FontSizeHalfPt) / 2.0
-			if fs > 10.5 {
-				fs = 10.5
-			}
-			sizePt = fs
+			sizePt = float64(f.refSpec.FontSizeHalfPt) / 2.0
 		}
 	}
 	// 设置段落默认 run 属性（unioffice 序列化时以此覆盖 run 级属性）

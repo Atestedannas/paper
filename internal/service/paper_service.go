@@ -35,10 +35,41 @@ type PaperService struct {
 const maxFormatRulesDebugBytes = 16384
 
 func formatTemplateDocumentPath(template model.FormatTemplate) string {
-	if path := strings.TrimSpace(template.GoldenTemplatePath); path != "" {
-		return path
+	// The uploaded DOCX is the source of truth.  Older database rows may have
+	// only JSON rules and empty path columns, while upload-template persists the
+	// file at the stable ID-based location below.  Resolve that location before
+	// falling back to JSON-only formatting; otherwise a stale profile silently
+	// formats the paper with the wrong school rules.
+	candidates := []string{strings.TrimSpace(template.FilePath)}
+	if template.ID != uuid.Nil {
+		candidates = append(candidates, filepath.Join("uploads", "templates", template.ID.String(), "template.docx"))
 	}
-	return strings.TrimSpace(template.FilePath)
+	for _, candidate := range candidates {
+		if candidate == "" || !strings.EqualFold(filepath.Ext(candidate), ".docx") {
+			continue
+		}
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func activeTemplateForUniversity(universityID int64) (model.FormatTemplate, error) {
+	var templates []model.FormatTemplate
+	if err := database.DB.Preload("University").Where("university_id = ? AND is_active = ?", universityID, true).
+		Order("updated_at DESC").Find(&templates).Error; err != nil {
+		return model.FormatTemplate{}, err
+	}
+	for _, template := range templates {
+		if formatTemplateDocumentPath(template) != "" {
+			return template, nil
+		}
+	}
+	if len(templates) > 0 {
+		return templates[0], nil
+	}
+	return model.FormatTemplate{}, gorm.ErrRecordNotFound
 }
 
 var ErrLegacyWritePathDisabled = fmt.Errorf("legacy paper write path disabled")
@@ -190,6 +221,20 @@ func (s PaperService) CheckPaperFormat(userID, paperID, templateID uuid.UUID) (*
 		return nil, fmt.Errorf("failed to check paper format: %v", err)
 	}
 
+	// Keep Go's deterministic OOXML result as the primary result, then add
+	// Python's rendered visual evidence when the service is configured.
+	if pythonURL := strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")); pythonURL != "" {
+		visualSpec := buildPythonVisualSpec(template.TemplateID, rulesMap)
+		visual, visualErr := NewPythonVisualClient(pythonURL).CheckStudentPaperWithContext(
+			ctx, paper.FilePath, template.TemplateID, 1, paperID.String(), visualSpec, nil,
+		)
+		if visualErr != nil {
+			log.Printf("[PYTHON_VISUAL] visual check unavailable: %v", visualErr)
+		} else if visual != nil {
+			appendPythonVisualIssues(checkResult, visual)
+		}
+	}
+
 	// 7. 淇濆瓨妫€鏌ョ粨鏋?
 	issuesJSON, _ := json.Marshal(checkResult.Issues)
 
@@ -221,8 +266,121 @@ func (s PaperService) CheckPaperFormat(userID, paperID, templateID uuid.UUID) (*
 	return result, nil
 }
 
+func buildPythonVisualSpec(templateID string, rules map[string]interface{}) map[string]interface{} {
+	spec := map[string]interface{}{"specVersion": "1.0", "templateId": templateID, "rules": []interface{}{}}
+	visualRules := make([]interface{}, 0)
+	for _, role := range []string{"body", "body_paragraph", "heading_1", "heading_2", "heading_3", "heading_4", "abstract", "references"} {
+		section, ok := rules[role].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		alignment, _ := section["alignment"].(string)
+		if alignment != "center" {
+			continue
+		}
+		targetRole := role
+		if role == "body" {
+			targetRole = "body_paragraph"
+		}
+		visualRules = append(visualRules, map[string]interface{}{
+			"ruleId":       "go-visual-alignment-" + role,
+			"targetRole":   targetRole,
+			"severity":     "error",
+			"property":     "visual_horizontal_alignment",
+			"expected":     map[string]interface{}{"offsetMm": 0},
+			"tolerance":    map[string]interface{}{"offsetMm": 2},
+			"verification": []string{"visual"},
+		})
+	}
+	spec["rules"] = visualRules
+	return spec
+}
+
+func appendPythonVisualIssues(result *formatchecker.CheckResult, visual *PythonVisualReport) {
+	if result == nil || visual == nil {
+		return
+	}
+	added := make([]formatchecker.FormatIssue, 0, len(visual.Violations)+len(visual.ReviewItems))
+	for _, item := range visual.Violations {
+		added = append(added, pythonVisualIssue(item, "error"))
+	}
+	for _, item := range visual.ReviewItems {
+		added = append(added, pythonVisualIssue(item, "warning"))
+	}
+	result.Issues = append(result.Issues, added...)
+	result.TotalIssues = len(result.Issues)
+	for _, issue := range added {
+		switch issue.Severity {
+		case formatchecker.SeverityError:
+			result.ErrorCount++
+		case formatchecker.SeverityWarning:
+			result.WarningCount++
+		case formatchecker.SeverityInfo:
+			result.InfoCount++
+		}
+	}
+}
+
+func pythonVisualIssue(item map[string]interface{}, severity string) formatchecker.FormatIssue {
+	page := 0
+	if value, ok := item["page"].(float64); ok {
+		page = int(value)
+	}
+	id := "python-visual"
+	if value, ok := item["violationId"].(string); ok && value != "" {
+		id = value
+	}
+	if value, ok := item["reviewId"].(string); ok && value != "" {
+		id = value
+	}
+	message := "Python visual check reported a layout issue"
+	if value, ok := item["message"].(string); ok && value != "" {
+		message = value
+	}
+	if value, ok := item["reason"].(string); ok && value != "" {
+		message = value
+	}
+	details := map[string]interface{}{"detector": "python_visual"}
+	var suggestion interface{}
+	if repair, ok := item["suggestedRepair"].(map[string]interface{}); ok {
+		suggestion = repair
+		action, _ := repair["action"].(string)
+		value, hasValue := repair["value"]
+		nodeID, _ := item["nodeId"].(string)
+		confidence, _ := item["confidence"].(float64)
+		// Only a concrete, targetable alignment repair is safe to apply
+		// automatically. Other visual suggestions remain review-only.
+		if severity == "error" && action == "set_paragraph_alignment" && hasValue && value != nil && nodeID != "" && confidence >= 0.85 {
+			details["auto_repair"] = true
+			details["repair_action"] = action
+			details["repair_node_id"] = nodeID
+			details["repair_value"] = value
+		}
+	}
+	return formatchecker.FormatIssue{
+		ID: id, Type: formatchecker.IssueTypePageSetup, Severity: formatchecker.SeverityLevel(severity),
+		Page: page, Description: message, Original: item, Suggestion: suggestion, Details: details,
+	}
+}
+
+func visualRepairsFromIssues(issues []formatchecker.FormatIssue, selected map[string]struct{}) []map[string]interface{} {
+	repairs := make([]map[string]interface{}, 0)
+	for _, issue := range issues {
+		if _, ok := selected[issue.ID]; !ok || issue.Details == nil || issue.Details["auto_repair"] != true {
+			continue
+		}
+		repairs = append(repairs, map[string]interface{}{
+			"node_id": issue.Details["repair_node_id"],
+			"action":  issue.Details["repair_action"],
+			"value":   issue.Details["repair_value"],
+		})
+	}
+	return repairs
+}
+
 // QuickV2Fix 直接运行 V2 引擎修正格式（跳过 CheckPaperFormat，~200ms）
 func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (string, error) {
+	log.Printf("[UPLOAD_FLOW] QuickV2Fix service start input=%s university_id=%d python_url=%q", paperFilePath, universityID, strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")))
 	if legacyWritePathDisabled() {
 		return "", ErrLegacyWritePathDisabled
 	}
@@ -237,9 +395,8 @@ func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (stri
 
 	start := time.Now()
 
-	var template model.FormatTemplate
-	if err := database.DB.Preload("University").Where("university_id = ? AND is_active = ?", universityID, true).
-		First(&template).Error; err != nil {
+	template, err := activeTemplateForUniversity(universityID)
+	if err != nil {
 		return "", fmt.Errorf("no active template for university %d: %v", universityID, err)
 	}
 
@@ -254,20 +411,33 @@ func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (stri
 	logFormatRulesDebug("QuickV2Fix_upload_async", uuid.Nil, template.ID, quickV2DbgRules)
 
 	processor := s.createSmartProcessor()
-	if templatePath := formatTemplateDocumentPath(template); templatePath != "" {
+	templatePath := formatTemplateDocumentPath(template)
+	if templatePath != "" {
 		processor.SetTemplatePath(templatePath)
 	}
 
-	var corrections []map[string]interface{}
+	// When the DOCX is available, its OOXML Profile is authoritative.  Passing
+	// the cached JSON as user overrides would let stale values (for example a
+	// 14pt body rule) override the selected template even after the file path was
+	// recovered.  Keep an empty rule map only to activate the template-aware
+	// engine; use JSON rules solely when no DOCX exists.
+	correction := map[string]interface{}{"format_rules": map[string]interface{}{}}
+	if templatePath == "" {
+		correction["format_rules"] = quickV2DbgRules
+	} else {
+		log.Printf("[QuickV2Fix] 使用 DOCX 模板 Profile，忽略缓存 format_rules: %s", templatePath)
+	}
 	if template.ID != uuid.Nil && template.University != nil {
 		if sid := fileprocessor.SchoolIDFromUniversityName(template.University.Name, template.University.Abbr); sid != "" {
-			corrections = []map[string]interface{}{{"school_id": sid}}
+			correction["school_id"] = sid
 			log.Printf("[QuickV2Fix] school_id=%s (StyleFormatter school spec)", sid)
 		}
 	}
+	corrections := []map[string]interface{}{correction}
 
 	ctx := context.Background()
 	result, err := processor.ApplyCorrectionsV2(ctx, paperFilePath, corrections)
+	log.Printf("[UPLOAD_FLOW] QuickV2Fix V2 engine returned output=%s err=%v", result, err)
 	if err == nil {
 		err = finalizeGeneratedPaperDOCX(ctx, result)
 	}
@@ -276,6 +446,41 @@ func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (stri
 }
 
 // FixPaperFormatByParsedRequirements 鏍规嵁瑙ｆ瀽鐨勮姹備慨澶嶈鏂囨牸寮?
+// CheckPythonVisualFile runs the rendered visual pipeline for a concrete DOCX.
+// Legacy QuickV2Fix returns before CheckPaperFormat, so it calls this explicitly.
+func (s PaperService) CheckPythonVisualFile(filePath string, universityID int64, documentID string) (*PythonVisualReport, error) {
+	pythonURL := strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL"))
+	if pythonURL == "" {
+		return nil, fmt.Errorf("PYTHON_SERVICE_URL is not configured")
+	}
+	template, err := activeTemplateForUniversity(universityID)
+	if err != nil {
+		return nil, err
+	}
+	var rulesMap map[string]interface{}
+	if err := json.Unmarshal([]byte(template.FormatRules), &rulesMap); err != nil {
+		var encoded string
+		if err2 := json.Unmarshal([]byte(template.FormatRules), &encoded); err2 != nil {
+			return nil, fmt.Errorf("failed to parse template format rules: %w", err)
+		}
+		if err2 := json.Unmarshal([]byte(encoded), &rulesMap); err2 != nil {
+			return nil, fmt.Errorf("failed to parse encoded template format rules: %w", err2)
+		}
+	}
+	log.Printf("[PYTHON_VISUAL] legacy post-fix request paper=%s file=%s template=%s url=%s", documentID, filePath, template.ID, pythonURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	report, err := NewPythonVisualClient(pythonURL).CheckStudentPaperWithContext(ctx, filePath, template.TemplateID, 1, documentID, buildPythonVisualSpec(template.TemplateID, rulesMap), nil)
+	if err != nil {
+		log.Printf("[PYTHON_VISUAL] legacy post-fix failed paper=%s err=%v", documentID, err)
+		return nil, err
+	}
+	if report != nil {
+		log.Printf("[PYTHON_VISUAL] legacy post-fix completed paper=%s verdict=%s violations=%d reviews=%d", documentID, report.VisualVerdict, len(report.Violations), len(report.ReviewItems))
+	}
+	return report, nil
+}
+
 func (s PaperService) FixPaperFormatByParsedRequirements(userID, paperID uuid.UUID, requirements map[string]interface{}) (interface{}, error) {
 	if legacyWritePathDisabled() {
 		return nil, ErrLegacyWritePathDisabled
@@ -315,10 +520,11 @@ func (s PaperService) FixPaperFormatByParsedRequirements(userID, paperID uuid.UU
 		return nil, fmt.Errorf("failed to update paper record: %v", err)
 	}
 
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"corrected_file_path": fixedPath,
 		"download_url":        fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String()),
-	}, nil
+	}
+	return result, nil
 }
 
 // FixPaperFormat 淇璁烘枃鏍煎紡
@@ -372,6 +578,15 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 	if len(selectedIssueIDs) == 0 {
 		return nil, fmt.Errorf("no issue selected to apply")
 	}
+	selectedSet := make(map[string]struct{}, len(selectedIssueIDs))
+	for _, issueID := range selectedIssueIDs {
+		selectedSet[issueID] = struct{}{}
+	}
+	parsedIssues, err := parseIssuesFromRaw(checkResult.Issues)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse selected visual repairs: %v", err)
+	}
+	visualRepairs := visualRepairsFromIssues(parsedIssues, selectedSet)
 
 	// 将本次选中的 issue 标记为已应用（便于幂等与审计）
 	if err := s.markAppliedCorrections(checkResult.ID, selectedIssueIDs); err != nil {
@@ -421,6 +636,10 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 		"selected_issue_ids": selectedIssueIDs,                             // 只处理这些 issue（与 fix_all 配合）
 		"fix_all":            options.FixAll || len(options.IssueIDs) == 0, // FixAll 或未显式传 IssueIDs 时视为全量
 	}
+	if len(visualRepairs) > 0 {
+		correctionMap["visual_repairs"] = visualRepairs
+		log.Printf("[PYTHON_VISUAL] applying %d high-confidence visual repairs", len(visualRepairs))
+	}
 	if template.ID != uuid.Nil {
 		if u := template.University; u != nil {
 			// 由高校中文名/简称映射到 pkg 内学校标识，加载 *.spec.json 等
@@ -443,6 +662,24 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 	if err := finalizeGeneratedPaperDOCX(ctx, fixedPath); err != nil {
 		return nil, fmt.Errorf("failed to finalize document fields: %v", err)
 	}
+
+	var visualVerification *PythonVisualReport
+	var visualVerificationErr string
+	if pythonURL := strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")); pythonURL != "" {
+		verifyCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		visualVerification, err = NewPythonVisualClient(pythonURL).CheckStudentPaperWithContext(
+			verifyCtx, fixedPath, template.TemplateID, 1, paperID.String()+"-corrected",
+			buildPythonVisualSpec(template.TemplateID, rulesMap), nil,
+		)
+		cancel()
+		if err != nil {
+			visualVerificationErr = err.Error()
+			log.Printf("[PYTHON_VISUAL] post-fix verification unavailable: %v", err)
+		} else if visualVerification != nil {
+			log.Printf("[PYTHON_VISUAL] post-fix verification verdict=%s violations=%d reviews=%d",
+				visualVerification.VisualVerdict, len(visualVerification.Violations), len(visualVerification.ReviewItems))
+		}
+	}
 	paper.CorrectedFilePath = fixedPath // 回写论文表：修正稿路径
 	paper.Status = "corrected"          // 状态标记为已修正
 	if err := database.DB.Save(paper).Error; err != nil {
@@ -452,21 +689,26 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 	// 若处理器生成了差异报告，序列化后挂到本次 CheckResult 上
 	if report := processor.GetLastDiffReport(); report != nil {
 		if b, err2 := json.Marshal(report); err2 == nil {
-			database.DB.Model(&model.CheckResult{}).
+			if err := database.DB.Model(&model.CheckResult{}).
 				Where("id = ?", checkResult.ID).
-				Update("diff_report", string(b))
-			log.Printf("[差异报告] 已保存到数据库，错误: %d 警告: %d",
-				report.ErrorCount, report.WarningCount)
+				Update("diff_report", string(b)).Error; err != nil {
+				log.Printf("[差异报告] 保存到数据库失败: %v", err)
+			} else {
+				log.Printf("[差异报告] 已保存到数据库，错误: %d 警告: %d",
+					report.ErrorCount, report.WarningCount)
+			}
 		}
 	}
 
 	// 返回给 API 的摘要：路径、下载 URL、实际应用的 issue 列表与数量
 	return map[string]interface{}{
-		"corrected_file_path": fixedPath,
-		"download_url":        fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String()),
-		"applied_issue_ids":   selectedIssueIDs,
-		"applied_issue_count": len(selectedIssueIDs),
-		"fix_all":             options.FixAll || len(options.IssueIDs) == 0,
+		"corrected_file_path":       fixedPath,
+		"download_url":              fmt.Sprintf("/api/v1/papers/%s/corrected-file", paper.ID.String()),
+		"applied_issue_ids":         selectedIssueIDs,
+		"applied_issue_count":       len(selectedIssueIDs),
+		"fix_all":                   options.FixAll || len(options.IssueIDs) == 0,
+		"visual_verification":       visualVerification,
+		"visual_verification_error": visualVerificationErr,
 	}, nil
 }
 
@@ -474,13 +716,6 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 // Falls back to the legacy Python script if the Go engine fails.
 func (s PaperService) tryTemplateFill(ctx context.Context, inputPath, goldenTemplatePath string, rulesMap map[string]interface{}) (string, error) {
 	tf := templatefiller.NewTemplateFiller()
-
-	// Inject DeepSeek client for precise refinement
-	if s.config != nil && s.config.DeepSeek.Enabled && s.config.DeepSeek.Cookie != "" {
-		dsClient := aiclassifier.NewDeepSeekWebClient(s.config.DeepSeek.Cookie, s.config.DeepSeek.Bearer)
-		tf.DeepSeekClient = dsClient
-		log.Printf("[FixFormat] DeepSeek精确替换已启用")
-	}
 
 	// Prefer the prepared real-template-based golden template for maximum accuracy
 	preparedPath, prepErr := tf.EnsureGoldenTemplate("cqrwst")

@@ -26,6 +26,16 @@ var passwordResetMu sync.Mutex
 var passwordResetCodes = map[string]passwordResetCode{}
 var passwordResetTokens = map[string]passwordResetToken{}
 
+func (h *AuthHandler) setRefreshTokenCookie(c *gin.Context, token string, expiresAt time.Time) {
+	maxAge := int(time.Until(expiresAt).Seconds())
+	if maxAge < 0 {
+		maxAge = 0
+	}
+	secure := h.config != nil && strings.EqualFold(h.config.Server.Env, "production")
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie("refresh_token", token, maxAge, "/", "", secure, true)
+}
+
 type passwordResetCode struct {
 	Code      string
 	ExpiresAt time.Time
@@ -163,6 +173,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		utils.InternalServerError(c, "failed to save refresh token")
 		return
 	}
+	h.setRefreshTokenCookie(c, refreshToken, refreshExpiresAt)
 
 	// 返回响应
 	utils.Created(c, gin.H{
@@ -211,6 +222,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	// 返回响应
+	h.setRefreshTokenCookie(c, refreshToken, refreshExpiresAt)
 	utils.Success(c, gin.H{
 		"access_token":  token,
 		"refresh_token": refreshToken,
@@ -708,12 +720,21 @@ func (h *AuthHandler) ResetPasswordByCode(c *gin.Context) {
 func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	// 解析请求数据
 	var req struct {
-		RefreshToken string `json:"refresh_token" binding:"required"`
+		RefreshToken string `json:"refresh_token"`
 		AccessToken  string `json:"access_token"`
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
-		utils.BadRequest(c, err.Error())
+	if cookie, err := c.Cookie("refresh_token"); err == nil {
+		req.RefreshToken = cookie
+	}
+	if req.RefreshToken == "" && c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			utils.BadRequest(c, err.Error())
+			return
+		}
+	}
+	if req.RefreshToken == "" {
+		utils.Unauthorized(c, "refresh session required")
 		return
 	}
 
@@ -778,6 +799,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		utils.InternalServerError(c, "failed to update refresh token")
 		return
 	}
+	h.setRefreshTokenCookie(c, newRefreshToken, newRefreshExpiresAt)
 
 	if oldAccessClaims != nil {
 		if err := h.tokenBlacklistService.AddToken(req.AccessToken, model.TokenTypeAccess, user.ID, oldAccessClaims.ExpiresAt.Time, "token refreshed"); err != nil {

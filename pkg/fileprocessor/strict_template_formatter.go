@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 
 	"gitee.com/greatmusicians/unioffice/document"
@@ -1967,9 +1968,10 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 		return err
 	}
 
-	sectionRefs := mapTemplateSectionHeaderFooterRefs(
+	sectionRefs := mapTemplateSectionHeaderFooterRefsWithVisibleHeaders(
 		string(outputEntries["word/document.xml"]),
 		string(templateEntries["word/document.xml"]),
+		templateVisibleHeaderRoles(templateEntries),
 	)
 	requiredRelationshipIDs := referencedRelationshipIDs(sectionRefs)
 	relationshipIDs, copiedParts, err := mergeSelectedDocumentRelationships(
@@ -1985,18 +1987,73 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 	}
 	mergeCopiedPartContentTypes(outputEntries, templateEntries, copiedParts)
 	mergeDocumentSectionHeaderFooterRefsWithPlan(outputEntries, sectionRefs, relationshipIDs)
+	syncEvenOddHeadersSetting(outputEntries, templateEntries)
 
 	return writeDocxEntries(outputPath, outputEntries)
+}
+
+// ensureEvenOddHeadersSetting keeps the package-level switch consistent with
+// the section references we just migrated. Word ignores w:type="even" refs
+// when this setting is absent, which makes a visually correct template render
+// with the wrong header/footer on alternate pages.
+func ensureEvenOddHeadersSetting(entries map[string][]byte) {
+	documentXML, ok := entries["word/document.xml"]
+	if !ok || !strings.Contains(string(documentXML), `w:type="even"`) {
+		return
+	}
+	settingsXML, ok := entries["word/settings.xml"]
+	if !ok || strings.Contains(string(settingsXML), "<w:evenAndOddHeaders") {
+		return
+	}
+	if updated, changed := ooxmlpatch.ApplySettingsProperties(string(settingsXML), ooxmlpatch.SettingsPropertiesSpec{EvenAndOddHeaders: true}); changed {
+		entries["word/settings.xml"] = []byte(updated)
+	}
+}
+
+// syncEvenOddHeadersSetting copies the template's package-level switch rather
+// than inferring it from copied references.  A template may contain even refs
+// for a cover section while intentionally leaving the switch disabled; turning
+// it on globally would make ordinary body sections lose their even-page
+// header/footer.
+func syncEvenOddHeadersSetting(output, template map[string][]byte) {
+	templateSettings := string(template["word/settings.xml"])
+	outputSettings, ok := output["word/settings.xml"]
+	if !ok {
+		return
+	}
+	if strings.Contains(templateSettings, "<w:evenAndOddHeaders") {
+		ensureEvenOddHeadersSetting(output)
+		return
+	}
+	// Do not infer the switch from section references. A template can carry
+	// even/first references for a cover sample while deliberately leaving the
+	// package-level switch disabled. Enabling it globally changes how every
+	// later section resolves headers/footers (and can make body-page headers
+	// appear empty). The template's settings part is the sole authority.
+	pattern := regexp.MustCompile(`(?s)<w:evenAndOddHeaders\b[^>]*/>|<w:evenAndOddHeaders\b[^>]*>.*?</w:evenAndOddHeaders>`)
+	output["word/settings.xml"] = []byte(pattern.ReplaceAllString(string(outputSettings), ""))
+	if documentXML, ok := output["word/document.xml"]; ok {
+		output["word/document.xml"] = []byte(stripEvenHeaderFooterReferences(string(documentXML)))
+	}
+}
+
+// stripEvenHeaderFooterReferences keeps a template with the even/odd switch
+// disabled internally consistent. Without the switch, even references are
+// ignored by Word; leaving them behind also makes verification fail closed.
+func stripEvenHeaderFooterReferences(documentXML string) string {
+	refs := regexp.MustCompile(`(?s)<w:(?:headerReference|footerReference)\b[^>]*/>`)
+	return refs.ReplaceAllStringFunc(documentXML, func(tag string) string {
+		if strings.Contains(tag, `w:type="even"`) {
+			return ""
+		}
+		return tag
+	})
 }
 
 func copyAndMaterializeTemplateHeaderFooter(templatePath, outputPath string, coverInfo map[string]string) error {
 	if err := copyTemplateHeaderFooterPackage(templatePath, outputPath); err != nil {
 		return err
 	}
-	if len(coverInfo) == 0 {
-		return nil
-	}
-
 	entries, err := readDocxEntries(outputPath)
 	if err != nil {
 		return err
@@ -2012,17 +2069,50 @@ func copyAndMaterializeTemplateHeaderFooter(templatePath, outputPath string, cov
 			continue
 		}
 		visible := strings.Join(texts, "")
-		materialized := materializeTemplateHeaderText(visible, coverInfo)
-		if materialized == visible {
-			continue
+		updated := xmlText
+		if len(coverInfo) > 0 {
+			materialized := materializeTemplateHeaderText(visible, coverInfo)
+			if materialized != visible {
+				updated = replaceDocxTextNodes(updated, distributeHeaderText(texts, materialized))
+			}
 		}
-		entries[name] = []byte(replaceDocxTextNodes(xmlText, distributeHeaderText(texts, materialized)))
-		changed = true
+		if strings.Contains(visible, "重庆工程学院本科生毕业设计（论文）") && strings.Contains(visible, "绪论") {
+			updated = materializeRunningHeaderStyleRef(updated)
+		}
+		if updated != xmlText {
+			entries[name] = []byte(updated)
+			changed = true
+		}
 	}
 	if !changed {
 		return nil
 	}
 	return writeDocxEntries(outputPath, entries)
+}
+
+// materializeRunningHeaderStyleRef keeps the school name and replaces the
+// template's sample "1 绪论" with Word's native current Heading 1 field.
+// The literal result remains as a safe fallback for renderers that do not
+// update fields; Word updates it when the document is opened.
+func materializeRunningHeaderStyleRef(headerXML string) string {
+	if strings.Contains(headerXML, "STYLEREF") {
+		return headerXML
+	}
+	paragraphs := regexp.MustCompile(`(?s)<w:p\b.*?</w:p>`)
+	return paragraphs.ReplaceAllStringFunc(headerXML, func(paragraph string) string {
+		visible := strings.Join(extractDocxTextNodes(paragraph), "")
+		if !strings.Contains(visible, "重庆工程学院本科生毕业设计（论文）") || !strings.Contains(visible, "绪论") {
+			return paragraph
+		}
+		schoolAt := strings.Index(paragraph, "重庆工程学院本科生毕业设计（论文）")
+		runEnd := schoolAt + strings.Index(paragraph[schoolAt:], "</w:r>") + len("</w:r>")
+		closeAt := strings.LastIndex(paragraph, "</w:p>")
+		if schoolAt < 0 || runEnd < schoolAt || closeAt < runEnd {
+			return paragraph
+		}
+		field := `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> STYLEREF "heading 1" \* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1 绪论</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>`
+		return paragraph[:runEnd] + field + paragraph[closeAt:]
+	})
 }
 
 func CopyTemplateHeaderFooter(templatePath, outputPath string, coverInfo map[string]string) error {
@@ -2959,7 +3049,15 @@ func strictStyleClosure(rootIDs map[string]bool, definitions map[string]string) 
 		}
 		definition, ok := definitions[id]
 		if !ok {
-			return fmt.Errorf("template header/footer references missing style %q", id)
+			// Word documents in the wild often retain references to built-in or
+			// latent styles which are not serialized in styles.xml (the Chongqing
+			// template uses ids "9" and "14" in page-number text boxes).  These
+			// references are valid enough for Word's built-in style fallback and
+			// must not make an otherwise usable header/footer package impossible
+			// to copy.  Leave the reference untouched instead of inventing a
+			// potentially incorrect formatting definition.
+			state[id] = 2
+			return nil
 		}
 		state[id] = 1
 		for _, tag := range strictStyleDependencyPattern.FindAllString(definition, -1) {
@@ -3779,6 +3877,13 @@ type strictSectionDescriptor struct {
 }
 
 func mapTemplateSectionHeaderFooterRefs(outputXML, templateXML string) [][]string {
+	return mapTemplateSectionHeaderFooterRefsWithVisibleHeaders(outputXML, templateXML, nil)
+}
+
+// mapTemplateSectionHeaderFooterRefsWithVisibleHeaders keeps the template's
+// section semantics, but never selects an intentionally blank cover/first-page
+// header when a visible header exists for the same semantic section.
+func mapTemplateSectionHeaderFooterRefsWithVisibleHeaders(outputXML, templateXML string, visibleHeaders map[string]strictSectionRole) [][]string {
 	outputSections := describeStrictSections(outputXML)
 	templateSections := describeStrictSections(templateXML)
 	if len(outputSections) == 0 || len(templateSections) == 0 {
@@ -3786,29 +3891,106 @@ func mapTemplateSectionHeaderFooterRefs(outputXML, templateXML string) [][]strin
 	}
 
 	firstByRole := make(map[strictSectionRole]int)
+	firstVisibleByRole := make(map[strictSectionRole]int)
 	for index, section := range templateSections {
 		if _, exists := firstByRole[section.Role]; !exists && section.Role != strictSectionUnknown {
 			firstByRole[section.Role] = index
 		}
+		for _, role := range []strictSectionRole{strictSectionAbstractCN, strictSectionAbstractEN, strictSectionTOC, strictSectionBody, strictSectionReferences, strictSectionAcknowledged, strictSectionAppendix} {
+			if _, exists := firstVisibleByRole[role]; !exists && sectionHasHeaderRole(section, visibleHeaders, role) {
+				firstVisibleByRole[role] = index
+			}
+		}
 	}
-	bodyIndex, hasBody := firstByRole[strictSectionBody]
+	// The template can contain an instructional/front-matter section and one or
+	// more actual body examples.  Picking the first section with role "body"
+	// sends the student's post-TOC pages to the front-matter header/footer.
+	// Resolve the body section relative to the TOC instead of by a fixed index.
+	templateTOCIndex := -1
+	for index, section := range templateSections {
+		if section.Role == strictSectionTOC {
+			templateTOCIndex = index
+			break
+		}
+	}
+	frontMatterBodyIndex, hasFrontMatterBody := -1, false
+	mainBodyIndex, hasMainBody := -1, false
+	for index, section := range templateSections {
+		if section.Role != strictSectionBody {
+			continue
+		}
+		if templateTOCIndex >= 0 && index > templateTOCIndex {
+			if !hasMainBody {
+				mainBodyIndex, hasMainBody = index, true
+			}
+			continue
+		}
+		if !hasFrontMatterBody {
+			frontMatterBodyIndex, hasFrontMatterBody = index, true
+		}
+	}
+	if !hasMainBody {
+		mainBodyIndex, hasMainBody = frontMatterBodyIndex, hasFrontMatterBody
+	}
+	if visibleIndex, ok := firstVisibleByRole[strictSectionBody]; ok {
+		mainBodyIndex, hasMainBody = visibleIndex, true
+	}
+	outputTOCIndex := -1
+	for index, section := range outputSections {
+		if section.Role == strictSectionTOC {
+			outputTOCIndex = index
+			break
+		}
+	}
 
 	result := make([][]string, len(outputSections))
+	frontMatterStage := 0
 	for index, section := range outputSections {
 		templateIndex, found := firstByRole[section.Role]
+		if visibleIndex, ok := firstVisibleByRole[section.Role]; ok && section.Role != strictSectionCover {
+			templateIndex, found = visibleIndex, true
+		}
+		semanticFrontMatter := false
+		// Student files often put a section break immediately after the cover
+		// and classify the Chinese abstract block as generic body because it
+		// contains dates/numbers.  Consume front matter in semantic order
+		// before falling back to the template's generic body sample.
+		if index > 0 && frontMatterStage == 0 && section.Role == strictSectionBody &&
+			(outputTOCIndex < 0 || index < outputTOCIndex) {
+			if candidate, ok := firstByRole[strictSectionAbstractCN]; ok {
+				templateIndex, found = candidate, true
+				frontMatterStage = 1
+				semanticFrontMatter = true
+			}
+		} else if frontMatterStage == 1 && section.Role == strictSectionAbstractCN {
+			if candidate, ok := firstByRole[strictSectionAbstractEN]; ok {
+				templateIndex, found = candidate, true
+				frontMatterStage = 2
+				semanticFrontMatter = true
+			}
+		}
+		if !semanticFrontMatter && (section.Role == strictSectionBody || section.Role == strictSectionUnknown) {
+			// Before the output TOC, preserve front-matter/cover conventions;
+			// after it, use the template's first real body section.
+			if outputTOCIndex >= 0 && index > outputTOCIndex {
+				templateIndex, found = mainBodyIndex, hasMainBody
+			} else {
+				templateIndex, found = frontMatterBodyIndex, hasFrontMatterBody
+			}
+		}
 		if !found {
 			switch section.Role {
 			case strictSectionAbstractEN:
 				templateIndex, found = firstByRole[strictSectionAbstractCN]
 			case strictSectionReferences, strictSectionAcknowledged, strictSectionAppendix:
-				templateIndex, found = bodyIndex, hasBody
+				templateIndex, found = mainBodyIndex, hasMainBody
 			}
 		}
 		if !found && index == 0 {
 			templateIndex, found = 0, true
 		}
-		if !found && hasBody {
-			templateIndex, found = bodyIndex, true
+		if !found && hasMainBody {
+			templateIndex, found = mainBodyIndex, true
 		}
 		if !found {
 			templateIndex = len(templateSections) - 1
@@ -3816,6 +3998,64 @@ func mapTemplateSectionHeaderFooterRefs(outputXML, templateXML string) [][]strin
 		result[index] = append([]string(nil), templateSections[templateIndex].Refs...)
 	}
 	return result
+}
+
+func sectionHasHeaderRole(section strictSectionDescriptor, headerRoles map[string]strictSectionRole, want strictSectionRole) bool {
+	if len(headerRoles) == 0 {
+		return false
+	}
+	for _, ref := range section.Refs {
+		if !strings.Contains(ref, "<w:headerReference") {
+			continue
+		}
+		if headerRoles[strictXMLAttributeValue(ref, "r:id")] == want {
+			return true
+		}
+	}
+	return false
+}
+
+func templateVisibleHeaderRoles(entries map[string][]byte) map[string]strictSectionRole {
+	rels, ok := entries["word/_rels/document.xml.rels"]
+	if !ok {
+		return nil
+	}
+	var relationships strictRelationshipSet
+	if xml.Unmarshal(rels, &relationships) != nil {
+		return nil
+	}
+	visible := make(map[string]strictSectionRole)
+	for _, rel := range relationships.Relationships {
+		if !strings.Contains(rel.Type, "/header") {
+			continue
+		}
+		part, exists := entries[resolveRelationshipPart("word/document.xml", rel.Target)]
+		if !exists || strings.TrimSpace(strings.Join(extractDocxTextNodes(string(part)), "")) == "" {
+			continue
+		}
+		visible[rel.ID] = classifyTemplateHeaderRole(strings.Join(extractDocxTextNodes(string(part)), " "))
+	}
+	return visible
+}
+
+func classifyTemplateHeaderRole(text string) strictSectionRole {
+	compact := strings.ToLower(strings.Join(strings.Fields(text), ""))
+	switch {
+	case strings.Contains(compact, "目录") || strings.Contains(compact, "contents"):
+		return strictSectionTOC
+	case strings.Contains(compact, "摘要"):
+		return strictSectionAbstractCN
+	case strings.Contains(compact, "abstract"):
+		return strictSectionAbstractEN
+	case strings.Contains(compact, "参考文献") || strings.Contains(compact, "references"):
+		return strictSectionReferences
+	case strings.Contains(compact, "致谢") || strings.Contains(compact, "acknowledg"):
+		return strictSectionAcknowledged
+	case strings.Contains(compact, "附录") || strings.Contains(compact, "appendix"):
+		return strictSectionAppendix
+	default:
+		return strictSectionBody
+	}
 }
 
 func describeStrictSections(documentXML string) []strictSectionDescriptor {
@@ -3845,29 +4085,54 @@ func classifyStrictSectionRole(text string, index int) strictSectionRole {
 		return strictSectionCover
 	}
 	normalized := strings.ToLower(strings.Join(strings.Fields(text), " "))
-	compact := strings.ReplaceAll(normalized, " ", "")
+	// A section may contain an English reference title or the word "abstract"
+	// many pages after its opening heading.  Section identity belongs to its
+	// opening title, not to arbitrary later body text.
+	lead := []rune(normalized)
+	if len(lead) > 320 {
+		lead = lead[:320]
+	}
+	compact := strings.ReplaceAll(string(lead), " ", "")
+	// Match real Unicode section labels before the legacy encoded aliases
+	// below. The previous aliases were mojibake and caused all body sections
+	// to fall back to the wrong header/footer relationship.
+	switch {
+	case strings.Contains(compact, "\u76ee\u5f55"):
+		return strictSectionTOC
+	case strings.Contains(compact, "\u6458\u8981"):
+		return strictSectionAbstractCN
+	case strings.Contains(compact, "\u7eea\u8bba") ||
+		regexp.MustCompile(`(?m)(^|\s)[1-9]\d?(?:\.\d+)*\s+[\p{Han}]`).MatchString(string(lead)):
+		return strictSectionBody
+	case strings.Contains(compact, "\u53c2\u8003\u6587\u732e"):
+		return strictSectionReferences
+	case strings.Contains(compact, "\u81f4\u8c22"):
+		return strictSectionAcknowledged
+	case strings.Contains(compact, "\u9644\u5f55"):
+		return strictSectionAppendix
+	}
 	switch {
 	case strings.Contains(compact, "目录") ||
-		strings.Contains(normalized, "table of contents") ||
-		regexp.MustCompile(`\bcontents\b`).MatchString(normalized):
+		strings.Contains(string(lead), "table of contents") ||
+		regexp.MustCompile(`\bcontents\b`).MatchString(string(lead)):
 		return strictSectionTOC
 	case strings.Contains(compact, "摘要"):
 		return strictSectionAbstractCN
-	case regexp.MustCompile(`\babstract\b`).MatchString(normalized):
+	case regexp.MustCompile(`\babstract\b`).MatchString(string(lead)):
 		return strictSectionAbstractEN
-	case regexp.MustCompile(`第[一二三四五六七八九十百\d]+章`).MatchString(compact) ||
+	case strings.Contains(compact, "第") && strings.Contains(compact, "章") ||
 		strings.Contains(compact, "绪论") ||
-		regexp.MustCompile(`(?m)(^|\s)[1-9]\d?(?:\.\d+)*\s+[\p{Han}A-Za-z]`).MatchString(normalized) ||
-		regexp.MustCompile(`\b(chapter|body)\b`).MatchString(normalized):
+		regexp.MustCompile(`(?m)(^|\s)[1-9]\d?(?:\.\d+)*\s+[\p{Han}A-Za-z]`).MatchString(string(lead)) ||
+		regexp.MustCompile(`\b(chapter|body)\b`).MatchString(string(lead)):
 		return strictSectionBody
 	case strings.Contains(compact, "参考文献") ||
-		regexp.MustCompile(`\b(references|bibliography)\b`).MatchString(normalized):
+		regexp.MustCompile(`\b(references|bibliography)\b`).MatchString(string(lead)):
 		return strictSectionReferences
 	case strings.Contains(compact, "致谢") ||
-		strings.Contains(normalized, "acknowledg"):
+		strings.Contains(string(lead), "acknowledg"):
 		return strictSectionAcknowledged
 	case strings.Contains(compact, "附录") ||
-		regexp.MustCompile(`\bappendix\b`).MatchString(normalized):
+		regexp.MustCompile(`\bappendix\b`).MatchString(string(lead)):
 		return strictSectionAppendix
 	default:
 		return strictSectionUnknown
@@ -3888,14 +4153,32 @@ func referencedRelationshipIDs(sectionRefs [][]string) map[string]bool {
 }
 
 func remapRelationshipIDs(xmlText string, relationshipIDs map[string]string) string {
-	for oldID, newID := range relationshipIDs {
-		if oldID == newID {
-			continue
+	// Replace each attribute value once. Sequential string replacement is
+	// incorrect when the mapping contains a chain such as rId6 -> rId12 and
+	// rId12 -> rId19: the first replacement would be remapped a second time,
+	// causing a footer reference to resolve to a header relationship.
+	quoted := regexp.MustCompile(`r:id="([^"]+)"`)
+	xmlText = quoted.ReplaceAllStringFunc(xmlText, func(attribute string) string {
+		match := quoted.FindStringSubmatch(attribute)
+		if len(match) != 2 {
+			return attribute
 		}
-		xmlText = strings.ReplaceAll(xmlText, `r:id="`+oldID+`"`, `r:id="`+newID+`"`)
-		xmlText = strings.ReplaceAll(xmlText, `r:id='`+oldID+`'`, `r:id='`+newID+`'`)
-	}
-	return xmlText
+		if mapped, ok := relationshipIDs[match[1]]; ok {
+			return `r:id="` + mapped + `"`
+		}
+		return attribute
+	})
+	singleQuoted := regexp.MustCompile(`r:id='([^']+)'`)
+	return singleQuoted.ReplaceAllStringFunc(xmlText, func(attribute string) string {
+		match := singleQuoted.FindStringSubmatch(attribute)
+		if len(match) != 2 {
+			return attribute
+		}
+		if mapped, ok := relationshipIDs[match[1]]; ok {
+			return `r:id='` + mapped + `'`
+		}
+		return attribute
+	})
 }
 
 func lastSectPrBlock(docXML string) string {

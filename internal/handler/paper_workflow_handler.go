@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,7 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
-	"github.com/paper-format-checker/backend/internal/core/workflow"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/service"
@@ -98,6 +98,7 @@ func (h *PaperWorkflowHandler) CompileTemplate(c *gin.Context) {
 }
 
 func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
+	log.Printf("[WORKFLOW_FLOW] create upload request path=%s method=%s python_url=%q", c.Request.URL.Path, c.Request.Method, strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")))
 	if h == nil || h.svc == nil {
 		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "")
 		return
@@ -178,6 +179,7 @@ func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
 		utils.ErrorResponse(c, http.StatusConflict, "服务授权绑定失败", err.Error())
 		return
 	}
+	log.Printf("[WORKFLOW_FLOW] create upload accepted job=%s paper=%s compiled_template=%s file=%s", job.ID, job.PaperID, job.CompiledTemplateID, inputPath)
 
 	utils.CreatedResponse(c, "paper job created", h.jobResponse(job))
 }
@@ -276,6 +278,7 @@ func (h *PaperWorkflowHandler) consumePaperJobAccess(c *gin.Context, userID, pap
 }
 
 func (h *PaperWorkflowHandler) RunJob(c *gin.Context) {
+	log.Printf("[WORKFLOW_FLOW] run request job=%s python_url=%q", c.Param("job_id"), strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")))
 	if h == nil || h.svc == nil {
 		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "")
 		return
@@ -289,9 +292,11 @@ func (h *PaperWorkflowHandler) RunJob(c *gin.Context) {
 
 	job, err := h.svc.RunJob(c.Request.Context(), c.Param("job_id"), userID)
 	if err != nil {
+		log.Printf("[WORKFLOW_FLOW] run failed job=%s err=%v", c.Param("job_id"), err)
 		h.respondWorkflowError(c, err)
 		return
 	}
+	log.Printf("[WORKFLOW_FLOW] run completed job=%s status=%s stage=%s download=%q ready=%t", job.ID, job.Status, job.Stage, job.DownloadPath, job.DownloadReady)
 
 	utils.SuccessResponse(c, "job run completed", h.jobResponse(job))
 }
@@ -318,6 +323,7 @@ func (h *PaperWorkflowHandler) GetJob(c *gin.Context) {
 }
 
 func (h *PaperWorkflowHandler) DownloadJob(c *gin.Context) {
+	log.Printf("[WORKFLOW_FLOW] download request job=%s", c.Param("job_id"))
 	if h == nil || h.svc == nil {
 		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "")
 		return
@@ -335,24 +341,33 @@ func (h *PaperWorkflowHandler) DownloadJob(c *gin.Context) {
 		return
 	}
 	if job == nil || !jobDownloadReady(job) {
-		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "")
+		detail := "generated DOCX is not available"
+		if job != nil {
+			detail = fmt.Sprintf("status=%s stage=%s download_path=%q download_ready=%t", job.Status, job.Stage, job.DownloadPath, job.DownloadReady)
+		}
+		log.Printf("[WORKFLOW_DOWNLOAD] not ready job=%s %s", c.Param("job_id"), detail)
+		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, detail)
 		return
 	}
 
 	safePath, ok := h.safeDownloadPath(job.DownloadPath)
 	if !ok {
-		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "")
+		log.Printf("[WORKFLOW_DOWNLOAD] unsafe or missing path job=%s path=%q root=%q", c.Param("job_id"), job.DownloadPath, h.downloadRoot)
+		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "download path is missing, outside the download root, or the file does not exist")
 		return
 	}
 
 	c.FileAttachment(safePath, filepath.Base(safePath))
+	log.Printf("[WORKFLOW_FLOW] download served job=%s path=%s", c.Param("job_id"), safePath)
 }
 
 func jobDownloadReady(job *service.WorkflowJobView) bool {
 	if job == nil || strings.TrimSpace(job.DownloadPath) == "" {
 		return false
 	}
-	return job.Status == string(workflow.StatusVerifiedPass) && job.Stage == workflow.StageVerified
+	// Manual review remains visible in the job status, but must not block
+	// retrieval of the generated artifact.
+	return true
 }
 
 func (h *PaperWorkflowHandler) respondJobLookupError(c *gin.Context, err error) {

@@ -1,6 +1,7 @@
 package database
 
 import (
+	"encoding/json"
 	"log"
 	"time"
 
@@ -141,31 +142,31 @@ func insertSuperAdmin() {
 func insertDefaultUniversities() {
 	universities := []model.University{
 		{
-			Name:        "閲嶅簡宸ョ▼瀛﹂櫌",
+			Name:        "重庆工程学院",
 			Abbr:        "CQIE",
-			Description: "閲嶅簡宸ョ▼瀛﹂櫌",
-			Tags:        `["鏈闄㈡牎", "宸ョ▼绫?]`,
+			Description: "重庆工程学院",
+			Tags:        jsonStringList("本科院校", "工程类"),
 			Color:       "#1890ff",
 		},
 		{
-			Name:        "閲嶅簡宸ュ晢澶у",
+			Name:        "重庆工商大学",
 			Abbr:        "CTBU",
-			Description: "閲嶅簡宸ュ晢澶у",
-			Tags:        `["鏈闄㈡牎", "璐㈢粡绫?]`,
+			Description: "重庆工商大学",
+			Tags:        jsonStringList("本科院校", "财经类"),
 			Color:       "#52c41a",
 		},
 		{
-			Name:        "娓呭崕澶у",
+			Name:        "清华大学",
 			Abbr:        "THU",
-			Description: "娓呭崕澶у",
-			Tags:        `["985", "211", "鍙屼竴娴?]`,
+			Description: "清华大学",
+			Tags:        jsonStringList("985", "211", "双一流"),
 			Color:       "#722ed1",
 		},
 		{
-			Name:        "鍖椾含澶у",
+			Name:        "北京大学",
 			Abbr:        "PKU",
-			Description: "鍖椾含澶у",
-			Tags:        `["985", "211", "鍙屼竴娴?]`,
+			Description: "北京大学",
+			Tags:        jsonStringList("985", "211", "双一流"),
 			Color:       "#f5222d",
 		},
 	}
@@ -174,8 +175,11 @@ func insertDefaultUniversities() {
 		var count int64
 		DB.Model(&model.University{}).Where("name = ?", university.Name).Count(&count)
 		if count == 0 {
-			DB.Create(&university)
-			log.Printf("鎻掑叆楂樻牎: %s", university.Name)
+			if err := DB.Create(&university).Error; err != nil {
+				log.Printf("插入高校失败: %s: %v", university.Name, err)
+				continue
+			}
+			log.Printf("插入高校: %s", university.Name)
 		}
 	}
 }
@@ -184,35 +188,35 @@ func insertDefaultUniversities() {
 func insertDefaultMemberLevels() {
 	memberLevels := []model.MemberLevel{
 		{
-			LevelName:    "鍏嶈垂鐢ㄦ埛",
+			LevelName:    "免费用户",
 			Price:        0.00,
 			DurationDays: 365,
 			MaxChecks:    5,
 			MaxFileSize:  5 * 1024 * 1024, // 5MB
-			Features:     `["鍩烘湰鏍煎紡妫€鏌?, "姣忔棩5娆℃鏌ラ檺鍒?, "鏂囦欢澶у皬闄愬埗5MB"]`,
-			Description:  "鍏嶈垂鍩虹鏈嶅姟",
+			Features:     jsonStringList("基本格式检查", "每日5次检查限制", "文件大小限制5MB"),
+			Description:  "免费基础服务",
 			SortOrder:    1,
 			IsActive:     true,
 		},
 		{
-			LevelName:    "楂樼骇浼氬憳",
+			LevelName:    "高级会员",
 			Price:        29.99,
 			DurationDays: 30,
 			MaxChecks:    100,
 			MaxFileSize:  20 * 1024 * 1024, // 20MB
-			Features:     `["楂樼骇鏍煎紡妫€鏌?, "姣忔棩100娆℃鏌ラ檺鍒?, "鏂囦欢澶у皬闄愬埗20MB", "浼樺厛澶勭悊"]`,
-			Description:  "楂樼骇浼氬憳鏈嶅姟",
+			Features:     jsonStringList("高级格式检查", "每日100次检查限制", "文件大小限制20MB", "优先处理"),
+			Description:  "高级会员服务",
 			SortOrder:    2,
 			IsActive:     true,
 		},
 		{
-			LevelName:    "涓撲笟浼氬憳",
+			LevelName:    "专业会员",
 			Price:        99.99,
 			DurationDays: 365,
 			MaxChecks:    1000,
 			MaxFileSize:  50 * 1024 * 1024, // 50MB
-			Features:     `["涓撲笟鏍煎紡妫€鏌?, "姣忔棩1000娆℃鏌ラ檺鍒?, "鏂囦欢澶у皬闄愬埗50MB", "浼樺厛澶勭悊", "涓撳睘鏀寔"]`,
-			Description:  "涓撲笟浼氬憳鏈嶅姟",
+			Features:     jsonStringList("专业格式检查", "每日1000次检查限制", "文件大小限制50MB", "优先处理", "专属支持"),
+			Description:  "专业会员服务",
 			SortOrder:    3,
 			IsActive:     true,
 		},
@@ -222,10 +226,18 @@ func insertDefaultMemberLevels() {
 		var count int64
 		DB.Model(&model.MemberLevel{}).Where("level_name = ?", level.LevelName).Count(&count)
 		if count == 0 {
-			DB.Create(&level)
-			log.Printf("鎻掑叆浼氬憳绛夌骇: %s", level.LevelName)
+			if err := DB.Create(&level).Error; err != nil {
+				log.Printf("插入会员等级失败: %s: %v", level.LevelName, err)
+				continue
+			}
+			log.Printf("插入会员等级: %s", level.LevelName)
 		}
 	}
+}
+
+func jsonStringList(values ...string) string {
+	encoded, _ := json.Marshal(values) // []string cannot fail to marshal.
+	return string(encoded)
 }
 
 // insertDefaultSystemSettings 鎻掑叆榛樿绯荤粺璁剧疆

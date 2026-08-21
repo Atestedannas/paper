@@ -38,18 +38,19 @@ type FormatterConfig struct {
 
 // Config 应用配置结构体
 type Config struct {
-	Server        ServerConfig        `mapstructure:"server"`
-	Database      DatabaseConfig      `mapstructure:"database"`
-	JWT           JWTConfig           `mapstructure:"jwt"`
-	File          FileConfig          `mapstructure:"file"`
-	Log           LogConfig           `mapstructure:"log"`
-	RBAC          RBACConfig          `mapstructure:"rbac"`
-	Wechat        WechatConfig        `mapstructure:"wechat"`
-	WechatSandbox WechatSandboxConfig `mapstructure:"wechat_sandbox"`
-	Alipay        AlipayConfig        `mapstructure:"alipay"`
-	Payment       PaymentConfig       `mapstructure:"payment"`
-	DeepSeek      DeepSeekConfig      `mapstructure:"deepseek"`
-	Formatter     FormatterConfig     `mapstructure:"formatter"`
+	Server           ServerConfig        `mapstructure:"server"`
+	Database         DatabaseConfig      `mapstructure:"database"`
+	JWT              JWTConfig           `mapstructure:"jwt"`
+	File             FileConfig          `mapstructure:"file"`
+	Log              LogConfig           `mapstructure:"log"`
+	RBAC             RBACConfig          `mapstructure:"rbac"`
+	Wechat           WechatConfig        `mapstructure:"wechat"`
+	WechatSandbox    WechatSandboxConfig `mapstructure:"wechat_sandbox"`
+	Alipay           AlipayConfig        `mapstructure:"alipay"`
+	Payment          PaymentConfig       `mapstructure:"payment"`
+	DeepSeek         DeepSeekConfig      `mapstructure:"deepseek"`
+	Formatter        FormatterConfig     `mapstructure:"formatter"`
+	PythonServiceURL string              `mapstructure:"python_service_url"`
 }
 
 // RBACConfig RBAC 配置
@@ -160,7 +161,7 @@ func LoadConfig(configPath string) (*Config, error) {
 			Expiration:         24 * time.Hour,
 			AccessTokenExpiry:  1 * time.Hour,
 			RefreshTokenExpiry: 30 * 24 * time.Hour,
-			MaxRefreshCount:    5,
+			MaxRefreshCount:    0, // unlimited rotation; expiry and revocation are the bounds
 		},
 		File: FileConfig{
 			UploadPath:   "./uploads",
@@ -467,6 +468,14 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 	if sp := os.Getenv("FORMATTER_SCHOOL_SPEC"); sp != "" {
 		config.Formatter.SchoolSpecPath = sp
+	}
+	if pythonURL := strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")); pythonURL != "" {
+		config.PythonServiceURL = pythonURL
+	}
+	if strings.TrimSpace(config.PythonServiceURL) == "" {
+		// Local Go development reaches the Python service through its published port.
+		// Docker Compose overrides this with http://python-ocr:8000.
+		config.PythonServiceURL = "http://127.0.0.1:8000"
 	}
 
 	if err := config.Validate(); err != nil {

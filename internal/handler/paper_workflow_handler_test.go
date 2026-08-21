@@ -146,7 +146,7 @@ func TestPaperWorkflowHandlerDownloadJobReturnsFileForVerifiedPass(t *testing.T)
 	}
 }
 
-func TestPaperWorkflowHandlerDownloadJobRejectsDraftForManualReview(t *testing.T) {
+func TestPaperWorkflowHandlerDownloadJobAllowsManualReviewArtifact(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "draft.docx")
 	if err := os.WriteFile(path, []byte("draft bytes"), 0644); err != nil {
@@ -165,11 +165,11 @@ func TestPaperWorkflowHandlerDownloadJobRejectsDraftForManualReview(t *testing.T
 		},
 	}, root), jobID.String(), userID)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusConflict, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if strings.Contains(rec.Body.String(), "draft bytes") {
-		t.Fatalf("manual-review draft must not be downloadable: %q", rec.Body.String())
+	if rec.Body.String() != "draft bytes" {
+		t.Fatalf("body = %q, want downloadable artifact", rec.Body.String())
 	}
 }
 

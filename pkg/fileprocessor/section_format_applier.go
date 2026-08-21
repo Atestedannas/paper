@@ -298,7 +298,18 @@ func (p *EnhancedProcessor) applySectionBreaksForPageNumbering(doc *document.Doc
 		log.Printf("[分节] 摘要前插入分节符 (罗马数字页码), 段落索引=%d", abstractIdx)
 	}
 	if bodyStartIdx >= 0 {
-		p.insertSectionBreakBefore(paragraphs[bodyStartIdx], wml.ST_NumberFormatDecimal)
+		// The source may already have a section break immediately before the
+		// first body heading. Avoid creating an empty adjacent section, which
+		// changes header/footer inheritance and page numbering.
+		hasPreviousBreak := bodyStartIdx > 0 && paragraphs[bodyStartIdx-1].X().PPr != nil &&
+			paragraphs[bodyStartIdx-1].X().PPr.SectPr != nil
+		if hasPreviousBreak {
+			p.runDocumentFormattingSelfCheck("applySectionBreaksForPageNumbering", doc)
+			log.Printf("[分节] 正文前已有分节符，跳过重复插入（段落索引=%d）", bodyStartIdx)
+			return
+		} else {
+			p.insertSectionBreakBefore(paragraphs[bodyStartIdx], wml.ST_NumberFormatDecimal)
+		}
 		log.Printf("[分节] 正文前插入分节符 (阿拉伯数字页码从1开始), 段落索引=%d", bodyStartIdx)
 	}
 	p.runDocumentFormattingSelfCheck("applySectionBreaksForPageNumbering", doc)

@@ -31,6 +31,20 @@ Gitee 是 OSCHINA 推出的基于 Git 的代码托管平台（同时支持 SVN�
 
 #### 特技
 
+
+
+
+
+
+ast, err := paperast.Extract(job.Paper.FilePath)
+
+	//fixme 内容检查  将ast   使用deepseek 发送 检查内容错误
+
+
+
+
+
+
 1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
 2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
 3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目

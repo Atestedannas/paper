@@ -316,19 +316,18 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 		return
 	}
 	newTemplate := model.FormatTemplate{
-		ID:                 newTemplateID,
-		TemplateID:         uuid.New().String(),
-		Name:               fmt.Sprintf("%s%s格式标准", universityName, documentType),
-		UniversityID:       &university.ID,
-		DocumentType:       documentType,
-		Subject:            subject,
-		Source:             "sample_upload",
-		IsActive:           true,
-		IsPublic:           true,
-		FilePath:           stablePath,
-		GoldenTemplatePath: stablePath,
-		FormatRules:        string(formatRulesJSON),
-		Description:        description,
+		ID:           newTemplateID,
+		TemplateID:   uuid.New().String(),
+		Name:         fmt.Sprintf("%s%s格式标准", universityName, documentType),
+		UniversityID: &university.ID,
+		DocumentType: documentType,
+		Subject:      subject,
+		Source:       "sample_upload",
+		IsActive:     true,
+		IsPublic:     true,
+		FilePath:     stablePath,
+		FormatRules:  string(formatRulesJSON),
+		Description:  description,
 	}
 	if err := database.DB.Create(&newTemplate).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())
@@ -488,20 +487,19 @@ func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string, up
 		}
 	}
 	newTemplate := model.FormatTemplate{
-		ID:                 newTemplateID,
-		TemplateID:         uuid.New().String(),
-		Name:               fmt.Sprintf("%s%s格式标准", universityName, documentType),
-		UniversityID:       &university.ID,
-		DocumentType:       documentType,
-		Subject:            subject,
-		Source:             "university_upload",
-		IsActive:           true,
-		IsPublic:           true,
-		FilePath:           stablePath,
-		GoldenTemplatePath: stablePath,
-		FormatRules:        string(formatRulesJSON),
-		ParseConfidence:    parseResult.Quality.QualityScore,
-		Description:        description,
+		ID:              newTemplateID,
+		TemplateID:      uuid.New().String(),
+		Name:            fmt.Sprintf("%s%s格式标准", universityName, documentType),
+		UniversityID:    &university.ID,
+		DocumentType:    documentType,
+		Subject:         subject,
+		Source:          "university_upload",
+		IsActive:        true,
+		IsPublic:        true,
+		FilePath:        stablePath,
+		FormatRules:     string(formatRulesJSON),
+		ParseConfidence: parseResult.Quality.QualityScore,
+		Description:     description,
 	}
 	if err := database.DB.Create(&newTemplate).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())

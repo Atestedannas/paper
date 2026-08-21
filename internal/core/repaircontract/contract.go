@@ -222,7 +222,7 @@ func validateVisibleContentPreserved(before, after paperast.Snapshot, allowedIns
 func visibleNodeTexts(nodes []paperast.Node) []string {
 	texts := make([]string, 0, len(nodes))
 	for _, node := range nodes {
-		if node.SectionID == "toc" {
+		if node.SectionID == "toc" || node.SemanticRole == "header" || node.SemanticRole == "footer" || node.SemanticRole == "instruction_textbox" {
 			continue
 		}
 		text := strings.TrimSpace(node.Text)

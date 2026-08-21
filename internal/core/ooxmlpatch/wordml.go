@@ -21,6 +21,8 @@ var (
 	indentElement          = regexp.MustCompile(`<w:ind\b[^>]*/>`)
 	pageBreakBeforeElement = regexp.MustCompile(`<w:pageBreakBefore\b[^>]*/>`)
 	keepNextElement        = regexp.MustCompile(`<w:keepNext\b[^>]*/>`)
+	keepLinesElement       = regexp.MustCompile(`<w:keepLines\b[^>]*/>`)
+	widowControlElement    = regexp.MustCompile(`<w:widowControl\b[^>]*/>`)
 	snapToGridElement      = regexp.MustCompile(`<w:snapToGrid\b[^>]*/>`)
 	adjustRightIndElement  = regexp.MustCompile(`<w:adjustRightInd\b[^>]*/>`)
 	paragraphStyleElement  = regexp.MustCompile(`<w:pStyle\b[^>]*/>`)
@@ -83,6 +85,11 @@ type ParagraphPropertiesSpec struct {
 	FirstLineCharsSet  bool
 	PageBreakBefore    bool
 	KeepNext           bool
+	KeepNextSet        bool
+	KeepLines          bool
+	KeepLinesSet       bool
+	WidowControl       bool
+	WidowControlSet    bool
 	SnapToGridOff      bool
 	AdjustRightIndZero bool
 	RunPropertiesInPPr bool
@@ -147,6 +154,40 @@ func ApplySectionProperties(documentXML string, spec SectionPropertiesSpec) (str
 		return documentXML[:idx] + updatedSectPr + documentXML[idx:], true
 	}
 	return documentXML + updatedSectPr, true
+}
+
+// ApplySectionPropertiesAll applies the template page setup to every section
+// in the document.  ApplySectionProperties intentionally targets only the
+// final sectPr (the OOXML body-level section), which is insufficient when a
+// student document contains cover/TOC/body section breaks: earlier sections
+// would retain the student's margins.
+func ApplySectionPropertiesAll(documentXML string, spec SectionPropertiesSpec) (string, bool) {
+	indexes := sectionPropertiesElement.FindAllStringIndex(documentXML, -1)
+	if len(indexes) == 0 {
+		return ApplySectionProperties(documentXML, spec)
+	}
+	updated := documentXML
+	changed := false
+	// Replace from the end so byte offsets remain valid while preserving every
+	// section's header/footer references and other unrelated properties.
+	for i := len(indexes) - 1; i >= 0; i-- {
+		currentIndexes := sectionPropertiesElement.FindAllStringIndex(updated, -1)
+		if i >= len(currentIndexes) {
+			continue
+		}
+		idx := currentIndexes[i]
+		sectPr := updated[idx[0]:idx[1]]
+		next := replaceElementBody(sectPr, updateSectionPropertiesBody(elementBody(sectPr), spec), "w:sectPr")
+		if ordered, _, err := ooxmlpkg.RepairPropertyBlock([]byte(next), "sectPr"); err == nil {
+			next = string(ordered)
+		}
+		if next == sectPr {
+			continue
+		}
+		updated = updated[:idx[0]] + next + updated[idx[1]:]
+		changed = true
+	}
+	return updated, changed
 }
 
 func ApplySectionPropertiesAt(documentXML string, sectionIndex int, spec SectionPropertiesSpec) (string, bool) {
@@ -387,8 +428,14 @@ func updateParagraphPropertiesBody(body string, spec ParagraphPropertiesSpec) st
 	if spec.PageBreakBefore {
 		body = upsertOnOffProperty(body, pageBreakBeforeElement, "w:pageBreakBefore", true)
 	}
-	if spec.KeepNext {
-		body = upsertOnOffProperty(body, keepNextElement, "w:keepNext", true)
+	if spec.KeepNext || spec.KeepNextSet {
+		body = upsertOnOffProperty(body, keepNextElement, "w:keepNext", spec.KeepNext)
+	}
+	if spec.KeepLines || spec.KeepLinesSet {
+		body = upsertOnOffProperty(body, keepLinesElement, "w:keepLines", spec.KeepLines)
+	}
+	if spec.WidowControl || spec.WidowControlSet {
+		body = upsertOnOffProperty(body, widowControlElement, "w:widowControl", spec.WidowControl)
 	}
 	if spec.SnapToGridOff {
 		body = upsertPropertyElement(body, snapToGridElement, "w:snapToGrid", []xmlAttributeUpdate{{"w:val", "0"}}, nil)

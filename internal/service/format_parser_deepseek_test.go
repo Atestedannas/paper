@@ -12,6 +12,14 @@ type fakeFormatAIClient struct {
 	calls     int
 }
 
+func TestInitAIClientDisablesLegacyWholeTemplateCalls(t *testing.T) {
+	parser := NewFormatParserService()
+	parser.InitAIClient("configured-cookie", "configured-bearer", true)
+	if parser.aiClient != nil {
+		t.Fatal("legacy parser must not initialize a DeepSeek client for complete template text")
+	}
+}
+
 func (f *fakeFormatAIClient) ChatCompletion(string) (string, error) {
 	i := f.calls
 	f.calls++
@@ -24,7 +32,7 @@ func (f *fakeFormatAIClient) ChatCompletion(string) (string, error) {
 	return f.responses[i], nil
 }
 
-func TestParseFormatFromTextDetailedExtractsAllChunks(t *testing.T) {
+func TestParseFormatFromTextDetailedDoesNotSendLegacyChunks(t *testing.T) {
 	client := &fakeFormatAIClient{responses: []string{
 		`{"title":{"font_size":"小二"}}`,
 		`{"body":{"font_name":"宋体"}}`,
@@ -39,22 +47,15 @@ func TestParseFormatFromTextDetailedExtractsAllChunks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if client.calls != 4 {
-		t.Fatalf("DeepSeek calls = %d, want 4", client.calls)
+	if client.calls != 0 {
+		t.Fatalf("legacy DeepSeek calls = %d, want 0", client.calls)
 	}
-	if result.Quality.ChunkCount != 2 || result.Quality.SuccessfulChunks != 2 {
+	if result.Quality.SuccessfulChunks != 0 || result.Quality.HighConfidence {
 		t.Fatalf("quality = %+v", result.Quality)
-	}
-	if result.Quality.QualityScore != 1 || !result.Quality.HighConfidence {
-		t.Fatalf("quality score = %+v, want high-confidence 1.0", result.Quality)
-	}
-	body, ok := result.Rules["body"].(map[string]interface{})
-	if !ok || body["font_name"] != "宋体" {
-		t.Fatalf("body rules = %#v", result.Rules["body"])
 	}
 }
 
-func TestParseFormatFromTextDetailedRetriesInvalidJSONOnce(t *testing.T) {
+func TestParseFormatFromTextDetailedDoesNotRetryLegacyAI(t *testing.T) {
 	client := &fakeFormatAIClient{responses: []string{
 		`not json`,
 		`{"title":{"font_size":"小二"}}`,
@@ -67,11 +68,8 @@ func TestParseFormatFromTextDetailedRetriesInvalidJSONOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if client.calls != 2 || result.Quality.RetriedChunks != 1 || result.Quality.SuccessfulChunks != 1 {
+	if client.calls != 0 || result.Quality.SuccessfulChunks != 0 || result.Quality.HighConfidence {
 		t.Fatalf("calls=%d quality=%+v", client.calls, result.Quality)
-	}
-	if !result.Quality.HighConfidence {
-		t.Fatalf("retry result should be high confidence: %+v", result.Quality)
 	}
 }
 

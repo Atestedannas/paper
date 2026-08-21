@@ -6,8 +6,6 @@ import (
 	"log"
 	"strings"
 	"time"
-
-	"github.com/paper-format-checker/backend/pkg/aiclassifier"
 )
 
 const aiFormatPrompt = `你是一个学术论文格式规范解析专家。请从以下格式规范文本中提取所有格式要求，输出为严格的JSON格式。
@@ -750,9 +748,7 @@ func trimDeepSeekResponseBody(response string) string {
 // 第二返回值 aiRawBody 为去掉围栏后的模型原文（成功/失败均尽量返回，便于调试）；在调用失败时也可能含截断的 SSE 片段。
 // kind 传空字符串时等同于 FormatAIPromptKindFormatRules。
 func (s *FormatParserService) ParseFormatWithAI(text string, kind string) (data map[string]interface{}, aiRawBody string, err error) {
-	if s.aiClient == nil {
-		return nil, "", fmt.Errorf("AI client not available")
-	}
+	return nil, "", fmt.Errorf("legacy unstructured DeepSeek parser disabled; use structured evidence compiler")
 
 	if kind == "" {
 		kind = FormatAIPromptKindFormatRules
@@ -770,10 +766,10 @@ func (s *FormatParserService) ParseFormatWithAI(text string, kind string) (data 
 
 	switch kind {
 	case FormatAIPromptKindFormatRules:
-		maxRunes = 6000
+		maxRunes = 0 // format rules are template data; do not silently truncate them
 		minRunes = 50
 		logTag = "[格式解析AI]"
-		if runeLen > maxRunes {
+		if maxRunes > 0 && runeLen > maxRunes {
 			text = string([]rune(text)[:maxRunes])
 			runeLen = maxRunes
 		}
@@ -996,12 +992,11 @@ func (s *FormatParserService) ParseFormatFromTextSmart(text string) (string, err
 
 // InitAIClient 初始化 AI 客户端（在获取配置后调用）
 func (s *FormatParserService) InitAIClient(cookie, bearer string, enabled bool) {
-	if enabled && cookie != "" {
-		s.aiClient = aiclassifier.NewDeepSeekWebClient(cookie, bearer)
-		log.Println("[格式解析] AI 增强解析已启用")
-	} else {
-		log.Println("[格式解析] AI 未配置，使用纯正则解析")
-	}
+	// This parser receives complete template text. It must never become a
+	// production DeepSeek boundary: semantic calls require one typed evidence
+	// packet per subject and source IDs, handled by roleclassify instead.
+	s.aiClient = nil
+	log.Printf("[DEEPSEEK_POLICY] legacy full-template format parser disabled enabled=%t credentials_configured=%t", enabled, cookie != "" || bearer != "")
 }
 
 const aiUniversityPrompt = `从以下论文格式规范文本中提取高校信息。只输出JSON，不要其他文字。

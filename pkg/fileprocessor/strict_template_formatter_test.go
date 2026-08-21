@@ -69,6 +69,55 @@ func TestStrictTemplateFormatterPreservesUserContentAndCopiesTemplatePageSize(t 
 	}
 }
 
+func TestMapTemplateSectionsUsesPostTOCBodyHeader(t *testing.T) {
+	section := func(text, ref string) string {
+		return `<w:p><w:r><w:t>` + text + `</w:t></w:r><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="` + ref + `"/></w:sectPr></w:pPr></w:p>`
+	}
+	output := section("封面", "out-cover") + section("摘要", "out-abstract") + section("目录", "out-toc") + section("1 绪论", "out-body")
+	template := section("封面", "tpl-cover") + section("原创性声明", "tpl-front") + section("目录", "tpl-toc") + section("1 绪论", "tpl-body")
+	refs := mapTemplateSectionHeaderFooterRefs(output, template)
+	if len(refs) != 4 {
+		t.Fatalf("mapped %d sections, want 4", len(refs))
+	}
+	if !strings.Contains(refs[3][0], `r:id="tpl-body"`) {
+		t.Fatalf("post-TOC body used wrong template refs: %v", refs[3])
+	}
+}
+
+func TestMapTemplateSectionsSkipsBlankHeaderSamples(t *testing.T) {
+	section := func(text, ref string) string {
+		return `<w:p><w:r><w:t>` + text + `</w:t></w:r><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="` + ref + `"/></w:sectPr></w:pPr></w:p>`
+	}
+	output := section("封面", "out-cover") + section("ABSTRACT", "out-abstract") + section("目录", "out-toc") + section("1 绪论", "out-body")
+	template := section("封面", "tpl-cover") + section("ABSTRACT", "tpl-abstract-blank") + section("ABSTRACT", "tpl-abstract") + section("目录", "tpl-toc-blank") + section("目录", "tpl-toc") + section("1 绪论", "tpl-body-blank") + section("1 绪论", "tpl-body")
+	refs := mapTemplateSectionHeaderFooterRefsWithVisibleHeaders(output, template, map[string]strictSectionRole{
+		"tpl-abstract": strictSectionAbstractEN, "tpl-toc": strictSectionTOC, "tpl-body": strictSectionBody,
+	})
+	for index, want := range []string{"tpl-cover", "tpl-abstract", "tpl-toc", "tpl-body"} {
+		if len(refs[index]) == 0 || !strings.Contains(refs[index][0], `r:id="`+want+`"`) {
+			t.Fatalf("section %d refs=%v, want %s", index, refs[index], want)
+		}
+	}
+}
+
+func TestMaterializeRunningHeaderStyleRef(t *testing.T) {
+	input := `<w:hdr><w:p><w:r><w:t>重庆工程学院本科生毕业设计（论文）</w:t></w:r><w:r><w:t>1 绪论</w:t></w:r></w:p></w:hdr>`
+	got := materializeRunningHeaderStyleRef(input)
+	if !strings.Contains(got, `STYLEREF "heading 1"`) || !strings.Contains(got, `重庆工程学院本科生毕业设计（论文）`) {
+		t.Fatalf("running header field missing: %s", got)
+	}
+	if twice := materializeRunningHeaderStyleRef(got); twice != got {
+		t.Fatalf("running header materialization must be idempotent: %s", twice)
+	}
+}
+
+func TestClassifyStrictSectionRoleIgnoresLaterAbstractWord(t *testing.T) {
+	text := "1 绪论 " + strings.Repeat("正文内容 ", 100) + "reference abstract appears here"
+	if got := classifyStrictSectionRole(text, 3); got != strictSectionBody {
+		t.Fatalf("section role = %q, want body", got)
+	}
+}
+
 func TestStrictTemplateFormatterCopiesTemplateHeaderFooterAndTableFormatting(t *testing.T) {
 	tmpDir := t.TempDir()
 	userPath := filepath.Join(tmpDir, "user.docx")

@@ -69,9 +69,9 @@ func (s *RefreshTokenService) ValidateRefreshToken(token string, maxRefreshCount
 		return nil, ErrRefreshTokenRevoked
 	}
 
-	if !refreshToken.CanRefresh(maxRefreshCount) {
-		return nil, ErrMaxRefreshExceeded
-	}
+	// Rotation is bounded by session expiry/revocation, not by a refresh-count
+	// cap. Keep the parameter for API compatibility with older callers.
+	_ = maxRefreshCount
 
 	return refreshToken, nil
 }

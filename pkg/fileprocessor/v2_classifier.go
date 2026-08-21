@@ -57,17 +57,19 @@ const (
 )
 
 var (
-	reHeading1Num   = regexp.MustCompile(`^(\d+)\s`)
-	reHeading1NumCN = regexp.MustCompile(`^([1-9])\p{Han}`)
-	reHeading1Ch    = regexp.MustCompile(`^第(?:[一二三四五六七八九十百]+|\d+)章`)
-	reHeading1List  = regexp.MustCompile(`^[一二三四五六七八九十百]+[、.．]`)
-	reHeading2      = regexp.MustCompile(`^(\d+)[.．](\d+)\s*[^.．\d]`)
-	reHeading3      = regexp.MustCompile(`^(\d+)[.．](\d+)[.．](\d+)`)
-	reHeading4      = regexp.MustCompile(`^(\d+)[.．](\d+)[.．](\d+)[.．](\d+)`)
-	reRefItem       = regexp.MustCompile(`^\[?\d+\]`)
-	reTOCDots       = regexp.MustCompile(`[．\.…]{2,}`)
-	reFigureCaption = regexp.MustCompile(`^图\s*\d+`)
-	reTableCaption  = regexp.MustCompile(`^表\s*\d+`)
+	reHeading1Num     = regexp.MustCompile(`^(\d+)\s`)
+	reHeading1Compact = regexp.MustCompile(`^(\d+)、\s*([^\d\s].+)$`)
+	reHeading2Compact = regexp.MustCompile(`^(\d+)[.．]\s*([^\d\s].+)$`)
+	reHeading1NumCN   = regexp.MustCompile(`^([1-9])\p{Han}`)
+	reHeading1Ch      = regexp.MustCompile(`^第(?:[一二三四五六七八九十百]+|\d+)章`)
+	reHeading1List    = regexp.MustCompile(`^[一二三四五六七八九十百]+[、.．]`)
+	reHeading2        = regexp.MustCompile(`^(\d+)[.．](\d+)\s*[^.．\d]`)
+	reHeading3        = regexp.MustCompile(`^(\d+)[.．](\d+)[.．](\d+)`)
+	reHeading4        = regexp.MustCompile(`^(\d+)[.．](\d+)[.．](\d+)[.．](\d+)`)
+	reRefItem         = regexp.MustCompile(`^\[?\d+\]`)
+	reTOCDots         = regexp.MustCompile(`[．\.…]{2,}`)
+	reFigureCaption   = regexp.MustCompile(`^图\s*\d+`)
+	reTableCaption    = regexp.MustCompile(`^表\s*\d+`)
 )
 
 // V2ClassifiedPara 分类结果
@@ -495,10 +497,18 @@ func isHeading1(s string) bool {
 			return true
 		}
 	}
+	if match := reHeading1Compact.FindStringSubmatch(strings.TrimSpace(s)); len(match) == 3 && likelyShortHeadingTitle(match[2]) {
+		return true
+	}
 	if strings.HasPrefix(s, "绪论") || strings.HasPrefix(s, "引言") || strings.HasPrefix(s, "结论") {
 		return true
 	}
 	return false
+}
+
+func likelyShortHeadingTitle(title string) bool {
+	title = strings.TrimSpace(title)
+	return title != "" && len([]rune(title)) <= 32 && !strings.ContainsAny(title, "。！？；;，,")
 }
 
 func v2HasTOCStyle(para document.Paragraph) bool {
@@ -546,6 +556,9 @@ func classifyBodyParagraph(s string) string {
 		return V2Heading3
 	}
 	if reHeading2.MatchString(s) {
+		return V2Heading2
+	}
+	if match := reHeading2Compact.FindStringSubmatch(strings.TrimSpace(s)); len(match) == 3 && likelyShortHeadingTitle(match[2]) {
 		return V2Heading2
 	}
 	if isHeading1(s) {

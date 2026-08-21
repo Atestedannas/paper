@@ -19,8 +19,9 @@ import (
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/paper-format-checker/backend/internal/core/cqrwst"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
+	"github.com/paper-format-checker/backend/internal/core/paperast"
+	"github.com/paper-format-checker/backend/internal/core/templateapply"
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 	"github.com/paper-format-checker/backend/internal/core/transplant"
 )
@@ -257,67 +258,76 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 		if ruleEngine.Profile != nil {
 			profileForMargins = ruleEngine.Profile
 		}
+		// The OOXML profile is the source of truth.  GetRule also contains
+		// legacy compiled/instruction rules, which can describe a different
+		// sample from the same template (notably body bold/alignment and
+		// complex-script size).  Use the profile-backed map for every role so
+		// one extraction cannot be silently overwritten by the fallback loader.
+		specFor := func(category string) (ParagraphFormatSpec, bool) {
+			spec, ok := resolvedSpecs[category]
+			return spec, ok
+		}
 		headingSpecs = make(map[string]ParagraphFormatSpec)
 		for _, category := range []string{
 			V2Heading1, V2Heading2, V2Heading3, V2Heading4,
 			V2AcknowledgementsTitle, V2Acknowledgements,
 			V2AppendixTitle, V2Appendix, V2NotesTitle, V2Notes,
 		} {
-			if spec, ok := ruleEngine.GetRule(category); ok {
+			if spec, ok := specFor(category); ok {
 				headingSpecs[category] = spec
 			}
 		}
 		// 🔒 LOCKED: 正文段落 — bodySpec 从 FormatRuleEngine 取值（模板 > 硬编码兜底）
-		if bs, ok := ruleEngine.GetRule("body"); ok {
+		if bs, ok := specFor("body"); ok {
 			bodySpec = &bs
 		}
 		// 🔒 LOCKED: 参考文献条目 — refSpec 从 FormatRuleEngine 取值，行距不硬编码
-		if rs, ok := ruleEngine.GetRule("references"); ok {
+		if rs, ok := specFor("references"); ok {
 			refSpec = &rs
 		}
-		if spec, ok := ruleEngine.GetRule("cover_title"); ok {
+		if spec, ok := specFor("cover_title"); ok {
 			coverTitleSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("cover"); ok {
+		if spec, ok := specFor("cover"); ok {
 			coverFieldSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("abstract_title"); ok {
+		if spec, ok := specFor("abstract_title"); ok {
 			abstractTitleSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("abstract"); ok {
+		if spec, ok := specFor("abstract"); ok {
 			abstractContentSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("keywords"); ok {
+		if spec, ok := specFor("keywords"); ok {
 			keywordsSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("en_abstract_title"); ok {
+		if spec, ok := specFor("en_abstract_title"); ok {
 			enAbstractTitleSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("en_abstract"); ok {
+		if spec, ok := specFor("en_abstract"); ok {
 			enAbstractContentSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("en_keywords"); ok {
+		if spec, ok := specFor("en_keywords"); ok {
 			enKeywordsSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("toc_title"); ok {
+		if spec, ok := specFor("toc_title"); ok {
 			tocTitleSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("toc_entry"); ok {
+		if spec, ok := specFor("toc_entry"); ok {
 			tocEntrySpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("references_title"); ok {
+		if spec, ok := specFor("references_title"); ok {
 			referencesTitleSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("section_title"); ok {
+		if spec, ok := specFor("section_title"); ok {
 			sectionTitleSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("notes"); ok {
+		if spec, ok := specFor("notes"); ok {
 			notesSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("caption"); ok {
+		if spec, ok := specFor("caption"); ok {
 			captionSpec = &spec
 		}
-		if spec, ok := ruleEngine.GetRule("header"); ok {
+		if spec, ok := specFor("header"); ok {
 			headerSpec = &spec
 		}
 		templateHeaderText = ""
@@ -481,6 +491,12 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 				}
 			}
 		}
+	}
+	// Save/section-margin patches can reintroduce empty numeric OOXML
+	// attributes (notably w:gutter=""). Normalize after the last package write
+	// so the V2 engine itself always returns a reopenable DOCX.
+	if _, err := transplant.NormalizeFinalDOCX(outputPath); err != nil {
+		return "", fmt.Errorf("normalize V2 output: %w", err)
 	}
 
 	elapsed := time.Since(startTime)
@@ -779,6 +795,26 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 		}
 		runLog.printf("统一规则计划：成功；产物=%s", plannedPath)
 		logOutputParagraphCount("unified-rule-plan", plannedPath)
+		// Apply region-specific OOXML rules before strong verification. The V2
+		// body-level classifier cannot reliably reach cover-table dates and
+		// captions, so verifying before these passes creates avoidable fallback
+		// rebuilds and leaves those paragraphs in the student's old format.
+		preProfile, profileErr := templateprofile.Extract(templatePath)
+		if profileErr != nil {
+			return "", fmt.Errorf("extract template profile before strong verification: %w", profileErr)
+		}
+		if _, err := templateapply.ApplyTemplateProfileCoverStylesAndPageSetup(ctx, plannedPath, preProfile); err != nil {
+			return "", fmt.Errorf("apply pre-verification cover profile: %w", err)
+		}
+		if _, err := templateapply.ApplyTemplateProfileCaptionStyles(ctx, plannedPath, preProfile); err != nil {
+			return "", fmt.Errorf("apply pre-verification caption profile: %w", err)
+		}
+		if _, err := templateapply.ApplyTemplateProfileBodyListStyles(ctx, plannedPath, preProfile); err != nil {
+			return "", fmt.Errorf("apply pre-verification body-list profile: %w", err)
+		}
+		if _, err := templateapply.ApplyTemplateProfileTOCStyles(ctx, plannedPath, preProfile); err != nil {
+			return "", fmt.Errorf("apply pre-verification TOC profile: %w", err)
+		}
 		finalPath, finalEngine, err := p.enforceStrongFormatConsistency(ctx, docPath, plannedPath, templatePath, corrections, primaryEngine)
 		if err != nil {
 			return "", err
@@ -789,12 +825,15 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 		if err != nil {
 			return "", fmt.Errorf("extract template profile for final validation: %w", err)
 		}
-		if _, err := cqrwst.ApplyTemplateProfilePageSetup(ctx, finalPath, profile); err != nil {
-			return "", fmt.Errorf("apply final template profile page setup: %w", err)
+		if applied, err := templateapply.ApplyTemplateProfileCoverStylesAndPageSetup(ctx, finalPath, profile); err != nil {
+			return "", fmt.Errorf("apply final template profile styles and page setup: %w", err)
+		} else {
+			runLog.printf("最终模板 Profile 样式与页面设置重写：成功；修改=%d 处", applied)
 		}
 		runLog.printf("最终页面设置重写：成功；%s", humanPageSetup(profile.PageSetup))
 		logOutputParagraphCount("template-profile", finalPath)
 		p.applyPostSavePatches(finalPath, templatePath)
+		p.normalizeFinalBoldByProfile(finalPath, templatePath)
 		runLog.printf("保存后 XML 补丁：已执行（页眉规范化、页码域规范化、页边距兜底）。")
 		logOutputParagraphCount("post-save-patches", finalPath)
 		if _, err := transplant.NormalizeFinalDOCX(finalPath); err != nil {
@@ -807,12 +846,69 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 		}
 		runLog.printf("OOXML 段落属性/文字属性元素顺序修复：成功。")
 		logOutputParagraphCount("property-order", finalPath)
+		// Reapply the narrow cover-only profile pass after all final OOXML
+		// normalization so a writer cannot reintroduce stale cover run props.
+		if applied, err := templateapply.ApplyTemplateProfileCoverStylesAndPageSetup(ctx, finalPath, profile); err != nil {
+			return "", fmt.Errorf("reapply final cover profile: %w", err)
+		} else {
+			runLog.printf("final cover profile verification: applied=%d", applied)
+		}
+		if applied, err := templateapply.ApplyTemplateProfileCaptionStyles(ctx, finalPath, profile); err != nil {
+			return "", fmt.Errorf("reapply final caption profile: %w", err)
+		} else {
+			runLog.printf("final caption profile verification: applied=%d", applied)
+		}
+		if applied, err := templateapply.ApplyTemplateProfileBodyListStyles(ctx, finalPath, profile); err != nil {
+			return "", fmt.Errorf("reapply final body-list profile: %w", err)
+		} else {
+			runLog.printf("final body-list profile verification: applied=%d", applied)
+		}
+		if applied, err := templateapply.ApplyTemplateProfileTOCStyles(ctx, finalPath, profile); err != nil {
+			return "", fmt.Errorf("reapply final TOC profile: %w", err)
+		} else {
+			runLog.printf("final TOC profile verification: applied=%d", applied)
+		}
+		// The final OOXML normalizer may recreate section properties and
+		// relationship IDs.  Copy the template's header/footer package after
+		// that last writer, so the file delivered to the user cannot retain the
+		// student's empty header parts or stale references.  Re-materialize
+		// placeholders from the source cover when available.
+		coverInfo := map[string]string{}
+		if sourceDoc, openErr := document.Open(docPath); openErr == nil {
+			coverInfo = p.extractCoverInfo(sourceDoc)
+			sourceDoc.Close()
+		}
+		if err := copyAndMaterializeTemplateHeaderFooter(templatePath, finalPath, coverInfo); err != nil {
+			return "", fmt.Errorf("final template header/footer copy: %w", err)
+		}
+		runLog.printf("最终页眉页脚包复制：已在最后写入阶段完成")
 		if sourceContent != nil {
 			if err := verifyDOCXContentPreserved(p, sourceContent, finalPath); err != nil {
+				SetFormatRunLogResult(ctx, "manual_review", "manual_review")
 				return "", fmt.Errorf("content preservation check failed: %w", err)
 			}
 			runLog.printf("内容保全检查：成功；段落数量=%d，逐段文字未改变。", len(sourceContent))
 		}
+		// The final profile/OOXML/header-footer passes above are the artifact
+		// returned to callers. Validate that exact artifact before marking the
+		// operation successful; earlier strong verification is only a repair hint.
+		// Do not let database/user JSON redefine the acceptance criteria. The
+		// selected DOCX template is the authoritative standard for the final
+		// download gate; JSON rules may guide repair but cannot mask a mismatch.
+		finalDiffs, verifyErr := p.countTemplateSpecDiffs(finalPath, templatePath, nil)
+		if verifyErr != nil {
+			SetFormatRunLogResult(ctx, "manual_review", "manual_review")
+			return "", fmt.Errorf("final format quality gate failed: %w", verifyErr)
+		}
+		// The final download gate is stricter than the optional repair retry
+		// threshold: a returned document must have zero profile differences.
+		runLog.printf("最终格式质量门禁：差异=%d，允许阈值=0", finalDiffs)
+		if finalDiffs != 0 {
+			SetFormatRunLogResult(ctx, "manual_review", "manual_review")
+			return "", fmt.Errorf("final format quality gate rejected output: %d diffs remain", finalDiffs)
+		}
+		SetFormatRunLogResult(ctx, "verified_pass", "verified")
+		runLog.printf("最终格式质量门禁：通过；仅允许下载最终已验证文件")
 		logPaperFormatAudit("GoV2", "path_chosen", map[string]interface{}{
 			"engine":      finalEngine,
 			"output_path": finalPath,
@@ -898,6 +994,90 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 	return finalPath, nil
 }
 
+// normalizeFinalBoldByProfile repairs stale run-level bold properties after
+// the final DOCX writer has serialized the document. Targets come only from
+// the template profile and deterministic classifier.
+func (p *EnhancedProcessor) normalizeFinalBoldByProfile(path, templatePath string) {
+	profile, err := templateprofile.Extract(templatePath)
+	if err != nil || profile == nil {
+		return
+	}
+	ruleEngine, err := NewFormatRuleEngine(p, templatePath, nil)
+	if err != nil {
+		return
+	}
+	specs := templateProfileBackedSpecs(ruleEngine.Rules(), profile)
+	doc, err := document.Open(path)
+	if err != nil {
+		return
+	}
+	classified := NewV2DeterministicClassifier(p).Classify(BodyLevelParagraphsOnly(doc))
+	targets := map[string]int{}
+	for _, item := range classified {
+		// A cover paragraph containing the document-type marker is the cover
+		// heading, not ordinary cover metadata. Do not let the generic cover
+		// normal-weight cleanup strip its template bold setting.
+		if item.Type == V2Cover || item.Type == V2ThesisTitle || isCoverTitleText(item.Text) {
+			continue
+		}
+		spec, ok := specs[item.Type]
+		if !ok || !spec.BoldSet || spec.Bold {
+			continue
+		}
+		if text := strings.TrimSpace(item.Text); text != "" {
+			targets[text]++
+		}
+	}
+	doc.Close()
+	if len(targets) == 0 {
+		return
+	}
+	entries, err := readDocxEntries(path)
+	if err != nil {
+		return
+	}
+	xml := string(entries["word/document.xml"])
+	paragraphPatternFinal := regexp.MustCompile(`(?s)<w:p\b[^>]*>.*?</w:p>`)
+	paragraphs := paragraphPatternFinal.FindAllStringIndex(xml, -1)
+	boldPattern := regexp.MustCompile(`(?s)<w:b(?:Cs)?\b[^>]*/>|<w:b(?:Cs)?\b[^>]*>.*?</w:b(?:Cs)>`)
+	rPrPattern := regexp.MustCompile(`(?s)<w:rPr\b[^>]*>.*?</w:rPr>`)
+	changed := 0
+	for i := len(paragraphs) - 1; i >= 0; i-- {
+		start, end := paragraphs[i][0], paragraphs[i][1]
+		paragraph := xml[start:end]
+		text := strings.TrimSpace(strings.Join(extractDocxTextNodes(paragraph), ""))
+		if targets[text] <= 0 {
+			continue
+		}
+		updated := rPrPattern.ReplaceAllStringFunc(paragraph, func(rPr string) string {
+			return boldPattern.ReplaceAllString(rPr, "")
+		})
+		if updated != paragraph {
+			xml = xml[:start] + updated + xml[end:]
+			targets[text]--
+			changed++
+		}
+	}
+	if changed == 0 {
+		return
+	}
+	entries["word/document.xml"] = []byte(xml)
+	if err := writeDocxEntries(path, entries); err != nil {
+		log.Printf("[最终粗体兜底] 写入失败: %v", err)
+	} else {
+		log.Printf("[最终粗体兜底] 按模板 Profile 清除 %d 个段落粗体", changed)
+	}
+}
+
+func isCoverTitleText(text string) bool {
+	text = strings.TrimSpace(text)
+	if strings.Contains(text, "原创性") || strings.Contains(text, "作者") || len([]rune(text)) > 32 {
+		return false
+	}
+	return strings.Contains(text, "毕业论文") || strings.Contains(text, "毕业设计") ||
+		strings.Contains(text, "学士学位") || strings.Contains(text, "硕士学位") || strings.Contains(text, "博士学位")
+}
+
 func captureDOCXContent(processor *EnhancedProcessor, path string) ([]string, error) {
 	doc, err := document.Open(path)
 	if err != nil {
@@ -921,11 +1101,16 @@ func verifyDOCXContentPreserved(processor *EnhancedProcessor, source []string, o
 		return fmt.Errorf("paragraph count changed from %d to %d", len(source), len(output))
 	}
 	for index := range source {
-		if source[index] != output[index] {
+		if normalizePreservedContentText(source[index]) != normalizePreservedContentText(output[index]) {
 			return fmt.Errorf("paragraph %d text changed", index)
 		}
 	}
 	return nil
+}
+
+func normalizePreservedContentText(text string) string {
+	text = strings.ReplaceAll(text, "\u3000", "")
+	return strings.Join(strings.Fields(text), "")
 }
 
 func (p *EnhancedProcessor) applyUnifiedRulePlanToFile(path, templatePath string, corrections []map[string]interface{}, runLog *formatRunLog) (string, error) {
@@ -948,6 +1133,9 @@ func (p *EnhancedProcessor) applyUnifiedRulePlanToFile(path, templatePath string
 	repair := NewRepairAgent(p, 3, p.repairDiagnosticClient()).WithLocks(locks).Run(doc, specs)
 	runLog.printf("最终统一规则计划的复检与修复：")
 	runLog.repair(repair)
+	if applied := applyVisualRepairs(doc, corrections); applied > 0 {
+		runLog.printf("Python视觉反馈应用：%d处高置信度修复", applied)
+	}
 	if repair.NeedsManualReview {
 		log.Printf("[修复代理] 规划执行后三轮仍有 %d 处差异，标记为需人工复核", repair.FinalDiffs)
 	}
@@ -962,6 +1150,116 @@ func (p *EnhancedProcessor) applyUnifiedRulePlanToFile(path, templatePath string
 		return "", fmt.Errorf("normalize unified rule plan output: %w", err)
 	}
 	return promoteStrongVerificationRetry(tempPath, path), nil
+}
+
+// applyVisualRepairs applies only explicit, targetable repairs returned by the
+// Python renderer. The node id is generated from the Go paragraph index, so a
+// missing or malformed target is ignored instead of widening the edit scope.
+func applyVisualRepairs(doc *document.Document, corrections []map[string]interface{}) int {
+	return applyVisualRepairsWithIndexes(doc, corrections, nil)
+}
+
+func applyVisualRepairsWithIndexes(doc *document.Document, corrections []map[string]interface{}, nodeIndexes map[string]int) int {
+	if doc == nil {
+		return 0
+	}
+	paragraphs := BodyLevelParagraphsOnly(doc)
+	paragraphByIndex := make(map[int]document.Paragraph, len(paragraphs))
+	for i, para := range paragraphs {
+		paragraphByIndex[i] = para
+	}
+	applied := 0
+	for _, correction := range corrections {
+		raw, ok := correction["visual_repairs"].([]map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, repair := range raw {
+			if repair["action"] != "set_paragraph_alignment" || repair["value"] == nil {
+				continue
+			}
+			nodeID, _ := repair["node_id"].(string)
+			index, found := nodeIndexes[nodeID]
+			if !found && strings.HasPrefix(nodeID, "para-") {
+				if parsed, err := strconv.Atoi(strings.TrimPrefix(nodeID, "para-")); err == nil {
+					index, found = parsed, true
+				}
+			}
+			if !found {
+				continue
+			}
+			alignment, _ := repair["value"].(string)
+			var value wml.ST_Jc
+			switch alignment {
+			case "center":
+				value = wml.ST_JcCenter
+			case "left":
+				value = wml.ST_JcLeft
+			case "right":
+				value = wml.ST_JcRight
+			case "justify", "both":
+				value = wml.ST_JcBoth
+			default:
+				continue
+			}
+			para, ok := paragraphByIndex[index]
+			if !ok {
+				continue
+			}
+			para.Properties().SetAlignment(value)
+			applied++
+		}
+	}
+	return applied
+}
+
+// ApplyVisualRepairsToFile applies only explicit high-confidence repairs from
+// the Python visual service and writes the result back to the same DOCX.
+// Keeping this narrow prevents OCR feedback from triggering a second global
+// formatting pass.
+func ApplyVisualRepairsToFile(path string, repairs []map[string]interface{}) (int, error) {
+	if strings.TrimSpace(path) == "" || len(repairs) == 0 {
+		return 0, nil
+	}
+	doc, err := document.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	ast, err := paperast.Extract(path)
+	if err != nil {
+		doc.Close()
+		return 0, fmt.Errorf("extract visual repair node IDs: %w", err)
+	}
+	nodeIndexes := make(map[string]int)
+	for _, node := range ast.Nodes {
+		if node.SourcePart == "word/document.xml" && node.NodeType == "paragraph" {
+			nodeIndexes[node.NodeID] = node.Index
+		}
+	}
+	applied := applyVisualRepairsWithIndexes(doc, []map[string]interface{}{{"visual_repairs": repairs}}, nodeIndexes)
+	if applied == 0 {
+		doc.Close()
+		return 0, nil
+	}
+	tmp := fmt.Sprintf("%s.python-visual-%d.docx", strings.TrimSuffix(path, filepath.Ext(path)), time.Now().UnixNano())
+	if err := doc.SaveToFile(tmp); err != nil {
+		doc.Close()
+		return 0, err
+	}
+	doc.Close()
+	if _, err := transplant.NormalizeFinalDOCX(tmp); err != nil {
+		_ = os.Remove(tmp)
+		return 0, err
+	}
+	if err := os.Remove(path); err != nil {
+		_ = os.Remove(tmp)
+		return 0, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return 0, err
+	}
+	return applied, nil
 }
 
 func strongVerificationEnabled() bool {
@@ -1000,11 +1298,23 @@ func planStrongVerificationAction(initialDiffs, retryDiffs, threshold int) (shou
 }
 
 func (p *EnhancedProcessor) countTemplateSpecDiffs(docPath, templatePath string, rules map[string]interface{}) (int, error) {
-	engine, err := NewFormatRuleEngine(p, templatePath, rules)
-	if err != nil {
-		return 0, err
+	var specs map[string]ParagraphFormatSpec
+	if rules == nil {
+		// Final verification must compare against the OOXML profile itself. A
+		// legacy/named-style fallback can turn an explicitly exact line rule
+		// into an auto rule and report false residuals after the profile pass.
+		profile, err := templateprofile.Extract(templatePath)
+		if err != nil {
+			return 0, err
+		}
+		specs = templateProfileBackedSpecs(nil, profile)
+	} else {
+		engine, err := NewFormatRuleEngine(p, templatePath, rules)
+		if err != nil {
+			return 0, err
+		}
+		specs = templateProfileBackedSpecs(engine.Rules(), engine.Profile)
 	}
-	specs := templateProfileBackedSpecs(engine.Rules(), engine.Profile)
 	if len(specs) == 0 {
 		return 0, fmt.Errorf("no template specs loaded")
 	}
@@ -1016,6 +1326,18 @@ func (p *EnhancedProcessor) countTemplateSpecDiffs(docPath, templatePath string,
 	verifier := NewFormatVerifier(p, nil)
 	classified := NewV2DeterministicClassifier(p).ClassifyToMap(BodyLevelParagraphsOnly(doc))
 	diffs := verifier.compareAllWithSpecs(classified, specs)
+	if len(diffs) > 0 {
+		// Keep strong-verification failures diagnosable; a bare count cannot
+		// distinguish a real template mismatch from a classifier/spec mapping
+		// error. The details are written to the existing per-run format log.
+		limit := len(diffs)
+		if limit > 40 {
+			limit = 40
+		}
+		for _, diff := range diffs[:limit] {
+			log.Printf("[强校验差异] category=%s para=%d property=%s expected=%s actual=%s text=%s", diff.Category, diff.ParaIdx, diff.Property, diff.Expected, diff.Actual, diff.TextSnip)
+		}
+	}
 	return len(diffs), nil
 }
 
@@ -1073,7 +1395,13 @@ func (p *EnhancedProcessor) enforceStrongFormatConsistency(
 		return p.fallbackToV2Engine(ctx, sourceDocPath, templatePath, corrections, initialDiffs, threshold)
 	}
 	ruleEngine, loadErr := NewFormatRuleEngine(p, templatePath, formatRules)
-	specs := ruleEngineRules(ruleEngine, loadErr)
+	var specs map[string]ParagraphFormatSpec
+	if loadErr == nil && ruleEngine != nil {
+		// The initial V2 pass is profile-backed; the strong retry must use the
+		// same OOXML-derived expectations. Falling back to the legacy loader here
+		// reintroduced instruction-text rules and caused needless rebuilds.
+		specs = templateProfileBackedSpecs(ruleEngine.Rules(), ruleEngine.Profile)
+	}
 	if loadErr != nil || len(specs) == 0 {
 		doc.Close()
 		_ = os.Remove(retryPath)
@@ -1204,22 +1532,25 @@ func templateProfileBackedSpecs(specs map[string]ParagraphFormatSpec, profile *t
 		return map[string]ParagraphFormatSpec{}
 	}
 	styleKeys := map[string][]string{
+		V2Cover:                 {"cover"},
 		V2ThesisTitle:           {"cover_title"},
 		V2AbstractTitle:         {"abstract_cn"},
 		V2Abstract:              {"abstract_body"},
+		V2Keywords:              {"keywords_cn_body", "keywords_cn"},
 		V2EnAbstractTitle:       {"abstract_en"},
 		V2EnAbstract:            {"abstract_en_body"},
+		V2EnKeywords:            {"keywords_en_body", "keywords_en"},
 		V2Heading1:              {"heading_1", "body_start"},
 		V2Heading2:              {"heading_2"},
 		V2Heading3:              {"heading_3"},
 		V2Heading4:              {"heading_4"},
-		V2Body:                  {"body"},
+		V2Body:                  {"body_text", "body"},
 		V2ReferencesTitle:       {"references_title"},
 		V2References:            {"references"},
 		V2AcknowledgementsTitle: {"acknowledgements_title"},
-		V2Acknowledgements:      {"acknowledgements"},
+		V2Acknowledgements:      {"acknowledgements_content", "acknowledgements"},
 		V2AppendixTitle:         {"appendix_title"},
-		V2Appendix:              {"appendix"},
+		V2Appendix:              {"appendix_content", "appendix"},
 		V2NotesTitle:            {"notes_title"},
 		V2Notes:                 {"notes"},
 		V2TOCTitle:              {"toc_title"},
@@ -1229,18 +1560,42 @@ func templateProfileBackedSpecs(specs map[string]ParagraphFormatSpec, profile *t
 	}
 	result := make(map[string]ParagraphFormatSpec)
 	for category, candidates := range styleKeys {
+		found := false
 		for _, key := range candidates {
 			if style, ok := profile.Styles[key]; ok {
 				if spec, usable := styleRuleToFormatSpec(style); usable {
+					// A sampled template style with no w:b is effective normal
+					// weight. Clear stale student bold formatting for every role;
+					// an absent rule has SampleCount==0 and remains unspecified.
+					if !style.BoldSet && style.SampleCount > 0 {
+						spec.BoldSet = true
+					}
 					result[category] = spec
+					found = true
 				}
 				break
+			}
+		}
+		if !found {
+			if fallback, ok := specs[category]; ok && !fallback.IsEmpty() {
+				if !fallback.Bold && fallback.SampleCount > 0 {
+					fallback.BoldSet = true
+				}
+				result[category] = fallback
 			}
 		}
 	}
 	for _, category := range []string{"header", "footer"} {
 		if spec, ok := specs[category]; ok {
 			result[category] = spec
+		}
+	}
+	// Cover metadata is heterogeneous: the title and date are not governed by
+	// the generic cover-field sample. Keep the date rule available to the
+	// verifier and the final cover-only pass without inventing fixed values.
+	if style, ok := profile.Styles["cover_date"]; ok {
+		if spec, usable := styleRuleToFormatSpec(style); usable {
+			result["cover_date"] = spec
 		}
 	}
 	return result

@@ -7,7 +7,7 @@ import (
 )
 
 // Migration20260327UpdateGoldenTemplateToReal 将 golden_template_path 更新为真实模板文件
-// cqrwst.docx（4KB）只是空模板，格式样本极少。
+// templateapply.docx（4KB）只是空模板，格式样本极少。
 // cqrwst_real.docx（414KB）是管理员上传的真实论文格式范例，
 // 含完整的正文/标题/摘要/参考文献等各类段落，格式学习效果最佳。
 type Migration20260327UpdateGoldenTemplateToReal struct{}
@@ -34,7 +34,7 @@ func (m *Migration20260327UpdateGoldenTemplateToReal) Up(tx *gorm.DB) error {
 func (m *Migration20260327UpdateGoldenTemplateToReal) Down(tx *gorm.DB) error {
 	return tx.Exec(`
 		UPDATE format_templates
-		SET golden_template_path = 'uploads/golden_templates/cqrwst.docx'
+		SET golden_template_path = 'uploads/golden_templates/templateapply.docx'
 		WHERE university_id IN (
 			SELECT id FROM universities WHERE abbr = 'CQRWST' OR name = '重庆人文科技学院'
 		)

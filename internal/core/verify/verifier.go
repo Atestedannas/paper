@@ -12,12 +12,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/paper-format-checker/backend/internal/core/cqrwst"
 	"github.com/paper-format-checker/backend/internal/core/goldenregression"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/paperast"
 	"github.com/paper-format-checker/backend/internal/core/renderverify"
 	"github.com/paper-format-checker/backend/internal/core/repaircontract"
+	"github.com/paper-format-checker/backend/internal/core/templateapply"
 	"github.com/paper-format-checker/backend/internal/core/templatecontract"
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
@@ -67,11 +67,12 @@ type Result struct {
 }
 
 type Verifier struct {
-	templateProfile *templateprofile.Profile
-	closure         *ClosureArtifacts
-	renderOptions   *renderverify.Options
-	goldenPath      string
-	skipCQRWST      bool
+	templateProfile     *templateprofile.Profile
+	closure             *ClosureArtifacts
+	renderOptions       *renderverify.Options
+	goldenPath          string
+	skipSchoolSpecific  bool
+	skipTemplateProfile bool
 }
 
 type ClosureArtifacts struct {
@@ -115,13 +116,28 @@ func (v *Verifier) WithoutRenderGate() *Verifier {
 	return v
 }
 
-func (v *Verifier) WithoutCQRWSTRules() *Verifier {
+func (v *Verifier) WithoutSchoolSpecificRules() *Verifier {
 	if v == nil {
 		return nil
 	}
-	v.skipCQRWST = true
+	v.skipSchoolSpecific = true
 	return v
 }
+
+// WithoutTemplateProfileCheck disables the legacy whole-document profile
+// heuristic. Callers that apply and validate a stable role-based format plan
+// use that exact validation as the authoritative template-style gate.
+func (v *Verifier) WithoutTemplateProfileCheck() *Verifier {
+	if v == nil {
+		return nil
+	}
+	v.skipTemplateProfile = true
+	return v
+}
+
+// WithoutCQRWSTRules is kept as a source-compatible alias for legacy callers.
+// New workflow code must use WithoutSchoolSpecificRules.
+func (v *Verifier) WithoutCQRWSTRules() *Verifier { return v.WithoutSchoolSpecificRules() }
 
 func (v *Verifier) Verify(ctx context.Context, docxPath string) (Result, error) {
 	if ctx == nil {
@@ -171,19 +187,19 @@ func (v *Verifier) Verify(ctx context.Context, docxPath string) (Result, error) 
 		})
 	}
 
-	if v == nil || !v.skipCQRWST {
-		cqrwstResult, err := v.checkCQRWST(ctx, docxPath)
+	if v == nil || (!v.skipSchoolSpecific && !v.skipTemplateProfile) {
+		profileResult, err := v.checkTemplateProfile(ctx, docxPath)
 		if err != nil {
 			result.FatalIssues = append(result.FatalIssues, Issue{
-				Kind:     "cqrwst_check",
+				Kind:     "template_profile_check",
 				Severity: "fatal",
-				Message:  fmt.Sprintf("CQRWST rule check failed: %v", err),
+				Message:  fmt.Sprintf("template profile rule check failed: %v", err),
 				Target:   documentTarget,
 			})
 		} else {
-			for _, issue := range cqrwstResult.Issues {
+			for _, issue := range profileResult.Issues {
 				result.RepairableIssues = append(result.RepairableIssues, Issue{
-					Kind:     "cqrwst_rule",
+					Kind:     "template_profile_rule",
 					Severity: issue.Severity,
 					Message:  issue.Message,
 					Target:   issue.Target,
@@ -1486,11 +1502,11 @@ func appendFatalIssueOnce(result *Result, kind string, message string, target st
 	})
 }
 
-func (v *Verifier) checkCQRWST(ctx context.Context, docxPath string) (cqrwst.Result, error) {
+func (v *Verifier) checkTemplateProfile(ctx context.Context, docxPath string) (templateapply.Result, error) {
 	if v != nil && v.templateProfile != nil {
-		return cqrwst.CheckDOCXWithTemplateProfile(ctx, docxPath, v.templateProfile)
+		return templateapply.CheckDOCXWithTemplateProfile(ctx, docxPath, v.templateProfile)
 	}
-	return cqrwst.CheckDOCX(ctx, docxPath)
+	return templateapply.CheckDOCX(ctx, docxPath)
 }
 
 func (v *Verifier) checkClosureArtifacts(result *Result) {

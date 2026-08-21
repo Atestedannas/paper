@@ -31,7 +31,12 @@ type ParagraphFormatSpec struct {
 	FontAscii      string // ASCII/西文字体，如"Times New Roman"
 	FontSizeHalfPt uint64 // w:sz值（半磅单位），0表示未设置
 	Bold           bool
-	Italic         bool
+	// BoldSet distinguishes an explicit false (w:b w:val="false" or an
+	// explicitly sampled non-bold run) from an unspecified bold property.
+	// This prevents the formatter from retaining a student's stale bold run
+	// when the template explicitly requires normal weight.
+	BoldSet bool
+	Italic  bool
 
 	// 段落级别属性
 	AlignmentSet    bool      // Alignment字段是否有效

@@ -86,7 +86,27 @@ func ExtractTemplateFormats(templateDoc *document.Document, proc *EnhancedProces
 	classified := classifier.Classify(templateDoc.Paragraphs())
 
 	// 按类型收集，取每种类型的第一个有格式的段落作为模板
+	samplesByType := make(map[string][]V2ClassifiedPara)
 	for _, cp := range classified {
+		if cp.Text != "" && cp.Para.X().PPr != nil {
+			samplesByType[cp.Type] = append(samplesByType[cp.Type], cp)
+		}
+	}
+	for category, samples := range samplesByType {
+		best := samples[0]
+		bestCount := 0
+		counts := make(map[ParagraphFormatSpec]int)
+		for _, candidate := range samples {
+			spec := extractParaFormatSpec(candidate.Para)
+			counts[spec]++
+			if counts[spec] > bestCount {
+				best, bestCount = candidate, counts[spec]
+			}
+		}
+		cp := best
+		if _, exists := store.Formats[category]; exists {
+			continue
+		}
 		if cp.Text == "" {
 			continue
 		}
@@ -105,6 +125,7 @@ func ExtractTemplateFormats(templateDoc *document.Document, proc *EnhancedProces
 			SampleParaIndex: cp.ParaIdx,
 			SampleSpec:      extractParaFormatSpec(cp.Para),
 		}
+		format.SampleSpec.SampleCount = len(samples)
 
 		// 提取运行属性（取第一个有文本的run）
 		runs := cp.Para.Runs()

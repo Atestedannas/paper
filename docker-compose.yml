@@ -9,32 +9,62 @@ services:
     ports:
       - "8002:8002"
     environment:
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_NAME=paper_db
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=postgres
+      - DATABASE_PASSWORD=postgres
+      - DATABASE_NAME=paper_db
       - REDIS_ADDR=redis:6379
       - OPENXML_VALIDATOR_BIN=/app/openxml-validator
       - OPENXML_VALIDATOR_REQUIRED=true
       # Python 服务地址 (使用服务名)
-      - PYTHON_SERVICE_URL=http://python-service:5000
+      - PYTHON_SERVICE_URL=http://python-ocr:8000
     depends_on:
       - postgres
       - redis
-      - python-service
+      - python-ocr
+      - python-ocr-worker
     networks:
       - backend-network
 
-  # 2. Python 辅助服务
-  python-service:
-    build: ./python_service
-    ports:
-      - "5000:5000"
+  # 2. Python 视觉/OCR 辅助服务
+  python-ocr:
+    build: ../python ocr
+    container_name: paper-python-ocr
     expose:
-      - "5000"
+      - "8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/1
+      - UPLOAD_ROOT=/data/uploads
+      - OFFICECLI_BIN=officecli
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8000
+      - LOG_DIR=/data/logs
+    volumes:
+      - ./uploads:/data/uploads
+      - ./python-ocr-logs:/data/logs
     networks:
       - backend-network
+    depends_on:
+      - redis
+
+  # Python RQ worker：消费 visual-checks 队列，执行 OfficeCLI、OCR 和布局识别
+  python-ocr-worker:
+    build: ../python ocr
+    container_name: paper-python-ocr-worker
+    command: rq worker visual-checks --url redis://redis:6379/1
+    environment:
+      - REDIS_URL=redis://redis:6379/1
+      - UPLOAD_ROOT=/data/uploads
+      - OFFICECLI_BIN=officecli
+      - LOG_DIR=/data/logs
+    volumes:
+      - ./uploads:/data/uploads
+      - ./python-ocr-logs:/data/logs
+    networks:
+      - backend-network
+    depends_on:
+      - redis
 
   # 3. PostgreSQL 数据库
   postgres:

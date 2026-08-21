@@ -408,6 +408,7 @@ func styleRuleToFormatSpec(style templateprofile.StyleRule) (ParagraphFormatSpec
 		FontEastAsia: eastAsia,
 		FontAscii:    ascii,
 		Bold:         style.Bold,
+		BoldSet:      style.BoldSet,
 		Italic:       style.Italic,
 		SampleCount:  1,
 	}

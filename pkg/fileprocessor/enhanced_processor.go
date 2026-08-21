@@ -700,11 +700,15 @@ func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rule
 		case FormatStepTables:
 			// 9e: 记录修正前的表格数
 			tableCountBefore := len(doc.Tables())
-			skipParaSet := map[*wml.CT_P]bool{}
-			if bodySpec, ok := specs["body"]; ok && !bodySpec.IsEmpty() {
-				p.applyTableFormattingWithSpec(doc, bodySpec, skipParaSet)
+			// Tables are a separate formatting domain. Preserve cell formatting
+			// unless the template explicitly provides a table rule. Cover tables
+			// are handled by their dedicated cover pass.
+			if tableSpec, ok := specs["table"]; ok && !tableSpec.IsEmpty() {
+				p.applyTableFormattingWithSpec(doc, tableSpec, map[*wml.CT_P]bool{})
+			} else if _, explicit := rules["tables"]; explicit {
+				p.applyTableFormatting(doc, rules, map[*wml.CT_P]bool{})
 			} else {
-				p.applyTableFormatting(doc, rules, skipParaSet)
+				log.Printf("[表格] 未发现显式 table 规则，保留表格单元格原格式")
 			}
 			// 9e: 验证表格数一致性
 			tableCountAfter := len(doc.Tables())
@@ -3167,22 +3171,18 @@ func (p *EnhancedProcessor) applyHeadingFormatting(paragraphs []document.Paragra
 	return nil
 }
 
-// applyBodyFormatting 应用正文格式
+// applyBodyFormatting 应用正文格式。
+// 委托给统一的 FormatBodyParagraphs，确保所有正文格式化路径一致。
 func (p *EnhancedProcessor) applyBodyFormatting(paragraphs []document.Paragraph, rules map[string]interface{}) error {
-	bodyRules, ok := rules["body"].(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("未找到 body 规则，可用键: %v", getMapKeys(rules))
+	spec, err := ExtractBodyTextSpec(rules)
+	if err != nil {
+		return err
 	}
 
-	// 解析目标字号
-	targetSizePt := p.resolveActualFontSizePt(bodyRules)
-	log.Printf("[body] body 规则: font_name=%v, font_size=%v (解析后=%.1fpt), alignment=%v, first_line_indent=%v, line_space=%v",
-		bodyRules["font_name"], bodyRules["font_size"], targetSizePt,
-		bodyRules["alignment"], bodyRules["first_line_indent"], bodyRules["line_space"])
+	log.Printf("[body] %s", spec.String())
 
 	for i, para := range paragraphs {
-		// 前 3 个段落打印修正前格式
-		if i < 3 {
+		if i < 3 && p.debug {
 			text := p.extractParagraphText(para)
 			if len(text) > 50 {
 				text = text[:50] + "..."
@@ -3191,17 +3191,14 @@ func (p *EnhancedProcessor) applyBodyFormatting(paragraphs []document.Paragraph,
 			log.Printf("[body] 段落[%d] 修正前: 字体=%s 字号=%s | %s", i, beforeFont, beforeSize, text)
 		}
 
-		if err := p.applyParagraphFormatting(para, bodyRules); err != nil {
-			log.Printf("[body] 段落[%d] 格式应用失败: %v", i, err)
-		}
+		FormatBodyParagraph(para, spec)
 
-		// 前 3 个段落打印修正后格式
-		if i < 3 {
+		if i < 3 && p.debug {
 			afterFont, afterSize := p.getRunFontInfo(para)
 			log.Printf("[body] 段落[%d] 修正后: 字体=%s 字号=%s", i, afterFont, afterSize)
 		}
 	}
-	p.runParagraphFormattingSelfCheck("applyBodyFormatting", paragraphs, bodyRules)
+	p.runParagraphFormattingSelfCheck("applyBodyFormatting", paragraphs, rules["body"].(map[string]interface{}))
 	return nil
 }
 

@@ -50,17 +50,7 @@ func deepSeekHTTPTimeout() time.Duration {
 // NewDeepSeekWebClient 创建客户端
 func NewDeepSeekWebClient(cookie, bearer string) *DeepSeekWebClient {
 	timeout := deepSeekHTTPTimeout()
-	log.Printf("\n========================================\n"+
-		"[DeepSeek]1 初始化 Web 客户端\n"+
-		"  base_url    : %s\n"+
-		"  http_timeout: %v (env DEEPSEEK_CHAT_TIMEOUT_SEC)\n"+
-		"  cookie      : %s...\n"+
-		"  bearer      : %s...\n"+
-		"========================================",
-		"https://chat.deepseek.com",
-		timeout,
-		truncCookie(cookie, 60),
-		truncCookie(bearer, 20))
+	log.Printf("[DeepSeek] client initialized base_url=%s http_timeout=%v", "https://chat.deepseek.com", timeout)
 
 	return &DeepSeekWebClient{
 		cookie:  cookie,
@@ -73,13 +63,6 @@ func NewDeepSeekWebClient(cookie, bearer string) *DeepSeekWebClient {
 			},
 		},
 	}
-}
-
-func truncCookie(s string, maxLen int) string {
-	if len(s) > maxLen {
-		return s[:maxLen]
-	}
-	return s
 }
 
 // powChallenge PoW 挑战结构
@@ -160,11 +143,10 @@ func (c *DeepSeekWebClient) createPowChallenge(targetPath string) (*powChallenge
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	log.Printf("[DeepSeek] << PoW Challenge %d (%v)\n  body: %s",
-		resp.StatusCode, elapsed, truncate(string(respBody), 500))
+	log.Printf("[DeepSeek] PoW challenge status=%d elapsed=%v", resp.StatusCode, elapsed)
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("pow challenge HTTP %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("pow challenge HTTP %d", resp.StatusCode)
 	}
 
 	var result powChallengeResp
@@ -176,12 +158,7 @@ func (c *DeepSeekWebClient) createPowChallenge(targetPath string) (*powChallenge
 	}
 
 	ch := result.Data.BizData.Challenge
-	log.Printf("[DeepSeek] PoW Challenge parsed:\n"+
-		"  algorithm  : %s\n"+
-		"  difficulty : %d\n"+
-		"  salt       : %s\n"+
-		"  challenge  : %s...",
-		ch.Algorithm, ch.Difficulty, ch.Salt, truncate(ch.Challenge, 30))
+	log.Printf("[DeepSeek] PoW challenge parsed algorithm=%s difficulty=%d", ch.Algorithm, ch.Difficulty)
 
 	return ch, nil
 }
@@ -287,11 +264,10 @@ func (c *DeepSeekWebClient) createChatSession() (string, error) {
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	log.Printf("[DeepSeek] << Session Create %d (%v)\n  body: %s",
-		resp.StatusCode, elapsed, truncate(string(respBody), 300))
+	log.Printf("[DeepSeek] session create status=%d elapsed=%v", resp.StatusCode, elapsed)
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("create session HTTP %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("create session HTTP %d", resp.StatusCode)
 	}
 
 	var result chatSessionResp
@@ -303,20 +279,14 @@ func (c *DeepSeekWebClient) createChatSession() (string, error) {
 		sid = result.Data.BizData.ChatSessionID
 	}
 
-	log.Printf("[DeepSeek] Session ID: %s", sid)
 	return sid, nil
 }
 
-// ChatCompletion 发送消息并获取完整回复（完整流程日志）
+// ChatCompletion sends a bounded request without logging its content.
 func (c *DeepSeekWebClient) ChatCompletion(prompt string) (string, error) {
 	totalStart := time.Now()
 
-	log.Printf("\n========================================\n"+
-		"[DeepSeek] ChatCompletion START\n"+
-		"  prompt_len: %d chars\n"+
-		"  prompt    : %s\n"+
-		"========================================",
-		len([]rune(prompt)), truncate(prompt, 200))
+	log.Printf("[DeepSeek] ChatCompletion start prompt_len=%d", len([]rune(prompt)))
 
 	// Step 1: 创建会话
 	sessionID, err := c.createChatSession()
@@ -363,13 +333,7 @@ func (c *DeepSeekWebClient) ChatCompletion(prompt string) (string, error) {
 	})
 
 	completionURL := c.baseURL + targetPath
-	log.Printf("\n----------------------------------------\n"+
-		"[DeepSeek] >> POST %s\n"+
-		"  session_id  : %s\n"+
-		"  pow_base64  : %s...\n"+
-		"  body_len    : %d bytes\n"+
-		"----------------------------------------",
-		completionURL, sessionID, truncate(powBase64, 40), len(reqBody))
+	log.Printf("[DeepSeek] completion request url=%s body_len=%d", completionURL, len(reqBody))
 
 	req, err := http.NewRequest("POST", completionURL, bytes.NewReader(reqBody))
 	if err != nil {
@@ -397,9 +361,7 @@ func (c *DeepSeekWebClient) ChatCompletion(prompt string) (string, error) {
 		resp.Header.Get("Transfer-Encoding"))
 
 	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		log.Printf("[DeepSeek] << ERROR BODY:\n%s", string(b))
-		return "", fmt.Errorf("completion HTTP %d: %s", resp.StatusCode, string(b))
+		return "", fmt.Errorf("completion HTTP %d", resp.StatusCode)
 	}
 
 	// Step 5: 解析 SSE 流
@@ -407,25 +369,11 @@ func (c *DeepSeekWebClient) ChatCompletion(prompt string) (string, error) {
 	totalElapsed := time.Since(totalStart)
 
 	if err != nil {
-		log.Printf("\n========================================\n"+
-			"[DeepSeek] ChatCompletion END（失败，可能为 SSE 读超时）\n"+
-			"  total_time    : %v\n"+
-			"  partial_chars : %d\n"+
-			"  error         : %v\n"+
-			"  hint          : 可调大 DEEPSEEK_CHAT_TIMEOUT_SEC（当前 http 超时 %v）\n"+
-			"  head          : %s\n"+
-			"========================================",
-			totalElapsed, len([]rune(content)), err, c.httpClient.Timeout, truncate(content, 400))
+		log.Printf("[DeepSeek] ChatCompletion failed elapsed=%v partial_chars=%d err=%v timeout=%v", totalElapsed, len([]rune(content)), err, c.httpClient.Timeout)
 		return content, err
 	}
 
-	log.Printf("\n========================================\n"+
-		"[DeepSeek] ChatCompletion DONE\n"+
-		"  total_time   : %v\n"+
-		"  response_len : %d chars\n"+
-		"  response     : %s\n"+
-		"========================================",
-		totalElapsed, len([]rune(content)), truncate(content, 300))
+	log.Printf("[DeepSeek] ChatCompletion complete elapsed=%v response_len=%d", totalElapsed, len([]rune(content)))
 
 	return content, nil
 }
@@ -456,7 +404,6 @@ func (c *DeepSeekWebClient) parseSSEResponse(body io.Reader, contentEncoding str
 	chunkCount := 0
 	lineCount := 0
 	dataLineCount := 0
-	firstLines := make([]string, 0, 15)
 	inContentStream := false
 	// 缓冲不完整的 JSON 行（DeepSeek 的 v 值可能含换行，被 scanner 切断）
 	var incompleteLine string
@@ -464,9 +411,6 @@ func (c *DeepSeekWebClient) parseSSEResponse(body io.Reader, contentEncoding str
 	for scanner.Scan() {
 		line := scanner.Text()
 		lineCount++
-		if lineCount <= 15 {
-			firstLines = append(firstLines, truncate(line, 250))
-		}
 
 		// 如果上一行 JSON 不完整，尝试拼接
 		if incompleteLine != "" {
@@ -588,7 +532,7 @@ func (c *DeepSeekWebClient) parseSSEResponse(body io.Reader, contentEncoding str
 							fullContent.WriteString(f.Content)
 							chunkCount++
 							inContentStream = true
-							log.Printf("[DeepSeek] SSE: WIP fragment seed (%d bytes): %q", len(f.Content), f.Content)
+							log.Printf("[DeepSeek] SSE received WIP fragment seed bytes=%d", len(f.Content))
 						}
 					}
 				}
@@ -616,13 +560,7 @@ func (c *DeepSeekWebClient) parseSSEResponse(body io.Reader, contentEncoding str
 		}
 	}
 
-	log.Printf("[DeepSeek] SSE parsed:\n"+
-		"  total_lines  : %d\n"+
-		"  data_lines   : %d\n"+
-		"  content_chunks: %d\n"+
-		"  content_len  : %d bytes\n"+
-		"  first_lines  : %v",
-		lineCount, dataLineCount, chunkCount, fullContent.Len(), firstLines)
+	log.Printf("[DeepSeek] SSE parsed total_lines=%d data_lines=%d content_chunks=%d content_len=%d", lineCount, dataLineCount, chunkCount, fullContent.Len())
 
 	if err := scanner.Err(); err != nil {
 		partial := fullContent.String()

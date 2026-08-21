@@ -26,14 +26,9 @@ type arbitrationParaItem struct {
 
 // NewAIArbitrator 创建 AI 仲裁器
 func NewAIArbitrator(cookie, bearer string, enabled bool) *AIArbitrator {
-	var client *DeepSeekWebClient
-	if enabled && cookie != "" {
-		client = NewDeepSeekWebClient(cookie, bearer)
-	}
-	return &AIArbitrator{
-		client:  client,
-		enabled: enabled && client != nil,
-	}
+	// This legacy payload contains paragraph text. Model-assisted role work is
+	// limited to roleclassify.ClassifyStructuredWithEvidence instead.
+	return &AIArbitrator{}
 }
 
 // IsEnabled 是否启用

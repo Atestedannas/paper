@@ -20,7 +20,7 @@ import (
 
 // Version is also the deterministic extractor revision. Bumping it invalidates
 // cached profiles when extraction semantics change, even when the DOCX bytes do not.
-const Version = "template-profile-v2"
+const Version = "template-profile-v6"
 
 const templateProfileAIPromptTemplate = `你是“本科毕业论文 DOCX 模板格式规范解析专家”，任务是把 OOXML 本地解析结果转成可执行的论文格式画像 JSON。
 
@@ -103,17 +103,35 @@ type Profile struct {
 	AI             *AIProfile             `json:"ai,omitempty"`
 	Numbering      *NumberingProfile      `json:"numbering,omitempty"` // OOXML numbering.xml 精确提取
 	Confidence     float64                `json:"confidence"`
+	Scope          *TemplateScope         `json:"template_scope,omitempty"`
+	Requirements   []string               `json:"requirement_evidence,omitempty"`
 }
+
+// TemplateScope prevents requirements text and the wrong embedded example
+// from contributing style evidence.
+type TemplateScope struct {
+	RequirementsRange  [2]int `json:"requirements_range"`
+	ScienceSampleRange [2]int `json:"science_sample_range"`
+	ArtsSampleRange    [2]int `json:"arts_sample_range"`
+	SelectedSample     string `json:"selected_sample"`
+}
+
+const (
+	SampleScience = "science"
+	SampleArts    = "arts"
+)
 
 // SectionFormatMap exposes the semantic template regions used by classifiers.
 // Values still use StyleRule so extraction and application share one schema.
 type SectionFormatMap map[string]StyleRule
 
 type SectionRule struct {
-	Label           string `json:"label"`
-	PageBreakBefore bool   `json:"page_break_before"`
-	SectionBreak    bool   `json:"section_break"`
-	DetectedFrom    string `json:"detected_from"`
+	Label                 string `json:"label"`
+	PageBreakBefore       bool   `json:"page_break_before"`
+	SectionBreak          bool   `json:"section_break"`
+	SectionBreakType      string `json:"section_break_type,omitempty"`
+	BlankParagraphsBefore int    `json:"blank_paragraphs_before,omitempty"`
+	DetectedFrom          string `json:"detected_from"`
 }
 
 type StyleRule struct {
@@ -133,6 +151,12 @@ type StyleRule struct {
 	BoldSet           bool          `json:"bold_set,omitempty"`
 	Italic            bool          `json:"italic,omitempty"`
 	ItalicSet         bool          `json:"italic_set,omitempty"`
+	KeepNext          bool          `json:"keep_next,omitempty"`
+	KeepNextSet       bool          `json:"keep_next_set,omitempty"`
+	KeepLines         bool          `json:"keep_lines,omitempty"`
+	KeepLinesSet      bool          `json:"keep_lines_set,omitempty"`
+	WidowControl      bool          `json:"widow_control,omitempty"`
+	WidowControlSet   bool          `json:"widow_control_set,omitempty"`
 	Alignment         string        `json:"alignment,omitempty"`
 	Line              string        `json:"line,omitempty"`
 	LineRule          string        `json:"line_rule,omitempty"`
@@ -465,12 +489,16 @@ type paragraph struct {
 
 var (
 	paragraphPattern             = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
+	documentBodyNodePattern      = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
 	textBoxContentPattern        = regexp.MustCompile(`(?s)<w:txbxContent(?:\s[^>]*)?>.*?</w:txbxContent>`)
 	textPattern                  = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
 	fontPattern                  = regexp.MustCompile(`<w:rFonts\b[^>]*/>`)
 	sizePattern                  = regexp.MustCompile(`<w:sz\b[^>]*/>`)
 	sizeCsPattern                = regexp.MustCompile(`<w:szCs\b[^>]*/>`)
 	spacingPattern               = regexp.MustCompile(`<w:spacing\b[^>]*/>`)
+	keepNextPattern              = regexp.MustCompile(`<w:keepNext\b[^>]*/>`)
+	keepLinesPattern             = regexp.MustCompile(`<w:keepLines\b[^>]*/>`)
+	widowControlPattern          = regexp.MustCompile(`<w:widowControl\b[^>]*/>`)
 	runPropertiesPattern         = regexp.MustCompile(`(?s)<w:rPr\b[^>]*>.*?</w:rPr>|<w:rPr\b[^>]*/>`)
 	runElementPattern            = regexp.MustCompile(`(?s)<w:r(?:\s[^>]*)?>.*?</w:r>`)
 	paragraphRunPropsPattern     = regexp.MustCompile(`(?s)<w:pPr\b[^>]*>.*?<w:rPr\b[^>]*>.*?</w:rPr>.*?</w:pPr>`)
@@ -850,6 +878,17 @@ func Extract(templatePath string) (*Profile, error) {
 		Confidence:  0.76,
 	}
 	paras := collectParagraphs(documentXML)
+	var scope TemplateScope
+	allParas := paras
+	scope, paras = SelectTemplateScope(paras)
+	if scope.SelectedSample != "" {
+		profile.Scope = &scope
+		for index := scope.RequirementsRange[0]; index < scope.RequirementsRange[1] && index < len(allParas); index++ {
+			if text := strings.TrimSpace(allParas[index].Text); text != "" {
+				profile.Requirements = append(profile.Requirements, summarizeSourceText(text))
+			}
+		}
+	}
 	if numbering := parseNumberingPartWithTheme(parts.Numbering, themeFonts); numbering != nil {
 		profile.Numbering = numbering
 	}
@@ -874,27 +913,63 @@ func Extract(templatePath string) (*Profile, error) {
 	bodyStarted := false
 	inTOC := false
 	coverTitlePending := false
+	coverDateSamples := []StyleRule{}
 	sampleRegionStarted := false
 	abstractBodyKey := ""
+	coverRegionStart := -1
+	coverRegionEnd := -1
+	for i, candidate := range paras {
+		candidateText := strings.TrimSpace(candidate.Text)
+		if coverRegionStart < 0 && (candidateText == "毕业设计（论文）" || candidateText == "毕业论文/设计" || candidateText == "毕业设计/论文") {
+			coverRegionStart = i
+		}
+		if coverRegionStart >= 0 && coverRegionEnd < 0 && strings.Contains(candidateText, "原创性声明") {
+			coverRegionEnd = i
+		}
+		if normalizeLabel(candidate.Text) == "摘要" || strings.EqualFold(strings.TrimSpace(candidate.Text), "abstract") {
+			break
+		}
+	}
 	for index, para := range paras {
 		normalized := normalizeLabel(para.Text)
 		lower := strings.ToLower(strings.TrimSpace(para.Text))
 		if !sampleRegionStarted && (normalized == "摘要" || lower == "abstract") {
 			sampleRegionStarted = true
 			coverSamples := styleSamples["cover_title"]
+			coverFieldSamples := styleSamples["cover"]
 			styleSamples = map[string][]StyleRule{}
 			if len(coverSamples) > 0 {
 				styleSamples["cover_title"] = coverSamples
+			}
+			if len(coverFieldSamples) > 0 {
+				styleSamples["cover"] = coverFieldSamples
+			}
+			if len(coverDateSamples) > 0 {
+				styleSamples["cover_date"] = coverDateSamples
 			}
 			profile.Sections = map[string]SectionRule{}
 			bodyStarted, inTOC, coverTitlePending = false, false, false
 		}
 		key := classifyParagraphNumberingAware(para.Text, numberingPatterns)
+		if !sampleRegionStarted && index == coverRegionStart {
+			// The first paragraph of the detected cover block is the template's
+			// cover heading. Keep it separate from the ordinary cover metadata.
+			key = "cover_title"
+		}
+		// A numbered heading must never fall through to the body sample pool.
+		// This is important for templates that format headings as Normal and omit
+		// w:outlineLvl; their direct formatting is still the heading evidence.
+		if key == "" {
+			if level := numberedHeadingLevel(strings.TrimSpace(para.Text)); level > 0 {
+				key = fmt.Sprintf("heading_%d", level)
+			}
+		}
 		if key == "" {
 			key = classifyCaptionParagraph(para.Text, para.XML, styleDefinitions)
 		}
 		if (key == "body_start" || strings.HasPrefix(key, "heading_")) &&
-			!hasSemanticOutlineLevel(para.XML) && isBodyStyleCandidate(para) {
+			!hasSemanticOutlineLevel(para.XML) && isBodyStyleCandidate(para) &&
+			numberedHeadingLevel(strings.TrimSpace(para.Text)) == 0 {
 			key = ""
 		}
 		if abstractBodyKey != "" && key == "" && isBodyStyleCandidate(para) {
@@ -926,6 +1001,26 @@ func Extract(templatePath string) (*Profile, error) {
 		}
 		if strings.HasPrefix(key, "heading_") && hasTOCLeader(para.Text) {
 			continue
+		}
+		// Cover metadata paragraphs (college, major, class, date, etc.) usually
+		// have no semantic label that the classifier can recognize.  Preserve
+		// their direct OOXML formatting as a separate consensus rule before the
+		// first abstract instead of letting the later body fallback consume it.
+		if !sampleRegionStarted && index > coverRegionStart && (coverRegionEnd < 0 || index < coverRegionEnd) && key == "" && strings.TrimSpace(para.Text) != "" {
+			coverKey := "cover"
+			if isTemplateCoverDateText(para.Text) {
+				coverKey = "cover_date"
+			}
+			coverStyle := extractEffectiveParagraphStyle(coverKey, para.XML, styleSet, profile.Numbering)
+			coverStyle = extractRepresentativeRunStyleWithDefinitions(coverKey, para.XML, coverStyle, styleDefinitions)
+			coverStyle = recordStyleSource(coverStyle, index, para)
+			if coverStyle.FontSizeHalfPt != "" || coverStyle.FontEastAsia != "" || coverStyle.FontASCII != "" {
+				if coverKey == "cover_date" {
+					coverDateSamples = append(coverDateSamples, coverStyle)
+				} else {
+					styleSamples["cover"] = append(styleSamples["cover"], coverStyle)
+				}
+			}
 		}
 		if key == "" {
 			continue
@@ -965,11 +1060,14 @@ func Extract(templatePath string) (*Profile, error) {
 		}
 		if isSectionKey(key) {
 			breakBefore, detectedFrom := detectPageBreakBefore(paras, index)
+			sectionBreak, sectionType := detectSectionBreak(paras, index)
 			profile.Sections[key] = SectionRule{
-				Label:           key,
-				PageBreakBefore: breakBefore,
-				SectionBreak:    strings.Contains(para.XML, "<w:sectPr"),
-				DetectedFrom:    detectedFrom,
+				Label:                 key,
+				PageBreakBefore:       breakBefore,
+				SectionBreak:          sectionBreak,
+				SectionBreakType:      sectionType,
+				BlankParagraphsBefore: blankParagraphsBefore(paras, index),
+				DetectedFrom:          detectedFrom,
 			}
 		}
 		// A template may contain several complete example papers. Mixing later
@@ -981,11 +1079,94 @@ func Extract(templatePath string) (*Profile, error) {
 		}
 	}
 	for key, samples := range styleSamples {
+		if key == "body" {
+			// A template often formats numbered headings as Normal and omits
+			// w:outlineLvl.  The semantic pass can therefore leave a heading in
+			// the generic body pool.  Never let that heading determine the body
+			// consensus; doing so makes every student paragraph inherit the
+			// heading's font/size. Keep the original pool only when filtering
+			// would discard every sample, so incomplete templates still work.
+			filtered := samples[:0]
+			for _, sample := range samples {
+				isNumberedHeading := false
+				for _, source := range sample.Sources {
+					if numberedHeadingLevel(strings.TrimSpace(source.Text)) > 0 {
+						isNumberedHeading = true
+						break
+					}
+				}
+				if !isNumberedHeading {
+					filtered = append(filtered, sample)
+				}
+			}
+			if len(filtered) > 0 {
+				samples = filtered
+			}
+		}
+		if key == "abstract_body" {
+			// The abstract heading and its body can share one paragraph in
+			// OOXML. Do not let the heading's larger complex-script size become
+			// the body rule; retain only actual content samples.
+			filtered := samples[:0]
+			for _, sample := range samples {
+				isLabel := false
+				for _, source := range sample.Sources {
+					n := strings.TrimSpace(normalizeLabel(source.Text))
+					if n == "摘要" || strings.EqualFold(n, "abstract") {
+						isLabel = true
+						break
+					}
+				}
+				if !isLabel {
+					filtered = append(filtered, sample)
+				}
+			}
+			if len(filtered) > 0 {
+				samples = filtered
+			}
+		}
 		profile.Styles[key] = aggregateStyleRules(key, samples)
 	}
 
 	profile.SectionFormats = buildSectionFormatMap(profile.Styles)
 	return profile, nil
+}
+
+// ResolveDocumentEffectiveStyles returns the same inherited styles used by
+// template extraction, keyed by the stable body-node index used by paperast.
+func ResolveDocumentEffectiveStyles(docxPath string) (map[int]StyleRule, error) {
+	pkg, err := ooxmlpkg.Open(docxPath)
+	if err != nil {
+		return nil, err
+	}
+	parts, err := extractTemplateParts(pkg)
+	if err != nil {
+		return nil, err
+	}
+	stylesXML := parts.Styles.XML
+	themeFonts := extractThemeFontResolverFromXML(parts.Theme.XML, stylesXML)
+	stylesXML = materializeThemeFonts(stylesXML, themeFonts)
+	documentXML := materializeThemeFonts(parts.Document.XML, themeFonts)
+	definitions := parseStyleDefinitions(stylesXML)
+	numbering := parseNumberingPartWithTheme(parts.Numbering, themeFonts)
+	result := map[int]StyleRule{}
+	for index, raw := range documentBodyNodePattern.FindAllString(documentXML, -1) {
+		if !strings.HasPrefix(raw, "<w:p") {
+			continue
+		}
+		style := extractEffectiveParagraphStyle("student", raw, definitions, numbering)
+		style = extractRepresentativeRunStyleWithDefinitions("body", raw, style, definitions.Resolved)
+		style.Label = ""
+		result[index] = style
+	}
+	return result, nil
+}
+
+// isTemplateCoverDateText identifies a cover date without prescribing any
+// particular year/month format. It is only used to keep date samples out of
+// the generic cover-field consensus rule.
+func isTemplateCoverDateText(text string) bool {
+	return strings.Contains(text, "年") && strings.Contains(text, "月")
 }
 
 func buildSectionFormatMap(styles map[string]StyleRule) SectionFormatMap {
@@ -1016,6 +1197,9 @@ func extractLocalRulePack(paras []paragraph) RulePack {
 	var rules RulePack
 	for _, para := range paras {
 		text := normalizeLabel(para.Text)
+		if strings.Contains(text, "\u539f\u521b\u6027\u58f0\u660e") || strings.Contains(text, "\u539f\u521b\u6027\u7533\u660e") || strings.Contains(text, "\u5b66\u672f\u8bda\u4fe1\u58f0\u660e") {
+			rules.RequiredSections = appendUniqueRuleSection(rules.RequiredSections, "originality_declaration")
+		}
 		if strings.Contains(text, "\u6587\u732e\u5f15\u7528") &&
 			strings.Contains(text, "\u4e0a\u6807") &&
 			strings.Contains(text, "[1]") {
@@ -1028,37 +1212,22 @@ func extractLocalRulePack(paras []paragraph) RulePack {
 	return rules
 }
 
+func appendUniqueRuleSection(sections []string, section string) []string {
+	for _, existing := range sections {
+		if existing == section {
+			return sections
+		}
+	}
+	return append(sections, section)
+}
+
 func AttachAISummary(ctx context.Context, profile *Profile, client ChatClient) {
 	if profile == nil || client == nil {
 		return
 	}
-	if err := ctx.Err(); err != nil {
-		profile.AI = &AIProfile{Enabled: true, Error: err.Error()}
-		return
-	}
-	localJSON, _ := json.Marshal(profile)
-	prompt := fmt.Sprintf(templateProfileAIPromptTemplate, string(localJSON))
-	response, err := client.ChatCompletion(prompt)
-	trimmed := trimJSONResponse(response)
-	ai := &AIProfile{Enabled: true, RawText: trimmed}
-	if err != nil {
-		ai.Error = err.Error()
-		profile.AI = ai
-		return
-	}
-	var raw map[string]interface{}
-	if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
-		ai.Error = err.Error()
-		profile.AI = ai
-		return
-	}
-	ai.RawJSON = raw
-	mergeAISummary(profile, raw)
-	profile.AI = ai
-	profile.Source = "local+deepseek"
-	if profile.Confidence == 0 {
-		profile.Confidence = 0.88
-	}
+	// A whole Profile is not a per-object typed evidence packet. Structured
+	// compilation in templatecontract is the only permitted model boundary.
+	profile.AI = &AIProfile{Enabled: false, Error: "legacy unstructured AI profile summary disabled; use structured evidence compiler"}
 }
 
 func AttachRulePackSidecar(profile *Profile, templatePath string) {
@@ -1215,13 +1384,22 @@ func mergeStyleRule(base StyleRule, override StyleRule) StyleRule {
 	if override.FontSizeHalfPt != "" {
 		base.FontSizeHalfPt = override.FontSizeHalfPt
 	}
-	if override.BoldSet || override.Bold {
+	if override.BoldSet {
 		base.BoldSet = true
 		base.Bold = override.Bold
 	}
 	if override.ItalicSet {
 		base.ItalicSet = true
 		base.Italic = override.Italic
+	}
+	if override.KeepNextSet {
+		base.KeepNextSet, base.KeepNext = true, override.KeepNext
+	}
+	if override.KeepLinesSet {
+		base.KeepLinesSet, base.KeepLines = true, override.KeepLines
+	}
+	if override.WidowControlSet {
+		base.WidowControlSet, base.WidowControl = true, override.WidowControl
 	}
 	if override.Alignment != "" {
 		base.Alignment = override.Alignment
@@ -1333,6 +1511,9 @@ func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
 	}
 	style.ItalicSet = italicSamples > 0
 	style.Italic = italicSamples > 0 && italicCount*5 > italicSamples*3
+	style.KeepNext, style.KeepNextSet = majorityOnOff(samples, func(sample StyleRule) (bool, bool) { return sample.KeepNext, sample.KeepNextSet })
+	style.KeepLines, style.KeepLinesSet = majorityOnOff(samples, func(sample StyleRule) (bool, bool) { return sample.KeepLines, sample.KeepLinesSet })
+	style.WidowControl, style.WidowControlSet = majorityOnOff(samples, func(sample StyleRule) (bool, bool) { return sample.WidowControl, sample.WidowControlSet })
 	style.SampleCount = len(samples)
 	for _, sample := range samples {
 		style.Sources = append(style.Sources, sample.Sources...)
@@ -1396,6 +1577,24 @@ func mostCommonStyleValue(samples []StyleRule, value func(StyleRule) string) str
 		}
 	}
 	return best
+}
+
+func majorityOnOff(samples []StyleRule, value func(StyleRule) (bool, bool)) (bool, bool) {
+	enabled, declared := 0, 0
+	for _, sample := range samples {
+		current, set := value(sample)
+		if !set {
+			continue
+		}
+		declared++
+		if current {
+			enabled++
+		}
+	}
+	if declared == 0 {
+		return false, false
+	}
+	return enabled*2 >= declared, true
 }
 
 func jsonStyleFieldPresent(data []byte, styleKey string, field string) bool {
@@ -1806,6 +2005,7 @@ func Parse(data string) (*Profile, error) {
 	if err := json.Unmarshal([]byte(data), &profile); err != nil {
 		return nil, err
 	}
+
 	if profile.Version != Version {
 		return nil, fmt.Errorf("unsupported template profile version %q", profile.Version)
 	}
@@ -1870,14 +2070,18 @@ func collectParagraphs(documentXML string) []paragraph {
 				paragraphStart, paragraphDepth = start, depth
 			}
 		case xml.EndElement:
+			if typed.Name.Local == "txbxContent" {
+				// Text boxes often contain template annotations. Preserve their XML
+				// in the document, but never treat them as paragraph style samples.
+				textBoxDepth--
+				depth--
+				continue
+			}
 			if typed.Name.Local == "p" && paragraphStart >= 0 && depth == paragraphDepth {
 				raw := documentXML[paragraphStart:int(decoder.InputOffset())]
 				raw = textBoxContentPattern.ReplaceAllString(raw, "")
 				paras = append(paras, paragraph{Text: extractText(raw), XML: raw})
 				paragraphStart, paragraphDepth = -1, -1
-			}
-			if typed.Name.Local == "txbxContent" {
-				textBoxDepth--
 			}
 			depth--
 		}
@@ -1892,6 +2096,43 @@ func collectParagraphs(documentXML string) []paragraph {
 		paras = append(paras, paragraph{Text: extractText(raw), XML: raw})
 	}
 	return paras
+}
+
+// SelectTemplateScope selects the science sample when a template embeds both
+// variants. Chinese numbered headings (1, 1.1, 1.1.1) are the default thesis
+// shape supported by the formatter; the arts sample is retained as metadata
+// but never mixed into the selected evidence.
+func SelectTemplateScope(paras []paragraph) (TemplateScope, []paragraph) {
+	scope := TemplateScope{SelectedSample: SampleScience}
+	science, arts := -1, -1
+	for i, para := range paras {
+		text := strings.TrimSpace(para.Text)
+		if science < 0 && strings.Contains(text, "7-1") && strings.Contains(text, "理工类") {
+			science = i
+		}
+		if arts < 0 && strings.Contains(text, "7-2") && strings.Contains(text, "文科类") {
+			arts = i
+		}
+	}
+	if science < 0 && arts < 0 {
+		return TemplateScope{}, paras
+	}
+	if science < 0 {
+		science = 0
+	}
+	if arts < 0 || arts <= science {
+		arts = len(paras)
+	}
+	scope.RequirementsRange = [2]int{0, science}
+	// The anchor labels the sample; it is not itself a style example.
+	scope.ScienceSampleRange = [2]int{science + 1, arts}
+	if arts < len(paras) {
+		scope.ArtsSampleRange = [2]int{arts, len(paras)}
+	}
+	if science+1 >= arts {
+		return scope, paras
+	}
+	return scope, paras[science+1 : arts]
 }
 
 func extractText(raw string) string {
@@ -1964,6 +2205,13 @@ func hasSemanticOutlineLevel(paragraphXML string) bool {
 // OOXML extraction), then falls back to the original classifyParagraph logic.
 // When numberingPatterns is empty, it behaves identically to classifyParagraph.
 func classifyParagraphNumberingAware(text string, numberingPatterns map[string]*regexp.Regexp) string {
+	trimmed := strings.TrimSpace(text)
+	if level := numberedHeadingLevel(trimmed); level > 0 {
+		if level == 1 && IsBodyStartParagraph(trimmed) {
+			return "body_start"
+		}
+		return fmt.Sprintf("heading_%d", level)
+	}
 	// Phase 1: Try numbering-derived heading patterns (most precise)
 	if len(numberingPatterns) > 0 {
 		for _, profileKey := range []string{"heading_3", "heading_2", "heading_1"} {
@@ -1971,12 +2219,12 @@ func classifyParagraphNumberingAware(text string, numberingPatterns map[string]*
 			if !ok {
 				continue
 			}
-			if pat.MatchString(strings.TrimSpace(text)) {
+			if pat.MatchString(trimmed) {
 				return profileKey
 			}
 		}
 		if pat, ok := numberingPatterns["heading_4"]; ok {
-			if pat.MatchString(strings.TrimSpace(text)) {
+			if pat.MatchString(trimmed) {
 				return "heading_4"
 			}
 		}
@@ -1986,8 +2234,48 @@ func classifyParagraphNumberingAware(text string, numberingPatterns map[string]*
 	return classifyParagraph(text)
 }
 
+// numberedHeadingLevel recognizes compact Arabic headings such as
+// "1.1研究目的" as well as spaced forms such as "1.1 研究目的". It rejects
+// date-like prose so a sentence beginning with "2026 年" is not a heading.
+func numberedHeadingLevel(text string) int {
+	match := regexp.MustCompile(`^(\d+(?:\.\d+){0,3})\s*(.*)$`).FindStringSubmatch(strings.TrimSpace(text))
+	if len(match) != 3 || strings.TrimSpace(match[2]) == "" {
+		return 0
+	}
+	parts := strings.Split(match[1], ".")
+	level := len(parts)
+	if level == 1 {
+		value, err := strconv.Atoi(parts[0])
+		if err != nil || value > 99 {
+			return 0
+		}
+	}
+	title := strings.TrimSpace(match[2])
+	first := []rune(title)
+	if len(first) == 0 {
+		return 0
+	}
+	// Numeric/scientific expressions such as "8.7×10-2" can match the
+	// numbering prefix regexp, but they are paragraph content, not headings.
+	// Do not let them contaminate heading samples.
+	if first[0] >= '0' && first[0] <= '9' || strings.ContainsRune("×+-=/", first[0]) {
+		return 0
+	}
+	if len(first) > 80 || strings.ContainsAny(title, "。！？；;，,") ||
+		strings.HasPrefix(title, "年") || strings.HasPrefix(title, "月") ||
+		strings.HasPrefix(title, "日") || strings.HasPrefix(title, "天") {
+		return 0
+	}
+	return level
+}
+
 func classifyParagraph(text string) string {
 	normalized := normalizeLabel(text)
+	// Templates frequently put the sample heading in a shape with helper
+	// placeholders such as “空一行空一行致  谢”. Ignore those placeholders for
+	// semantic classification while retaining the original XML for style
+	// extraction.
+	acknowledgementText := strings.ReplaceAll(normalized, "空一行", "")
 	lower := strings.ToLower(strings.TrimSpace(text))
 	switch {
 	case normalized == "目录":
@@ -2004,7 +2292,7 @@ func classifyParagraph(text string) string {
 		return "references_title"
 	case strings.HasPrefix(normalized, "[") && strings.Contains(normalized, "]"):
 		return "references"
-	case normalized == "致谢":
+	case acknowledgementText == "致谢":
 		return "acknowledgements_title"
 	case IsBodyStartParagraph(text):
 		return "body_start"
@@ -2040,7 +2328,8 @@ func detectPageBreakBefore(paras []paragraph, index int) (bool, string) {
 	for previousIndex, checked := index-1, 0; previousIndex >= 0 && checked < 5; previousIndex, checked = previousIndex-1, checked+1 {
 		previousPara := paras[previousIndex]
 		previous := previousPara.XML
-		if strings.Contains(previous, `<w:br w:type="page"`) || strings.Contains(previous, `<w:type w:val="nextPage"`) || strings.Contains(previous, `<w:sectPr`) {
+		sectionType := sectionBreakType(previous)
+		if strings.Contains(previous, `<w:br w:type="page"`) || sectionType == "nextPage" || sectionType == "oddPage" || sectionType == "evenPage" {
 			return true, "previous_paragraph"
 		}
 		if strings.TrimSpace(previousPara.Text) != "" {
@@ -2050,8 +2339,49 @@ func detectPageBreakBefore(paras []paragraph, index int) (bool, string) {
 	return false, "not_found"
 }
 
+func blankParagraphsBefore(paras []paragraph, index int) int {
+	count := 0
+	for i := index - 1; i >= 0 && strings.TrimSpace(paras[i].Text) == ""; i-- {
+		count++
+	}
+	return count
+}
+
+func sectionBreakType(raw string) string {
+	section := sectPrPattern.FindString(raw)
+	if section == "" {
+		return ""
+	}
+	typeElement := regexp.MustCompile(`<w:type\b[^>]*/>`).FindString(section)
+	if value := attrs(typeElement)["w:val"]; value != "" {
+		return value
+	}
+	return "nextPage"
+}
+
+func detectSectionBreak(paras []paragraph, index int) (bool, string) {
+	if index < 0 || index >= len(paras) {
+		return false, ""
+	}
+	if value := sectionBreakType(paras[index].XML); value != "" {
+		return true, value
+	}
+	for i, checked := index-1, 0; i >= 0 && checked < 5; i, checked = i-1, checked+1 {
+		if value := sectionBreakType(paras[i].XML); value != "" {
+			return true, value
+		}
+		if strings.TrimSpace(paras[i].Text) != "" {
+			break
+		}
+	}
+	return false, ""
+}
+
 func extractStyle(label string, raw string) StyleRule {
 	style := StyleRule{Label: label}
+	style.KeepNext, style.KeepNextSet = parseOnOffElement(keepNextPattern.FindString(raw))
+	style.KeepLines, style.KeepLinesSet = parseOnOffElement(keepLinesPattern.FindString(raw))
+	style.WidowControl, style.WidowControlSet = parseOnOffElement(widowControlPattern.FindString(raw))
 	trimmed := strings.TrimSpace(raw)
 	singleRun := strings.HasPrefix(trimmed, "<w:r>") || strings.HasPrefix(trimmed, "<w:r ")
 	if font := fontPattern.FindString(raw); font != "" {
@@ -2131,12 +2461,28 @@ func extractStyle(label string, raw string) StyleRule {
 	if ind := indentPattern.FindString(raw); ind != "" {
 		attributes := attrs(ind)
 		style.FirstLineChars = attributes["w:firstLineChars"]
+		if value, err := strconv.Atoi(style.FirstLineChars); err == nil && (value < 0 || value > 1000) {
+			style.FirstLineChars = ""
+		}
 		style.FirstLineTwips = attributes["w:firstLine"]
 	}
 	if outline := outlinePattern.FindString(raw); outline != "" {
 		style.OutlineLevel = attrs(outline)["w:val"]
 	}
 	return style
+}
+
+func parseOnOffElement(element string) (bool, bool) {
+	if element == "" {
+		return false, false
+	}
+	value := strings.ToLower(strings.TrimSpace(attrs(element)["w:val"]))
+	switch value {
+	case "0", "false", "off", "no":
+		return false, true
+	default:
+		return true, true
+	}
 }
 
 func extractLeadingLabelRunStyle(label, paragraphXML string, base StyleRule) StyleRule {
@@ -2436,7 +2782,10 @@ func appendUniqueStrings(base []string, values ...string) []string {
 }
 
 func enabledBold(raw string) bool {
-	for _, tag := range []string{"<w:b", "<w:bCs"} {
+	// Check <w:bCs> (complex script bold) first, then <w:b>.
+	// Must use precise matching like hasBoldDeclaration/hasItalicDeclaration
+	// to avoid matching <w:br/>, <w:bdr>, <w:body>, etc.
+	for _, tag := range []string{"<w:bCs/>", "<w:bCs ", "<w:bCs>", "<w:b/>", "<w:b ", "<w:b>"} {
 		if index := strings.Index(raw, tag); index >= 0 {
 			end := strings.Index(raw[index:], ">")
 			if end < 0 {
@@ -2549,6 +2898,7 @@ func extractHeaderFooterVariantsFromParts(profile *Profile, parts templateParts,
 	for _, part := range append(append([]templatePart{}, parts.Headers...), parts.Footers...) {
 		contents[part.Name] = part.XML
 	}
+
 	for _, reference := range headerFooterReferencePattern.FindAllString(documentXML, -1) {
 		values := attrs(reference)
 		content, ok := contents[targets[values["r:id"]]]
@@ -2597,6 +2947,7 @@ func extractHeaderFooterRule(raw string) HeaderFooterRule {
 	if size := sizePattern.FindString(raw); size != "" {
 		rule.FontSizeHalfPt = attrs(size)["w:val"]
 	}
+
 	return rule
 }
 

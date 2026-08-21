@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/paper-format-checker/backend/internal/core/cqrwst"
 	"github.com/paper-format-checker/backend/internal/core/paperast"
 	"github.com/paper-format-checker/backend/internal/core/repaircontract"
+	"github.com/paper-format-checker/backend/internal/core/templateapply"
 	"github.com/paper-format-checker/backend/internal/core/templatecontract"
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
@@ -1006,8 +1006,8 @@ func TestVerifierReportsCQRWSTRepairableIssues(t *testing.T) {
 	if result.Passed {
 		t.Fatal("Verify() Passed = true, want false")
 	}
-	if !hasVerifyIssueKind(result.RepairableIssues, "cqrwst_rule") {
-		t.Fatalf("RepairableIssues = %#v, want cqrwst_rule", result.RepairableIssues)
+	if !hasVerifyIssueKind(result.RepairableIssues, "template_profile_rule") {
+		t.Fatalf("RepairableIssues = %#v, want template_profile_rule", result.RepairableIssues)
 	}
 }
 
@@ -1024,8 +1024,8 @@ func TestVerifierDoesNotPassShortDocumentWithMissingCQRWSTStructure(t *testing.T
 	if len(result.Warnings) != 1 {
 		t.Fatalf("Warnings len = %d, want 1", len(result.Warnings))
 	}
-	if !hasVerifyIssueKind(result.RepairableIssues, "cqrwst_rule") {
-		t.Fatalf("RepairableIssues = %#v, want cqrwst_rule", result.RepairableIssues)
+	if !hasVerifyIssueKind(result.RepairableIssues, "template_profile_rule") {
+		t.Fatalf("RepairableIssues = %#v, want template_profile_rule", result.RepairableIssues)
 	}
 }
 
@@ -1033,7 +1033,7 @@ func TestVerifierPassesCleanDocument(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
 		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
 	})
-	if _, err := cqrwst.FixDOCX(context.Background(), docxPath); err != nil {
+	if _, err := templateapply.FixDOCX(context.Background(), docxPath); err != nil {
 		t.Fatalf("FixDOCX() error = %v", err)
 	}
 
@@ -1088,7 +1088,7 @@ func TestVerifierWithTemplateProfileUsesProfileStyles(t *testing.T) {
 			},
 		},
 	}
-	if _, err := cqrwst.FixDOCXWithTemplateProfile(context.Background(), docxPath, profile); err != nil {
+	if _, err := templateapply.FixDOCXWithTemplateProfile(context.Background(), docxPath, profile); err != nil {
 		t.Fatalf("FixDOCXWithTemplateProfile() error = %v", err)
 	}
 
@@ -1113,7 +1113,7 @@ func TestVerifierRejectsComplianceWhenClosureArtifactsAreInvalid(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
 		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
 	})
-	if _, err := cqrwst.FixDOCX(context.Background(), docxPath); err != nil {
+	if _, err := templateapply.FixDOCX(context.Background(), docxPath); err != nil {
 		t.Fatalf("FixDOCX() error = %v", err)
 	}
 
@@ -1136,7 +1136,7 @@ func TestVerifierPassesWhenClosureArtifactsAreValid(t *testing.T) {
 	docxPath := writeVerifyTestDocx(t, map[string]string{
 		"word/document.xml": `<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`,
 	})
-	if _, err := cqrwst.FixDOCX(context.Background(), docxPath); err != nil {
+	if _, err := templateapply.FixDOCX(context.Background(), docxPath); err != nil {
 		t.Fatalf("FixDOCX() error = %v", err)
 	}
 	ast := paperast.ExtractDocumentXML(`<w:document><w:body><w:p><w:r><w:t>Clean final document with enough text.</w:t></w:r></w:p></w:body></w:document>`)

@@ -30,7 +30,7 @@ func NewAdminUniversityHandler() *AdminUniversityHandler {
 
 func universityTemplateFilePath(template *model.FormatTemplate, fileType string) (string, bool) {
 	var candidates []string
-	for _, path := range []string{template.GoldenTemplatePath, template.FilePath} {
+	for _, path := range []string{template.FilePath} {
 		path = strings.TrimSpace(path)
 		if path == "" {
 			continue
@@ -466,7 +466,7 @@ func (h *AdminUniversityHandler) DeleteUniversity(c *gin.Context) {
 	}
 
 	for i := range templates {
-		for _, path := range []string{templates[i].FilePath, templates[i].GoldenTemplatePath} {
+		for _, path := range []string{templates[i].FilePath} {
 			if path != "" {
 				_ = os.Remove(path)
 			}

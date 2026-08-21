@@ -12,9 +12,91 @@ import (
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 )
 
+func TestExtractStylePreservesParagraphFlowProperties(t *testing.T) {
+	style := extractStyle("heading_1", `<w:pPr><w:keepNext/><w:keepLines w:val="0"/><w:widowControl w:val="false"/></w:pPr>`)
+	if !style.KeepNextSet || !style.KeepNext {
+		t.Fatalf("keepNext not extracted: %#v", style)
+	}
+	if !style.KeepLinesSet || style.KeepLines {
+		t.Fatalf("explicit keepLines=false not extracted: %#v", style)
+	}
+	if !style.WidowControlSet || style.WidowControl {
+		t.Fatalf("explicit widowControl=false not extracted: %#v", style)
+	}
+}
+
+func TestSectionFlowEvidenceCountsBlankParagraphsAndBreakType(t *testing.T) {
+	paras := []paragraph{
+		{Text: "content", XML: `<w:p><w:r><w:t>content</w:t></w:r></w:p>`},
+		{XML: `<w:p/>`},
+		{XML: `<w:p/>`},
+		{Text: "References", XML: `<w:p><w:pPr><w:sectPr><w:type w:val="continuous"/></w:sectPr></w:pPr></w:p>`},
+	}
+	if got := blankParagraphsBefore(paras, 3); got != 2 {
+		t.Fatalf("blank paragraphs=%d, want 2", got)
+	}
+	if got := sectionBreakType(paras[3].XML); got != "continuous" {
+		t.Fatalf("section break type=%q, want continuous", got)
+	}
+	previous := []paragraph{
+		{XML: `<w:p><w:pPr><w:sectPr><w:type w:val="nextPage"/></w:sectPr></w:pPr></w:p>`},
+		{XML: `<w:p/>`},
+		{Text: "Chapter 1", XML: `<w:p><w:r><w:t>Chapter 1</w:t></w:r></w:p>`},
+	}
+	if found, got := detectSectionBreak(previous, 2); !found || got != "nextPage" {
+		t.Fatalf("previous section break=(%t,%q), want (true,nextPage)", found, got)
+	}
+	continuous := []paragraph{
+		{XML: `<w:p><w:pPr><w:sectPr><w:type w:val="continuous"/></w:sectPr></w:pPr></w:p>`},
+		{Text: "Heading", XML: `<w:p><w:r><w:t>Heading</w:t></w:r></w:p>`},
+	}
+	if pageBreak, _ := detectPageBreakBefore(continuous, 1); pageBreak {
+		t.Fatal("continuous section break must not become a page break")
+	}
+}
+
+func TestResolveDocumentEffectiveStylesFollowsBasedOn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "student.docx")
+	writeDocxEntries(t, path, map[string]string{
+		"[Content_Types].xml": `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Chapter</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+		"word/styles.xml": `<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+			`<w:style w:type="paragraph" w:styleId="Normal"><w:rPr><w:rFonts w:eastAsia="Song" w:ascii="Times"/><w:sz w:val="24"/></w:rPr></w:style>` +
+			`<w:style w:type="paragraph" w:styleId="Heading1"><w:basedOn w:val="Normal"/><w:pPr><w:jc w:val="center"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>` +
+			`</w:styles>`,
+	})
+	styles, err := ResolveDocumentEffectiveStyles(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := styles[0]
+	if got.FontEastAsia != "Song" || got.FontASCII != "Times" || got.FontSizeHalfPt != "32" || got.Alignment != "center" || !got.BoldSet || !got.Bold {
+		t.Fatalf("effective style did not follow basedOn: %#v", got)
+	}
+}
+
 type fakeChatClient struct {
 	response string
 	prompt   string
+}
+
+func TestSelectTemplateScopeUsesScienceSampleOnly(t *testing.T) {
+	xml := `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+		`<w:p><w:r><w:t>格式要求</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>7-1.理工类毕业设计（论文）范本</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>1.1 科学研究</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>7-2.文科类毕业设计（论文）范本</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>一、文科标题</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	scope, selected := SelectTemplateScope(collectParagraphs(xml))
+	if scope.SelectedSample != SampleScience || len(selected) != 1 || selected[0].Text != "1.1 科学研究" {
+		t.Fatalf("scope=%+v selected=%#v", scope, selected)
+	}
+	if scope.RequirementsRange != [2]int{0, 1} || scope.ScienceSampleRange != [2]int{2, 3} || scope.ArtsSampleRange != [2]int{3, 5} {
+		t.Fatalf("ranges=%+v", scope)
+	}
 }
 
 func TestCollectParagraphsIgnoresNestedTextBoxAnnotations(t *testing.T) {
@@ -558,6 +640,21 @@ func TestClassifyParagraphDoesNotTreatSubheadingAsBodyStart(t *testing.T) {
 	}
 }
 
+func TestNumberedHeadingLevelRejectsDateLikeProse(t *testing.T) {
+	if got := numberedHeadingLevel("1.3.3 Nd:YAG激光陶瓷的优点"); got != 3 {
+		t.Fatalf("numberedHeadingLevel() = %d, want 3", got)
+	}
+	if got := numberedHeadingLevel("2026 年 3 月"); got != 0 {
+		t.Fatalf("date-like text classified as heading level %d", got)
+	}
+}
+
+func TestNumberedHeadingLevelRejectsScientificExpression(t *testing.T) {
+	if got := numberedHeadingLevel("8.7×10-2"); got != 0 {
+		t.Fatalf("scientific expression classified as heading level %d", got)
+	}
+}
+
 func TestExtractAggregatesRepeatedStylesByMode(t *testing.T) {
 	templatePath := filepath.Join(t.TempDir(), "template.docx")
 	paragraph := func(font, size string) string {
@@ -577,7 +674,7 @@ func TestExtractAggregatesRepeatedStylesByMode(t *testing.T) {
 	}
 }
 
-func TestBuildAllowsAIToCorrectLocalSectionAndBold(t *testing.T) {
+func TestBuildKeepsAICorrectionsAsCandidates(t *testing.T) {
 	templatePath := filepath.Join(t.TempDir(), "template.docx")
 	writeTemplateProfileDocx(t, templatePath)
 	client := &fakeChatClient{response: `{"sections":{"references_title":{"page_break_before":false,"evidence":"ai_corrected"}},"styles":{"references_title":{"bold":false,"font_size_half_pt":"30"}},"confidence":0.91}`}
@@ -587,11 +684,14 @@ func TestBuildAllowsAIToCorrectLocalSectionAndBold(t *testing.T) {
 		t.Fatalf("Build() error = %v", err)
 	}
 
-	if profile.Sections["references_title"].PageBreakBefore || profile.Sections["references_title"].DetectedFrom != "ai_corrected" {
-		t.Fatalf("AI section correction not applied: %#v", profile.Sections["references_title"])
+	if !profile.Sections["references_title"].PageBreakBefore || profile.Sections["references_title"].DetectedFrom == "ai_corrected" {
+		t.Fatalf("AI candidate overrode local section evidence: %#v", profile.Sections["references_title"])
 	}
-	if style := profile.Styles["references_title"]; style.Bold || style.FontSizeHalfPt != "30" {
-		t.Fatalf("AI style correction not applied: %#v", style)
+	if style := profile.Styles["references_title"]; !style.Bold || style.FontSizeHalfPt == "30" {
+		t.Fatalf("AI candidate overrode local style: %#v", style)
+	}
+	if profile.AI == nil || profile.AI.Enabled || !strings.Contains(profile.AI.Error, "unstructured") || client.prompt != "" {
+		t.Fatalf("legacy AI summary was not disabled: %#v prompt=%q", profile.AI, client.prompt)
 	}
 }
 
@@ -659,7 +759,7 @@ func TestExtractKeepsFirstAndEvenHeaderFooterVariants(t *testing.T) {
 	}
 }
 
-func TestBuildAttachesDeepSeekSummary(t *testing.T) {
+func TestBuildDisablesLegacyDeepSeekSummary(t *testing.T) {
 	templatePath := filepath.Join(t.TempDir(), "template.docx")
 	writeTemplateProfileDocx(t, templatePath)
 	client := &fakeChatClient{response: `{"sections":{"references_title":{"page_break_before":true,"evidence":"ai_confirmed"}},"styles":{"body":{"font_east_asia":"\u6977\u4f53","font_ascii":"Times New Roman","font_size_half_pt":"26","line":"420","first_line_chars":"200"},"references":{"font_east_asia":"宋体","font_size_half_pt":"21","first_line_chars":"0"}},"rule_pack":{"citation_style":"superscript_bracket","reference_standard":"GB/T 7714-2005","table_style":"three-line"},"header":{"exists":true,"has_double_line":true},"confidence":0.91}`}
@@ -668,38 +768,20 @@ func TestBuildAttachesDeepSeekSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if profile.Source != "local+deepseek" {
-		t.Fatalf("Source = %s, want local+deepseek", profile.Source)
+	if profile.Source != "local" || profile.AI == nil || profile.AI.Enabled || !strings.Contains(profile.AI.Error, "unstructured") || client.prompt != "" {
+		t.Fatalf("legacy AI summary was not disabled: source=%s profile=%#v prompt=%q", profile.Source, profile.AI, client.prompt)
 	}
-	if profile.AI == nil || profile.AI.Error != "" || profile.AI.RawJSON == nil {
-		t.Fatalf("AI summary not attached: %#v", profile.AI)
+	if profile.Styles["body"].FontEastAsia == "\u6977\u4f53" || profile.Styles["body"].Line == "420" {
+		t.Fatalf("AI candidate changed executable body style: %#v", profile.Styles["body"])
 	}
-	if profile.Styles["body"].FontEastAsia != "\u6977\u4f53" || profile.Styles["body"].Line != "420" {
-		t.Fatalf("AI styles should merge into profile styles: %#v", profile.Styles["body"])
-	}
-	if !profile.Sections["references_title"].PageBreakBefore || profile.Sections["references_title"].DetectedFrom != "ai_confirmed" {
-		t.Fatalf("AI section evidence should merge into local profile: %#v", profile.Sections["references_title"])
+	if profile.Sections["references_title"].DetectedFrom == "ai_confirmed" {
+		t.Fatalf("AI candidate changed executable section rule: %#v", profile.Sections["references_title"])
 	}
 	if profile.Confidence != 0.76 {
 		t.Fatalf("Confidence = %v, want local confidence 0.76", profile.Confidence)
 	}
-	if profile.RulePack.CitationStyle != "superscript_bracket" ||
-		profile.RulePack.ReferenceStandard != "GB/T 7714" ||
-		profile.RulePack.TableStyle != "three-line" {
-		t.Fatalf("AI rule pack should merge into profile: %#v", profile.RulePack)
-	}
-	for _, want := range []string{
-		"\u672c\u79d1\u6bd5\u4e1a\u8bba\u6587 DOCX \u6a21\u677f\u683c\u5f0f\u89c4\u8303\u89e3\u6790\u4e13\u5bb6",
-		"\u7ae0\u8282\u53e6\u8d77页",
-		"references_title",
-		"acknowledgements_title",
-		"页\u7709页\u811a",
-		"\u6837\u5f0f\u753b\u50cf",
-		"\u672c\u5730\u89e3\u6790 JSON",
-	} {
-		if !strings.Contains(client.prompt, want) {
-			t.Fatalf("prompt missing %q: %s", want, client.prompt)
-		}
+	if profile.RulePack.TableStyle == "three-line" {
+		t.Fatalf("AI candidate changed executable rule pack: %#v", profile.RulePack)
 	}
 }
 
@@ -767,6 +849,13 @@ func TestBuildMergesRulePackSidecar(t *testing.T) {
 		profile.RulePack.ReferenceStyle != "author_year" ||
 		!profile.RulePack.BlindReview {
 		t.Fatalf("expanded sidecar rule pack not merged: %#v", profile.RulePack)
+	}
+}
+
+func TestExtractLocalRulePackRequiresOriginalityDeclarationWhenTemplateContainsIt(t *testing.T) {
+	rules := extractLocalRulePack([]paragraph{{Text: "原创性声明"}, {Text: "论文格式要求"}})
+	if len(rules.RequiredSections) != 1 || rules.RequiredSections[0] != "originality_declaration" {
+		t.Fatalf("required sections = %#v", rules.RequiredSections)
 	}
 }
 

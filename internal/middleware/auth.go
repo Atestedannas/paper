@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"errors"
+	"github.com/paper-format-checker/backend/internal/utils"
 	"net/http"
 	"strings"
 	"time"
@@ -90,7 +91,7 @@ func AuthMiddleware(config *config.Config, db *gorm.DB) gin.HandlerFunc {
 		// 获取Authorization头
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "authorization header is required"})
+			utils.Unauthorized(c, "缺少认证信息，请先登录")
 			c.Abort()
 			return
 		}
@@ -98,7 +99,7 @@ func AuthMiddleware(config *config.Config, db *gorm.DB) gin.HandlerFunc {
 		// 解析Bearer令牌
 		parts := strings.SplitN(authHeader, " ", 2)
 		if !(len(parts) == 2 && parts[0] == "Bearer") {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization format"})
+			utils.Unauthorized(c, "认证格式无效")
 			c.Abort()
 			return
 		}
@@ -107,7 +108,7 @@ func AuthMiddleware(config *config.Config, db *gorm.DB) gin.HandlerFunc {
 
 		// 检查令牌是否在黑名单中
 		if tokenBlacklistService.IsTokenBlacklisted(tokenString) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "token has been invalidated"})
+			utils.Unauthorized(c, "登录已失效，请重新登录")
 			c.Abort()
 			return
 		}
@@ -123,19 +124,19 @@ func AuthMiddleware(config *config.Config, db *gorm.DB) gin.HandlerFunc {
 		})
 
 		if err != nil || !token.Valid {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+			utils.Unauthorized(c, "登录已过期，请重新登录")
 			c.Abort()
 			return
 		}
 
 		// 检查令牌是否过期
 		if claims.ExpiresAt.Before(time.Now()) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "token has expired"})
+			utils.Unauthorized(c, "登录已过期，请重新登录")
 			c.Abort()
 			return
 		}
 		if claims.IssuedAt == nil || tokenBlacklistService.AreUserAccessTokensRevoked(claims.UserID, claims.IssuedAt.Time) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "token has been invalidated"})
+			utils.Unauthorized(c, "登录已失效，请重新登录")
 			c.Abort()
 			return
 		}
@@ -143,14 +144,14 @@ func AuthMiddleware(config *config.Config, db *gorm.DB) gin.HandlerFunc {
 		// 获取用户信息
 		user, err := userService.GetUserByID(claims.UserID)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+			utils.Unauthorized(c, "用户不存在")
 			c.Abort()
 			return
 		}
 
 		// 检查用户状态
 		if user.Status != "active" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "user account is not active"})
+			utils.Unauthorized(c, "账号已被禁用")
 			c.Abort()
 			return
 		}
@@ -236,7 +237,7 @@ func RequireMemberMiddleware() gin.HandlerFunc {
 		// 获取用户ID
 		userID, exists := c.Get("user_id")
 		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+			utils.Unauthorized(c, "请先登录")
 			c.Abort()
 			return
 		}
@@ -245,7 +246,7 @@ func RequireMemberMiddleware() gin.HandlerFunc {
 		memberService := service.NewMemberService()
 		isActive, err := memberService.CheckMemberStatus(userID.(uuid.UUID))
 		if err != nil || !isActive {
-			c.JSON(http.StatusForbidden, gin.H{"error": "member access required"})
+			utils.ErrorResponse(c, 403, "权限不足", "需要会员权限")
 			c.Abort()
 			return
 		}
@@ -260,7 +261,7 @@ func RequireCheckPermissionMiddleware() gin.HandlerFunc {
 		// 获取用户ID
 		userID, exists := c.Get("user_id")
 		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+			utils.Unauthorized(c, "请先登录")
 			c.Abort()
 			return
 		}
@@ -269,7 +270,7 @@ func RequireCheckPermissionMiddleware() gin.HandlerFunc {
 		memberService := service.NewMemberService()
 		isActive, err := memberService.CheckMemberStatus(userID.(uuid.UUID))
 		if err != nil || !isActive {
-			c.JSON(http.StatusForbidden, gin.H{"error": "member access required"})
+			utils.ErrorResponse(c, 403, "权限不足", "需要会员权限")
 			c.Abort()
 			return
 		}
@@ -277,13 +278,13 @@ func RequireCheckPermissionMiddleware() gin.HandlerFunc {
 		// 检查剩余检查次数
 		remaining, err := memberService.GetMemberRemainingChecks(userID.(uuid.UUID))
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check remaining checks"})
+			utils.ErrorResponse(c, 500, "服务器错误", "检查剩余次数失败")
 			c.Abort()
 			return
 		}
 
 		if remaining <= 0 {
-			c.JSON(http.StatusForbidden, gin.H{"error": "check count limit exceeded"})
+			utils.ErrorResponse(c, 403, "检查次数已用完", "请升级会员或购买更多次数")
 			c.Abort()
 			return
 		}
@@ -306,7 +307,7 @@ func AdminMiddleware() gin.HandlerFunc {
 		// 检查用户是否已认证
 		_, exists := c.Get("user_id")
 		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+			utils.Unauthorized(c, "请先登录")
 			c.Abort()
 			return
 		}
@@ -319,7 +320,7 @@ func AdminMiddleware() gin.HandlerFunc {
 
 		role, exists := c.Get("role")
 		if !exists || (role != "admin" && role != "super_admin") {
-			c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+			utils.ErrorResponse(c, 403, "权限不足", "需要管理员权限")
 			c.Abort()
 			return
 		}
@@ -344,21 +345,21 @@ func AdminRBACMiddleware() gin.HandlerFunc {
 
 		userIDValue, exists := c.Get("user_id")
 		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+			utils.Unauthorized(c, "请先登录")
 			c.Abort()
 			return
 		}
 
 		userID, ok := userIDValue.(uuid.UUID)
 		if !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
+			utils.Unauthorized(c, "用户ID无效")
 			c.Abort()
 			return
 		}
 
 		rbacService, err := service.NewRBACService()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize rbac service"})
+			utils.ErrorResponse(c, 500, "服务器错误", "权限服务初始化失败")
 			c.Abort()
 			return
 		}
@@ -367,12 +368,14 @@ func AdminRBACMiddleware() gin.HandlerFunc {
 		action := c.Request.Method
 		allowed, err := rbacService.HasPermission(userID, resource, action)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "permission check failed"})
+			utils.ErrorResponse(c, 500, "服务器错误", "权限检查失败")
 			c.Abort()
 			return
 		}
 		if !allowed {
 			c.JSON(http.StatusForbidden, gin.H{
+				"code":     403,
+				"msg":      "权限不足",
 				"error":    "permission denied",
 				"resource": resource,
 				"action":   action,

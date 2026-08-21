@@ -85,7 +85,7 @@ func (a *AIFormatApplier) Apply(
 
 func isProtectedFormatCategory(category string) bool {
 	switch category {
-	case aiclassifier.TypeTOCTitle, aiclassifier.TypeTOC:
+	case aiclassifier.TypeTOC:
 		return true
 	default:
 		return false
@@ -204,6 +204,7 @@ func (a *AIFormatApplier) applyFontToParaRPr(rPr *wml.CT_ParaRPr, spec Paragraph
 		rPr.RFonts.EastAsiaAttr = eastAsiaPtr
 		rPr.RFonts.AsciiAttr = asciiPtr
 		rPr.RFonts.HAnsiAttr = asciiPtr
+		rPr.RFonts.CsAttr = asciiPtr
 	}
 	if spec.FontAscii != "" && spec.FontEastAsia == "" {
 		// 纯ASCII字体（如英文参考文献条目）
@@ -213,6 +214,7 @@ func (a *AIFormatApplier) applyFontToParaRPr(rPr *wml.CT_ParaRPr, spec Paragraph
 		asciiPtr := a.processor.getCachedFontName(spec.FontAscii)
 		rPr.RFonts.AsciiAttr = asciiPtr
 		rPr.RFonts.HAnsiAttr = asciiPtr
+		rPr.RFonts.CsAttr = asciiPtr
 	}
 	if spec.FontSizeHalfPt > 0 {
 		halfPt := spec.FontSizeHalfPt
@@ -222,9 +224,18 @@ func (a *AIFormatApplier) applyFontToParaRPr(rPr *wml.CT_ParaRPr, spec Paragraph
 	if spec.FontSizeCSHalfPt > 0 {
 		rPr.SzCs = wml.NewCT_HpsMeasure()
 		rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &spec.FontSizeCSHalfPt
+	} else if spec.FontSizeHalfPt > 0 {
+		// An omitted w:szCs inherits the normal size.  Do not retain a
+		// student's stale complex-script size (for example 15pt on a 12pt
+		// keyword label) when the template does not define one.
+		rPr.SzCs = nil
 	}
-	if spec.Bold {
-		rPr.B = wml.NewCT_OnOff()
+	if spec.BoldSet || spec.Bold {
+		if spec.Bold {
+			rPr.B = wml.NewCT_OnOff()
+		} else {
+			rPr.B = nil
+		}
 	}
 	if spec.Underline {
 		rPr.U = wml.NewCT_Underline()
@@ -235,7 +246,7 @@ func (a *AIFormatApplier) applyFontToParaRPr(rPr *wml.CT_ParaRPr, spec Paragraph
 // applySpecToRun 将格式规范应用到单个Run（Run级优先级最高）
 func (a *AIFormatApplier) applySpecToRun(run document.Run, spec ParagraphFormatSpec) {
 	text := run.Text()
-	hasCJK, hasASCII, hasComplex, hasNonComplex := textScriptKinds(text)
+	_, _, hasComplex, _ := textScriptKinds(text)
 	rPr := run.X().RPr
 	if rPr == nil {
 		rPr = wml.NewCT_RPr()
@@ -243,14 +254,19 @@ func (a *AIFormatApplier) applySpecToRun(run document.Run, spec ParagraphFormatS
 	}
 
 	// 字体
-	if spec.FontEastAsia != "" && hasCJK {
+	// A paragraph can split its numbering/punctuation and Chinese text into
+	// separate runs.  Writing EastAsia only to runs that currently contain CJK
+	// leaves the first (often numeric) run with the student's old font slot.
+	// The paragraph rule owns the font family, so normalize the slot on every
+	// run when a template explicitly supplies it.
+	if spec.FontEastAsia != "" {
 		if rPr.RFonts == nil {
 			rPr.RFonts = wml.NewCT_Fonts()
 		}
 		eastAsiaPtr := a.processor.getCachedFontName(spec.FontEastAsia)
 		rPr.RFonts.EastAsiaAttr = eastAsiaPtr
 	}
-	if hasASCII && (spec.FontAscii != "" || spec.FontEastAsia != "") {
+	if spec.FontAscii != "" || spec.FontEastAsia != "" {
 		if rPr.RFonts == nil {
 			rPr.RFonts = wml.NewCT_Fonts()
 		}
@@ -258,7 +274,7 @@ func (a *AIFormatApplier) applySpecToRun(run document.Run, spec ParagraphFormatS
 		rPr.RFonts.AsciiAttr = asciiPtr
 		rPr.RFonts.HAnsiAttr = asciiPtr
 	}
-	if hasComplex && spec.FontAscii != "" {
+	if spec.FontAscii != "" {
 		if rPr.RFonts == nil {
 			rPr.RFonts = wml.NewCT_Fonts()
 		}
@@ -266,24 +282,40 @@ func (a *AIFormatApplier) applySpecToRun(run document.Run, spec ParagraphFormatS
 	}
 
 	// 字号（半磅单位，直接写w:sz，避免单位转换问题）
-	if spec.FontSizeHalfPt > 0 && hasNonComplex {
+	// Apply the paragraph's size to every visible run, including whitespace or
+	// punctuation-only runs. Leaving those runs untouched creates mixed-size
+	// references and headings even though the paragraph-level audit passes.
+	if spec.FontSizeHalfPt > 0 {
 		halfPt := spec.FontSizeHalfPt
 		if rPr.Sz == nil {
 			rPr.Sz = wml.NewCT_HpsMeasure()
 		}
 		rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPt
 	}
-	if spec.FontSizeCSHalfPt > 0 && hasComplex {
+	if spec.FontSizeCSHalfPt > 0 && (hasComplex || rPr.SzCs != nil) {
 		if rPr.SzCs == nil {
 			rPr.SzCs = wml.NewCT_HpsMeasure()
 		}
 		rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &spec.FontSizeCSHalfPt
+	} else if spec.FontSizeHalfPt > 0 && (hasComplex || rPr.SzCs != nil) {
+		// Keep complex-script rendering in lockstep with w:sz when the
+		// template leaves w:szCs unspecified.
+		halfPt := spec.FontSizeHalfPt
+		if rPr.SzCs == nil {
+			rPr.SzCs = wml.NewCT_HpsMeasure()
+		}
+		rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &halfPt
 	}
 
 	// 加粗
-	if spec.Bold {
-		rPr.B = wml.NewCT_OnOff()
-		rPr.BCs = wml.NewCT_OnOff()
+	if spec.BoldSet || spec.Bold {
+		if spec.Bold {
+			rPr.B = wml.NewCT_OnOff()
+			rPr.BCs = wml.NewCT_OnOff()
+		} else {
+			rPr.B = nil
+			rPr.BCs = nil
+		}
 	}
 
 	// 斜体
@@ -301,7 +333,7 @@ func (a *AIFormatApplier) applySpecToRun(run document.Run, spec ParagraphFormatS
 
 func buildParagraphSpecPatch(para document.Paragraph, expected ParagraphFormatSpec) ParagraphFormatSpec {
 	actual := extractParaFormatSpec(para)
-	patch := ParagraphFormatSpec{}
+	patch := ParagraphFormatSpec{BoldSet: expected.BoldSet}
 	pPr := para.X().PPr
 	hasNamedStyle := pPr != nil && pPr.PStyle != nil
 	var visibleText strings.Builder
@@ -310,14 +342,56 @@ func buildParagraphSpecPatch(para document.Paragraph, expected ParagraphFormatSp
 	}
 	hasCJK, hasASCII, hasComplex, _ := textScriptKinds(visibleText.String())
 	typographyAbsent := actual.FontEastAsia == "" && actual.FontAscii == "" && actual.FontSizeHalfPt == 0
-	listLike := listLikeParagraphPattern.MatchString(strings.TrimSpace(visibleText.String()))
+	// The dominant run is useful for sampling, but it is not sufficient for
+	// applying a rule: Word commonly leaves one short label run (for example
+	// "Key words:") at the student's old size. Normalize a requested
+	// typography field when any visible run disagrees, while leaving unrelated
+	// run properties (fields, hyperlinks, superscript, etc.) untouched.
+	runSizeMismatch := false
+	runCSSizeMismatch := false
+	runEastAsiaMismatch := false
+	runAsciiMismatch := false
+	runBoldMismatch := false
+	for _, run := range para.Runs() {
+		if strings.TrimSpace(run.Text()) == "" {
+			continue
+		}
+		runSpec, ok := extractTemplateRunFormatSpec(run)
+		if expected.FontSizeHalfPt > 0 && (!ok || runSpec.FontSizeHalfPt != expected.FontSizeHalfPt) {
+			runSizeMismatch = true
+		}
+		if expected.FontSizeCSHalfPt > 0 && hasComplex && (!ok || runSpec.FontSizeCSHalfPt != expected.FontSizeCSHalfPt) {
+			runCSSizeMismatch = true
+		} else if expected.FontSizeCSHalfPt == 0 && expected.FontSizeHalfPt > 0 && ok &&
+			runSpec.FontSizeCSHalfPt > 0 && runSpec.FontSizeCSHalfPt != expected.FontSizeHalfPt {
+			runCSSizeMismatch = true
+		}
+		if expected.FontEastAsia != "" && (!ok || getChineseFontName(runSpec.FontEastAsia) != getChineseFontName(expected.FontEastAsia)) {
+			runEastAsiaMismatch = true
+		}
+		if expected.FontAscii != "" && (!ok || !strings.EqualFold(normalizedAsciiFont(runSpec.FontAscii, runSpec.FontEastAsia), normalizedAsciiFont(expected.FontAscii, expected.FontEastAsia))) {
+			runAsciiMismatch = true
+		}
+		if expected.BoldSet && runSpec.Bold != expected.Bold {
+			runBoldMismatch = true
+		}
+	}
 
-	if !listLike && hasCJK && expected.FontEastAsia != "" &&
+	// Numbered headings (1.1, 1.3.1, ...) also match listLikeParagraphPattern.
+	// That pattern is only useful for preserving list indentation; it must not
+	// suppress template font/size correction for headings.
+	if hasCJK && expected.FontEastAsia != "" &&
 		(typographyAbsent || (actual.FontEastAsia != "" && getChineseFontName(actual.FontEastAsia) != getChineseFontName(expected.FontEastAsia))) {
 		patch.FontEastAsia = expected.FontEastAsia
 	}
-	if !listLike && hasASCII && expected.FontAscii != "" &&
+	if hasASCII && expected.FontAscii != "" &&
 		(typographyAbsent || (actual.FontAscii != "" && !strings.EqualFold(normalizedAsciiFont(actual.FontAscii, actual.FontEastAsia), normalizedAsciiFont(expected.FontAscii, expected.FontEastAsia)))) {
+		patch.FontAscii = expected.FontAscii
+	}
+	if runEastAsiaMismatch {
+		patch.FontEastAsia = expected.FontEastAsia
+	}
+	if runAsciiMismatch {
 		patch.FontAscii = expected.FontAscii
 	}
 	if expected.FontSizeHalfPt > 0 && (actual.FontSizeHalfPt > 0 || typographyAbsent) {
@@ -326,11 +400,27 @@ func buildParagraphSpecPatch(para document.Paragraph, expected ParagraphFormatSp
 			patch.FontSizeHalfPt = expected.FontSizeHalfPt
 		}
 	}
+	if runSizeMismatch {
+		patch.FontSizeHalfPt = expected.FontSizeHalfPt
+	}
 	if hasComplex && expected.FontSizeCSHalfPt > 0 && actual.FontSizeCSHalfPt != expected.FontSizeCSHalfPt {
 		patch.FontSizeCSHalfPt = expected.FontSizeCSHalfPt
 	}
-	if expected.Bold && !actual.Bold && (typographyAbsent || paragraphHasExplicitBoldOff(para)) {
+	if runCSSizeMismatch {
+		patch.FontSizeCSHalfPt = expected.FontSizeCSHalfPt
+		if patch.FontSizeCSHalfPt == 0 {
+			patch.FontSizeCSHalfPt = expected.FontSizeHalfPt
+		}
+	}
+	if expected.Bold && !actual.Bold {
 		patch.Bold = true
+	} else if expected.BoldSet && !expected.Bold && actual.Bold {
+		// The template explicitly samples normal weight; remove stale student bold.
+		patch.BoldSet = true
+	}
+	if runBoldMismatch {
+		patch.BoldSet = true
+		patch.Bold = expected.Bold
 	}
 	if expected.Italic && !actual.Italic && !hasNamedStyle {
 		patch.Italic = true
@@ -345,7 +435,12 @@ func buildParagraphSpecPatch(para document.Paragraph, expected ParagraphFormatSp
 	}
 	if expected.LineSpacingVal > 0 && (actual.LineSpacingVal > 0 || typographyAbsent) {
 		delta := expected.LineSpacingVal - actual.LineSpacingVal
-		if delta > 20 || delta < -20 {
+		// A paragraph can already have the right numeric line value but the
+		// wrong OOXML rule (for example exact instead of auto).  Treat the rule
+		// as an independent managed property; otherwise repair rounds leave a
+		// persistent visual mismatch while reporting the value as correct.
+		ruleMismatch := expected.LineSpacingRule != 0 && actual.LineSpacingRule != expected.LineSpacingRule
+		if delta > 20 || delta < -20 || ruleMismatch {
 			patch.LineSpacingVal = expected.LineSpacingVal
 			patch.LineSpacingRule = expected.LineSpacingRule
 		}
@@ -356,7 +451,10 @@ func buildParagraphSpecPatch(para document.Paragraph, expected ParagraphFormatSp
 	if expected.SpaceAfter > 0 && actual.SpaceAfter > 0 && actual.SpaceAfter != expected.SpaceAfter {
 		patch.SpaceAfter = expected.SpaceAfter
 	}
-	if expected.FirstLineIndent > 0 && !listLike {
+	// A numbered heading can still have an explicit first-line indent in the
+	// template (the Chongqing sample uses 560 twips for level-3 headings).
+	// Do not discard that rule merely because the text looks list-like.
+	if expected.FirstLineIndent > 0 {
 		hasCharacterIndent := pPr != nil && pPr.Ind != nil && pPr.Ind.FirstLineCharsAttr != nil
 		delta := int64(expected.FirstLineIndent) - int64(actual.FirstLineIndent)
 		tolerance := int64(expected.FontSizeHalfPt * 3)
@@ -379,6 +477,38 @@ func buildParagraphSpecPatch(para document.Paragraph, expected ParagraphFormatSp
 	return patch
 }
 
+// paragraphHasRunFormatMismatch complements paragraph-level verification. A
+// paragraph can have a compliant dominant run while a short label run still
+// carries stale size/font/bold attributes.
+func paragraphHasRunFormatMismatch(para document.Paragraph, expected ParagraphFormatSpec) bool {
+	for _, run := range para.Runs() {
+		if strings.TrimSpace(run.Text()) == "" {
+			continue
+		}
+		actual, ok := extractTemplateRunFormatSpec(run)
+		if expected.FontSizeHalfPt > 0 && (!ok || actual.FontSizeHalfPt != expected.FontSizeHalfPt) {
+			return true
+		}
+		if expected.FontSizeCSHalfPt > 0 && (!ok || actual.FontSizeCSHalfPt != expected.FontSizeCSHalfPt) {
+			return true
+		}
+		if expected.FontSizeCSHalfPt == 0 && expected.FontSizeHalfPt > 0 && ok &&
+			actual.FontSizeCSHalfPt > 0 && actual.FontSizeCSHalfPt != expected.FontSizeHalfPt {
+			return true
+		}
+		if expected.FontEastAsia != "" && (!ok || getChineseFontName(actual.FontEastAsia) != getChineseFontName(expected.FontEastAsia)) {
+			return true
+		}
+		if expected.FontAscii != "" && (!ok || !strings.EqualFold(normalizedAsciiFont(actual.FontAscii, actual.FontEastAsia), normalizedAsciiFont(expected.FontAscii, expected.FontEastAsia))) {
+			return true
+		}
+		if expected.BoldSet && actual.Bold != expected.Bold {
+			return true
+		}
+	}
+	return false
+}
+
 var listLikeParagraphPattern = regexp.MustCompile(`^(?:[\(（]?\d+[\)）、.]|[①-⑳]|[一二三四五六七八九十]+[、）])`)
 
 func paragraphHasExplicitBoldOff(para document.Paragraph) bool {
@@ -397,7 +527,7 @@ func paragraphHasExplicitBoldOff(para document.Paragraph) bool {
 }
 
 func hasTypographySpecFields(spec ParagraphFormatSpec) bool {
-	return spec.FontEastAsia != "" || spec.FontAscii != "" || spec.FontSizeHalfPt > 0 ||
+	return spec.FontEastAsia != "" || spec.FontAscii != "" || spec.FontSizeHalfPt > 0 || spec.BoldSet ||
 		spec.FontSizeCSHalfPt > 0 || spec.Bold || spec.Italic || spec.Underline || spec.ColorHex != ""
 }
 
@@ -419,7 +549,7 @@ func specManagesDiffField(spec ParagraphFormatSpec, field string) bool {
 	case "font_size_cs_half_pt":
 		return spec.FontSizeCSHalfPt > 0
 	case "bold":
-		return spec.Bold
+		return spec.BoldSet || spec.Bold
 	case "italic":
 		return spec.Italic
 	case "underline":

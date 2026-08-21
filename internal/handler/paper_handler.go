@@ -97,6 +97,9 @@ const (
 )
 
 func legacyWritePathDisabled() bool {
+	// The legacy upload/fix pipeline (including the old V2 engine) is retired.
+	// It cannot be re-enabled through configuration; /api/v2 is the only write
+	// workflow and it uses the selected DOCX profile.
 	return true
 }
 
@@ -125,14 +128,12 @@ func (h *PaperHandler) formatTemplateGoldenOrFilePath(paper *model.Paper, req Up
 	if err := database.DB.Where("id = ?", tid).First(&t).Error; err != nil {
 		return ""
 	}
-	if p := strings.TrimSpace(t.GoldenTemplatePath); p != "" {
-		return p
-	}
 	return strings.TrimSpace(t.FilePath)
 }
 
 // UploadPaper 上传论文；后台异步格式修正经 paperService → ApplyCorrectionsV2，引擎由 pkg/formatengine 编译期常量控制（与 Handler 无直接耦合）。
 func (h *PaperHandler) UploadPaper(c *gin.Context) {
+	log.Printf("[UPLOAD_FLOW] legacy upload request path=%s method=%s python_url=%q", c.Request.URL.Path, c.Request.Method, strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")))
 	if legacyWritePathDisabled() {
 		utils.ErrorResponse(c, http.StatusGone, legacyWritePathMessage, "")
 		return
@@ -254,6 +255,7 @@ func (h *PaperHandler) UploadPaper(c *gin.Context) {
 	}
 
 	go h.runUploadPaperAsyncJob(userID, paper, req)
+	log.Printf("[UPLOAD_FLOW] legacy upload accepted paper=%s async=true template_id=%d", paper.ID, req.TemplateID)
 
 	// 前端应使用 file_download_url + Authorization 下载原件；paper.file_path 为服务端相对路径，勿当地址栏直接打开
 	resp := gin.H{
@@ -347,6 +349,7 @@ func (h *PaperHandler) bumpUploadPaperQueue() int {
 }
 
 func (h *PaperHandler) runUploadPaperAsyncJob(uid interface{}, p *model.Paper, r UploadPaperRequest) {
+	log.Printf("[UPLOAD_FLOW] legacy async start paper=%s template_id=%d file=%s python_url=%q", p.ID, r.TemplateID, p.FilePath, strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")))
 	defer func() {
 		// panic 时回写状态与错误摘要，避免记录永远卡在 processing
 		if rec := recover(); rec != nil {
@@ -378,15 +381,26 @@ func (h *PaperHandler) runUploadPaperAsyncJob(uid interface{}, p *model.Paper, r
 }
 
 func (h *PaperHandler) tryQuickV2FixAfterUpload(p *model.Paper, r UploadPaperRequest) bool {
+	log.Printf("[UPLOAD_FLOW] QuickV2Fix start paper=%s template_id=%d", p.ID, r.TemplateID)
 	// 尝试基于模板一键出修正稿路径
 	fixedPath, err := h.paperService.QuickV2Fix(p.FilePath, r.TemplateID)
 	if err == nil && fixedPath != "" {
+		log.Printf("[UPLOAD_FLOW] QuickV2Fix completed paper=%s output=%s", p.ID, fixedPath)
+		if pythonURL := strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")); pythonURL != "" {
+			log.Printf("[PYTHON_VISUAL] legacy post-fix start paper=%s file=%s", p.ID, fixedPath)
+			if _, visualErr := h.paperService.CheckPythonVisualFile(fixedPath, r.TemplateID, p.ID.String()); visualErr != nil {
+				log.Printf("[PYTHON_VISUAL] legacy post-fix error paper=%s err=%v", p.ID, visualErr)
+			} else {
+				log.Printf("[PYTHON_VISUAL] legacy post-fix finished paper=%s", p.ID)
+			}
+		}
 		database.DB.Model(p).Updates(map[string]interface{}{
 			"status":              "corrected",
 			"corrected_file_path": fixedPath,
 		})
 		return true
 	}
+	log.Printf("[UPLOAD_FLOW] QuickV2Fix failed paper=%s err=%v", p.ID, err)
 
 	return false
 }

@@ -78,7 +78,10 @@ var continuedTableCaptionNumberPattern = regexp.MustCompile(`^(\s*\x{7eed}\x{886
 var headerReferencePattern = regexp.MustCompile(`<w:headerReference\b[^>]*/>`)
 var headerReferenceIDPattern = regexp.MustCompile(`<w:headerReference\b[^>]*\br:id="([^"]+)"[^>]*/>`)
 var footerReferenceIDPattern = regexp.MustCompile(`<w:footerReference\b[^>]*\br:id="([^"]+)"[^>]*/>`)
+var evenFooterReferencePattern = regexp.MustCompile(`<w:footerReference\b[^>]*\bw:type="even"[^>]*\br:id="([^"]+)"[^>]*/>`)
 var relationshipPattern = regexp.MustCompile(`<Relationship\b[^>]*/>`)
+var relIDPattern = regexp.MustCompile(`Id="rId(\d+)"`)
+var footerNamePattern = regexp.MustCompile(`^word/footer\d+\.xml$`)
 var xmlAttributePattern = regexp.MustCompile(`\b([A-Za-z_:][A-Za-z0-9_.:-]*)="([^"]*)"`)
 var shadingPattern = regexp.MustCompile(`<w:shd\b[^>]*/>`)
 var documentBackgroundPattern = regexp.MustCompile(`<w:background\b[^>]*/>`)
@@ -220,6 +223,7 @@ func NewTransplanter() *Transplanter {
 }
 
 func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error {
+
 	if ctx == nil {
 		return fmt.Errorf("context is nil")
 	}
@@ -285,7 +289,11 @@ func (t *Transplanter) Generate(ctx context.Context, input GenerateInput) error 
 	ooxmlpatch.FinalizeReviewMarkup(pkg)
 	// Comments present here originate from the template skeleton. Student
 	// comments are handled by the in-place repair path and are never removed.
+
 	ooxmlpatch.RemoveComments(pkg)
+	if !usesCQRWSTNormalizers {
+		ensureAllBodySectPrFooterReferences(pkg)
+	}
 	ensureUpdateFieldsOnOpen(pkg)
 	if _, err := ooxmlpatch.ApplyHeadingNumberingDefinitions(pkg, []string{"1", "1.1", "1.1.1"}); err != nil {
 		return err
@@ -368,12 +376,36 @@ func ensureUpdateFieldsOnOpen(pkg *ooxmlpkg.DocxPackage) {
 	document, _ := pkg.Get(defaultPatchTarget)
 	spec := ooxmlpatch.SettingsPropertiesSpec{
 		UpdateFieldsOnOpen: true,
-		EvenAndOddHeaders:  strings.Contains(string(document), `w:type="even"`),
+		EvenAndOddHeaders:  evenFooterHasPageField(pkg, string(document)),
 	}
 	if updated, ok := ooxmlpatch.ApplySettingsProperties(settingsXML, spec); ok {
 		pkg.Set("word/settings.xml", []byte(updated))
 	}
 	ooxmlpatch.EnsurePartRelationship(pkg, "word/settings.xml", ooxmlpatch.SettingsRelationshipType, ooxmlpatch.SettingsContentType)
+}
+
+// evenFooterHasPageField checks whether any even footer referenced in the
+// document actually contains a PAGE field. If no even footer exists or none
+// contains PAGE, Word would render even pages without page numbers when
+// evenAndOddHeaders is enabled — so we must not enable it.
+func evenFooterHasPageField(pkg *ooxmlpkg.DocxPackage, documentXML string) bool {
+	for _, match := range evenFooterReferencePattern.FindAllStringSubmatch(documentXML, -1) {
+		if len(match) < 2 || match[1] == "" {
+			continue
+		}
+		target := relationshipTarget(pkg, match[1])
+		if target == "" {
+			continue
+		}
+		content, ok := pkg.Get(target)
+		if !ok {
+			continue
+		}
+		if strings.Contains(string(content), " PAGE ") {
+			return true
+		}
+	}
+	return false
 }
 
 // NormalizeFinalDOCX applies the safe package cleanup used by the template
@@ -3448,6 +3480,155 @@ func mainBodyHeaderReferenceID(documentXML string) string {
 		}
 	}
 	return ""
+}
+
+// ensureAllBodySectPrFooterReferences ensures every body sectPr (w:fmt="decimal")
+// has a footerReference, even when the document originally lacked one.
+// It follows a three-step fallback:
+//
+//	a) Reuse an existing type="default" footerReference r:id from the document
+//	b) Search word/_rels/document.xml.rels for an existing footer XML with PAGE + center alignment
+//	c) Generate a fresh centered PAGE-only footer XML and register it in the rels
+func ensureAllBodySectPrFooterReferences(pkg *ooxmlpkg.DocxPackage) {
+	if pkg == nil {
+		return
+	}
+	document, ok := pkg.Get(defaultPatchTarget)
+	if !ok {
+		return
+	}
+	documentXML := string(document)
+
+	// Check if any body sectPr actually needs a footerReference
+	needFooter := false
+	for _, sectPr := range finalSectPrPattern.FindAllString(documentXML, -1) {
+		if !strings.Contains(sectPr, `w:fmt="decimal"`) {
+			continue
+		}
+		if !strings.Contains(sectPr, "<w:footerReference") {
+			needFooter = true
+			break
+		}
+	}
+	if !needFooter {
+		return
+	}
+
+	footerRefID := findSuitableFooterRefID(pkg, documentXML)
+	if footerRefID == "" {
+		return
+	}
+	footerRefTag := fmt.Sprintf(`<w:footerReference w:type="default" r:id="%s"/>`, footerRefID)
+
+	updated := finalSectPrPattern.ReplaceAllStringFunc(documentXML, func(sectPr string) string {
+		if !strings.Contains(sectPr, `w:fmt="decimal"`) {
+			return sectPr
+		}
+		if strings.Contains(sectPr, "<w:footerReference") {
+			return sectPr
+		}
+		if idx := strings.Index(sectPr, ">"); idx >= 0 {
+			return sectPr[:idx+1] + footerRefTag + sectPr[idx+1:]
+		}
+		return sectPr
+	})
+	if updated != documentXML {
+		pkg.Set(defaultPatchTarget, []byte(updated))
+	}
+}
+
+func findSuitableFooterRefID(pkg *ooxmlpkg.DocxPackage, documentXML string) string {
+	// Step a: search for an existing type="default" footerReference
+	for _, match := range footerReferenceIDPattern.FindAllStringSubmatch(documentXML, -1) {
+		found := match[0]
+		if !strings.Contains(found, `w:type="even"`) && !strings.Contains(found, `w:type="first"`) {
+			return match[1]
+		}
+	}
+
+	// Step b: scan rels for footer XML files with PAGE field and center alignment
+	rels, ok := pkg.Get("word/_rels/document.xml.rels")
+	if ok {
+		for _, rel := range relationshipPattern.FindAllString(string(rels), -1) {
+			attrs := xmlAttributes(rel)
+			relType := attrs["Type"]
+			if !strings.HasSuffix(relType, "/footer") {
+				continue
+			}
+			target := normalizeRelationshipTarget(attrs["Target"])
+			if target == "" {
+				continue
+			}
+			relID := attrs["Id"]
+			if relID == "" {
+				continue
+			}
+			content, ok := pkg.Get(target)
+			if !ok {
+				continue
+			}
+			if strings.Contains(string(content), " PAGE ") && strings.Contains(string(content), `<w:jc w:val="center"`) {
+				return relID
+			}
+		}
+	}
+
+	// Step c: generate a fresh centered PAGE-only footer XML
+	return createDefaultFooter(pkg)
+}
+
+func createDefaultFooter(pkg *ooxmlpkg.DocxPackage) string {
+	rels, ok := pkg.Get("word/_rels/document.xml.rels")
+	if !ok {
+		return ""
+	}
+	relsXML := string(rels)
+
+	// Find the next available rId
+	maxRID := 0
+	for _, match := range relIDPattern.FindAllStringSubmatch(relsXML, -1) {
+		if n, err := strconv.Atoi(match[1]); err == nil && n > maxRID {
+			maxRID = n
+		}
+	}
+	nextRID := maxRID + 1
+	newRelID := fmt.Sprintf("rId%d", nextRID)
+
+	// Find the next available footer filename
+	nextFooter := nextFooterName(pkg)
+
+	footerContent := strings.Replace(
+		ooxmlpatch.BuildPageFooterXML(ooxmlpatch.PageNumberingPolicySpec{}),
+		`<?xml version="1.0" encoding="UTF-8"?>`,
+		`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+		1,
+	)
+	pkg.Set(nextFooter, []byte(footerContent))
+
+	// Add the relationship entry before </Relationships>
+	newRel := fmt.Sprintf(`<Relationship Id="%s" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="%s"/>`, newRelID, strings.TrimPrefix(nextFooter, "word/"))
+	updatedRels := strings.Replace(relsXML, "</Relationships>", newRel+"</Relationships>", 1)
+	pkg.Set("word/_rels/document.xml.rels", []byte(updatedRels))
+
+	return newRelID
+}
+
+func nextFooterName(pkg *ooxmlpkg.DocxPackage) string {
+	used := map[int]bool{}
+	for _, name := range pkg.Names() {
+		if !footerNamePattern.MatchString(name) {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(name, "word/footer%d.xml", &n); err == nil {
+			used[n] = true
+		}
+	}
+	for i := 1; ; i++ {
+		if !used[i] {
+			return fmt.Sprintf("word/footer%d.xml", i)
+		}
+	}
 }
 
 func mainBodyFooterReferenceID(documentXML string) string {

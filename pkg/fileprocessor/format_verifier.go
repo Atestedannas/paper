@@ -45,8 +45,10 @@ type ActualParaFormat struct {
 	PageBreak      bool    `json:"page_break_before"`
 }
 
-func NewFormatVerifier(proc *EnhancedProcessor, client *aiclassifier.DeepSeekWebClient) *FormatVerifier {
-	return &FormatVerifier{processor: proc, client: client}
+func NewFormatVerifier(proc *EnhancedProcessor, _ *aiclassifier.DeepSeekWebClient) *FormatVerifier {
+	// The legacy verifier builds prompts from paragraph snippets. DeepSeek may
+	// only receive bounded typed evidence at the structured workflow boundary.
+	return &FormatVerifier{processor: proc}
 }
 
 // VerifyAndFix 完整验证+修正流程
@@ -552,10 +554,36 @@ func (v *FormatVerifier) compareAllWithSpecs(classified map[string][]document.Pa
 			if text == "" {
 				continue
 			}
+			// V2Cover is a region bucket, not one homogeneous style. Resolve
+			// semantic cover-title/date paragraphs to their own profile rules;
+			// otherwise the verifier reports intentional differences as errors
+			// and may trigger an unnecessary fallback pass.
+			compareSpec := spec
+			_, _, hasComplex, _ := textScriptKinds(text)
+			if !hasComplex {
+				// w:szCs belongs to complex-script runs. A Latin-free Chinese
+				// paragraph must not fail merely because the profile's sample
+				// carried a different inherited cs size.
+				compareSpec.FontSizeCSHalfPt = 0
+			}
+			if category == V2Cover {
+				if isCoverTitleText(text) {
+					if titleSpec, ok := specs[V2ThesisTitle]; ok {
+						compareSpec = titleSpec
+					}
+				} else if isCoverDateText(text) {
+					if dateSpec, ok := specs["cover_date"]; ok {
+						compareSpec = dateSpec
+					}
+				}
+			}
 			actual := extractParaFormatSpec(para)
-			patch := buildParagraphSpecPatch(para, spec)
-			for _, diff := range DiffSpecExact(patch, actual) {
-				if !specManagesDiffField(patch, diff.Field) {
+			// Compare against the complete template expectation. The paragraph
+			// patch is deliberately sparse (it only contains fields that need a
+			// repair), so using it as the expected value turns an explicitly true
+			// bold rule into an apparent expected=false mismatch.
+			for _, diff := range DiffSpecExact(compareSpec, actual) {
+				if !specManagesDiffField(compareSpec, diff.Field) {
 					continue
 				}
 				allDiffs = append(allDiffs, FormatDiff{

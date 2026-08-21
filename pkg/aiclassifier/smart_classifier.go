@@ -32,7 +32,7 @@ const (
 	PhaseIndependent = "independent" // 独立期：主要依赖本地模型
 )
 
-// SmartClassifier 智能分类器 — 三级路由
+// SmartClassifier 智能分类器 — 规则、本地模型与状态机路由。
 //
 //	┌──────────────┐   ┌──────────────┐   ┌──────────────┐
 //	│  规则引擎      │   │  本地模型      │   │  AI 仲裁      │
@@ -42,12 +42,11 @@ const (
 //	                          ↓
 //	                    教学数据库 → 自动重训练
 type SmartClassifier struct {
-	ruleEngine        *RuleEngine
-	localModel        *LocalClassifier
-	aiArbitrator      *AIArbitrator
-	fullDocClassifier *FullDocumentClassifier // 阶段3：全文档语义分类器
-	db                *gorm.DB
-	mu                sync.RWMutex
+	ruleEngine   *RuleEngine
+	localModel   *LocalClassifier
+	aiArbitrator *AIArbitrator
+	db           *gorm.DB
+	mu           sync.RWMutex
 
 	// 配置
 	retrainThreshold int
@@ -68,7 +67,12 @@ func NewSmartClassifier(db *gorm.DB, cookie, bearer string, aiEnabled bool, retr
 		maxAICallsPerDoc = 20
 	}
 
-	arbitrator := NewAIArbitrator(cookie, bearer, aiEnabled)
+	// Legacy arbitration sent paragraph text directly to DeepSeek.  The only
+	// permitted model boundary is now internal/core/evidence's bounded packet.
+	arbitrator := NewAIArbitrator("", "", false)
+	if aiEnabled && cookie != "" {
+		log.Printf("[DEEPSEEK_POLICY] legacy SmartClassifier AI disabled; use structured evidence workflow")
+	}
 
 	sc := &SmartClassifier{
 		ruleEngine:       NewRuleEngine(),
@@ -78,12 +82,6 @@ func NewSmartClassifier(db *gorm.DB, cookie, bearer string, aiEnabled bool, retr
 		retrainThreshold: retrainThreshold,
 		maxAICallsPerDoc: maxAICallsPerDoc,
 		phase:            PhaseColdStart,
-	}
-
-	// 阶段3：若 AI 可用，同时初始化全文档分类器（使用相同的 DeepSeek 客户端）
-	if arbitrator.client != nil {
-		sc.fullDocClassifier = NewFullDocumentClassifier(arbitrator.client)
-		log.Printf("[SmartClassifier] 全文档语义分类器已启用")
 	}
 
 	// 尝试从数据库加载已训练的模型
@@ -126,7 +124,7 @@ func (sc *SmartClassifier) ClassifyDocument(features []ParagraphFeature, documen
 	}
 	populateContextLabels(features, results)
 
-	// ── Step 3: AI 仲裁低置信度段落 ──
+	// ── Step 3: legacy AI arbitration is policy-disabled ──
 	// #region agent log H3
 	{
 		lowConf := 0
@@ -141,33 +139,7 @@ func (sc *SmartClassifier) ClassifyDocument(features []ParagraphFeature, documen
 				sc.aiArbitrator.IsEnabled(), sc.shouldCallAI(results), len(results), lowConf))
 	}
 	// #endregion agent log H3
-	if sc.aiArbitrator.IsEnabled() && sc.shouldCallAI(results) {
-		aiResults, err := sc.aiArbitrator.ClassifyBatch(features, results)
-		if err != nil {
-			log.Printf("[智能分类] AI 仲裁失败: %v, 使用规则+模型结果", err)
-		} else {
-			sc.mu.Lock()
-			sc.aiCallCount++
-			sc.mu.Unlock()
-			results = aiResults
-			populateContextLabels(features, results)
-			logClassificationStats("规则+模型+AI", results)
-		}
-	}
-
-	// ── Step 3.5: 全文档语义分类（替代局部AI仲裁，更准确） ──
-	// 仅在文档段落数足够、且全文分类器可用时启动
-	if sc.fullDocClassifier != nil && len(features) >= 20 {
-		log.Printf("[全文分类] 启动全文语义分类（%d段）", len(features))
-		fullResults, err := sc.fullDocClassifier.ClassifyAll(features, results)
-		if err != nil {
-			log.Printf("[全文分类] 失败，保留规则+AI结果: %v", err)
-		} else {
-			results = fullResults
-		}
-	}
-
-	// ── Step 4: 状态机上下文修正（在全文分类之后再做一次兜底校正） ──
+	// ── Step 4: 状态机上下文修正 ──
 	results = sc.applyContextRules(features, results)
 	results = stabilizeClassificationByNeighbors(features, results)
 
@@ -498,11 +470,9 @@ func (sc *SmartClassifier) GetPhase() string {
 	return sc.phase
 }
 
-// GetDeepSeekClient 获取 DeepSeek Web 客户端（供格式验证器使用）
+// GetDeepSeekClient intentionally never exposes a legacy client.  Structured
+// evidence callers construct their own bounded request client at the workflow boundary.
 func (sc *SmartClassifier) GetDeepSeekClient() *DeepSeekWebClient {
-	if sc.aiArbitrator != nil && sc.aiArbitrator.client != nil {
-		return sc.aiArbitrator.client
-	}
 	return nil
 }
 

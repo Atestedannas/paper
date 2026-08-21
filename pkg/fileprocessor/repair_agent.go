@@ -63,7 +63,11 @@ func (a *RepairAgent) Run(doc *document.Document, specs map[string]ParagraphForm
 	previousDiffs := -1
 
 	for round := 1; round <= a.maxRounds; round++ {
-		classified := a.processor.classifyParagraphs(doc.Paragraphs())
+		// Table-cell paragraphs are a separate formatting domain.  The generic
+		// repair loop must only inspect body-level paragraphs; otherwise a cell
+		// whose text happens to look like a heading is rewritten with heading
+		// rules.  Cover tables are handled by the dedicated cover pass.
+		classified := a.processor.classifyParagraphs(BodyLevelParagraphsOnly(doc))
 		diffs := verifier.compareAllWithSpecs(classified, specs)
 		a.lockVerifiedTypes(classified, specs, diffs)
 		diffs = a.unlockedDiffs(classified, diffs)
@@ -93,7 +97,7 @@ func (a *RepairAgent) Run(doc *document.Document, specs map[string]ParagraphForm
 		log.Printf("[修复代理] 第%d轮：差异=%d，修复=%d", round, len(diffs), fixes)
 	}
 
-	classified := a.processor.classifyParagraphs(doc.Paragraphs())
+	classified := a.processor.classifyParagraphs(BodyLevelParagraphsOnly(doc))
 	result.FinalDiffs = len(verifier.compareAllWithSpecs(classified, specs))
 	result.NeedsManualReview = result.FinalDiffs > 0
 	result.Regressed = result.InitialDiffs >= 0 && result.FinalDiffs > result.InitialDiffs

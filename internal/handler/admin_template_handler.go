@@ -544,25 +544,38 @@ func (h *AdminTemplateHandler) UploadTemplateDOCX(c *gin.Context) {
 	}
 
 	template := model.FormatTemplate{
-		ID:                 templateUUID,
-		TemplateID:         templateID,
-		Name:               name,
-		UniversityID:       universityID,
-		DocumentType:       documentType,
-		Subject:            subject,
-		Source:             "admin_upload",
-		Version:            "1.0",
-		IsPublic:           true,
-		IsActive:           true,
-		FilePath:           stablePath,
-		GoldenTemplatePath: stablePath,
-		FormatRules:        "", // 延迟解析：首次提交论文时自动解析并回写
-		Description:        description,
+		ID:           templateUUID,
+		TemplateID:   templateID,
+		Name:         name,
+		UniversityID: universityID,
+		DocumentType: documentType,
+		Subject:      subject,
+		Source:       "admin_upload",
+		Version:      "1.0",
+		IsPublic:     true,
+		IsActive:     true,
+		FilePath:     stablePath,
+		FormatRules:  "", // 延迟解析：首次提交论文时自动解析并回写
+		Description:  description,
 	}
 
 	if err := database.DB.Create(&template).Error; err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "创建模板失败", err.Error())
 		return
+	}
+
+	if pythonURL := strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")); pythonURL != "" {
+		client := service.NewPythonVisualClient(pythonURL)
+		metadata := map[string]interface{}{
+			"templateId": template.TemplateID, "bizId": templateUUID.String(),
+			"school": "go", "year": time.Now().Year(), "major": subject, "filename": file.Filename,
+		}
+		spec := map[string]interface{}{"specVersion": "1.0", "templateId": template.TemplateID, "rules": []interface{}{}}
+		if err := client.RegisterTemplate(c.Request.Context(), stablePath, template.TemplateID, metadata, spec); err != nil {
+			log.Printf("[PYTHON_VISUAL] template baseline registration failed for %s: %v", templateUUID, err)
+		} else {
+			log.Printf("[PYTHON_VISUAL] template baseline registered: %s", template.TemplateID)
+		}
 	}
 
 	log.Printf("[ADMIN_TEMPLATE_UPLOAD] template %s (id=%s) saved, FormatRules deferred to first paper submission",

@@ -7,7 +7,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -16,8 +15,8 @@ type DeepSeekClient interface {
 	ChatCompletion(prompt string) (string, error)
 }
 
-// DeepSeekRefiner uses DeepSeek AI to refine paragraph classification by
-// analyzing the full document structure and identifying precise section boundaries.
+// DeepSeekRefiner is retained for API compatibility.  Its former implementation
+// submitted classified paragraph text and is therefore policy-disabled.
 type DeepSeekRefiner struct {
 	client DeepSeekClient
 }
@@ -52,61 +51,13 @@ type SectionBoundary struct {
 	EndIndex   int    `json:"end_index"`
 }
 
-// RefineClassification takes initial classification results and uses DeepSeek
-// to produce more accurate section assignments by analyzing the full document context.
-// Waits up to refinerWaitTimeout() (default 120s, env DEEPSEEK_REFINER_TIMEOUT_SEC).
+// RefineClassification never transmits document text.  The workflow's structured
+// evidence compiler is the sole allowed route for model-assisted decisions.
 func (r *DeepSeekRefiner) RefineClassification(cls ClassificationResult) (ClassificationResult, error) {
-	if r.client == nil {
-		return cls, nil
+	if r.client != nil {
+		log.Printf("[DEEPSEEK_POLICY] legacy template classification refinement skipped")
 	}
-
-	wait := refinerWaitTimeout()
-
-	compactDoc := buildCompactDocument(cls)
-	if compactDoc == "" {
-		return cls, nil
-	}
-
-	prompt := buildRefinementPrompt(compactDoc)
-
-	log.Printf("[DeepSeekRefiner] sending %d paragraphs for refinement (timeout %v)", len(cls.Paragraphs), wait)
-
-	type result struct {
-		response string
-		err      error
-	}
-
-	ch := make(chan result, 1)
-	var once sync.Once
-
-	go func() {
-		resp, err := r.client.ChatCompletion(prompt)
-		once.Do(func() {
-			ch <- result{resp, err}
-		})
-	}()
-
-	select {
-	case res := <-ch:
-		if res.err != nil {
-			log.Printf("[DeepSeekRefiner] DeepSeek call failed: %v, using original classification", res.err)
-			return cls, nil
-		}
-
-		boundaries := parseRefinementResponse(res.response)
-		if len(boundaries) == 0 {
-			log.Printf("[DeepSeekRefiner] no valid boundaries parsed, using original classification")
-			return cls, nil
-		}
-
-		refined := applyBoundaries(cls, boundaries)
-		log.Printf("[DeepSeekRefiner] refined %d paragraphs using %d section boundaries", len(refined.Paragraphs), len(boundaries))
-		return refined, nil
-
-	case <-time.After(wait):
-		log.Printf("[DeepSeekRefiner] timeout after %v, using original classification", wait)
-		return cls, nil
-	}
+	return cls, nil
 }
 
 func buildCompactDocument(cls ClassificationResult) string {

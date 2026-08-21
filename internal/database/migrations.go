@@ -83,6 +83,8 @@ func RunMigrations() error {
 		&Migration20260327AddDiffReport{},
 		&Migration20260423CreateDocxClosedLoopV2Tables{},
 		&Migration20260713AdminPaperListIndexes{},
+		&Migration20260815FixCQIEPageSetup{},
+		&Migration20260821RequireCQIEOriginalityDeclaration{},
 	}
 
 	// 按顺序执行迁移（单个失败不阻止后续，仅记录 warning）

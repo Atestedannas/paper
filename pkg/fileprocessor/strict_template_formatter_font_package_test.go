@@ -253,6 +253,46 @@ func TestCopyTemplateHeaderFooterPackageCopiesHeaderMediaAndContentTypes(t *test
 	}
 }
 
+func TestEnsureEvenOddHeadersSettingAddsPackageSwitch(t *testing.T) {
+	entries := map[string][]byte{
+		"word/document.xml": []byte(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:sectPr><w:headerReference w:type="even"/></w:sectPr></w:body></w:document>`),
+		"word/settings.xml": []byte(`<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>`),
+	}
+
+	ensureEvenOddHeadersSetting(entries)
+	if !strings.Contains(string(entries["word/settings.xml"]), "evenAndOddHeaders") {
+		t.Fatalf("expected settings.xml to enable even/odd headers, got %s", entries["word/settings.xml"])
+	}
+}
+
+func TestSyncEvenOddHeadersSettingPreservesTemplateDisabledSwitch(t *testing.T) {
+	output := map[string][]byte{
+		"word/document.xml": []byte(`<w:document><w:sectPr><w:headerReference w:type="even"/></w:sectPr></w:document>`),
+		"word/settings.xml": []byte(`<w:settings><w:evenAndOddHeaders/></w:settings>`),
+	}
+	template := map[string][]byte{
+		"word/settings.xml": []byte(`<w:settings/>`),
+	}
+	syncEvenOddHeadersSetting(output, template)
+	if strings.Contains(string(output["word/settings.xml"]), "evenAndOddHeaders") {
+		t.Fatalf("template-disabled even/odd switch was retained: %s", output["word/settings.xml"])
+	}
+	if strings.Contains(string(output["word/document.xml"]), `w:type="even"`) {
+		t.Fatalf("template-disabled even references were retained: %s", output["word/document.xml"])
+	}
+}
+
+func TestRemapRelationshipIDsDoesNotChainMappings(t *testing.T) {
+	xml := `<w:sectPr><w:footerReference w:type="default" r:id="rId6"/><w:headerReference w:type="default" r:id="rId12"/></w:sectPr>`
+	got := remapRelationshipIDs(xml, map[string]string{"rId6": "rId12", "rId12": "rId19"})
+	if !strings.Contains(got, `footerReference w:type="default" r:id="rId12"`) {
+		t.Fatalf("footer reference was remapped through a second mapping: %s", got)
+	}
+	if !strings.Contains(got, `headerReference w:type="default" r:id="rId19"`) {
+		t.Fatalf("header reference was not remapped: %s", got)
+	}
+}
+
 func TestCopyTemplateHeaderFooterPackageMigratesReferencedStyleClosure(t *testing.T) {
 	tmpDir := t.TempDir()
 	templatePath := filepath.Join(tmpDir, "template.docx")
