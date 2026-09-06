@@ -433,6 +433,27 @@ func TestApplyTemplateProfileStylesUsesSeparateTemplateDerivedFrontMatterBodySty
 	}
 }
 
+func TestApplyTemplateProfileCoverStylesDoesNotUseCoverTitleForInnerThesisTitle(t *testing.T) {
+	docxPath := writeCQRWSTDocx(t,
+		`<w:p><w:r><w:t>2026年 6 月</w:t></w:r></w:p>`+
+			`<w:p><w:r><w:t>社区2型糖尿病患者疾病知识认知现状及影响因素分析</w:t></w:r></w:p>`+
+			`<w:p><w:r><w:t>摘要</w:t></w:r></w:p>`,
+	)
+	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+		"cover":       {FontEastAsia: "宋体", FontSizeHalfPt: "21"},
+		"cover_title": {FontEastAsia: "黑体", FontSizeHalfPt: "72", Bold: true, BoldSet: true},
+		"title":       {FontEastAsia: "黑体", FontSizeHalfPt: "30", Bold: true, BoldSet: true, Alignment: "center"},
+	}}
+
+	if _, err := ApplyTemplateProfileCoverStylesAndPageSetup(context.Background(), docxPath, profile); err != nil {
+		t.Fatal(err)
+	}
+	titleParagraph := paragraphContaining(readCQRWSTDocumentXML(t, docxPath), "社区2型糖尿病")
+	if strings.Contains(titleParagraph, `w:val="72"`) || !strings.Contains(titleParagraph, `w:val="30"`) {
+		t.Fatalf("inner thesis title used the wrong style: %s", titleParagraph)
+	}
+}
+
 func TestApplyTemplateProfileStylesPreservesFrontMatterBookmarksHyperlinksAndFields(t *testing.T) {
 	documentXML := `<w:document><w:body><w:p>` +
 		`<w:bookmarkStart w:id="7" w:name="_RefAbstract"/><w:r><w:t>摘要：</w:t></w:r><w:bookmarkEnd w:id="7"/>` +

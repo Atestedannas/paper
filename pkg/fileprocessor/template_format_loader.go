@@ -4,17 +4,39 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"gitee.com/greatmusicians/unioffice/document"
+	"gitee.com/greatmusicians/unioffice/schema/soo/ofc/sharedTypes"
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
 )
 
-// dbgLog 写一行NDJSON到调试日志文件（仅Debug模式使用）
+// templateOnOffIsTrue 解析 OOXML OnOff 元素是否为"显式开启"。
+// OOXML 语义：元素存在即 true，除非显式 val="false"/"off"/"0"。
+// 用于 Bold 三态建模（D15）：区分"显式 true / 显式 false / 未设置"。
+func templateOnOffIsTrue(o *wml.CT_OnOff) bool {
+	if o == nil {
+		return false
+	}
+	if o.ValAttr == nil {
+		return true // 元素存在且无 val → 默认 true
+	}
+	if o.ValAttr.Bool != nil {
+		return *o.ValAttr.Bool
+	}
+	return o.ValAttr.ST_OnOff1 == sharedTypes.ST_OnOff1On
+}
+
+// dbgLog 写一行NDJSON到 agent 专用调试日志文件（仅Debug模式使用）。
+// agent 专用日志保留机器可读 NDJSON 原值（含 twips/half-point），
+// 供 LLM/agent 排查链路；人类可读中文日志走 formatRunLog，二者分离。
 func dbgLog(hypothesisID, location, message string, jsonData string) {
-	f, err := os.OpenFile("debug-c190b3.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// 固定写入系统临时目录下（避免依赖进程工作目录导致落盘位置随机）
+	agentPath := filepath.Join(os.TempDir(), "paper-debug-c190b3.log")
+	f, err := os.OpenFile(agentPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return
 	}
@@ -150,6 +172,11 @@ func (l *TemplateFormatLoader) loadFromFile(templatePath string, includeNamedSty
 				}
 			}
 			spec := extractParaFormatSpec(para)
+			// D6: 采样前按角色剔除噪声行（图/表说明、目录残留、居中短标题），
+			// 防止这些非正文字段混入 body 众数污染字体/对齐规格。
+			if category == "body" && isTemplateNoiseParagraph(text, spec) {
+				continue
+			}
 			// #region agent log H1
 			if len(samples) < 3 { // 每类只记录前3个样本，避免日志过多
 				preview := []rune(text)
@@ -233,7 +260,12 @@ func mergeLegacyNamedStyle(sampled, named ParagraphFormatSpec) ParagraphFormatSp
 	if named.FontSizeHalfPt > 0 {
 		sampled.FontSizeHalfPt = named.FontSizeHalfPt
 	}
-	sampled.Bold = named.Bold
+	if named.BoldSet {
+		sampled.Bold = named.Bold
+		sampled.BoldSet = true
+	} else if named.Bold {
+		sampled.Bold = true
+	}
 	if named.AlignmentSet {
 		sampled.AlignmentSet = true
 		sampled.Alignment = named.Alignment
@@ -335,6 +367,7 @@ func extractParaFormatSpec(para document.Paragraph) ParagraphFormatSpec {
 		spec.FontAscii = dominant.FontAscii
 		spec.FontSizeHalfPt = dominant.FontSizeHalfPt
 		spec.Bold = dominant.Bold
+		spec.BoldSet = dominant.BoldSet
 		spec.Italic = dominant.Italic
 		spec.Underline = dominant.Underline
 		spec.ColorHex = dominant.ColorHex
@@ -613,7 +646,9 @@ func consensusSpec(samples []ParagraphFormatSpec) ParagraphFormatSpec {
 		if s.FontSizeHalfPt > 0 {
 			sizeCounts[s.FontSizeHalfPt]++
 		}
-		boldCounts[s.Bold]++
+		if s.BoldSet {
+			boldCounts[s.Bold]++
+		}
 		if s.AlignmentSet {
 			alignCounts[s.Alignment]++
 		}
@@ -635,10 +670,24 @@ func consensusSpec(samples []ParagraphFormatSpec) ParagraphFormatSpec {
 	consensus.FontEastAsia = mostFrequentStringSpec(fontCounts)
 	consensus.FontAscii = mostFrequentStringSpec(asciiFontCounts)
 	consensus.FontSizeHalfPt = mostFrequentUint64Spec(sizeCounts)
-	consensus.Bold = boldCounts[true] > boldCounts[false]
-	if jc, count := mostFrequentJcSpec(alignCounts); count > 0 {
+	if len(boldCounts) > 0 {
+		// Bold 三态（D15）：仅"显式设置过"的样本参与众数投票，
+		// 未设置的样本不参与，避免把模板普遍未设置 bold 误判为"显式不加粗"。
+		// 平票时取 false（显式不加粗），保证"该不该加粗正文"表意不被稀释。
+		consensus.Bold = boldCounts[true] > boldCounts[false]
+		consensus.BoldSet = true
+	}
+	totalAlign := 0
+	for _, c := range alignCounts {
+		totalAlign += c
+	}
+	if jc, count := mostFrequentJcSpec(alignCounts); count > 0 && totalAlign > 0 && count*2 > totalAlign {
 		consensus.Alignment = jc
 		consensus.AlignmentSet = true
+	} else if count > 0 {
+		// D6: 对齐取向分裂（无严格绝对多数）时弃权，
+		// 避免少数居中等带偏整组对齐规格。
+		consensus.AlignmentSet = false
 	}
 	if val, count := mostFrequentInt64Spec(lineSpacingCounts); count > 0 {
 		consensus.LineSpacingVal = val
@@ -737,4 +786,50 @@ func mostFrequentLineRuleSpec(m map[wml.ST_LineSpacingRule]int) (wml.ST_LineSpac
 		}
 	}
 	return best, count
+}
+
+// isTemplateNoiseParagraph 判定模板正文采样时应剔除的噪声行（D6）：
+//  1. 图/表说明行（"图X"/"表X"/"Fig."/"Table" 前缀，或数字开头的极短行）
+//  2. 目录条目残留（带大纲级别且文本过短）
+//  3. 居中且过短的疑似标题行（防止少数居中标题带偏 body 对齐众数）
+func isTemplateNoiseParagraph(text string, spec ParagraphFormatSpec) bool {
+	if text == "" {
+		return true
+	}
+	runes := []rune(text)
+
+	// 图/表说明前缀（"图"/"附图"/"Fig."/"Figure"/"Table"）
+	lower := strings.ToLower(text)
+	for _, p := range []string{"图", "附图", "fig", "figure", "table"} {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	// "表" 后须跟数字/空格/冒号才算表说明，避免误伤"表示/表明…"等正文
+	if strings.HasPrefix(lower, "表") && len(runes) > 1 {
+		switch runes[1] {
+		case ' ', '\t', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', ':', '：',
+			'一', '二', '三', '四', '五', '六', '七', '八', '九':
+			return true
+		}
+	}
+
+	// 数字开头的极短行多为编号/图表行；带全角逗号的长句（如"3.5万名受访者……"）是正文
+	if runes[0] >= '0' && runes[0] <= '9' {
+		if len(runes) <= 40 && !strings.Contains(text, "，") {
+			return true
+		}
+	}
+
+	// 目录条目残留：设置了 Outline 级别且文本很短
+	if spec.OutlineLevel > 0 && len(runes) <= 40 {
+		return true
+	}
+
+	// 居中且过短的疑似标题行
+	if spec.AlignmentSet && spec.Alignment == wml.ST_JcCenter && len(runes) <= 20 {
+		return true
+	}
+
+	return false
 }

@@ -218,7 +218,8 @@ func (sc *SmartClassifier) applyContextRules(features []ParagraphFeature, result
 	for i := range results {
 		text := features[i].Text
 		original := results[i].Label
-		corrected := sm.Reclassify(original, text)
+		// 结构信号优先：命中 pStyle/outlineLvl 时由状态机按结构信号定级
+		corrected := sm.ReclassifyWithStructure(original, text, features[i].PStyle, features[i].OutlineLvl, features[i].HasNumPr)
 		if corrected != original {
 			log.Printf("[状态机] para#%d %q: %s → %s", i, truncateText(text, 20), original, corrected)
 			results[i].Label = corrected
@@ -282,15 +283,19 @@ func (sc *SmartClassifier) saveSamples(features []ParagraphFeature, results []Cl
 			HasTOCIndicator:  f.HasTOCIndicator,
 			HasCoverKeywords: f.HasCoverKeywords,
 			HasOriginalityKW: f.HasOriginalityKW,
-			FinalLabel:       r.Label,
-			LabelSource:      r.Source,
-			RuleLabel:        "",
-			RuleConfidence:   0,
-			AILabel:          "",
-			TextSnippet:      snippet,
-			DocumentID:       documentID,
-			ParaIndex:        i,
-			Weight:           weight,
+			// D14：结构信号持久化，供重训时训练/推理维度一致
+			PStyle:         f.PStyle,
+			OutlineLvl:     f.OutlineLvl,
+			HasNumPr:       f.HasNumPr,
+			FinalLabel:     r.Label,
+			LabelSource:    r.Source,
+			RuleLabel:      "",
+			RuleConfidence: 0,
+			AILabel:        "",
+			TextSnippet:    snippet,
+			DocumentID:     documentID,
+			ParaIndex:      i,
+			Weight:         weight,
 		}
 
 		switch r.Source {
@@ -395,6 +400,10 @@ func (sc *SmartClassifier) retrain(totalSamples int) {
 			0, // starts_with_digit_dot (not stored, but needed for consistency)
 			0, // ends_with_period
 			0, // has_tab
+			// D14: structure signals persisted & retrained (align with ToFloat64Slice)
+			boolToFloat(s.PStyle != ""),
+			float64(s.OutlineLvl),
+			boolToFloat(s.HasNumPr),
 		}
 		trainData = append(trainData, trainingSample{
 			Features: features,

@@ -316,13 +316,43 @@ func ExtractDocumentXML(documentXML string) Snapshot {
 	}
 	sectionID := "cover"
 	coverDateSeen := false
+	coverTitleSeen := false
 	abstractEnglish := false
 	fallbackIDOccurrences := map[string]int{}
 	pageSection := 1
-	matches := bodyChildPattern.FindAllString(documentXML, -1)
-	for index, raw := range matches {
+	matches := bodyChildPattern.FindAllStringIndex(documentXML, -1)
+	textboxRanges := textboxPattern.FindAllStringIndex(documentXML, -1)
+	for index, match := range matches {
+		// The non-nesting paragraph matcher sees a <w:p> inside a text box as
+		// another body child after the drawing anchor. It is an instruction node
+		// created by appendNonBodyParts, never a second body paragraph.
+		insideTextbox := false
+		textSource := documentXML[match[0]:match[1]]
+		for _, textbox := range textboxRanges {
+			if match[0] >= textbox[0] && match[0] < textbox[1] {
+				insideTextbox = true
+				break
+			}
+			if match[0] < textbox[1] && match[1] > textbox[0] {
+				start, end := 0, len(textSource)
+				if textbox[0] > match[0] {
+					start = textbox[0] - match[0]
+				}
+				if textbox[1] < match[1] {
+					end = textbox[1] - match[0]
+				}
+				textSource = textSource[:start] + textSource[end:]
+			}
+		}
+		if insideTextbox {
+			continue
+		}
+		raw := documentXML[match[0]:match[1]]
 		nodeType := detectNodeType(raw)
-		text := extractText(raw)
+		// A drawing's <w:txbxContent> is nested inside its anchor paragraph.
+		// Its text is instruction evidence, not thesis body text.  Extract it
+		// separately below so it cannot receive a body role or a format plan.
+		text := extractText(textboxPattern.ReplaceAllString(textSource, ""))
 		styleID := extractStyleID(raw)
 		role, level, _, evidence := classify(nodeType, text)
 		if nodeType == "paragraph" && ommlPattern.MatchString(raw) {
@@ -332,11 +362,14 @@ func ExtractDocumentXML(documentXML string) Snapshot {
 			switch {
 			case isCoverTitleText(text):
 				role, level, evidence = "cover_title", 0, []string{"cover:title"}
+				coverTitleSeen = true
 			case isCoverDateText(text):
 				role, level, evidence = "cover_date", 0, []string{"cover:date"}
 				coverDateSeen = true
+			case coverDateSeen && coverTitleSeen && likelyCoverThesisTitle(text):
+				role, level, evidence = "cover_title", 0, []string{"cover:inner_thesis_title"}
 			case coverDateSeen && likelyCoverThesisTitle(text):
-				role, level, evidence = "cover_title", 0, []string{"cover:thesis_title"}
+				role, level, evidence = "title", 0, []string{"cover:inner_thesis_title"}
 			}
 		}
 		if nodeType == "paragraph" && role == "body_paragraph" {

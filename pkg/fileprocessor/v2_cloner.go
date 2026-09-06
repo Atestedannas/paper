@@ -167,16 +167,27 @@ func isLabeledType(t string) bool {
 
 // ── 格式应用（XML 节点整体替换）──
 
-// V2FormatCloner 格式克隆器：将模板XML节点完整替换到学生文档段落
+// V2FormatCloner 格式克隆器：将模板XML节点完整替换到学生文档段落。
+//
+// Deprecated: D11 修复确认本类型（含 NewV2FormatCloner / ApplyAll / applyFormat /
+// applyLabeledFormat）已不被主链路调用——全部调用点已扫描（全仓库 grep），
+// 主链路已由"分区规则映射"（V2FormatEngine 步骤7 及 RepairAgent 规则写入）替代，
+// 仅 ExtractTemplateFormats / CloneStyles / CloneSectionProperties 仍被引用且另有归口。
+// applyFormat 的"整块替换 PPr/RPr"实现会破坏 caps/vanish/vertAlign/lang/主题引用，
+// 且对含修订（rPrChange）的 run 无保护，禁用即为根治。如将来确需复用，必须重写为
+// "只写目标属性组 + rPrChange 保护"（遇含 rPrChange 的 run 跳过）后再启用。
 type V2FormatCloner struct {
 	store *V2TemplateFormatStore
 }
 
+// Deprecated: V2FormatCloner 已停用（见类型注释），禁止新建使用。
 func NewV2FormatCloner(store *V2TemplateFormatStore) *V2FormatCloner {
 	return &V2FormatCloner{store: store}
 }
 
-// ApplyAll 对所有已分类段落应用模板格式
+// ApplyAll 对所有已分类段落应用模板格式。
+//
+// Deprecated: V2FormatCloner 已停用（见类型注释），本方法不再被调用。
 func (c *V2FormatCloner) ApplyAll(classified []V2ClassifiedPara) int {
 	totalFixed := 0
 
@@ -205,7 +216,9 @@ func (c *V2FormatCloner) ApplyAll(classified []V2ClassifiedPara) int {
 	return totalFixed
 }
 
-// applyFormat 将模板格式应用到单个段落
+// applyFormat 将模板格式应用到单个段落。
+//
+// Deprecated: V2FormatCloner 已停用（见类型注释），本方法不再被调用。
 func (c *V2FormatCloner) applyFormat(para document.Paragraph, paraType string, format *V2TemplateFormat) bool {
 	changed := false
 
@@ -257,6 +270,8 @@ func (c *V2FormatCloner) applyFormat(para document.Paragraph, paraType string, f
 
 // applyLabeledFormat 处理"标签：内容"混合格式段落
 // 例如"摘要：XXXX"中，"摘要："用黑体加粗，"XXXX"用宋体
+//
+// Deprecated: V2FormatCloner 已停用（见类型注释），本方法不再被调用。
 func (c *V2FormatCloner) applyLabeledFormat(runs []document.Run, format *V2TemplateFormat) bool {
 	if len(runs) == 0 {
 		return false
@@ -374,7 +389,12 @@ func CloneSectionProperties(templateDoc, studentDoc *document.Document) sectionC
 	return summary
 }
 
-// CloneStyles 从模板复制样式定义到学生文档
+// CloneStyles 从模板复制样式定义到学生文档。
+//
+// D11 修复：不再覆盖学生已有同名样式定义——学生文档中已存在的同名样式
+// （如 Normal/Heading1 等被学生自定义过的样式）一律保留原定义，只把模板中有而
+// 学生缺失的样式新增进去，避免"改写全文样式继承结果"。因此调用方看到的
+// Overwritten 恒为 0，NamedStylesCopied 仅统计新增样式数。
 func CloneStyles(templateDoc, studentDoc *document.Document) styleCloneSummary {
 	summary := styleCloneSummary{}
 	tStyles := templateDoc.Styles
@@ -409,6 +429,11 @@ func CloneStyles(templateDoc, studentDoc *document.Document) styleCloneSummary {
 			if tStyle.StyleIdAttr == nil {
 				continue
 			}
+			if styleMap[*tStyle.StyleIdAttr] {
+				// D11: 学生已有同名样式则跳过，保留学生自定义定义，不覆盖
+				summary.Overwritten++
+				continue
+			}
 			data, err := xml.Marshal(tStyle)
 			if err != nil {
 				continue
@@ -418,24 +443,13 @@ func CloneStyles(templateDoc, studentDoc *document.Document) styleCloneSummary {
 				continue
 			}
 
-			if styleMap[*tStyle.StyleIdAttr] {
-				summary.Overwritten++
-				// 覆盖已有样式
-				for j, s := range sStyles.X().Style {
-					if s.StyleIdAttr != nil && *s.StyleIdAttr == *tStyle.StyleIdAttr {
-						sStyles.X().Style[j] = newStyle
-						break
-					}
-				}
-			} else {
-				sStyles.X().Style = append(sStyles.X().Style, newStyle)
-				summary.Added++
-			}
+			sStyles.X().Style = append(sStyles.X().Style, newStyle)
+			summary.Added++
 			copied++
 			summary.StyleIDs = append(summary.StyleIDs, *tStyle.StyleIdAttr)
 		}
 		summary.NamedStylesCopied = copied
-		log.Printf("[V2] 已复制/覆盖 %d 个命名样式", copied)
+		log.Printf("[V2] 已新增 %d 个命名样式（跳过学生已有 %d 个同名样式）", copied, summary.Overwritten)
 	}
 	return summary
 }

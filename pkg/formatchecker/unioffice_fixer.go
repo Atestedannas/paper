@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gitee.com/greatmusicians/unioffice/document"
+	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
 )
 
 // FormatAction 格式化动作类型
@@ -604,43 +605,174 @@ func (e *RuleEngine) applyReferenceSizeFix(action FormatAction, paras []document
 
 // Helper methods for formatting operations
 
+// isCJKFontName 按"目标字体用途"判断字体名是否面向中文（CJK），用于决定写 rFonts 哪个槽位。
+// 判定规则（D9 用途驱动）：
+//   - 字体名含汉字（如 宋体/黑体/楷体/仿宋/微软雅黑）→ CJK；
+//   - 否则命中常见中文字体的英文名（如 SimSun/SimHei/KaiTi/FangSong 等）→ CJK；
+//   - 其它西文字体名（Times New Roman/Arial/Calibri 等）→ 非 CJK。
+// 西文字体一律返回 false，从而只写 ascii/hAnsi 槽位、保留 cs 原值。
+func isCJKFontName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			return true
+		}
+	}
+	lower := strings.ToLower(name)
+	switch lower {
+	case "simsun", "nsimsun", "simhei", "kaiti", "kaitsc", "fangsong", "msyh", "microsoft yahei",
+		"youyuan", "dengxian", "stzhongsong", "stfangsong", "stkaiti", "stsong", "stxihei",
+		"simkai", "simfang", "wasimsun", "fzfs", "fzkaiti", "fzxbsjw", "kaiti_gb2312",
+		"fangsong_gb2312", "simsun-extb":
+		return true
+	}
+	return false
+}
+
+// getOrCreateRunRPr 取 run 的 rPr，不存在则创建并挂到 run 上（保留原 run 其它子元素）。
+func getOrCreateRunRPr(run document.Run) *wml.CT_RPr {
+	rPr := run.Properties().X()
+	if rPr == nil {
+		rPr = wml.NewCT_RPr()
+		run.X().RPr = rPr
+	}
+	return rPr
+}
+
+// getOrCreateParaPPr 取段落的 pPr，不存在则创建并挂到段落上（保留原 pPr 其它分组）。
+func getOrCreateParaPPr(para document.Paragraph) *wml.CT_PPr {
+	pPr := para.X().PPr
+	if pPr == nil {
+		pPr = wml.NewCT_PPr()
+		para.X().PPr = pPr
+	}
+	return pPr
+}
+
+// setParagraphFontName 设置段落内所有非空 run 的字体。
+// 槽位路由按"目标字体用途"驱动（D9 修复）：
+//   - 中文字体（含汉字名或 SimSun/SimHei 等英文名）→ 只写 eastAsia 槽，保留 ascii/hAnsi/cs 原值；
+//   - 西文字体（Times New Roman/Arial/Calibri 等）→ 只写 ascii/hAnsi 槽，cs 槽保留原值不写；
+// 避免把 SimSun/SimHei 误当西文写西文槽，也避免污染 cs（复杂文种）槽位。
+// 遵守机制 3/4：只写目标属性，绝不重建整个 w:rPr，保留 caps/vanish/dstrike/bdr/shd/lang 等未覆盖子元素。
 func (e *RuleEngine) setParagraphFontName(para document.Paragraph, fontName string) error {
-	// 简化实现：这里应该设置实际的字体名称
-	// 由于UniOffice API限制，暂时只是记录操作
+	if strings.TrimSpace(fontName) == "" {
+		return nil
+	}
+	changed := 0
+	for _, run := range para.Runs() {
+		if strings.TrimSpace(run.Text()) == "" {
+			continue
+		}
+		rPr := getOrCreateRunRPr(run)
+		if rPr.RFonts == nil {
+			rPr.RFonts = wml.NewCT_Fonts()
+		}
+		if isCJKFontName(fontName) {
+			// 中文字体只动 eastAsia 槽位
+			rPr.RFonts.EastAsiaAttr = &fontName
+		} else {
+			// 西文字体写 ascii/hAnsi 槽，cs 槽保留原值不写
+			rPr.RFonts.AsciiAttr = &fontName
+			rPr.RFonts.HAnsiAttr = &fontName
+		}
+		changed++
+	}
 	if e.debug {
-		log.Printf("设置段落字体: %s", fontName)
+		log.Printf("设置段落字体: %s（%d 个 run）", fontName, changed)
 	}
 	return nil
 }
 
+// setParagraphFontSize 设置段落内所有非空 run 的字号（半磅单位写入 sz/szCs）。
 func (e *RuleEngine) setParagraphFontSize(para document.Paragraph, fontSize float64) error {
-	// 简化实现：这里应该设置实际的字体大小
+	if fontSize <= 0 {
+		return nil
+	}
+	halfPt := uint64(fontSize * 2)
+	changed := 0
+	for _, run := range para.Runs() {
+		if strings.TrimSpace(run.Text()) == "" {
+			continue
+		}
+		rPr := getOrCreateRunRPr(run)
+		rPr.Sz = wml.NewCT_HpsMeasure()
+		rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPt
+		rPr.SzCs = wml.NewCT_HpsMeasure()
+		rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &halfPt
+		changed++
+	}
 	if e.debug {
-		log.Printf("设置段落字体大小: %g", fontSize)
+		log.Printf("设置段落字体大小: %g（%d 个 run）", fontSize, changed)
 	}
 	return nil
 }
 
+// setParagraphAlignment 设置段落对齐（只动 pPr 的 jc 分组）。
 func (e *RuleEngine) setParagraphAlignment(para document.Paragraph, alignment string) error {
-	// 简化实现：这里应该设置实际的对齐方式
+	var jcVal wml.ST_Jc
+	switch strings.ToLower(strings.TrimSpace(alignment)) {
+	case "center", "居中":
+		jcVal = wml.ST_JcCenter
+	case "right", "居右":
+		jcVal = wml.ST_JcRight
+	case "justify", "both", "两端":
+		jcVal = wml.ST_JcBoth
+	case "left", "", "居左":
+		jcVal = wml.ST_JcLeft
+	default:
+		jcVal = wml.ST_JcLeft
+	}
+	pPr := getOrCreateParaPPr(para)
+	pPr.Jc = wml.NewCT_Jc()
+	pPr.Jc.ValAttr = jcVal
 	if e.debug {
 		log.Printf("设置段落对齐: %s", alignment)
 	}
 	return nil
 }
 
+// setParagraphIndent 设置首行缩进（字符单位，w:ind firstLineChars，2 字符=200）。
+// 只动 pPr 的 ind 分组，保留 hanging/left/right 等其它缩进设置。
 func (e *RuleEngine) setParagraphIndent(para document.Paragraph, indent float64) error {
-	// 简化实现：这里应该设置实际的首行缩进
+	if indent < 0 {
+		return nil
+	}
+	chars := int64(indent * 100)
+	pPr := getOrCreateParaPPr(para)
+	if pPr.Ind == nil {
+		pPr.Ind = wml.NewCT_Ind()
+	}
+	pPr.Ind.FirstLineCharsAttr = &chars
 	if e.debug {
-		log.Printf("设置段落缩进: %g", indent)
+		log.Printf("设置段落缩进: %g（字符）", indent)
 	}
 	return nil
 }
 
+// setParagraphBold 设置段落内所有非空 run 的加粗。
+// 三态布尔：加粗写 <w:b/>（ValAttr 留空=on）；取消加粗置 nil（未设置）。
 func (e *RuleEngine) setParagraphBold(para document.Paragraph, bold bool) error {
-	// 简化实现：这里应该设置实际的加粗
+	changed := 0
+	for _, run := range para.Runs() {
+		if strings.TrimSpace(run.Text()) == "" {
+			continue
+		}
+		rPr := getOrCreateRunRPr(run)
+		if bold {
+			rPr.B = wml.NewCT_OnOff()
+			rPr.BCs = wml.NewCT_OnOff()
+		} else {
+			rPr.B = nil
+			rPr.BCs = nil
+		}
+		changed++
+	}
 	if e.debug {
-		log.Printf("设置段落加粗: %v", bold)
+		log.Printf("设置段落加粗: %v（%d 个 run）", bold, changed)
 	}
 	return nil
 }

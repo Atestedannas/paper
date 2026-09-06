@@ -232,6 +232,7 @@ func TestPaperWorkflowServiceUsesSelectedFormatTemplateFromCreationThroughOutput
 	inputPath := filepath.Join(t.TempDir(), "paper.docx")
 	writeMinimalWorkflowDocx(t, inputPath, "1 Introduction")
 	t.Setenv("CQRWST_TEMPLATE_TRANSPLANT_ENABLED", "false")
+	t.Setenv("PAPER_TEMPLATE_TRANSPLANT_ONLY", "1")
 	t.Setenv("DEEPSEEK_ENABLED", "false")
 	userID := uuid.New()
 	outputRoot := t.TempDir()

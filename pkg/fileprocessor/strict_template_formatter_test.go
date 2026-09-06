@@ -102,11 +102,12 @@ func TestMapTemplateSectionsSkipsBlankHeaderSamples(t *testing.T) {
 
 func TestMaterializeRunningHeaderStyleRef(t *testing.T) {
 	input := `<w:hdr><w:p><w:r><w:t>重庆工程学院本科生毕业设计（论文）</w:t></w:r><w:r><w:t>1 绪论</w:t></w:r></w:p></w:hdr>`
-	got := materializeRunningHeaderStyleRef(input)
+	schoolName := "重庆工程学院本科生毕业设计（论文）"
+	got := materializeRunningHeaderStyleRef(input, schoolName)
 	if !strings.Contains(got, `STYLEREF "heading 1"`) || !strings.Contains(got, `重庆工程学院本科生毕业设计（论文）`) {
 		t.Fatalf("running header field missing: %s", got)
 	}
-	if twice := materializeRunningHeaderStyleRef(got); twice != got {
+	if twice := materializeRunningHeaderStyleRef(got, schoolName); twice != got {
 		t.Fatalf("running header materialization must be idempotent: %s", twice)
 	}
 }

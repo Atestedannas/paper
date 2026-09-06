@@ -207,6 +207,7 @@ var allowedRuleConstraints = map[string]bool{
 	"font":      true,
 	"alignment": true, "spacing_before_pt": true, "spacing_after_pt": true,
 	"line_spacing_pt": true, "line_rule": true, "page_break_before": true,
+	"bold": true, "first_line_chars": true,
 }
 
 var ruleIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -392,6 +393,14 @@ func validateConstraint(key string, value any) error {
 	case "page_break_before":
 		if _, ok := value.(bool); !ok {
 			return fmt.Errorf("candidate page_break_before must be boolean")
+		}
+	case "bold":
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("candidate bold must be boolean")
+		}
+	case "first_line_chars":
+		if n, ok := finiteNumber(value); !ok || n < 0 || n > 1000 {
+			return fmt.Errorf("candidate first_line_chars must be a number from 0 to 1000")
 		}
 	}
 	return nil

@@ -62,7 +62,7 @@ func createFormatRunLog(studentPath, templatePath, runID string) (*formatRunLog,
 	}
 	l.logger.Printf("学生论文：%s", studentPath)
 	l.logger.Printf("学校模板：%s", templatePath)
-	l.logger.Println("单位说明：1 磅(pt)=20 twips；字号原值为 half-point（半磅）；尺寸同时保留 OOXML 原值便于精确核对。")
+	l.logger.Println("单位说明：本日志中的格式值均已换算为中文常用单位——字号用磅表示，行距用倍数或磅表示，缩进用字符数或磅表示，页边距与页眉页脚距用毫米表示，便于直接阅读核对。")
 	return l, nil
 }
 
@@ -172,6 +172,13 @@ func (l *formatRunLog) printf(format string, args ...interface{}) {
 	}
 }
 
+// println 写入一整行文本（不附带格式参数）。供 DiagPrintf 兜底落日志使用。
+func (l *formatRunLog) println(s string) {
+	if l != nil {
+		l.logger.Print(s)
+	}
+}
+
 func (l *formatRunLog) finish(err error) {
 	if l == nil || l.finishedOnce {
 		return
@@ -247,8 +254,14 @@ func (l *formatRunLog) profile(profile *templateprofile.Profile, heading string)
 		valueOrMissing(profile.RulePack.PageNumbering),
 		strings.Join(profile.RulePack.RequiredSections, "、"))
 
+	// 完整 Profile 原始值（含 FontSizeHalfPt/BeforeTwips 等机器字段）只写入 agent 专用 NDJSON 日志
+	// （debugLog → agent_trace），主流程 human 日志保持全中文可读，仅保留一句指引。
+	l.printf("完整 Profile 原始值已写入 agent 专用诊断日志（NDJSON），本日志不重复输出机器格式；上方为全部人类可读的中文摘要。")
 	if raw, err := json.MarshalIndent(profile, "", "  "); err == nil {
-		l.printf("\n完整 Profile 原始值（JSON，无内存地址）：\n%s", raw)
+		debugLog("format_run_log.go:profile", "PROFILE_RAW_JSON", map[string]interface{}{
+			"source":      profile.Source,
+			"profileJSON": string(raw),
+		})
 	}
 }
 
@@ -442,6 +455,22 @@ func humanHeaderFooter(h templateprofile.HeaderFooterRule) string {
 		yesNo(h.HasDoubleLine), yesNo(h.HasUnderline))
 }
 
+// humanLineRuleName 将 OOXML 行距规则枚举值映射为中文可读名称。
+func humanLineRuleName(rule string) string {
+	switch strings.ToLower(rule) {
+	case "auto":
+		return "自动"
+	case "exact":
+		return "固定值"
+	case "atleast", "at_least":
+		return "最小值"
+	case "multiple":
+		return "多倍行距"
+	default:
+		return valueOrMissing(rule)
+	}
+}
+
 func humanLineSpacing(value int64, rule string) string {
 	if value == 0 {
 		return "未直接指定"
@@ -456,13 +485,13 @@ func humanLineSpacingString(value, rule string) string {
 	}
 	switch strings.ToLower(rule) {
 	case "auto":
-		return fmt.Sprintf("%.2f 倍（原值 %d，规则 auto）", float64(n)/240, n)
+		return fmt.Sprintf("%.2f 倍", float64(n)/240)
 	case "exact":
-		return fmt.Sprintf("%.2f 磅固定值（原值 %d twips）", float64(n)/20, n)
+		return fmt.Sprintf("%.2f 磅（固定值）", float64(n)/20)
 	case "atleast", "at_least":
-		return fmt.Sprintf("至少 %.2f 磅（原值 %d twips）", float64(n)/20, n)
+		return fmt.Sprintf("至少 %.2f 磅", float64(n)/20)
 	default:
-		return fmt.Sprintf("%.2f 磅/原值 %d（规则 %s）", float64(n)/20, n, valueOrMissing(rule))
+		return fmt.Sprintf("%.2f 磅（%s）", float64(n)/20, humanLineRuleName(rule))
 	}
 }
 
@@ -472,9 +501,9 @@ func humanHalfPoints(n uint64) string {
 	}
 	name := map[uint64]string{84: "初号", 72: "小初", 52: "一号", 48: "小一", 44: "二号", 36: "小二", 32: "三号", 30: "小三", 28: "四号", 24: "小四", 21: "五号", 18: "小五"}[n]
 	if name != "" {
-		return fmt.Sprintf("%s（%.1f 磅，原值 %d half-point）", name, float64(n)/2, n)
+		return fmt.Sprintf("%s（%.1f 磅）", name, float64(n)/2)
 	}
-	return fmt.Sprintf("%.1f 磅（原值 %d half-point）", float64(n)/2, n)
+	return fmt.Sprintf("%.1f 磅", float64(n)/2)
 }
 
 func humanTwipsString(value string) string {
@@ -482,7 +511,7 @@ func humanTwipsString(value string) string {
 	if err != nil || value == "" {
 		return "未直接指定"
 	}
-	return fmt.Sprintf("%.2f 磅（原值 %d twips）", float64(n)/20, n)
+	return fmt.Sprintf("%.2f 磅", float64(n)/20)
 }
 
 func humanTwipsStringMM(value string) string {
@@ -490,14 +519,21 @@ func humanTwipsStringMM(value string) string {
 	if err != nil || value == "" {
 		return "未直接指定"
 	}
-	return fmt.Sprintf("%.2f 毫米（原值 %d twips）", float64(n)*25.4/1440, n)
+	return fmt.Sprintf("%.2f 毫米", float64(n)*25.4/1440)
 }
 
 func humanTwipsUint(n uint64) string {
 	if n == 0 {
 		return "未直接指定"
 	}
-	return fmt.Sprintf("%.2f 磅（原值 %d twips）", float64(n)/20, n)
+	return fmt.Sprintf("%.2f 磅", float64(n)/20)
+}
+
+func humanTwipsInt(n int64) string {
+	if n <= 0 {
+		return "未直接指定"
+	}
+	return fmt.Sprintf("%.2f 磅", float64(n)/20)
 }
 
 func humanHundredthChars(value string) string {
@@ -505,7 +541,7 @@ func humanHundredthChars(value string) string {
 	if err != nil || value == "" {
 		return "未直接指定"
 	}
-	return fmt.Sprintf("%.2f 字符（原值 %d）", float64(n)/100, n)
+	return fmt.Sprintf("%.2f 字符", float64(n)/100)
 }
 
 func sortedStyleKeys[T ~map[string]templateprofile.StyleRule](items T) []string {
@@ -591,18 +627,28 @@ func humanSeverity(value string) string {
 
 func humanField(value string) string {
 	fields := map[string]string{
-		"font_east_asia":    "中文字体",
-		"font_ascii":        "西文字体",
-		"font_size":         "字号",
-		"font_size_half_pt": "字号原值",
-		"bold":              "加粗",
-		"italic":            "斜体",
-		"underline":         "下划线",
-		"alignment":         "对齐方式",
-		"line_spacing":      "行距",
-		"space_before":      "段前距",
-		"space_after":       "段后距",
-		"first_line_indent": "首行缩进",
+		"font_east_asia":       "中文字体",
+		"font_ascii":           "西文字体",
+		"font_size":            "字号",
+		"font_size_half_pt":    "字号原值",
+		"bold":                 "加粗",
+		"italic":               "斜体",
+		"underline":            "下划线",
+		"alignment":            "对齐方式",
+		"line_spacing":         "行距",
+		"line_spacing_rule":    "行距规则",
+		"space_before":         "段前距",
+		"space_after":          "段后距",
+		"first_line_indent":    "首行缩进",
+		"indent_left":          "左缩进",
+		"indent_right":         "右缩进",
+		"font_size_cs_half_pt": "中文字号原值",
+		"outline_level":        "大纲级别",
+		"page_break":           "段前分页",
+		"keep_with_next":       "与下段同页",
+		"keep_lines":           "段内不分页",
+		"color":                "字体颜色",
+		"font_size_cs":         "中文字号",
 	}
 	if translated := fields[value]; translated != "" {
 		return translated
@@ -623,6 +669,7 @@ func humanCategory(value string) string {
 		V2AppendixTitle: "附录标题", V2Appendix: "附录正文",
 		V2NotesTitle: "注释标题", V2Notes: "注释正文",
 		V2FigureCaption: "图题", V2TableCaption: "表题",
+		V2Empty:       "空行",
 		"cover_title": "封面论文题目", "cover_field": "封面字段",
 		"chapter_title": "一级标题", "section_title": "二级标题",
 		"subsection_title": "三级标题", "body_text": "正文",

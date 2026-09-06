@@ -4,9 +4,46 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="fix 论文修复">
+    <list default="true" id="12a70ce7-b1c1-4a56-9553-008e41926401" name="更改" comment="fix 论文修复08">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/core/evidence/structured.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/evidence/structured.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/core/paperast/ast.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/paperast/ast.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/core/paperast/ast_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/paperast/ast_test.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/core/roleclassify/classifier.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/roleclassify/classifier.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/core/roleclassify/classifier_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/roleclassify/classifier_test.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/core/templateapply/role_plan.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/templateapply/role_plan.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/core/templateapply/role_plan_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/templateapply/role_plan_test.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/core/templateapply/template_profile.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/templateapply/template_profile.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/core/templateapply/template_profile_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/core/templateapply/template_profile_test.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/model/paragraph_sample.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/model/paragraph_sample.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/service/format_parser_ai.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/format_parser_ai.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/service/paper_workflow_service.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/paper_workflow_service.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/internal/service/paper_workflow_service_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/service/paper_workflow_service_test.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/aiclassifier/decision_tree.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/aiclassifier/decision_tree.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/aiclassifier/deepseek_client.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/aiclassifier/deepseek_client.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/aiclassifier/features.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/aiclassifier/features.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/aiclassifier/rule_engine.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/aiclassifier/rule_engine.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/aiclassifier/smart_classifier.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/aiclassifier/smart_classifier.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/aiclassifier/thesis_state_machine.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/aiclassifier/thesis_state_machine.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/diag.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/diag.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/enhanced_processor.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/enhanced_processor.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/format_diff.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/format_diff.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/format_rule_engine.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/format_rule_engine.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/format_run_log.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/format_run_log.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/format_verifier.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/format_verifier.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/section_format_applier.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/section_format_applier.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/strict_template_formatter.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/strict_template_formatter.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/strict_template_formatter_test.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/strict_template_formatter_test.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/template_format_loader.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/template_format_loader.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/template_style_extractor.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/template_style_extractor.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/v2_classifier.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/v2_classifier.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/v2_cloner.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/v2_cloner.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/v2_engine.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/v2_engine.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/fileprocessor/v2_smart_format.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/fileprocessor/v2_smart_format.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/formatchecker/unioffice_checker.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/formatchecker/unioffice_checker.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/formatchecker/unioffice_fixer.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/formatchecker/unioffice_fixer.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pkg/formatchecker/unioffice_processor.go" beforeDir="false" afterPath="$PROJECT_DIR$/pkg/formatchecker/unioffice_processor.go" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -50,36 +87,36 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ASKED_SHARE_PROJECT_CONFIGURATION_FILES": "true",
-    "DefaultGoTemplateProperty": "Go File",
-    "Go 构建.go build github.com/paper-format-checker/backend.executor": "Debug",
-    "Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestAuthHandler_Register.executor": "Run",
-    "Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestGetAlipayAuthURL_Real.executor": "Run",
-    "Go 测试.go test backend.executor": "Debug",
-    "Go 测试.go test server.executor": "Run",
-    "RunOnceActivity.OpenProjectViewOnStart": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.go.formatter.settings.were.checked": "true",
-    "RunOnceActivity.go.migrated.go.modules.settings": "true",
-    "RunOnceActivity.go.modules.automatic.dependencies.download": "true",
-    "RunOnceActivity.go.modules.go.list.on.any.changes.was.set": "true",
-    "WebServerToolWindowPanel.toolwindow.highlight.mappings": "true",
-    "WebServerToolWindowPanel.toolwindow.highlight.symlinks": "true",
-    "WebServerToolWindowPanel.toolwindow.show.date": "false",
-    "WebServerToolWindowPanel.toolwindow.show.permissions": "false",
-    "WebServerToolWindowPanel.toolwindow.show.size": "false",
-    "git-widget-placeholder": "main",
-    "go.import.settings.migrated": "true",
-    "go.sdk.automatically.set": "true",
-    "last_opened_file_path": "D:/workpace/商城/goshop",
-    "node.js.detected.package.eslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "project.propVCSSupport.DirectoryMappings"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_SHARE_PROJECT_CONFIGURATION_FILES&quot;: &quot;true&quot;,
+    &quot;DefaultGoTemplateProperty&quot;: &quot;Go File&quot;,
+    &quot;Go 构建.go build github.com/paper-format-checker/backend.executor&quot;: &quot;Debug&quot;,
+    &quot;Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestAuthHandler_Register.executor&quot;: &quot;Run&quot;,
+    &quot;Go 测试.github.com/paper-format-checker/backend/internal/handler 中的 TestGetAlipayAuthURL_Real.executor&quot;: &quot;Run&quot;,
+    &quot;Go 测试.go test backend.executor&quot;: &quot;Debug&quot;,
+    &quot;Go 测试.go test server.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.formatter.settings.were.checked&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.migrated.go.modules.settings&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.modules.automatic.dependencies.download&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.go.modules.go.list.on.any.changes.was.set&quot;: &quot;true&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.highlight.mappings&quot;: &quot;true&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.highlight.symlinks&quot;: &quot;true&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.show.date&quot;: &quot;false&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.show.permissions&quot;: &quot;false&quot;,
+    &quot;WebServerToolWindowPanel.toolwindow.show.size&quot;: &quot;false&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;go.import.settings.migrated&quot;: &quot;true&quot;,
+    &quot;go.sdk.automatically.set&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;D:/workpace/商城/goshop&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;project.propVCSSupport.DirectoryMappings&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="D:\workpace\博客\paper\backend" />
@@ -194,7 +231,6 @@
       <path value="D:/workpace/博客/paper/backend" />
       <path value="D:/workpace/博客/pentagi" />
     </ignored-roots>
-    <MESSAGE value="codex  修改" />
     <MESSAGE value="action 修改" />
     <MESSAGE value="支付宝登陆" />
     <MESSAGE value="修改模板识别 解析" />
@@ -219,7 +255,8 @@
     <MESSAGE value="模板uuid" />
     <MESSAGE value="修改修复流程" />
     <MESSAGE value="fix 论文修复" />
-    <option name="LAST_COMMIT_MESSAGE" value="fix 论文修复" />
+    <MESSAGE value="fix 论文修复08" />
+    <option name="LAST_COMMIT_MESSAGE" value="fix 论文修复08" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>

@@ -319,7 +319,7 @@ func applyTemplateProfileCoverStyles(path string, profile *templateprofile.Profi
 				return paragraph
 			}
 			if len([]rune(text)) > 8 {
-				if rule, found := resolveTemplateProfileStyle(profile.Styles, "cover_title"); found {
+				if rule, found := resolveTemplateProfileStyle(profile.Styles, frontMatterTitleStyleKey(profile)); found {
 					if style, valid := paragraphStyleFromTemplateProfile(rule); valid {
 						return applyParagraphStyle(paragraph, style)
 					}
@@ -391,7 +391,7 @@ func applyTemplateProfileCoverStyles(path string, profile *templateprofile.Profi
 		if len([]rune(text)) <= 20 {
 			return paragraph
 		}
-		rule, found := resolveTemplateProfileStyle(profile.Styles, "cover_title")
+		rule, found := resolveTemplateProfileStyle(profile.Styles, frontMatterTitleStyleKey(profile))
 		if !found {
 			return paragraph
 		}
@@ -406,6 +406,18 @@ func applyTemplateProfileCoverStyles(path string, profile *templateprofile.Profi
 		return 0, err
 	}
 	return count, nil
+}
+
+func frontMatterTitleStyleKey(profile *templateprofile.Profile) string {
+	if profile != nil {
+		if _, ok := profile.Styles["title"]; ok {
+			return "title"
+		}
+		if _, ok := profile.Styles["body"]; ok {
+			return "body"
+		}
+	}
+	return "title"
 }
 
 func isTemplateCoverTitleText(text string) bool {
@@ -423,6 +435,15 @@ func isTemplateCoverDateText(text string) bool {
 func isShortTemplateCoverDateText(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	return len([]rune(trimmed)) <= 20 && strings.Contains(trimmed, "\u5e74") && strings.Contains(trimmed, "\u6708")
+}
+
+func isTemplateCoverThesisTitle(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if len([]rune(trimmed)) <= 20 || strings.HasPrefix(trimmed, "\u6458\u8981") || strings.HasPrefix(strings.ToLower(trimmed), "abstract") {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return !strings.Contains(trimmed, "\u5173\u952e\u8bcd") && !strings.HasPrefix(lower, "keywords") && !strings.HasPrefix(lower, "key words")
 }
 
 func ApplyTemplateProfilePageSetup(ctx context.Context, path string, profile *templateprofile.Profile) (int, error) {
@@ -1895,8 +1916,12 @@ func applyTemplateProfileStylesToDocumentXML(documentXML string, profile *templa
 			key = "cover_title"
 		case currentSection == "cover" && isShortTemplateCoverDateText(text):
 			key = "cover_date"
-		case currentSection == "after_cover" && !frontMatterLabel && len([]rune(text)) > 20:
+		case currentSection == "cover" && isTemplateCoverThesisTitle(text):
 			key = "cover_title"
+		case currentSection == "after_cover" && isTemplateCoverThesisTitle(text):
+			key = "cover_title"
+		case currentSection == "after_cover" && !frontMatterLabel && len([]rune(text)) > 20:
+			key = frontMatterTitleStyleKey(profile)
 		default:
 			key = templateProfileStyleKey(paragraph, text, &currentSection)
 		}

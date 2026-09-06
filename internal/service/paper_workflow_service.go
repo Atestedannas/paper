@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/paper-format-checker/backend/internal/core/blockmap"
 	"github.com/paper-format-checker/backend/internal/core/evidence"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/paperast"
@@ -736,24 +737,19 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		rolePDFEvidence := map[string][]evidence.Item{}
 		if pythonVisualURL != "" && strings.TrimSpace(job.CompiledTemplate.TemplateName) != "" {
 			visualClient := NewPythonVisualClient(pythonVisualURL)
-			if baselineErr := ensureWorkflowTemplateBaseline(ctx, pythonVisualURL, job.CompiledTemplate, profile); baselineErr != nil {
-				log.Printf("[ROLE_PDF_EVIDENCE] skipped job=%s reason=template_baseline err=%v", job.ID, baselineErr)
-				fileprocessor.FormatLogPrintf(ctx, "Role PDF evidence skipped: template baseline unavailable: %v", baselineErr)
+			evidencePath, prepareErr := prepareRoleEvidenceDOCX(job.Paper.FilePath)
+			if prepareErr != nil {
+				log.Printf("[ROLE_PDF_EVIDENCE] skipped job=%s reason=prepare_copy err=%v", job.ID, prepareErr)
+				fileprocessor.FormatLogPrintf(ctx, "Role PDF evidence skipped: prepare renderable copy: %v", prepareErr)
 			} else {
-				evidencePath, prepareErr := prepareRoleEvidenceDOCX(job.Paper.FilePath)
-				if prepareErr != nil {
-					log.Printf("[ROLE_PDF_EVIDENCE] skipped job=%s reason=prepare_copy err=%v", job.ID, prepareErr)
-					fileprocessor.FormatLogPrintf(ctx, "Role PDF evidence skipped: prepare renderable copy: %v", prepareErr)
+				mapped, evidenceErr := visualClient.CollectStudentPDFEvidence(ctx, evidencePath, job.CompiledTemplate.TemplateName, 1, job.ID.String(), ast)
+				if evidenceErr != nil {
+					log.Printf("[ROLE_PDF_EVIDENCE] skipped job=%s reason=python_service err=%v", job.ID, evidenceErr)
+					fileprocessor.FormatLogPrintf(ctx, "Role PDF evidence skipped: %v", evidenceErr)
 				} else {
-					mapped, evidenceErr := visualClient.CollectStudentPDFEvidence(ctx, evidencePath, job.CompiledTemplate.TemplateName, 1, job.ID.String(), ast)
-					if evidenceErr != nil {
-						log.Printf("[ROLE_PDF_EVIDENCE] skipped job=%s reason=python_service err=%v", job.ID, evidenceErr)
-						fileprocessor.FormatLogPrintf(ctx, "Role PDF evidence skipped: %v", evidenceErr)
-					} else {
-						rolePDFEvidence = mapped
-						log.Printf("[ROLE_PDF_EVIDENCE] mapped job=%s nodes=%d items=%d", job.ID, len(rolePDFEvidence), evidenceItemCount(rolePDFEvidence))
-						fileprocessor.FormatLogPrintf(ctx, "Role PDF evidence mapped nodes=%d", len(rolePDFEvidence))
-					}
+					rolePDFEvidence = mapped
+					log.Printf("[ROLE_PDF_EVIDENCE] mapped job=%s nodes=%d items=%d", job.ID, len(rolePDFEvidence), evidenceItemCount(rolePDFEvidence))
+					fileprocessor.FormatLogPrintf(ctx, "Role PDF evidence mapped nodes=%d", len(rolePDFEvidence))
 				}
 			}
 		}
@@ -862,14 +858,21 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	//   2. structureRequiresInPlaceRepair：检查学生论文是否含受保护对象（书签/域/公式/图片等）
 	//      如果学生论文含受保护对象，即使模板支持移植也必须降级为就地修复，
 	//      因为模板骨架重建会丢失书签、域代码、公式等 OOXML 精细结构
-	// The production workflow is profile-only: no template transplant, CQRWST
-	// school rules, or golden-template fallback is allowed here.
-	templateCanTransplant := false
-	requiresInPlaceRepair := true
-	transplantEnabled := false
-	if transplantEnabled && requiresInPlaceRepair {
-		transplantEnabled = false // 强制降级为分支 B
-		fileprocessor.FormatLogPrintf(ctx, "源文档含书签、域、公式、图片、批注或其他受保护对象；改用就地格式修复，避免重建模板骨架时丢失 OOXML 结构。")
+	// Strict mode has one output authority: the selected template skeleton.
+	// Never silently fall back to in-place repair, because that is the path
+	// where later format passes can overwrite a previously corrected layout.
+	templateCanTransplant := templateTransplantEnabled(job.CompiledTemplate.SourceFilePath, profile)
+	requiresInPlaceRepair := structureRequiresInPlaceRepair(sourceStructure)
+	strictTransplantOnly := workflowStrictTemplateTransplantEnabled()
+	transplantEnabled := templateCanTransplant && !requiresInPlaceRepair
+	if strictTransplantOnly && !templateCanTransplant {
+		fileprocessor.FormatLogPrintf(ctx, "严格模板移植不可用：模板缺少受控槽位；自动使用内容保全修复链路，不中断任务。")
+	}
+	if strictTransplantOnly && requiresInPlaceRepair {
+		fileprocessor.FormatLogPrintf(ctx, "严格模板移植暂不承载图片、书签、超链接或域；自动使用内容保全修复链路，不中断任务。")
+	}
+	if !transplantEnabled {
+		fileprocessor.FormatLogPrintf(ctx, "严格模板移植未启用或当前文档无法安全迁移；保留兼容就地修复路径。启用 PAPER_TEMPLATE_TRANSPLANT_ONLY=1 后将拒绝回退。")
 	}
 	// ── 阶段 6：执行模板移植（核心步骤）──
 	// 根据 transplantEnabled 走分支 A（模板骨架重建）或分支 B（就地修复）
@@ -878,7 +881,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		templateCanTransplant, requiresInPlaceRepair, transplantEnabled,
 		len(sourceStructure.Bookmarks), len(sourceStructure.Fields), sourceStructure.Formulas,
 		sourceStructure.Drawings+sourceStructure.Pictures, sourceStructure.CommentReferences)
-	profile, err = s.buildWorkflowOutput(ctx, job.Paper.FilePath, outputPath, job.CompiledTemplate, profile)
+	profile, err = s.buildWorkflowOutput(ctx, job.Paper.FilePath, outputPath, job.CompiledTemplate, profile, transplantEnabled)
 	if err != nil {
 		log.Printf("[WORKFLOW_FLOW] Go format stage failed job=%s err=%v", job.ID, err)
 		fileprocessor.FormatLogPrintf(ctx, "Go 格式修复阶段失败：%v", err)
@@ -935,7 +938,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	// 如果修复合同涉及"可见内容重写"，在执行后续修复前先备份输出文件
 	// 用于修复失败时回滚，确保学生原文内容不丢失
 	contractBackup := outputPath + ".contract-backup"
-	if contract.Blocks("visible_content_rewrite") {
+	if !transplantEnabled && contract.Blocks("visible_content_rewrite") {
 		if err := copyFile(outputPath, contractBackup); err != nil {
 			return nil, err
 		}
@@ -944,22 +947,24 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 
 	// Page setup is independent from paragraph semantics. Paragraph properties
 	// have exactly one writer below: the frozen role plan.
-	pageChanges, err := templateapply.ApplyTemplateProfilePageSetup(ctx, outputPath, profile)
-	if err != nil {
-		return nil, fmt.Errorf("apply selected template page setup: %w", err)
+	if !transplantEnabled {
+		pageChanges, applyErr := templateapply.ApplyTemplateProfilePageSetup(ctx, outputPath, profile)
+		if applyErr != nil {
+			return nil, fmt.Errorf("apply selected template page setup: %w", applyErr)
+		}
+		fileprocessor.FormatLogPrintf(ctx, "模板页面设置：实际修改=%d", pageChanges)
+		headerChanges, applyErr := templateapply.ApplyTemplateProfileHeaderFormatting(ctx, outputPath, profile)
+		if applyErr != nil {
+			return nil, fmt.Errorf("apply selected template header formatting: %w", applyErr)
+		}
+		fileprocessor.FormatLogPrintf(ctx, "模板页眉格式：实际修改=%d", headerChanges)
 	}
-	fileprocessor.FormatLogPrintf(ctx, "模板页面设置：实际修改=%d", pageChanges)
-	headerChanges, err := templateapply.ApplyTemplateProfileHeaderFormatting(ctx, outputPath, profile)
-	if err != nil {
-		return nil, fmt.Errorf("apply selected template header formatting: %w", err)
-	}
-	fileprocessor.FormatLogPrintf(ctx, "模板页眉格式：实际修改=%d", headerChanges)
 
 	// ── 阶段 10：OOXML 最终清理 ──
 	// 归一化：移除多余的 XML 命名空间、空白节点等冗余部件
 	// Apply the frozen semantic plan after the single profile baseline pass.
 	// No later document-wide formatter runs after this point.
-	if len(roleAssignments) > 0 {
+	if !transplantEnabled && len(roleAssignments) > 0 {
 		applied, planErr := templateapply.ApplyRoleFormatPlan(ctx, outputPath, profile, roleAssignments)
 		if planErr != nil {
 			return nil, fmt.Errorf("apply stable-node role format plan: %w", planErr)
@@ -994,7 +999,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	// per-node validation is authoritative; the legacy whole-document profile
 	// heuristic otherwise reclassifies untouched cover fields and creates a
 	// false template_profile_rule failure.
-	if len(roleAssignments) > 0 {
+	if transplantEnabled || len(roleAssignments) > 0 {
 		verifier.WithoutTemplateProfileCheck()
 	}
 	// 分支 A（模板移植）不需要 CQRWST 规则验证（因为走的是骨架重建，规则已经内置）
@@ -1011,13 +1016,15 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 
 	// ── 阶段 12：修复验证中发现的特定问题 ──
 	// 12a：修复手动题注编号（如"图1-1"、"表2-3"等）
-	if repaired, repairErr := repairManualCaptionFields(outputPath, result.VerifyResult); repairErr != nil {
-		return nil, repairErr
-	} else if repaired {
-		// 修复后需要重新验证，确保修复没有引入新问题
-		result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
-		if err != nil {
-			return nil, err
+	if !transplantEnabled {
+		if repaired, repairErr := repairManualCaptionFields(outputPath, result.VerifyResult); repairErr != nil {
+			return nil, repairErr
+		} else if repaired {
+			// 修复后需要重新验证，确保修复没有引入新问题
+			result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	// 12b：修复手动公式编号（如"(1-1)"、"(2-3)"等）
@@ -1045,7 +1052,16 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 
 	// ── 阶段 14：内容保全验证 ──
 	// 当修复合同标记了"visible_content_rewrite"时，校验修复是否意外删改学生原文内容
-	if contract.Blocks("visible_content_rewrite") {
+	if transplantEnabled {
+		sourceParsed, parseErr := paperparse.NewParser().Parse(ctx, job.Paper.FilePath)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse source content for template transplant gate: %w", parseErr)
+		}
+		if missing := missingGeneratedSourceContent(ctx, sourceParsed, outputPath); len(missing) > 0 {
+			return nil, fmt.Errorf("template transplant content gate failed: %s", missing[0])
+		}
+		fileprocessor.FormatLogPrintf(ctx, "模板移植内容门禁：通过；学生正文已迁移到模板骨架。")
+	} else if contract.Blocks("visible_content_rewrite") {
 		// 对输出文件重新做 AST 提取
 		finalAST, extractErr := paperast.Extract(outputPath)
 		if extractErr != nil {
@@ -1077,10 +1093,14 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 
 	// ── 阶段 15：OOXML 结构保全验证 ──
 	// 对比修复前后 OOXML 结构快照，确保节、书签等受保护对象未减少
-	finalStructure, structureErr := repaircontract.CaptureStructure(outputPath)
-	if structureErr == nil {
-		if issues := repaircontract.ValidateStructurePreserved(sourceStructure, finalStructure); len(issues) > 0 {
-			structureErr = fmt.Errorf("repair contract violation: %s", issues[0].Message)
+	var structureErr error
+	if !transplantEnabled {
+		finalStructure, captureErr := repaircontract.CaptureStructure(outputPath)
+		structureErr = captureErr
+		if structureErr == nil {
+			if issues := repaircontract.ValidateStructurePreserved(sourceStructure, finalStructure); len(issues) > 0 {
+				structureErr = fmt.Errorf("repair contract violation: %s", issues[0].Message)
+			}
 		}
 	}
 	if structureErr != nil {
@@ -1971,7 +1991,7 @@ func (s *paperWorkflowService) workflowOutputPath(jobID uuid.UUID) (string, erro
 
 // buildWorkflowOutput creates the structure-preserving base document. It does
 // not write paragraph formatting; RunJob's frozen FormatPlan is the sole writer.
-func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePath string, outputPath string, record model.CompiledTemplate, profile *templateprofile.Profile) (*templateprofile.Profile, error) {
+func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePath string, outputPath string, record model.CompiledTemplate, profile *templateprofile.Profile, transplantEnabled bool) (*templateprofile.Profile, error) {
 	// 提取模板文件路径，用于后续分支操作
 	templatePath := strings.TrimSpace(record.SourceFilePath)
 	// Profile 为空时无格式参照，直接复制原文作为输出
@@ -1986,15 +2006,40 @@ func (s *paperWorkflowService) buildWorkflowOutput(ctx context.Context, sourcePa
 	if templatePath == sourcePath {
 		return profile, fmt.Errorf("selected template path incorrectly points to the student paper")
 	}
-	// The only production formatter is the selected DOCX Profile. Keep the
-	// student's package intact; do not rebuild it from a skeleton or fallback
-	// to a school-specific/黄金模板 implementation.
-	if err := copyFile(sourcePath, outputPath); err != nil {
-		return profile, err
-	}
 	coverParsed, err := paperparse.NewParser().Parse(ctx, sourcePath)
 	if err != nil {
-		return profile, fmt.Errorf("parse student cover fields: %w", err)
+		return profile, fmt.Errorf("parse student paper for template transplant: %w", err)
+	}
+	if transplantEnabled {
+		compiled, compileErr := templatecompile.NewCompiler().Compile(ctx, templatePath, templatecompile.CompileOptions{
+			SchoolID:     record.SchoolID,
+			TemplateName: record.TemplateName,
+			Version:      record.TemplateVersion,
+			OutputDir:    filepath.Join(filepath.Dir(outputPath), "_compiled_template"),
+		})
+		if compileErr != nil {
+			return profile, fmt.Errorf("compile selected template skeleton: %w", compileErr)
+		}
+		mapping, mapErr := blockmap.NewMapper().Map(compiled, coverParsed)
+		if mapErr != nil {
+			return profile, fmt.Errorf("map student content to template slots: %w", mapErr)
+		}
+		if len(mapping.AmbiguousBlocks) > 0 || len(mapping.UnmappedBlocks) > 0 {
+			return profile, fmt.Errorf("template transplant requires review: ambiguous=%v unmapped=%v", mapping.AmbiguousBlocks, mapping.UnmappedBlocks)
+		}
+		if err := transplant.NewTransplanter().Generate(ctx, transplant.GenerateInput{
+			CompiledTemplate: compiled,
+			Mapping:          mapping,
+			OutputPath:       outputPath,
+			TemplateProfile:  profile,
+		}); err != nil {
+			return profile, fmt.Errorf("generate document from template skeleton: %w", err)
+		}
+		fileprocessor.FormatLogPrintf(ctx, "模板移植：使用模板骨架生成输出；绑定=%d，生成块=%d。", len(mapping.Bindings), len(mapping.GeneratedBlocks))
+		return profile, nil
+	}
+	if err := copyFile(sourcePath, outputPath); err != nil {
+		return profile, err
 	}
 	if err := fileprocessor.CopyTemplateHeaderFooter(templatePath, outputPath, coverParsed.CoverFields); err != nil {
 		return profile, fmt.Errorf("copy template header/footer: %w", err)
@@ -2054,6 +2099,15 @@ func templateTransplantEnabled(templatePath string, profile *templateprofile.Pro
 	default:
 		// 模板使用了 CQRWST 规范化器（如 SmartNormalizer）或有映射锚点 → 可以移植
 		return transplant.UsesCQRWSTNormalizers(templatePath) || templateHasMappingAnchors(templatePath)
+	}
+}
+
+func workflowStrictTemplateTransplantEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PAPER_TEMPLATE_TRANSPLANT_ONLY"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 

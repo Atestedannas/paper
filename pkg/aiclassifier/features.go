@@ -8,32 +8,32 @@ import (
 
 // ParagraphType 段落类型常量
 const (
-	TypeTitle                    = "title"
-	TypeCover                    = "cover"
-	TypeOriginalityDeclaration   = "originality_declaration"
-	TypeAbstractTitle            = "abstract_title"
-	TypeAbstract                 = "abstract"
-	TypeEnAbstractTitle          = "en_abstract_title"
-	TypeEnAbstract               = "en_abstract"
-	TypeKeywords                 = "keywords"
-	TypeEnKeywords               = "en_keywords"
-	TypeHeading1                 = "heading_1"
-	TypeHeading2                 = "heading_2"
-	TypeHeading3                 = "heading_3"
-	TypeBody                     = "body"
-	TypeReferencesTitle          = "references_title"
-	TypeReferences               = "references"
-	TypeTOCTitle                 = "table_of_contents_title"
-	TypeTOC                      = "table_of_contents"
+	TypeTitle                  = "title"
+	TypeCover                  = "cover"
+	TypeOriginalityDeclaration = "originality_declaration"
+	TypeAbstractTitle          = "abstract_title"
+	TypeAbstract               = "abstract"
+	TypeEnAbstractTitle        = "en_abstract_title"
+	TypeEnAbstract             = "en_abstract"
+	TypeKeywords               = "keywords"
+	TypeEnKeywords             = "en_keywords"
+	TypeHeading1               = "heading_1"
+	TypeHeading2               = "heading_2"
+	TypeHeading3               = "heading_3"
+	TypeBody                   = "body"
+	TypeReferencesTitle        = "references_title"
+	TypeReferences             = "references"
+	TypeTOCTitle               = "table_of_contents_title"
+	TypeTOC                    = "table_of_contents"
 )
 
 // ParagraphFeature 段落特征向量（用于分类和模型训练）
 type ParagraphFeature struct {
 	// 文本特征
-	TextLength    int     `json:"text_length"`
-	RuneLength    int     `json:"rune_length"`
-	HasChinese    bool    `json:"has_chinese"`
-	ChineseRatio  float64 `json:"chinese_ratio"`
+	TextLength   int     `json:"text_length"`
+	RuneLength   int     `json:"rune_length"`
+	HasChinese   bool    `json:"has_chinese"`
+	ChineseRatio float64 `json:"chinese_ratio"`
 
 	// 格式特征（从 DOCX Run 属性提取）
 	FontSizePt float64 `json:"font_size_pt"`
@@ -51,13 +51,19 @@ type ParagraphFeature struct {
 	HasKeywordsKW    bool `json:"has_keywords_kw"`
 	HasReferencesKW  bool `json:"has_references_kw"`
 	HasTOCIndicator  bool `json:"has_toc_indicator"`
-	HasCoverKeywords   bool `json:"has_cover_keywords"`
-	HasOriginalityKW   bool `json:"has_originality_kw"`
+	HasCoverKeywords bool `json:"has_cover_keywords"`
+	HasOriginalityKW bool `json:"has_originality_kw"`
 
 	// 结构特征
 	StartsWithDigitDot bool `json:"starts_with_digit_dot"` // 1.1 or 1.1.1
 	EndsWithPeriod     bool `json:"ends_with_period"`
 	HasTab             bool `json:"has_tab"`
+
+	// 结构信号（从 para.X().PPr 提取，供规则/状态机/决策树优先使用，
+	// 对应 v2_classifier.go structuralSignalType 单源判定的 aiclassifier 侧）
+	PStyle     string `json:"p_style"`     // 段落样式 ID，如 Heading1 / 标题1（空=未设置）
+	OutlineLvl int    `json:"outline_lvl"` // 大纲级别，-1=未设置（0=1级标题）
+	HasNumPr   bool   `json:"has_num_pr"`  // 是否含多级编号 numPr
 
 	// 上下文（分类后回填）
 	PrevType string `json:"prev_type"`
@@ -92,6 +98,10 @@ func (f *ParagraphFeature) ToFloat64Slice() []float64 {
 		b(f.StartsWithDigitDot),
 		b(f.EndsWithPeriod),
 		b(f.HasTab),
+		// D14：结构信号入向量，与 retrain 侧保持维度一致（21 维）。
+		b(f.PStyle != ""),
+		float64(f.OutlineLvl),
+		b(f.HasNumPr),
 	}
 }
 
@@ -101,6 +111,7 @@ var FeatureNames = []string{
 	"has_number_prefix", "has_chapter_mark", "has_abstract_kw",
 	"has_keywords_kw", "has_references_kw", "has_toc_indicator",
 	"has_cover_keywords", "has_originality_kw", "starts_with_digit_dot", "ends_with_period", "has_tab",
+	"has_p_style", "outline_lvl", "has_num_pr",
 }
 
 // 预编译正则
@@ -158,6 +169,9 @@ func ExtractFeatures(text string, paraIndex, totalParas int, fontSizePt float64,
 		ParaIndex:     paraIndex,
 		PositionRatio: positionRatio,
 		Text:          trimmed,
+		// 结构信号默认未设置哨兵：-1=未设置（0=1级标题）可避免零值被 HeadingLevelFromStructure
+		// 误判为"大纲级别1"。有真实结构的段落由 applyStructuralSignals 显式回填。
+		OutlineLvl: -1,
 	}
 
 	// 关键词命中
@@ -255,4 +269,68 @@ func isParenNumberedHeading(text string) bool {
 	}
 	rest := []rune(strings.TrimSpace(text[loc[1]:]))
 	return len(rest) <= 20
+}
+
+// HeadingLevelFromStructure 依据结构信号判定标题级别（0=非标题）。
+// 复用 v2_classifier.go structuralSignalType 的判定逻辑思路（pStyle 名称 → outlineLvl → numPr），
+// 作为 aiclassifier 侧的结构信号单源，避免与主链路判定漂移。
+// 注意：不修改 ToFloat64Slice / FeatureNames，保持决策树向量维度稳定。
+func HeadingLevelFromStructure(pStyle string, outlineLvl int, numPr bool, text string) int {
+	// 1) 命名样式 pStyle 优先
+	style := strings.ToLower(strings.TrimSpace(pStyle))
+	switch {
+	case style == "heading1" || style == "heading 1" || style == "h1" ||
+		style == "标题1" || style == "一级标题" || style == "title1":
+		return 1
+	case style == "heading2" || style == "heading 2" || style == "h2" ||
+		style == "标题2" || style == "二级标题" || style == "title2":
+		return 2
+	case style == "heading3" || style == "heading 3" || style == "h3" ||
+		style == "标题3" || style == "三级标题" || style == "title3":
+		return 3
+	case style == "heading4" || style == "heading 4" || style == "h4" ||
+		style == "标题4" || style == "四级标题" || style == "title4":
+		return 4
+	}
+	if strings.HasPrefix(style, "heading") || strings.Contains(style, "标题") {
+		// heading 族样式：从样式名尾随数字推断级别
+		for i := 1; i <= 4; i++ {
+			if strings.Contains(style, string(rune('0'+i))) {
+				return i
+			}
+		}
+		return 1
+	}
+
+	// 2) 大纲级别直读（outlineLvl: 0=1级标题，以此类推）
+	if outlineLvl >= 0 {
+		lvl := outlineLvl + 1
+		if lvl > 4 {
+			lvl = 4
+		}
+		return lvl
+	}
+
+	// 3) 多级编号（numPr）且文本满足编号标题形态 → 按编号层级定类
+	if numPr {
+		if level := DetectHeadingLevel(text); level > 0 {
+			return level
+		}
+	}
+	return 0
+}
+
+// headingLabelForLevel 将标题级别映射为分类标签。
+// 1/2/3 级分别映射为 heading_1/heading_2/heading_3，更高级别归入 heading_3。
+func headingLabelForLevel(level int) string {
+	switch level {
+	case 1:
+		return TypeHeading1
+	case 2:
+		return TypeHeading2
+	case 3:
+		return TypeHeading3
+	default:
+		return TypeHeading3
+	}
 }

@@ -39,17 +39,19 @@ func (p *EnhancedProcessor) GetLastDiffReport() *DocDiffReport {
 
 // StrongVerifyResult 记录一次强校验流程的关键统计信息。
 type StrongVerifyResult struct {
-	Enabled           bool   `json:"enabled"`
-	Threshold         int    `json:"threshold"`
-	InitialDiffs      int    `json:"initial_diffs"`
-	RetryDiffs        int    `json:"retry_diffs"`
-	FinalDiffs        int    `json:"final_diffs"`
-	RepairRounds      int    `json:"repair_rounds"`
-	Retried           bool   `json:"retried"`
-	FallbackUsed      bool   `json:"fallback_used"`
-	NeedsManualReview bool   `json:"needs_manual_review"`
-	Passed            bool   `json:"passed"`
-	FinalEngine       string `json:"final_engine"`
+	Enabled             bool   `json:"enabled"`
+	Threshold           int    `json:"threshold"`
+	InitialDiffs        int    `json:"initial_diffs"`
+	RetryDiffs          int    `json:"retry_diffs"`
+	FinalDiffs          int    `json:"final_diffs"`
+	ExemptedDiffs       int    `json:"exempted_diffs"` // 合理差异（目录/图/表说明/映射缺口等）豁免数，不计入门禁
+	VerifParagraphCount int    `json:"verif_paragraph_count"`
+	RepairRounds        int    `json:"repair_rounds"`
+	Retried             bool   `json:"retried"`
+	FallbackUsed        bool   `json:"fallback_used"`
+	NeedsManualReview   bool   `json:"needs_manual_review"`
+	Passed              bool   `json:"passed"`
+	FinalEngine         string `json:"final_engine"`
 }
 
 // GetLastStrongVerifyResult 返回最近一次 ApplyCorrectionsV2 的强校验摘要。
@@ -597,14 +599,14 @@ func getSchoolIDFromCorrectionsList(corrections []map[string]interface{}) string
 // applyTemplateFormatting 新方案：直接从模板OOXML格式规范应用格式
 // 步骤：页面设置/页眉页脚（保留JSON规则）→ AI分类 → 直接应用模板格式规范 → 表格格式
 func (p *EnhancedProcessor) applyTemplateFormatting(doc *document.Document, rules map[string]interface{}, specs map[string]ParagraphFormatSpec) (*FormatLockManager, error) {
-	// 节点3b：enhanced_processor 路径 — 打印 rules 和 specs
-	DiagPrintf("====== 节点3b: enhanced_processor 路径 — applyTemplateFormatting =====")
-	DiagPrintf("[enhanced] rules count=%d specs count=%d", len(rules), len(specs))
+	// 节点3b：增强处理路径 — 打印 rules 和 specs
+	DiagPrintf("====== 节点3b: 增强处理路径 — applyTemplateFormatting ======")
+	DiagPrintf("[增强] 规则数量=%d 规范数量=%d", len(rules), len(specs))
 	for key, spec := range specs {
-		DiagPrintf("[enhanced] specs[%s]: %s", key, formatSpecCompact(spec))
+		DiagPrintf("[增强] 规范[%s]：%s", key, formatSpecCompact(spec))
 	}
 	for key, rule := range rules {
-		DiagPrintf("[enhanced] rules[%s]: %+v", key, rule)
+		DiagPrintf("[增强] 规则[%s]：%+v", key, rule)
 	}
 	// 模板模式下也需要设置 docDefaults 和命名样式（Heading1-3 等），
 	// 为 TOC/导航窗格等依赖样式定义的功能提供正确的格式基础。
@@ -772,10 +774,10 @@ func (p *EnhancedProcessor) verifySectionPageSize(doc *document.Document) {
 		return
 	}
 	if *w.ST_UnsignedDecimalNumber != 11906 {
-		log.Printf("[验证] FormatStepSection: 页面宽度=%d twips (A4预期11906)，可能非A4", *w.ST_UnsignedDecimalNumber)
+		log.Printf("[验证] 页面设置: 当前页面宽度=%.2f 毫米（标准A4为210.00毫米），可能非A4", float64(*w.ST_UnsignedDecimalNumber)*25.4/1440)
 	}
 	if *h.ST_UnsignedDecimalNumber != 16838 {
-		log.Printf("[验证] FormatStepSection: 页面高度=%d twips (A4预期16838)，可能非A4", *h.ST_UnsignedDecimalNumber)
+		log.Printf("[验证] 页面设置: 当前页面高度=%.2f 毫米（标准A4为297.00毫米），可能非A4", float64(*h.ST_UnsignedDecimalNumber)*25.4/1440)
 	}
 }
 
@@ -831,7 +833,7 @@ func (p *EnhancedProcessor) verifyPageSetupMargins(doc *document.Document, expec
 			diff = -diff
 		}
 		if float64(diff) > float64(expectedVal)*0.05 {
-			log.Printf("[验证] FormatStepPageSetup: %s 边距=%d twips (预期%d，偏差>5%%)", name, actual, expectedVal)
+			log.Printf("[验证] 页面边距: %s 边距=%.2f 毫米（预期 %.2f 毫米，偏差大于5%%）", name, float64(actual)*25.4/1440, float64(expectedVal)*25.4/1440)
 		}
 	}
 }
@@ -1047,7 +1049,7 @@ func (p *EnhancedProcessor) applyDocDefaults(styles *wml.Styles, bodyRules map[s
 		rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPt
 		rPr.SzCs = wml.NewCT_HpsMeasure()
 		rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &halfPt
-		log.Printf("[样式修改] docDefaults 字号 → %.1fpt (half-pt=%d)", fontSizePt, halfPt)
+		log.Printf("[样式修改] docDefaults 字号 → %s", humanHalfPoints(halfPt))
 	}
 
 	// 默认段落属性（行距+缩进+对齐）
@@ -1238,7 +1240,7 @@ func (p *EnhancedProcessor) verifyFormattingResults(doc *document.Document) {
 			}
 			size := "<未设置>"
 			if rPr.Sz != nil && rPr.Sz.ValAttr.ST_UnsignedDecimalNumber != nil {
-				size = fmt.Sprintf("%d half-pt (%.1fpt)", *rPr.Sz.ValAttr.ST_UnsignedDecimalNumber, float64(*rPr.Sz.ValAttr.ST_UnsignedDecimalNumber)/2)
+				size = humanHalfPoints(*rPr.Sz.ValAttr.ST_UnsignedDecimalNumber)
 			}
 			log.Printf("[验证] docDefaults: 字体=%s, 字号=%s", font, size)
 		}
@@ -1255,7 +1257,7 @@ func (p *EnhancedProcessor) verifyFormattingResults(doc *document.Document) {
 				}
 				size := "<未设置>"
 				if style.RPr != nil && style.RPr.Sz != nil && style.RPr.Sz.ValAttr.ST_UnsignedDecimalNumber != nil {
-					size = fmt.Sprintf("%d half-pt (%.1fpt)", *style.RPr.Sz.ValAttr.ST_UnsignedDecimalNumber, float64(*style.RPr.Sz.ValAttr.ST_UnsignedDecimalNumber)/2)
+					size = humanHalfPoints(*style.RPr.Sz.ValAttr.ST_UnsignedDecimalNumber)
 				}
 				log.Printf("[验证] Normal 样式: 字体=%s, 字号=%s", font, size)
 				break
@@ -1301,7 +1303,7 @@ func (p *EnhancedProcessor) verifyFormattingResults(doc *document.Document) {
 					rFont = *rPr.RFonts.EastAsiaAttr
 				}
 				if rPr.Sz != nil && rPr.Sz.ValAttr.ST_UnsignedDecimalNumber != nil {
-					rSize = fmt.Sprintf("%d half-pt (%.1fpt)", *rPr.Sz.ValAttr.ST_UnsignedDecimalNumber, float64(*rPr.Sz.ValAttr.ST_UnsignedDecimalNumber)/2)
+					rSize = humanHalfPoints(*rPr.Sz.ValAttr.ST_UnsignedDecimalNumber)
 				}
 			} else {
 				rFont = "<无rPr>"
@@ -1352,6 +1354,9 @@ func (p *EnhancedProcessor) classifyParagraphs(paragraphs []document.Paragraph) 
 				info.text, i, len(paraInfos),
 				fontSizePt, isBold, alignment,
 			)
+			// 结构信号回填：从 para.X().PPr 读取 pStyle/outlineLvl/numPr，
+			// 供规则引擎/状态机/决策树优先使用（与 v2_classifier.go structuralSignalType 同源思路）
+			p.applyStructuralSignals(&features[i], info.para)
 		}
 
 		docID := fmt.Sprintf("doc_%d", time.Now().UnixNano())
@@ -1374,6 +1379,27 @@ func (p *EnhancedProcessor) classifyParagraphs(paragraphs []document.Paragraph) 
 	// ── 回退：使用原始规则引擎（无 AI/模型） ──
 	log.Println("[分类] 使用传统规则引擎（无智能分类器）")
 	return p.classifyParagraphsFallback(paraInfos)
+}
+
+// applyStructuralSignals 从段落结构信号（pStyle/outlineLvl/numPr）回填特征，
+// 与 v2_classifier.go structuralSignalType 同源思路，作为 aiclassifier 侧的结构信号单源入口。
+func (p *EnhancedProcessor) applyStructuralSignals(f *aiclassifier.ParagraphFeature, para document.Paragraph) {
+	// document.Paragraph 是值类型，不能与 nil 比较；用 X() 判底层 CT_P 是否为空。
+	if para.X() == nil || para.X().PPr == nil {
+		return
+	}
+	ppr := para.X().PPr
+	if ppr.PStyle != nil {
+		f.PStyle = ppr.PStyle.ValAttr
+	}
+	if ppr.OutlineLvl != nil {
+		f.OutlineLvl = int(ppr.OutlineLvl.ValAttr)
+	} else {
+		// 未设置大纲级别时显式写回未设置哨兵 -1，避免特征零值 0 被
+		// HeadingLevelFromStructure 当成"大纲级别1"误判为一级标题。
+		f.OutlineLvl = -1
+	}
+	f.HasNumPr = ppr.NumPr != nil
 }
 
 // fallbackParaInfo 回退路径用的段落信息
@@ -1477,7 +1503,10 @@ func (p *EnhancedProcessor) classifyParagraphsFallback(paraInfos []fallbackParaI
 		}
 
 		// 状态机负责主干区段（封面→摘要→英文摘要→目录→正文→参考文献）
-		corrected := sm.Reclassify(pt, text)
+		// 结构信号优先：命中 pStyle/outlineLvl 时状态机按结构信号定级
+		var feature aiclassifier.ParagraphFeature
+		p.applyStructuralSignals(&feature, info.para)
+		corrected := sm.ReclassifyWithStructure(pt, text, feature.PStyle, feature.OutlineLvl, feature.HasNumPr)
 		if corrected != pt {
 			log.Printf("[回退分类器状态机] para#%d: %s → %s", i, pt, corrected)
 		}
@@ -1656,7 +1685,8 @@ func (p *EnhancedProcessor) applyStructureOrderConstraints(classified map[string
 		}
 	}
 
-	// 纠正逻辑：参考文献标题之后的 body 段落（且在致谢之前）应归为 references
+	// 纠正逻辑：参考文献标题之后、致谢之前的 body 段落，
+	// 仅当文本看起来像参考文献条目时才重分类为 references
 	if refTitleIdx >= 0 {
 		var newBody []document.Paragraph
 		for _, bodyPara := range classified["body"] {
@@ -1664,9 +1694,12 @@ func (p *EnhancedProcessor) applyStructureOrderConstraints(classified map[string
 			for i, info := range infos {
 				if info.para.X() == bodyPara.X() {
 					if i > refTitleIdx && (ackTitleIdx < 0 || i < ackTitleIdx) {
-						classified["references"] = append(classified["references"], bodyPara)
-						reclassified = true
-						log.Printf("[顺序约束] 段落 %d 从 body 纠正为 references", i)
+						text := p.extractParagraphText(bodyPara)
+						if looksLikeReferenceEntry(text) {
+							classified["references"] = append(classified["references"], bodyPara)
+							reclassified = true
+							log.Printf("[顺序约束] 段落 %d 从 body 纠正为 references（匹配参考文献条目特征）", i)
+						}
 					}
 					break
 				}
@@ -1679,6 +1712,30 @@ func (p *EnhancedProcessor) applyStructureOrderConstraints(classified map[string
 	}
 
 	return classified
+}
+
+func looksLikeReferenceEntry(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return false
+	}
+	// 常见参考文献条目特征：
+	// 1. 以 [数字] 或 [数字-数字] 或 [数字,数字] 开头
+	if matched, _ := regexp.MatchString(`^\[[\d,\-\s]+\]`, t); matched {
+		return true
+	}
+	// 2. 含中文文献类型标识符：[J] [M] [D] [C] [R] [S] [P] [EB/OL] [N] 等
+	if strings.Contains(t, "[J]") || strings.Contains(t, "[M]") || strings.Contains(t, "[D]") ||
+		strings.Contains(t, "[C]") || strings.Contains(t, "[R]") || strings.Contains(t, "[S]") ||
+		strings.Contains(t, "[P]") || strings.Contains(t, "[EB/OL]") || strings.Contains(t, "[N]") ||
+		strings.Contains(t, "[DB/OL]") || strings.Contains(t, "[DB/MT]") {
+		return true
+	}
+	// 3. 以 "数字." 或 "数字、" 开头（如 "1. 作者..." 或 "1、作者..."）
+	if matched, _ := regexp.MatchString(`^\d+[.、]\s`, t); matched {
+		return true
+	}
+	return false
 }
 
 // classifyByWordStyle 利用 Word 内建样式名称进行 100% 可靠分类
@@ -5218,7 +5275,7 @@ func (p *EnhancedProcessor) verifyParagraphFormat(para document.Paragraph, expec
 				rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &expectedHalfPt
 				fixes++
 				if fixes <= 3 {
-					log.Printf("[验证修正] %s: 字号 %d→%d half-pt (text=%q)", category, actualHalfPt, expectedHalfPt, truncText(runText, 20))
+					log.Printf("[验证修正] %s: 字号 %s→%s (text=%q)", category, humanHalfPoints(actualHalfPt), humanHalfPoints(expectedHalfPt), truncText(runText, 20))
 				}
 			}
 		}

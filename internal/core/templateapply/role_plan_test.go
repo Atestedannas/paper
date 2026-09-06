@@ -155,11 +155,46 @@ func TestRolePlanAddsHeading1StyleOnlyForTrustedHeading(t *testing.T) {
 	assignments := []roleclassify.Assignment{{NodeID: "p:AAA111", Role: "heading_1", Confidence: 1, Trusted: true, Index: 0}}
 	input := `<w:document xmlns:w="w" xmlns:w14="w14"><w:body><w:p w14:paraId="AAA111"><w:r><w:t>1 绪论</w:t></w:r></w:p></w:body></w:document>`
 	updated, changed := applyRoleFormatPlanToDocumentXML(input, profile, assignments)
-	if changed != 1 || !strings.Contains(updated, `<w:pStyle w:val="Heading1"/>`) || !strings.Contains(updated, `w:before="400"`) || !strings.Contains(updated, `w:after="400"`) || strings.Contains(updated, `<w:numPr>`) {
+	if changed != 1 || !strings.Contains(updated, `<w:pStyle w:val="Heading1"/>`) || !strings.Contains(updated, `w:before="400"`) || !strings.Contains(updated, `w:after="400"`) || !strings.Contains(updated, `w:firstLineChars="0"`) || strings.Contains(updated, `<w:numPr>`) {
 		t.Fatalf("trusted heading did not receive Heading 1 style: %s", updated)
 	}
 	if repeated, secondChanged := applyRoleFormatPlanToDocumentXML(updated, profile, assignments); secondChanged != 0 {
 		t.Fatalf("second pass changed=%d, want 0:\nfirst:  %s\nsecond: %s", secondChanged, updated, repeated)
+	}
+}
+
+func TestRolePlanHardRulesOverrideBadTemplateSamples(t *testing.T) {
+	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+		"title":     {FontEastAsia: "宋体", FontSizeHalfPt: "72", Bold: true, BoldSet: true},
+		"body":      {FontEastAsia: "宋体", FontSizeHalfPt: "36", Bold: true, BoldSet: true, Line: "360", LineRule: "auto"},
+		"heading_1": {FontEastAsia: "宋体", FontSizeHalfPt: "32", Bold: false, BoldSet: true, Alignment: "left", BeforeTwips: "0", AfterTwips: "0"},
+	}}
+	assignments := []roleclassify.Assignment{
+		{NodeID: "p:TITLE", Role: "title", Confidence: 1, Trusted: true, Index: 0},
+		{NodeID: "p:BODY", Role: "body", Confidence: 1, Trusted: true, Index: 1},
+		{NodeID: "p:H1", Role: "heading_1", Confidence: 1, Trusted: true, Index: 2},
+	}
+	input := `<w:document xmlns:w="w" xmlns:w14="w14"><w:body>` +
+		`<w:p w14:paraId="TITLE"><w:r><w:t>论文题名</w:t></w:r></w:p>` +
+		`<w:p w14:paraId="BODY"><w:r><w:t>正文内容</w:t></w:r></w:p>` +
+		`<w:p w14:paraId="H1"><w:r><w:t>1 绪论</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+
+	updated, changed := applyRoleFormatPlanToDocumentXML(input, profile, assignments)
+	if changed != 3 {
+		t.Fatalf("changed=%d, want 3", changed)
+	}
+	title := paragraphContaining(updated, "论文题名")
+	body := paragraphContaining(updated, "正文内容")
+	h1 := paragraphContaining(updated, "1 绪论")
+	if strings.Contains(title, `w:val="72"`) || !strings.Contains(title, `w:val="30"`) {
+		t.Fatalf("title hard rule not applied: %s", title)
+	}
+	if strings.Contains(body, `<w:b/>`) || !strings.Contains(body, `w:val="24"`) || !strings.Contains(body, `w:line="400" w:lineRule="exact"`) {
+		t.Fatalf("body hard rule not applied: %s", body)
+	}
+	if !strings.Contains(h1, `w:eastAsia="黑体"`) || !strings.Contains(h1, `w:before="400"`) || !strings.Contains(h1, `w:after="400"`) {
+		t.Fatalf("heading hard rule not applied: %s", h1)
 	}
 }
 

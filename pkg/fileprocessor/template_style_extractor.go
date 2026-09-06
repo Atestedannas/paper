@@ -61,6 +61,12 @@ func (e *TemplateStyleExtractor) ExtractFromTemplate(templatePath string) (map[s
 		{[]string{"heading 1", "标题 1", "标题1", "heading1"}, "heading_1"},
 		{[]string{"heading 2", "标题 2", "标题2", "heading2"}, "heading_2"},
 		{[]string{"heading 3", "标题 3", "标题3", "heading3"}, "heading_3"},
+		// D10: 补齐 appendix/notes/cover/caption 角色的样式链聚合，
+		// 使这些角色不再仅靠 fallback 兜底，且 key 与 styleKeys/角色常量对齐。
+		{[]string{"appendix", "appendix text", "appendix content", "appendix body", "附录", "附录正文", "附录内容"}, "appendix_content"},
+		{[]string{"notes", "note", "note text", "notes content", "notes body", "附注", "注释"}, "notes_content"},
+		{[]string{"cover", "cover text", "cover page", "cover body", "封面", "封面正文"}, "cover"},
+		{[]string{"figure caption", "table caption", "caption", "caption text", "题注", "图注", "表注"}, "figure_caption"},
 	}
 
 	specs := make(map[string]ParagraphFormatSpec)
@@ -90,6 +96,11 @@ func (e *TemplateStyleExtractor) ExtractFromTemplate(templatePath string) (map[s
 			}
 			if m.category == "acknowledgements" {
 				specs["acknowledgement"] = spec
+			}
+			// D10: caption 样式同时服务图题注与表题注，补齐角色别名
+			if m.category == "figure_caption" {
+				specs["table_caption"] = spec
+				specs["caption"] = spec
 			}
 			log.Printf("[样式提取] ✓ %s: font=%q ascii=%q size=%.1fpt bold=%v lineSpacing=%d firstLine=%d",
 				m.category, spec.FontEastAsia, spec.FontAscii,

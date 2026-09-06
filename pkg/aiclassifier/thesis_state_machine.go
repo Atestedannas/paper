@@ -67,7 +67,68 @@ func (sm *ThesisStateMachine) tryAdvance(label string, text string) {
 // Reclassify 用状态机对分类结果进行上下文修正，返回修正后的标签
 func (sm *ThesisStateMachine) Reclassify(label string, text string) string {
 	sm.tryAdvance(label, text)
+	switch sm.zone {
+	case ZoneCover:
+		if label == TypeBody || label == TypeTitle {
+			return TypeCover
+		}
+		return label
 
+	case ZoneAbstract:
+		if label == TypeBody {
+			return TypeAbstract
+		}
+		return label
+
+	case ZoneEnAbstract:
+		if label == TypeBody || label == TypeAbstract {
+			return TypeEnAbstract
+		}
+		return label
+
+	case ZoneTOC:
+		// TOC区内：body和标题格式的段落都是目录条目，统一归为TypeTOC
+		// heading_1不转换（可能是"目 录"这个标题本身）
+		if label == TypeBody || label == TypeHeading2 || label == TypeHeading3 {
+			return TypeTOC
+		}
+		return label
+
+	case ZoneBody:
+		if label == TypeAbstract || label == TypeCover || label == TypeTOC {
+			return TypeBody
+		}
+		return label
+
+	case ZoneReferences:
+		if label == TypeBody {
+			return TypeReferences
+		}
+		return label
+
+	case ZoneAcknowledgements:
+		if label == TypeBody {
+			return "acknowledgements"
+		}
+		return label
+	case ZoneAppendix:
+		if label == TypeBody || label == TypeReferences {
+			return "appendix_content"
+		}
+		return label
+	}
+	return label
+}
+
+// ReclassifyWithStructure 结构信号优先的状态机修正。
+// 复用 HeadingLevelFromStructure（与 v2_classifier.go structuralSignalType 同源思路），
+// 命中 pStyle/outlineLvl 结构信号时，直接把 label 提升为对应标题层级并推进区段，
+// 避免关键词启发式把标题误判为正文。
+func (sm *ThesisStateMachine) ReclassifyWithStructure(label string, text string, pStyle string, outlineLvl int, hasNumPr bool) string {
+	if level := HeadingLevelFromStructure(pStyle, outlineLvl, hasNumPr, text); level > 0 {
+		label = headingLabelForLevel(level)
+	}
+	sm.tryAdvance(label, text)
 	switch sm.zone {
 	case ZoneCover:
 		if label == TypeBody || label == TypeTitle {

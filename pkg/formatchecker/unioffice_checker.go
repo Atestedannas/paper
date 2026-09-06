@@ -126,8 +126,8 @@ func (c *UniOfficeFormatChecker) analyzeDocumentStructure() (map[string][]map[st
 			continue
 		}
 
-		// 判断段落类型和级别
-		paraType, level := c.classifyParagraphTypeWithLevel(text)
+		// 判断段落类型和级别（D13：优先结构信号，无信号才走纯文本启发式）
+		paraType, level := c.classifyParagraphTypeWithStructure(para, text)
 		paraInfos = append(paraInfos, paraInfo{
 			text:     text,
 			paraType: paraType,
@@ -226,6 +226,50 @@ func (c *UniOfficeFormatChecker) analyzeDocumentStructure() (map[string][]map[st
 	return structure, nil
 }
 
+// classifyParagraphTypeWithStructure 结构信号感知的段落分类（D13）。
+//
+// 优先依据 OOXML 结构信号下结论：
+//  1. outlineLvl：最可靠的大纲信号，0→一级标题、1→二级标题、2→三级标题（>=3 视为正文）；
+//  2. pStyle：样式名含 heading/标题 关键字时按级别归类；
+//  3. 无任何结构信号时才回退到纯文本启发式（classifyParagraphTypeWithLevel）。
+//
+// 返回 (类型, 级别)；级别 0 表示非标题。
+func (c *UniOfficeFormatChecker) classifyParagraphTypeWithStructure(para document.Paragraph, text string) (string, int) {
+	if ppr := para.X().PPr; ppr != nil {
+		// 1. outlineLvl —— 最可靠的结构信号
+		if ppr.OutlineLvl != nil {
+			lvl := ppr.OutlineLvl.ValAttr
+			switch lvl {
+			case 0:
+				return "heading_1", 1
+			case 1:
+				return "heading_2", 2
+			case 2:
+				return "heading_3", 3
+			default:
+				// 大纲级别 >=3 或负值视为正文级（保守，不误判为标题）
+				if lvl >= 3 {
+					return "body", 0
+				}
+			}
+		}
+		// 2. pStyle 样式名
+		if ppr.PStyle != nil && ppr.PStyle.ValAttr != "" && ppr.PStyle.ValAttr != "Normal" && ppr.PStyle.ValAttr != "正文" {
+			style := strings.ToLower(ppr.PStyle.ValAttr)
+			switch {
+			case strings.Contains(style, "heading1") || strings.Contains(style, "标题1") || strings.Contains(style, "heading 1"):
+				return "heading_1", 1
+			case strings.Contains(style, "heading2") || strings.Contains(style, "标题2") || strings.Contains(style, "heading 2"):
+				return "heading_2", 2
+			case strings.Contains(style, "heading3") || strings.Contains(style, "标题3") || strings.Contains(style, "heading 3"):
+				return "heading_3", 3
+			}
+		}
+	}
+	// 3. 无结构信号：回退纯文本启发式
+	return c.classifyParagraphTypeWithLevel(text)
+}
+
 // classifyParagraphType 分类段落类型
 func (c *UniOfficeFormatChecker) classifyParagraphType(text string) string {
 	paraType, _ := c.classifyParagraphTypeWithLevel(text)
@@ -233,6 +277,10 @@ func (c *UniOfficeFormatChecker) classifyParagraphType(text string) string {
 }
 
 // classifyParagraphTypeWithLevel 分类段落类型（返回类型和标题级别）
+//
+// Deprecated: 仅基于文本启发式，无法读取 pStyle/outlineLvl 等结构信号，分类可能
+// 与文档真实结构不符。该函数仅供诊断参考，不作为格式验收/判定依据（D13）。
+// 结构感知分类请使用 classifyParagraphTypeWithStructure。
 func (c *UniOfficeFormatChecker) classifyParagraphTypeWithLevel(text string) (string, int) {
 	text = strings.TrimSpace(text)
 
@@ -283,23 +331,30 @@ func (c *UniOfficeFormatChecker) extractParagraphText(para document.Paragraph) s
 	return strings.TrimSpace(text.String())
 }
 
-// checkFontFormatting 检查字体格式
+// checkFontFormatting 检查字体格式（D13 降噪）。
+//
+// 本检查器为纯文本/结构级检查，实际读取 run 字体信息为"宋体/黑体"并逐个断言的
+// 能力缺失，导致原先对全部正文段无差别告警、产生大量反转噪声且无法作为验收依据。
+// 现做两处收敛：
+//  1. 每个目标类型（body / heading_1）仅报告首段的一条**参考性**告警，不再全文逐段刷；
+//  2. 告警文案明确标注"参考性检查，非验收依据"。
+// 如需逐段精确字体校验，应改用主写入链路（V2FormatEngine）的结果或专门的字体校验器。
 func (c *UniOfficeFormatChecker) checkFontFormatting(structure map[string][]map[string]interface{}) {
 	if c.debug {
 		log.Printf("检查字体格式...")
 	}
 
-	// 检查正文字体
+	// 正文字体（参考性，仅报首段，避免无差别刷告警）
 	bodyParas := structure["body"]
-	for i, paraInfo := range bodyParas {
-		issue := c.generateFontIssue("body", i+1, paraInfo, "正文字体应为宋体", IssueTypeParagraph, SeverityWarning)
+	if len(bodyParas) > 0 {
+		issue := c.generateFontIssue("body", 1, bodyParas[0], "正文字体应为宋体（参考性检查，非验收依据）", IssueTypeParagraph, SeverityWarning)
 		c.issues = append(c.issues, issue)
 	}
 
-	// 检查标题字体
+	// 标题字体（参考性，仅报首段）
 	headingParas := structure["heading_1"]
-	for i, paraInfo := range headingParas {
-		issue := c.generateFontIssue("heading_1", i+1, paraInfo, "一级标题应为黑体", IssueTypeHeading, SeverityError)
+	if len(headingParas) > 0 {
+		issue := c.generateFontIssue("heading_1", 1, headingParas[0], "一级标题应为黑体（参考性检查，非验收依据）", IssueTypeHeading, SeverityError)
 		c.issues = append(c.issues, issue)
 	}
 }

@@ -37,7 +37,6 @@ func TestExtractSeparatesHeaderFooterAndInstructionTextbox(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-
 	snapshot, err := Extract(path)
 	if err != nil {
 		t.Fatal(err)
@@ -57,6 +56,9 @@ func TestExtractSeparatesHeaderFooterAndInstructionTextbox(t *testing.T) {
 	for _, node := range snapshot.Nodes {
 		if node.NodeType == "instruction_textbox" && node.ParentNodeID == "" {
 			t.Fatalf("instruction textbox lost its OOXML anchor: %#v", node)
+		}
+		if node.SemanticRole == "body_paragraph" && strings.Contains(node.Text, "空一行") {
+			t.Fatalf("instruction textbox leaked into body role: %#v", node)
 		}
 	}
 	for _, node := range snapshot.Nodes {
@@ -286,6 +288,16 @@ func TestExtractDocumentXMLRecognizesCompactAndOutlineHeadings(t *testing.T) {
 			t.Fatalf("node %d = %#v, want heading level %d", index, node, wantLevel)
 		}
 	}
+}
+
+func TestExtractDocumentXMLLabelsPostCoverThesisTitleAsTitle(t *testing.T) {
+	snapshot := ExtractDocumentXML(`<w:document><w:body>` +
+		`<w:p><w:r><w:t>2026年 6 月</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>社区2型糖尿病患者疾病知识认知现状及影响因素分析</w:t></w:r></w:p>` +
+		`<w:p><w:r><w:t>摘要</w:t></w:r></w:p>` +
+		`</w:body></w:document>`)
+
+	assertRole(t, snapshot, "社区2型糖尿病患者疾病知识认知现状及影响因素分析", "title", "cover")
 }
 
 func TestExtractDocumentXMLRecognizesCompactSingleLevelHeading(t *testing.T) {

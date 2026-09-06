@@ -304,8 +304,8 @@ func (p *EnhancedProcessor) applySectionBreaksForPageNumbering(doc *document.Doc
 		hasPreviousBreak := bodyStartIdx > 0 && paragraphs[bodyStartIdx-1].X().PPr != nil &&
 			paragraphs[bodyStartIdx-1].X().PPr.SectPr != nil
 		if hasPreviousBreak {
-			p.runDocumentFormattingSelfCheck("applySectionBreaksForPageNumbering", doc)
 			log.Printf("[分节] 正文前已有分节符，跳过重复插入（段落索引=%d）", bodyStartIdx)
+			p.runDocumentFormattingSelfCheck("applySectionBreaksForPageNumbering", doc)
 			return
 		} else {
 			p.insertSectionBreakBefore(paragraphs[bodyStartIdx], wml.ST_NumberFormatDecimal)
@@ -338,6 +338,56 @@ func (p *EnhancedProcessor) insertSectionBreakBefore(para document.Paragraph, nu
 // 4. 三线表：上下1.5磅粗线、中间1磅、无竖线
 // ──────────────────────────────────────────────────────────────────────────────
 
+// shdFillIsCustom 判断单元格底纹是否为"非默认"（非 auto/无/白色），
+// 用于识别学生手工设置的表头/单元格底色（D16 保护判定）。
+func shdFillIsCustom(shd *wml.CT_Shd) bool {
+	if shd == nil || shd.FillAttr == nil {
+		return false
+	}
+	if shd.FillAttr.ST_HexColorAuto == wml.ST_HexColorAutoAuto || string(shd.FillAttr.ST_HexColorAuto) != "" {
+		return false // 显式 auto（默认无底纹）或其他自动值
+	}
+	if shd.FillAttr.ST_HexColorRGB != nil {
+		fill := strings.ToUpper(strings.TrimSpace(*shd.FillAttr.ST_HexColorRGB))
+		if fill == "" || fill == "FFFFFF" {
+			return false // 无值或白色，视为默认
+		}
+		return true
+	}
+	return false
+}
+
+// hasManualTableLayoutFeatures 检测目标表格是否存在"学生手工排版特征"。
+// 命中任意一项即认为该表格含手工排版，三线表重写会跳过它（D16，默认保守）：
+//  1. 表格级已自定义边框（自绘边框结构）；
+//  2. 合并单元格（GridSpan / 水平 / 垂直合并）；
+//  3. 单元格级自定义边框；
+//  4. 单元格自定义底纹（表头底色等）。
+func hasManualTableLayoutFeatures(tbl document.Table) bool {
+	tblPr := tbl.X().TblPr
+	if tblPr != nil && tblPr.TblBorders != nil {
+		return true // 已有表格级自定义边框
+	}
+	for _, row := range tbl.Rows() {
+		for _, cell := range row.Cells() {
+			tcPr := cell.X().TcPr
+			if tcPr == nil {
+				continue
+			}
+			if tcPr.GridSpan != nil || tcPr.HMerge != nil || tcPr.VMerge != nil {
+				return true // 合并单元格
+			}
+			if tcPr.TcBorders != nil {
+				return true // 单元格级自定义边框
+			}
+			if shdFillIsCustom(tcPr.Shd) {
+				return true // 自定义底纹（如表头底色）
+			}
+		}
+	}
+	return false
+}
+
 func (p *EnhancedProcessor) applyThreeLineTableFormat(doc *document.Document) {
 	tables := doc.Tables()
 	if len(tables) == 0 {
@@ -345,6 +395,13 @@ func (p *EnhancedProcessor) applyThreeLineTableFormat(doc *document.Document) {
 	}
 
 	for i, tbl := range tables {
+		if hasManualTableLayoutFeatures(tbl) {
+			// D16：检测到学生手工排版特征（自定义边框/合并单元格/底纹），
+			// 不强制执行三线表重写，避免覆盖有意的手工排版（默认保守）。
+			log.Printf("[三线表] 表格 %d: 检测到手工排版特征，跳过三线表重写（保留学生原排版）", i+1)
+			continue
+		}
+
 		tblPr := tbl.X().TblPr
 		if tblPr == nil {
 			tblPr = wml.NewCT_TblPr()

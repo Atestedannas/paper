@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/paper-format-checker/backend/internal/core/paperast"
-	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
 type fakeRoleClient struct{ response string }
@@ -126,23 +125,6 @@ func TestFreezeUsesSectionContextAndKeepsCoverUnknown(t *testing.T) {
 		if want[assignment.NodeID] != assignment.Role || !assignment.Trusted {
 			t.Fatalf("unexpected frozen assignment: %#v", assignment)
 		}
-	}
-}
-
-func TestApplyFormatEvidenceRecoversOnlyWeakHeading(t *testing.T) {
-	heading := templateprofile.StyleRule{FontEastAsia: "Hei", FontASCII: "Times", FontSizeHalfPt: "32", Alignment: "center", Line: "400", Bold: true, BoldSet: true}
-	body := templateprofile.StyleRule{FontEastAsia: "Song", FontASCII: "Times", FontSizeHalfPt: "24", Alignment: "both", Line: "360", FirstLineChars: "200", Bold: false, BoldSet: true}
-	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{"heading_1": heading, "body": body}}
-	nodes := []paperast.Node{
-		{NodeID: "p:1", NodeType: "paragraph", Text: "Research Method", SemanticRole: "body_paragraph", Confidence: 0.55, EffectiveStyle: &heading},
-		{NodeID: "p:2", NodeType: "paragraph", Text: "1 Explicit Heading", SemanticRole: "body_paragraph", Confidence: 0.95, Evidence: []string{"regex:numbered_heading"}, EffectiveStyle: &heading},
-	}
-	got := ApplyFormatEvidence(nodes, profile)
-	if got[0].SemanticRole != "heading" || got[0].LogicalLevel != 1 {
-		t.Fatalf("weak heading not recovered: %#v", got[0])
-	}
-	if got[1].SemanticRole != "body_paragraph" {
-		t.Fatalf("strong semantic result was overwritten: %#v", got[1])
 	}
 }
 

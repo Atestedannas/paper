@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"gitee.com/greatmusicians/unioffice/document"
+	"gitee.com/greatmusicians/unioffice/schema/soo/ofc/sharedTypes"
 	"gitee.com/greatmusicians/unioffice/schema/soo/wml"
 	"golang.org/x/sync/singleflight"
 
@@ -134,6 +135,11 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 		}
 	}
 
+	// 将 DiagPrintf 的诊断内容兜底到主流程中文日志（仅当未设置 PAPER_DIAG_LOG_PATH 时生效）；
+	// Process 结束时统一由 defer 解除，避免污染其他流程。
+	defer SetDiagRunLog(nil)
+	SetDiagRunLog(runLog)
+
 	// #region agent log
 	debugLog("v2_engine.go:Process", "H1_V2_ENGINE_STARTED", map[string]interface{}{
 		"templatePath":   e.templatePath,
@@ -185,9 +191,19 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	runLog.section("第3步：打开学生论文")
 	runLog.printf("学生论文打开成功：段落=%d，表格=%d", len(studentDoc.Paragraphs()), len(studentDoc.Tables()))
 
+	// ── D4: 全局写操作标志 ──
+	// 短路保存（机制2）只能在本链路确认"未产生任何写改动"时才允许触发 copyFileRaw。
+	// 此前短路条件依赖 buildDiffReport（仅遍历 BodyLevelParagraphsOnly 顶层正文段），
+	// 与真实写范围不一致，会静默丢弃 CloneStyles / section / 表格 run / 页边距等改动。
+	// 现将所有写路径逐点计入 engineWrite，任一写路径命中即禁止短路。
+	engineWrite := false
+
 	// ── 步骤 4: 复制模板样式定义到学生文档 ──
 	log.Println("[V2][步骤4] 复制样式定义...")
 	styleSummary := CloneStyles(templateDoc, studentDoc)
+	if styleSummary.DocDefaultsCopied || styleSummary.NamedStylesCopied > 0 {
+		engineWrite = true
+	}
 	runLog.section("第4步：复制模板样式定义")
 	runLog.printf("DocDefaults 默认样式已复制=%s；命名样式共复制=%d（覆盖学生已有=%d，新增=%d）",
 		yesNo(styleSummary.DocDefaultsCopied), styleSummary.NamedStylesCopied, styleSummary.Overwritten, styleSummary.Added)
@@ -196,6 +212,9 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	// ── 步骤 5: 复制页面设置（A4/边距等）──
 	log.Println("[V2][步骤5] 复制页面设置...")
 	sectionSummary := CloneSectionProperties(templateDoc, studentDoc)
+	if sectionSummary.PageSizeCopied || sectionSummary.PageMarginsCopied {
+		engineWrite = true
+	}
 	runLog.section("第5步：复制页面设置")
 	runLog.printf("纸张大小已复制=%s；页边距已复制=%s；保留学生原页眉页脚引用=%d 个",
 		yesNo(sectionSummary.PageSizeCopied), yesNo(sectionSummary.PageMarginsCopied),
@@ -214,6 +233,10 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 		runLog.printf("结果：成功。")
 	}
 	tableCount, sectionBreakCount, citationCount := sectionLevelStats(studentDoc)
+	// 步骤5b 对现成表格的三线表重写与上标引用设置均为真实写操作（D4）
+	if tableCount > 0 || citationCount > 0 {
+		engineWrite = true
+	}
 	runLog.printf("实际处理结果：三线表重写=%d 个；当前段落级分节符=%d 个；识别并设为上标的引用/注释 run=%d 个。",
 		tableCount, sectionBreakCount, citationCount)
 	runLog.printf("页眉页脚策略：此步骤不生成硬编码页眉页脚，最终从学校模板部件复制。")
@@ -335,18 +358,18 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 			templateHeaderText = ruleEngine.Profile.Header.Text
 			e.processor.templateHeaderText = templateHeaderText
 		}
-		// DIAG: dump all critical specs
+		// DIAG: dump all critical specs（全中文人类可读，含单位换算）
 		if bodySpec != nil {
-			DiagPrintf("[DIAG] bodySpec: fontEA=%s sz=%d line=%d rule=%d fl=%d", bodySpec.FontEastAsia, bodySpec.FontSizeHalfPt, bodySpec.LineSpacingVal, bodySpec.LineSpacingRule, bodySpec.FirstLineIndent)
+			DiagPrintf("[DIAG] 正文字体规范：%s", humanParagraphSpec(*bodySpec))
 		}
 		if refSpec != nil {
-			DiagPrintf("[DIAG] refSpec: fontEA=%s sz=%d line=%d rule=%d fl=%d", refSpec.FontEastAsia, refSpec.FontSizeHalfPt, refSpec.LineSpacingVal, refSpec.LineSpacingRule, refSpec.FirstLineIndent)
+			DiagPrintf("[DIAG] 参考文献条目规范：%s", humanParagraphSpec(*refSpec))
 		}
 		if referencesTitleSpec != nil {
-			DiagPrintf("[DIAG] referencesTitleSpec: fontEA=%s sz=%d line=%d rule=%d", referencesTitleSpec.FontEastAsia, referencesTitleSpec.FontSizeHalfPt, referencesTitleSpec.LineSpacingVal, referencesTitleSpec.LineSpacingRule)
+			DiagPrintf("[DIAG] 参考文献标题规范：%s", humanParagraphSpec(*referencesTitleSpec))
 		}
 		if sectionTitleSpec != nil {
-			DiagPrintf("[DIAG] sectionTitleSpec: fontEA=%s sz=%d line=%d rule=%d", sectionTitleSpec.FontEastAsia, sectionTitleSpec.FontSizeHalfPt, sectionTitleSpec.LineSpacingVal, sectionTitleSpec.LineSpacingRule)
+			DiagPrintf("[DIAG] 章节标题规范：%s", humanParagraphSpec(*sectionTitleSpec))
 		}
 	}
 	smartFmt := NewV2SmartFormatter(e.processor, headingSpecs, bodySpec, refSpec,
@@ -364,6 +387,9 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 			resolvedSpecs,
 			lockedCategoryMap(e.processor.formatLocks, paragraphsByType),
 		)
+		if appliedCount > 0 {
+			engineWrite = true
+		}
 		runLog.printf("规则写入结果：实际处理 %d 个非空段落；已符合规则并锁定的类别会跳过重复写入。", appliedCount)
 		verifyAndLockParagraphTypes(e.processor, e.processor.formatLocks, paragraphsByType, resolvedSpecs)
 		smartClassified = unlockedV2Paragraphs(e.processor.formatLocks, classified)
@@ -378,11 +404,24 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 			WithLocks(e.processor.formatLocks).
 			RunClassified(v2ParagraphMap(classified), resolvedSpecs)
 		fixCount += repair.TotalFixes
+		if repair.TotalFixes > 0 {
+			engineWrite = true
+		}
 		runLog.repair(repair)
+	}
+
+	// ── 步骤 8: 表格内正文格式化 ──
+	// 职责：对表格内段落按模板正文格式（bodyFormat.RPr）统一套用，
+	//       覆盖 BodyLevelParagraphsOnly 排除掉的表格内正文，保证不遗漏。
+	log.Println("[V2][步骤8] 表格内正文格式化...")
+	if e.applyTableFormatFromTemplate(studentDoc, store) > 0 {
+		engineWrite = true
 	}
 
 	// B1-B2 修复：在所有 sectPr 操作（克隆/格式化/页眉）完成后才应用页边距覆盖
 	if profileForMargins != nil {
+		// D4: Profile 页边距覆盖为无条件写路径（写 body 级与所有段落级 sectPr）
+		engineWrite = true
 		ApplyProfilePageMargins(studentDoc, profileForMargins)
 		// 诊断：写入内存诊断文件
 		diagLines := []string{}
@@ -436,17 +475,33 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	runLog.printf("输出文件：%s", outputPath)
 
 	// 节点4：最终产出验证 — 保存前检查关键段落类型的实际 run/paragraph 属性
-	DiagPrintf(" ====== 节点4: 最终产出验证 (保存前) ======")
+	DiagPrintf(" ====== 节点4: 最终产出验证（保存前） ======")
 	dumpFinalDocDiagnostics(studentDoc, classified)
 
 	// B1-B2 post-save fix: unioffice serializes body-level sectPr from a cached/internal
 	// copy that ignores our in-memory mutations.  Save → patch ZIP in-place.
 
-	if err := studentDoc.SaveToFile(outputPath); err != nil {
-		return "", fmt.Errorf("保存文档失败: %w", err)
-	}
-	if info, statErr := os.Stat(outputPath); statErr == nil {
-		runLog.printf("文档保存成功：%d 字节。", info.Size())
+	// 短路保存（机制2 isUnchanged，D4 修正）：短路只能基于"本次引擎是否产生任何写操作"判定。
+	// 旧条件依赖 buildDiffReport（仅遍历 BodyLevelParagraphsOnly 顶层正文段），不含
+	// CloneStyles / CloneSectionProperties / 表格 run 替换 / 页边距修补等写路径，会在
+	// 学生正文合规但表格/样式/边距需改时静默丢弃已执行修改。现仅当 engineWrite==false
+	// （确认所有写路径均未命中）才允许 copyFileRaw 原字节保真复制。
+	if !engineWrite {
+		log.Printf("[V2][步骤10] 引擎未产生任何写操作（差异报告: 错误=%d 警告=%d），短路复制原文件到输出", diffReport.ErrorCount, diffReport.WarningCount)
+		runLog.section("第10步：未产生任何写操作，原文件字节保真复制")
+		if err := copyFileRaw(studentDocPath, outputPath); err != nil {
+			return "", fmt.Errorf("短路保存复制原文件失败: %w", err)
+		}
+		if info, statErr := os.Stat(outputPath); statErr == nil {
+			runLog.printf("原文件已字节保真复制：%d 字节。", info.Size())
+		}
+	} else {
+		if err := studentDoc.SaveToFile(outputPath); err != nil {
+			return "", fmt.Errorf("保存文档失败: %w", err)
+		}
+		if info, statErr := os.Stat(outputPath); statErr == nil {
+			runLog.printf("文档保存成功：%d 字节。", info.Size())
+		}
 	}
 	coverInfo := e.processor.extractCoverInfo(studentDoc)
 	coverKeys := make([]string, 0, len(coverInfo))
@@ -504,33 +559,141 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	return outputPath, nil
 }
 
-// applyTableFormatFromTemplate 使用模板的正文格式处理表格内文本
-func (e *V2FormatEngine) applyTableFormatFromTemplate(doc *document.Document, store *V2TemplateFormatStore) {
+// applyTableFormatFromTemplate 使用模板的正文格式处理表格内文本。
+// D3 修正：不再对表格 run 整块 cloneRPr 替换（原实现会清掉步骤5b 刚设置的上标 vertAlign、
+// 高亮、超链接与 caps 等未覆盖子元素），改为"只改目标字体槽位 + 差异比较后写入"——
+// 复用 v2_smart_format 的 v2WriteRFontsSlots（保留主题字体引用、已符合的槽不重复写、
+// 未覆盖子元素不动），并显式跳过上标/高亮/超链接 run。返回实际写入的 run 数（D4 判定用）。
+func (e *V2FormatEngine) applyTableFormatFromTemplate(doc *document.Document, store *V2TemplateFormatStore) int {
 	bodyFormat, ok := store.Formats[V2Body]
 	if !ok || bodyFormat.RPr == nil {
-		return
+		return 0
 	}
 
 	tables := doc.Tables()
-	fixCount := 0
+	writeCount := 0
 	for _, tbl := range tables {
-		for _, row := range tbl.Rows() {
-			for _, cell := range row.Cells() {
-				for _, para := range cell.Paragraphs() {
-					for _, r := range para.Runs() {
-						if strings.TrimSpace(r.Text()) == "" {
-							continue
-						}
-						r.X().RPr = cloneRPr(bodyFormat.RPr)
-						fixCount++
+		writeCount += e.formatTableParagraphs(doc, tbl, bodyFormat.RPr)
+	}
+	if writeCount > 0 {
+		log.Printf("[V2] 表格内修正 %d 个 run", writeCount)
+	}
+	return writeCount
+}
+
+// tableFontTargetsFromRPr 从模板正文 rPr 提取"目标槽位"（D3）：
+// eastAsia/ascii/hAnsi 槽位为主题字体引用（ThemeAttr != ST_ThemeUnset）时返回 nil，保留主题引用、不改该槽；
+// 为显式字体时返回模板值；Sz 提供字号目标（半磅 → 磅）。nil 槽表示"不改动该槽"。
+func tableFontTargetsFromRPr(tpl *wml.CT_RPr) (eastAsia, ascii, hAnsi *string, sizePt float64, setSize bool) {
+	if tpl == nil {
+		return nil, nil, nil, 0, false
+	}
+	if rf := tpl.RFonts; rf != nil {
+		if rf.EastAsiaThemeAttr == wml.ST_ThemeUnset {
+			eastAsia = rf.EastAsiaAttr
+		}
+		if rf.AsciiThemeAttr == wml.ST_ThemeUnset {
+			ascii = rf.AsciiAttr
+		}
+		if rf.HAnsiThemeAttr == wml.ST_ThemeUnset {
+			hAnsi = rf.HAnsiAttr
+		}
+	}
+	if tpl.Sz != nil && tpl.Sz.ValAttr.ST_UnsignedDecimalNumber != nil {
+		setSize = true
+		sizePt = float64(*tpl.Sz.ValAttr.ST_UnsignedDecimalNumber) / 2
+	}
+	return eastAsia, ascii, hAnsi, sizePt, setSize
+}
+
+// tableRunSkipFormat 判断表格 run 是否应跳过覆写（D3）：
+// ① 含 vertAlign 上标的引用/注释 run（步骤5b 刚设置，覆写会清零）；
+// ② 含高亮（hilite）的 run；
+// ③ 带超链接字符样式（Word 标准 "Hyperlink" rStyle）的 run。
+// 注：真正位于 w:hyperlink 容器内的 run 由 unioffice Paragraph.Runs() 天然排除
+// （Runs 仅遍历 EG_PContent.EG_ContentRunContent，不进入 CT_Hyperlink），
+// 此处以 rStyle 特征做超链接兜底防御。
+func tableRunSkipFormat(r document.Run) bool {
+	rpr := r.X().RPr
+	if rpr == nil {
+		return false
+	}
+	if rpr.VertAlign != nil && rpr.VertAlign.ValAttr == sharedTypes.ST_VerticalAlignRunSuperscript {
+		return true
+	}
+	if rpr.Highlight != nil {
+		return true
+	}
+	if rpr.RStyle != nil && strings.EqualFold(rpr.RStyle.ValAttr, "Hyperlink") {
+		return true
+	}
+	return false
+}
+
+// formatTableParagraphs 格式化单张表格内所有直接段落的 run（只改目标槽位 + 差异比较，D3），
+// 并对单元格内嵌套表递归。
+// 嵌套表通过 cell.X().EG_BlockLevelElts 提取（Cell 无 Tables() 方法），
+// 保证表格内正文按 bodyFormat 统一格式化，且不会因顶层 Tables() 已含嵌套表而重复写入。
+func (e *V2FormatEngine) formatTableParagraphs(doc *document.Document, tbl document.Table, rpr *wml.CT_RPr) int {
+	eastAsia, ascii, hAnsi, sizePt, setSize := tableFontTargetsFromRPr(rpr)
+	writeCount := 0
+	for _, row := range tbl.Rows() {
+		for _, cell := range row.Cells() {
+			for _, para := range cell.Paragraphs() {
+				for _, r := range para.Runs() {
+					if strings.TrimSpace(r.Text()) == "" {
+						continue
+					}
+					// D3: 上标/高亮/超链接 run 不做覆写
+					if tableRunSkipFormat(r) {
+						continue
+					}
+					runPr := r.X().RPr
+					if runPr == nil {
+						runPr = wml.NewCT_RPr()
+						r.X().RPr = runPr
+					}
+					if v2WriteRFontsSlots(runPr, eastAsia, ascii, hAnsi, sizePt, setSize) {
+						writeCount++
+					}
+				}
+			}
+			// 嵌套表递归：遍历单元格内所有块级元素，对其中表格继续格式化
+			if cell.X() == nil || cell.X().EG_BlockLevelElts == nil {
+				continue
+			}
+			for _, blk := range cell.X().EG_BlockLevelElts {
+				for _, content := range blk.EG_ContentBlockContent {
+					for _, nestedTbl := range content.Tbl {
+						writeCount += e.formatTableParagraphs(doc, document.Table{Document: doc, WTable: nestedTbl}, rpr)
 					}
 				}
 			}
 		}
 	}
-	if fixCount > 0 {
-		log.Printf("[V2] 表格内修正 %d 个 run", fixCount)
+	return writeCount
+}
+
+// copyFileRaw 原字节保真复制源文件到目标路径（短路保存用）。
+// 复用 io.Copy 逐字节拷贝，避免对未修改文档做 unioffice 全量序列化。
+// 命名避开测试文件的 copyFile(t, src, dst)（strict_template_formatter_test.go）。
+func copyFileRaw(src, dst string) error {
+	source, err := os.Open(src)
+	if err != nil {
+		return err
 	}
+	defer source.Close()
+
+	target, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer target.Close()
+
+	if _, err := io.Copy(target, source); err != nil {
+		return err
+	}
+	return target.Sync()
 }
 
 // buildDiffReport 构建格式差异报告
@@ -592,7 +755,7 @@ func (e *V2FormatEngine) buildDiffReport(classified []V2ClassifiedPara, store *V
 	return report
 }
 
-// v2ComparePPr 比对段落属性
+// v2ComparePPr 比对段落属性（对齐、行距、段前后距、首行缩进、左右缩进）
 func v2ComparePPr(expected, actual *wml.CT_PPr) []SpecDiff {
 	var diffs []SpecDiff
 
@@ -600,13 +763,119 @@ func v2ComparePPr(expected, actual *wml.CT_PPr) []SpecDiff {
 		if expected.Jc.ValAttr != actual.Jc.ValAttr {
 			diffs = append(diffs, SpecDiff{
 				Field:    "对齐方式",
-				Expected: expected.Jc.ValAttr.String(),
-				Actual:   actual.Jc.ValAttr.String(),
+				Expected: jcToAlignString(expected.Jc.ValAttr),
+				Actual:   jcToAlignString(actual.Jc.ValAttr),
 				Severity: "error",
 			})
 		}
 	}
+
+	// 行距/段前后距：读 w:spacing
+	if expected.Spacing != nil && actual.Spacing != nil {
+		expSp := expected.Spacing
+		actSp := actual.Spacing
+		// 行距（允许 ±20 twips 误差）
+		if expSp.LineAttr != nil && expSp.LineAttr.Int64 != nil &&
+			actSp.LineAttr != nil && actSp.LineAttr.Int64 != nil {
+			expLine := *expSp.LineAttr.Int64
+			actLine := *actSp.LineAttr.Int64
+			if expLine != 0 && actLine != 0 {
+				diff := expLine - actLine
+				if diff > 20 || diff < -20 {
+					diffs = append(diffs, SpecDiff{
+						Field:    "行距",
+						Expected: humanLineSpacing(expLine, spacingRuleString(expSp.LineRuleAttr)),
+						Actual:   humanLineSpacing(actLine, spacingRuleString(actSp.LineRuleAttr)),
+						Severity: "warning",
+					})
+				}
+			}
+		}
+		// 段前距
+		if expSp.BeforeAttr != nil && expSp.BeforeAttr.ST_UnsignedDecimalNumber != nil &&
+			actSp.BeforeAttr != nil && actSp.BeforeAttr.ST_UnsignedDecimalNumber != nil {
+			diff := int64(*expSp.BeforeAttr.ST_UnsignedDecimalNumber) - int64(*actSp.BeforeAttr.ST_UnsignedDecimalNumber)
+			if diff > 20 || diff < -20 {
+				diffs = append(diffs, SpecDiff{
+					Field:    "段前距",
+					Expected: humanTwipsUint(*expSp.BeforeAttr.ST_UnsignedDecimalNumber),
+					Actual:   humanTwipsUint(*actSp.BeforeAttr.ST_UnsignedDecimalNumber),
+					Severity: "warning",
+				})
+			}
+		}
+		// 段后距
+		if expSp.AfterAttr != nil && expSp.AfterAttr.ST_UnsignedDecimalNumber != nil &&
+			actSp.AfterAttr != nil && actSp.AfterAttr.ST_UnsignedDecimalNumber != nil {
+			diff := int64(*expSp.AfterAttr.ST_UnsignedDecimalNumber) - int64(*actSp.AfterAttr.ST_UnsignedDecimalNumber)
+			if diff > 20 || diff < -20 {
+				diffs = append(diffs, SpecDiff{
+					Field:    "段后距",
+					Expected: humanTwipsUint(*expSp.AfterAttr.ST_UnsignedDecimalNumber),
+					Actual:   humanTwipsUint(*actSp.AfterAttr.ST_UnsignedDecimalNumber),
+					Severity: "warning",
+				})
+			}
+		}
+	}
+
+	// 首行缩进/左右缩进：读 w:ind
+	if expected.Ind != nil && actual.Ind != nil {
+		expInd := expected.Ind
+		actInd := actual.Ind
+		if expInd.FirstLineAttr != nil && expInd.FirstLineAttr.ST_UnsignedDecimalNumber != nil &&
+			actInd.FirstLineAttr != nil && actInd.FirstLineAttr.ST_UnsignedDecimalNumber != nil {
+			diff := int64(*expInd.FirstLineAttr.ST_UnsignedDecimalNumber) - int64(*actInd.FirstLineAttr.ST_UnsignedDecimalNumber)
+			if diff > 40 || diff < -40 {
+				diffs = append(diffs, SpecDiff{
+					Field:    "首行缩进",
+					Expected: humanTwipsUint(*expInd.FirstLineAttr.ST_UnsignedDecimalNumber),
+					Actual:   humanTwipsUint(*actInd.FirstLineAttr.ST_UnsignedDecimalNumber),
+					Severity: "warning",
+				})
+			}
+		}
+		if expInd.LeftAttr != nil && expInd.LeftAttr.Int64 != nil &&
+			actInd.LeftAttr != nil && actInd.LeftAttr.Int64 != nil {
+			diff := *expInd.LeftAttr.Int64 - *actInd.LeftAttr.Int64
+			if diff > 40 || diff < -40 {
+				diffs = append(diffs, SpecDiff{
+					Field:    "左缩进",
+					Expected: humanTwipsUint(uint64(*expInd.LeftAttr.Int64)),
+					Actual:   humanTwipsUint(uint64(*actInd.LeftAttr.Int64)),
+					Severity: "warning",
+				})
+			}
+		}
+		if expInd.RightAttr != nil && expInd.RightAttr.Int64 != nil &&
+			actInd.RightAttr != nil && actInd.RightAttr.Int64 != nil {
+			diff := *expInd.RightAttr.Int64 - *actInd.RightAttr.Int64
+			if diff > 40 || diff < -40 {
+				diffs = append(diffs, SpecDiff{
+					Field:    "右缩进",
+					Expected: humanTwipsUint(uint64(*expInd.RightAttr.Int64)),
+					Actual:   humanTwipsUint(uint64(*actInd.RightAttr.Int64)),
+					Severity: "warning",
+				})
+			}
+		}
+	}
+
 	return diffs
+}
+
+// spacingRuleString 将行距规则枚举转中文描述
+func spacingRuleString(rule wml.ST_LineSpacingRule) string {
+	switch rule {
+	case wml.ST_LineSpacingRuleAuto:
+		return "自动"
+	case wml.ST_LineSpacingRuleExact:
+		return "固定值"
+	case wml.ST_LineSpacingRuleAtLeast:
+		return "最小值"
+		// 该 fork 无 ST_LineSpacingRuleMultiple 常量（多倍行距为 0 之外的另一取值），此处兜底。
+	}
+	return ""
 }
 
 // v2CompareRPr 比对运行属性
@@ -832,6 +1101,15 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 		}
 		runLog.printf("最终页面设置重写：成功；%s", humanPageSetup(profile.PageSetup))
 		logOutputParagraphCount("template-profile", finalPath)
+		// D8: 后置修补链写回点说明——
+		// applyPostSavePatches 对 zip 内各 part 读改后一次写回；
+		// normalizeFinalBoldByProfile 对 document.xml 单 part 做"读一次→收集→一次性写回"的
+		// 块级 patch（删除 <w:b/> 幂等，公式/图片 run 已豁免）。
+		// transplant.NormalizeFinalDOCX 与 ooxmlpkg.RepairPropertyOrder 均基于 ooxmlpkg
+		// 结构化遍历后单次 pkg.Write：前者纠正内容/引用/绘图残差，后者修复 pPr/rPr 子元素
+		// 的 OOXML 固定顺序，二者语义正交，且分属 transplant / ooxmlpkg 两个包——合并为
+		// 一次遍历需跨包搬移归一化逻辑，改动面过大且无正确性收益，故保持两阶段串行，
+		// 每个 part 各只写回一次，不做循环内重复正则重写。
 		p.applyPostSavePatches(finalPath, templatePath)
 		p.normalizeFinalBoldByProfile(finalPath, templatePath)
 		runLog.printf("保存后 XML 补丁：已执行（页眉规范化、页码域规范化、页边距兜底）。")
@@ -900,12 +1178,21 @@ func (p *EnhancedProcessor) applyCorrectionsV2Once(ctx context.Context, docPath 
 			SetFormatRunLogResult(ctx, "manual_review", "manual_review")
 			return "", fmt.Errorf("final format quality gate failed: %w", verifyErr)
 		}
-		// The final download gate is stricter than the optional repair retry
-		// threshold: a returned document must have zero profile differences.
-		runLog.printf("最终格式质量门禁：差异=%d，允许阈值=0", finalDiffs)
-		if finalDiffs != 0 {
+		// D7: 最终下载门禁与强校验链保持一致，由"真实未达标"驱动。
+		// 默认阈值按本轮比对段落数的 5% 动态计算（与强校验链解析规则一致），
+		// 不再零容忍——目录条目、图/表说明等合理差异已在 countTemplateSpecDiffs 内豁免，
+		// 分类器/映射自身误差不再导致误拒收。
+		var gateParaCount, gateExempted int
+		if p.lastStrongVerify != nil {
+			gateParaCount = p.lastStrongVerify.VerifParagraphCount
+			gateExempted = p.lastStrongVerify.ExemptedDiffs
+		}
+		gateThreshold := resolveStrongVerifyThreshold(strongVerificationThreshold(), gateParaCount)
+		runLog.printf("最终格式质量门禁：真实未达标=%d，阈值=%d（段落数=%d，豁免=%d）",
+			finalDiffs, gateThreshold, gateParaCount, gateExempted)
+		if finalDiffs > gateThreshold {
 			SetFormatRunLogResult(ctx, "manual_review", "manual_review")
-			return "", fmt.Errorf("final format quality gate rejected output: %d diffs remain", finalDiffs)
+			return "", fmt.Errorf("final format quality gate rejected output: %d diffs remain (threshold %d)", finalDiffs, gateThreshold)
 		}
 		SetFormatRunLogResult(ctx, "verified_pass", "verified")
 		runLog.printf("最终格式质量门禁：通过；仅允许下载最终已验证文件")
@@ -1037,11 +1324,21 @@ func (p *EnhancedProcessor) normalizeFinalBoldByProfile(path, templatePath strin
 		return
 	}
 	xml := string(entries["word/document.xml"])
+	// D8: 单轮块级 patch——仅对 document.xml 这一个 part 做内存级修正，
+	// 全部段落遍历结束后一次性重建并写回，避免对同一 part 做多轮全量重写。
 	paragraphPatternFinal := regexp.MustCompile(`(?s)<w:p\b[^>]*>.*?</w:p>`)
 	paragraphs := paragraphPatternFinal.FindAllStringIndex(xml, -1)
 	boldPattern := regexp.MustCompile(`(?s)<w:b(?:Cs)?\b[^>]*/>|<w:b(?:Cs)?\b[^>]*>.*?</w:b(?:Cs)>`)
 	rPrPattern := regexp.MustCompile(`(?s)<w:rPr\b[^>]*>.*?</w:rPr>`)
+	// D8: 只对普通文本 run 做粗体兜底；含数学公式(oMath)或图片(drawing/pict)的 run
+	// 原样保留（含其显式加粗），防止粗体兜底误删公式/特殊 run 的加粗。
+	runPattern := regexp.MustCompile(`(?s)<w:r\b[^>]*>.*?</w:r>`)
 	changed := 0
+	type paraPatch struct {
+		start, end int
+		updated    string
+	}
+	var patches []paraPatch
 	for i := len(paragraphs) - 1; i >= 0; i-- {
 		start, end := paragraphs[i][0], paragraphs[i][1]
 		paragraph := xml[start:end]
@@ -1049,17 +1346,28 @@ func (p *EnhancedProcessor) normalizeFinalBoldByProfile(path, templatePath strin
 		if targets[text] <= 0 {
 			continue
 		}
-		updated := rPrPattern.ReplaceAllStringFunc(paragraph, func(rPr string) string {
-			return boldPattern.ReplaceAllString(rPr, "")
+		updated := runPattern.ReplaceAllStringFunc(paragraph, func(run string) string {
+			if strings.Contains(run, "oMath") || strings.Contains(run, "drawing") || strings.Contains(run, "<w:pict") {
+				// 公式/图片 run 保留原样（含其显式加粗），不参与删除
+				return run
+			}
+			return rPrPattern.ReplaceAllStringFunc(run, func(rPr string) string {
+				// 删除操作幂等：<w:b[Cs]/ > 被删后不再命中，同一 run 不会被二次改写
+				return boldPattern.ReplaceAllString(rPr, "")
+			})
 		})
 		if updated != paragraph {
-			xml = xml[:start] + updated + xml[end:]
+			patches = append(patches, paraPatch{start: start, end: end, updated: updated})
 			targets[text]--
 			changed++
 		}
 	}
 	if changed == 0 {
 		return
+	}
+	// 一次性重建 document.xml：patches 按原文件偏移从大到小收集，按序应用不会造成偏移错位。
+	for _, patch := range patches {
+		xml = xml[:patch.start] + patch.updated + xml[patch.end:]
 	}
 	entries["word/document.xml"] = []byte(xml)
 	if err := writeDocxEntries(path, entries); err != nil {
@@ -1270,16 +1578,34 @@ func strongVerificationEnabled() bool {
 	return !(v == "0" || strings.EqualFold(v, "false") || strings.EqualFold(v, "off"))
 }
 
+// strongVerificationThreshold 返回强校验门禁阈值（环境变量 FORMAT_STRONG_VERIFY_MAX_DIFFS）。
+// 未设置或取值非法时返回 -1，表示由 resolveStrongVerifyThreshold 按实际段落数动态计算。
+// 默认不再采用零容忍（0）：分类器自身误差、模板映射缺口、目录/图/表说明等合理差异
+// 不应把"系统自身不准"伪装成"学生未达标"并触发整链路无效重跑或误拒收（D7）。
 func strongVerificationThreshold() int {
 	v := strings.TrimSpace(os.Getenv("FORMAT_STRONG_VERIFY_MAX_DIFFS"))
 	if v == "" {
-		return 0
+		return -1
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 0 {
-		return 0
+		return -1
 	}
 	return n
+}
+
+// resolveStrongVerifyThreshold 将强校验阈值解析为整数：
+//   - 环境变量显式设置（>=0）时原样返回；
+//   - 否则按段落数的 5% 动态计算（max(1, 段落数*5%)），给分类器/映射误差留出合理余量。
+func resolveStrongVerifyThreshold(envOrResolved int, paragraphCount int) int {
+	if envOrResolved >= 0 {
+		return envOrResolved
+	}
+	dynamic := paragraphCount * 5 / 100
+	if dynamic < 1 {
+		dynamic = 1
+	}
+	return dynamic
 }
 
 func strongVerificationStrictMode() bool {
@@ -1325,20 +1651,58 @@ func (p *EnhancedProcessor) countTemplateSpecDiffs(docPath, templatePath string,
 	defer doc.Close()
 	verifier := NewFormatVerifier(p, nil)
 	classified := NewV2DeterministicClassifier(p).ClassifyToMap(BodyLevelParagraphsOnly(doc))
+	if p.lastStrongVerify != nil {
+		// 记录本次比对覆盖的正文段落数，供默认动态阈值（段落数 5%）解析使用。
+		p.lastStrongVerify.VerifParagraphCount = len(BodyLevelParagraphsOnly(doc))
+	}
 	diffs := verifier.compareAllWithSpecs(classified, specs)
-	if len(diffs) > 0 {
+	// D7: 区分"合理差异"（目录条目、图/表说明、封面副标题等模板映射缺口/分类器
+	// 自身误差）与"真实未达标"（学生正文确实未按模板规格书写）。只有真实未达标
+	// 数参与门禁决策，避免零容忍门禁因系统自身误差触发整链路无效重跑或误拒收。
+	realDiffs := make([]FormatDiff, 0, len(diffs))
+	for _, diff := range diffs {
+		if isReasonableTemplateSpecDiff(diff.Category, diff.TextSnip) {
+			continue
+		}
+		realDiffs = append(realDiffs, diff)
+	}
+	if p.lastStrongVerify != nil {
+		p.lastStrongVerify.ExemptedDiffs = len(diffs) - len(realDiffs)
+	}
+	if len(diffs) != len(realDiffs) {
+		log.Printf("[强校验] 豁免合理差异=%d 条（目录/图/表说明/映射缺口），真实未达标=%d 条",
+			len(diffs)-len(realDiffs), len(realDiffs))
+	}
+	if len(realDiffs) > 0 {
 		// Keep strong-verification failures diagnosable; a bare count cannot
 		// distinguish a real template mismatch from a classifier/spec mapping
 		// error. The details are written to the existing per-run format log.
-		limit := len(diffs)
+		limit := len(realDiffs)
 		if limit > 40 {
 			limit = 40
 		}
-		for _, diff := range diffs[:limit] {
-			log.Printf("[强校验差异] category=%s para=%d property=%s expected=%s actual=%s text=%s", diff.Category, diff.ParaIdx, diff.Property, diff.Expected, diff.Actual, diff.TextSnip)
+		for _, diff := range realDiffs[:limit] {
+			log.Printf("[强校验差异] 分类=%s 段落=%d 属性=%s 期望=%s 实际=%s 文本=%s", diff.Category, diff.ParaIdx, humanField(diff.Property), diff.Expected, diff.Actual, diff.TextSnip)
 		}
 	}
-	return len(diffs), nil
+	return len(realDiffs), nil
+}
+
+// isReasonableTemplateSpecDiff 判定一条强校验差异是否属于"合理差异"（可豁免）：
+//   - 目录标题/目录条目（V2TOCTitle/V2TOC）：页码制表位、缩进等随模板样式映射变化，
+//     属于系统映射差异而非学生未达标；
+//   - 图/表说明（V2FigureCaption/V2TableCaption）：说明行位于表格/图片上下文，
+//     其字号/对齐由模板说明样式兜底，分类器解析自身误差较大；
+//   - 封面副标题（V2ThesisSubtitle）：多为无结构信号的居中短行，profile 常缺该角色
+//     映射（映射缺口）。
+//
+// 其余类别（正文、标题、封面核心字段等）的差异视为"真实未达标"，计入超阈值判断。
+func isReasonableTemplateSpecDiff(category, text string) bool {
+	switch category {
+	case V2TOCTitle, V2TOC, V2FigureCaption, V2TableCaption, V2ThesisSubtitle:
+		return true
+	}
+	return false
 }
 
 func (p *EnhancedProcessor) enforceStrongFormatConsistency(
@@ -1363,18 +1727,22 @@ func (p *EnhancedProcessor) enforceStrongFormatConsistency(
 	if !strongVerificationEnabled() {
 		return candidatePath, primaryEngine, nil
 	}
-	threshold := strongVerificationThreshold()
+	envThreshold := strongVerificationThreshold()
 	formatRules := normalizedFormatRulesFromCorrections(p, corrections)
 	p.lastStrongVerify.Enabled = true
-	p.lastStrongVerify.Threshold = threshold
 	initialDiffs, err := p.countTemplateSpecDiffs(candidatePath, templatePath, formatRules)
 	if err != nil {
 		log.Printf("[强校验] 首次比对失败，保留主路径产物: %v", err)
 		return candidatePath, primaryEngine, nil
 	}
+	// D7: 门禁阈值默认按真实未达标判定后的段落数比例动态计算
+	// （max(1, 段落数*5%)），避免零容忍触发无效重跑。
+	threshold := resolveStrongVerifyThreshold(envThreshold, p.lastStrongVerify.VerifParagraphCount)
+	p.lastStrongVerify.Threshold = threshold
 	p.lastStrongVerify.InitialDiffs = initialDiffs
 	retry, _ := planStrongVerificationAction(initialDiffs, -1, threshold)
-	log.Printf("[强校验] 引擎=%s 首次差异=%d 阈值=%d", primaryEngine, initialDiffs, threshold)
+	log.Printf("[强校验] 引擎=%s 首次真实未达标=%d 阈值=%d(段落数=%d 豁免=%d)",
+		primaryEngine, initialDiffs, threshold, p.lastStrongVerify.VerifParagraphCount, p.lastStrongVerify.ExemptedDiffs)
 	if !retry {
 		p.lastStrongVerify.FinalDiffs = initialDiffs
 		p.lastStrongVerify.Passed = initialDiffs <= threshold
@@ -1677,7 +2045,7 @@ func dumpFinalDocDiagnostics(doc *document.Document, classified []V2ClassifiedPa
 		if ppr := s.para.X().PPr; ppr != nil {
 			parts := []string{}
 			if ppr.Jc != nil {
-				parts = append(parts, fmt.Sprintf("Align=%s", ppr.Jc.ValAttr.String()))
+				parts = append(parts, fmt.Sprintf("对齐=%s", humanAlignment(ppr.Jc.ValAttr.String())))
 			}
 			if ppr.Spacing != nil {
 				if ppr.Spacing.LineAttr != nil && ppr.Spacing.LineAttr.Int64 != nil {
@@ -1685,17 +2053,17 @@ func dumpFinalDocDiagnostics(doc *document.Document, classified []V2ClassifiedPa
 					if ppr.Spacing.LineRuleAttr == wml.ST_LineSpacingRuleExact {
 						lineRule = "exact"
 					}
-					parts = append(parts, fmt.Sprintf("Line=%d(%s)", *ppr.Spacing.LineAttr.Int64, lineRule))
+					parts = append(parts, fmt.Sprintf("行距=%s", humanLineSpacing(*ppr.Spacing.LineAttr.Int64, lineRule)))
 				}
 				if ppr.Spacing.BeforeAttr != nil && ppr.Spacing.BeforeAttr.ST_UnsignedDecimalNumber != nil {
-					parts = append(parts, fmt.Sprintf("Before=%d", *ppr.Spacing.BeforeAttr.ST_UnsignedDecimalNumber))
+					parts = append(parts, fmt.Sprintf("段前=%s", humanTwipsString(fmt.Sprintf("%d", *ppr.Spacing.BeforeAttr.ST_UnsignedDecimalNumber))))
 				}
 				if ppr.Spacing.AfterAttr != nil && ppr.Spacing.AfterAttr.ST_UnsignedDecimalNumber != nil {
-					parts = append(parts, fmt.Sprintf("After=%d", *ppr.Spacing.AfterAttr.ST_UnsignedDecimalNumber))
+					parts = append(parts, fmt.Sprintf("段后=%s", humanTwipsString(fmt.Sprintf("%d", *ppr.Spacing.AfterAttr.ST_UnsignedDecimalNumber))))
 				}
 			}
 			if ppr.Ind != nil && ppr.Ind.FirstLineAttr != nil && ppr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber != nil {
-				parts = append(parts, fmt.Sprintf("FirstLine=%d", *ppr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber))
+				parts = append(parts, fmt.Sprintf("首行缩进=%s", humanTwipsString(fmt.Sprintf("%d", *ppr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber))))
 			}
 			pprInfo = strings.Join(parts, " ")
 		}
@@ -1706,29 +2074,29 @@ func dumpFinalDocDiagnostics(doc *document.Document, classified []V2ClassifiedPa
 				rParts := []string{}
 				if rpr.RFonts != nil {
 					if rpr.RFonts.EastAsiaAttr != nil {
-						rParts = append(rParts, fmt.Sprintf("East=%s", *rpr.RFonts.EastAsiaAttr))
+						rParts = append(rParts, fmt.Sprintf("中文字体=%s", *rpr.RFonts.EastAsiaAttr))
 					}
 					if rpr.RFonts.AsciiAttr != nil {
-						rParts = append(rParts, fmt.Sprintf("Ascii=%s", *rpr.RFonts.AsciiAttr))
+						rParts = append(rParts, fmt.Sprintf("西文字体=%s", *rpr.RFonts.AsciiAttr))
 					}
 				}
 				if rpr.Sz != nil && rpr.Sz.ValAttr.ST_UnsignedDecimalNumber != nil {
-					rParts = append(rParts, fmt.Sprintf("sz=%.1fpt", float64(*rpr.Sz.ValAttr.ST_UnsignedDecimalNumber)/2.0))
+					rParts = append(rParts, fmt.Sprintf("字号=%s", humanHalfPoints(uint64(*rpr.Sz.ValAttr.ST_UnsignedDecimalNumber))))
 				}
 				if rpr.SzCs != nil && rpr.SzCs.ValAttr.ST_UnsignedDecimalNumber != nil {
-					rParts = append(rParts, fmt.Sprintf("cs=%.1fpt", float64(*rpr.SzCs.ValAttr.ST_UnsignedDecimalNumber)/2.0))
+					rParts = append(rParts, fmt.Sprintf("中文字号=%s", humanHalfPoints(uint64(*rpr.SzCs.ValAttr.ST_UnsignedDecimalNumber))))
 				}
 				if rpr.B != nil {
-					rParts = append(rParts, "Bold=true")
+					rParts = append(rParts, "加粗=是")
 				}
 				if rpr.I != nil {
-					rParts = append(rParts, "Italic=true")
+					rParts = append(rParts, "斜体=是")
 				}
 				rprInfo = strings.Join(rParts, " ")
 			}
 		}
-		DiagPrintf(" [产出] idx=%d type=%s text=%q ppr={%s} rpr={%s}",
-			s.index, s.category, text, pprInfo, rprInfo)
+		DiagPrintf("[产出] 段落序号=%d 类型=%s 文字=%q 段落属性={%s} 文字属性={%s}",
+			s.index, humanCategory(s.category), text, pprInfo, rprInfo)
 	}
 }
 

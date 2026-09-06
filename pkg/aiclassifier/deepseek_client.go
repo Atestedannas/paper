@@ -29,6 +29,8 @@ type DeepSeekWebClient struct {
 	httpClient *http.Client
 }
 
+var errDeepSeekEmptySSE = errors.New("DeepSeek SSE completed without response content")
+
 // deepSeekHTTPTimeout 单次 HTTP 请求（含读 SSE 响应体）超时。长论文分段 JSON 流常超过 2 分钟。
 // 环境变量 DEEPSEEK_CHAT_TIMEOUT_SEC：30–900，默认 360（秒）。与 DEEPSEEK_REFINER_TIMEOUT_SEC 不同，此处约束底层 http.Client。
 func deepSeekHTTPTimeout() time.Duration {
@@ -284,6 +286,18 @@ func (c *DeepSeekWebClient) createChatSession() (string, error) {
 
 // ChatCompletion sends a bounded request without logging its content.
 func (c *DeepSeekWebClient) ChatCompletion(prompt string) (string, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		content, err := c.chatCompletionOnce(prompt)
+		if !errors.Is(err, errDeepSeekEmptySSE) || attempt == 1 {
+			return content, err
+		}
+		log.Printf("[DeepSeek] empty SSE response; retrying once")
+		time.Sleep(250 * time.Millisecond)
+	}
+	return "", errDeepSeekEmptySSE
+}
+
+func (c *DeepSeekWebClient) chatCompletionOnce(prompt string) (string, error) {
 	totalStart := time.Now()
 
 	log.Printf("[DeepSeek] ChatCompletion start prompt_len=%d", len([]rune(prompt)))
@@ -569,6 +583,9 @@ func (c *DeepSeekWebClient) parseSSEResponse(body io.Reader, contentEncoding str
 			return partial, fmt.Errorf("SSE scan error (读流超时，可调大 DEEPSEEK_CHAT_TIMEOUT_SEC): %w", err)
 		}
 		return partial, fmt.Errorf("SSE scan error: %w", err)
+	}
+	if fullContent.Len() == 0 {
+		return "", fmt.Errorf("%w (lines=%d data_lines=%d)", errDeepSeekEmptySSE, lineCount, dataLineCount)
 	}
 	return fullContent.String(), nil
 }

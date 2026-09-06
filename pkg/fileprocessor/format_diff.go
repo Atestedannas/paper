@@ -56,8 +56,8 @@ func DiffSpec(expected, actual ParagraphFormatSpec) []SpecDiff {
 		if diff > 1 || diff < -1 {
 			diffs = append(diffs, SpecDiff{
 				"font_size",
-				fmt.Sprintf("%.1fpt", float64(expected.FontSizeHalfPt)/2),
-				fmt.Sprintf("%.1fpt", float64(actual.FontSizeHalfPt)/2),
+				humanHalfPoints(expected.FontSizeHalfPt),
+				humanHalfPoints(actual.FontSizeHalfPt),
 				"error",
 			})
 		}
@@ -92,8 +92,8 @@ func DiffSpec(expected, actual ParagraphFormatSpec) []SpecDiff {
 		if diff > 20 || diff < -20 {
 			diffs = append(diffs, SpecDiff{
 				"line_spacing",
-				fmt.Sprintf("%d twips", expected.LineSpacingVal),
-				fmt.Sprintf("%d twips", actual.LineSpacingVal),
+				humanLineSpacing(expected.LineSpacingVal, string(expected.LineSpacingRule)),
+				humanLineSpacing(actual.LineSpacingVal, string(actual.LineSpacingRule)),
 				"warning",
 			})
 		}
@@ -105,8 +105,8 @@ func DiffSpec(expected, actual ParagraphFormatSpec) []SpecDiff {
 		if diff > 20 || diff < -20 {
 			diffs = append(diffs, SpecDiff{
 				"space_before",
-				fmt.Sprintf("%d twips", expected.SpaceBefore),
-				fmt.Sprintf("%d twips", actual.SpaceBefore),
+				humanTwipsUint(expected.SpaceBefore),
+				humanTwipsUint(actual.SpaceBefore),
 				"warning",
 			})
 		}
@@ -118,8 +118,8 @@ func DiffSpec(expected, actual ParagraphFormatSpec) []SpecDiff {
 		if diff > 20 || diff < -20 {
 			diffs = append(diffs, SpecDiff{
 				"space_after",
-				fmt.Sprintf("%d twips", expected.SpaceAfter),
-				fmt.Sprintf("%d twips", actual.SpaceAfter),
+				humanTwipsUint(expected.SpaceAfter),
+				humanTwipsUint(actual.SpaceAfter),
 				"warning",
 			})
 		}
@@ -131,8 +131,8 @@ func DiffSpec(expected, actual ParagraphFormatSpec) []SpecDiff {
 		if diff > 40 || diff < -40 {
 			diffs = append(diffs, SpecDiff{
 				"first_line_indent",
-				fmt.Sprintf("%d twips", expected.FirstLineIndent),
-				fmt.Sprintf("%d twips", actual.FirstLineIndent),
+				humanTwipsUint(expected.FirstLineIndent),
+				humanTwipsUint(actual.FirstLineIndent),
 				"warning",
 			})
 		}

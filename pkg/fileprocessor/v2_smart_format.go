@@ -95,60 +95,60 @@ func (f *V2SmartFormatter) ApplySmartFormatting(doc *document.Document, classifi
 	// #endregion
 
 	// 节点3a：v2_smart_format 路径 — 打印所有传入的格式 spec
-	DiagPrintf(" ====== 节点3a: v2_smart_format 路径 — ApplySmartFormatting ======")
+	DiagPrintf(" ====== 节点3a: 智能排版路径（ApplySmartFormatting） ======")
 	if f.coverTitleSpec != nil {
-		DiagPrintf(" [v2_smart] cover_title: %s", formatSpecCompact(*f.coverTitleSpec))
+		DiagPrintf(" [智能排版] 封面标题：%s", formatSpecCompact(*f.coverTitleSpec))
 	}
 	if f.coverFieldSpec != nil {
-		DiagPrintf(" [v2_smart] cover_field: %s", formatSpecCompact(*f.coverFieldSpec))
+		DiagPrintf(" [智能排版] 封面信息字段：%s", formatSpecCompact(*f.coverFieldSpec))
 	}
 	if f.abstractTitleSpec != nil {
-		DiagPrintf(" [v2_smart] abstract_title: %s", formatSpecCompact(*f.abstractTitleSpec))
+		DiagPrintf(" [智能排版] 摘要标题：%s", formatSpecCompact(*f.abstractTitleSpec))
 	}
 	if f.abstractContentSpec != nil {
-		DiagPrintf(" [v2_smart] abstract: %s", formatSpecCompact(*f.abstractContentSpec))
+		DiagPrintf(" [智能排版] 摘要正文：%s", formatSpecCompact(*f.abstractContentSpec))
 	}
 	if f.keywordsSpec != nil {
-		DiagPrintf(" [v2_smart] keywords: %s", formatSpecCompact(*f.keywordsSpec))
+		DiagPrintf(" [智能排版] 关键词：%s", formatSpecCompact(*f.keywordsSpec))
 	}
 	if f.enAbstractTitleSpec != nil {
-		DiagPrintf(" [v2_smart] en_abstract_title: %s", formatSpecCompact(*f.enAbstractTitleSpec))
+		DiagPrintf(" [智能排版] 英文摘要标题：%s", formatSpecCompact(*f.enAbstractTitleSpec))
 	}
 	if f.enAbstractContentSpec != nil {
-		DiagPrintf(" [v2_smart] en_abstract: %s", formatSpecCompact(*f.enAbstractContentSpec))
+		DiagPrintf(" [智能排版] 英文摘要正文：%s", formatSpecCompact(*f.enAbstractContentSpec))
 	}
 	if f.enKeywordsSpec != nil {
-		DiagPrintf(" [v2_smart] en_keywords: %s", formatSpecCompact(*f.enKeywordsSpec))
+		DiagPrintf(" [智能排版] 英文关键词：%s", formatSpecCompact(*f.enKeywordsSpec))
 	}
 	if f.bodySpec != nil {
-		DiagPrintf(" [v2_smart] body: %s", formatSpecCompact(*f.bodySpec))
+		DiagPrintf(" [智能排版] 正文：%s", formatSpecCompact(*f.bodySpec))
 	}
 	if f.refSpec != nil {
-		DiagPrintf(" [v2_smart] ref: %s", formatSpecCompact(*f.refSpec))
+		DiagPrintf(" [智能排版] 参考文献条目：%s", formatSpecCompact(*f.refSpec))
 	}
 	if f.tocTitleSpec != nil {
-		DiagPrintf(" [v2_smart] toc_title: %s", formatSpecCompact(*f.tocTitleSpec))
+		DiagPrintf(" [智能排版] 目录标题：%s", formatSpecCompact(*f.tocTitleSpec))
 	}
 	if f.tocEntrySpec != nil {
-		DiagPrintf(" [v2_smart] toc_entry: %s", formatSpecCompact(*f.tocEntrySpec))
+		DiagPrintf(" [智能排版] 目录条目：%s", formatSpecCompact(*f.tocEntrySpec))
 	}
 	if f.referencesTitleSpec != nil {
-		DiagPrintf(" [v2_smart] references_title: %s", formatSpecCompact(*f.referencesTitleSpec))
+		DiagPrintf(" [智能排版] 参考文献标题：%s", formatSpecCompact(*f.referencesTitleSpec))
 	}
 	if f.sectionTitleSpec != nil {
-		DiagPrintf(" [v2_smart] section_title: %s", formatSpecCompact(*f.sectionTitleSpec))
+		DiagPrintf(" [智能排版] 章节标题：%s", formatSpecCompact(*f.sectionTitleSpec))
 	}
 	if f.notesSpec != nil {
-		DiagPrintf(" [v2_smart] notes: %s", formatSpecCompact(*f.notesSpec))
+		DiagPrintf(" [智能排版] 注释：%s", formatSpecCompact(*f.notesSpec))
 	}
 	if f.captionSpec != nil {
-		DiagPrintf(" [v2_smart] caption: %s", formatSpecCompact(*f.captionSpec))
+		DiagPrintf(" [智能排版] 图表题注：%s", formatSpecCompact(*f.captionSpec))
 	}
 	if f.headerSpec != nil {
-		DiagPrintf(" [v2_smart] header: %s", formatSpecCompact(*f.headerSpec))
+		DiagPrintf(" [智能排版] 页眉：%s", formatSpecCompact(*f.headerSpec))
 	}
 	for level, spec := range f.headingSpecs {
-		DiagPrintf(" [v2_smart] headingSpec[%s]: %s", level, formatSpecCompact(spec))
+		DiagPrintf(" [智能排版] 标题规范[%s]：%s", level, formatSpecCompact(spec))
 	}
 
 	f.formatThesisTitle(classified)
@@ -1275,7 +1275,7 @@ func (f *V2SmartFormatter) formatCoverField(para document.Paragraph) {
 	if spec == nil {
 		specName = "NIL"
 	}
-	DiagPrintf("[formatCoverField] text=%-20s isCoverTitle=%v spec=%s", truncStr(text, 20), isCoverTitle, specName)
+	DiagPrintf("[封面字段排版] 文字=%-20s 是封面标题=%v 规范=%s", truncStr(text, 20), isCoverTitle, specName)
 	pPr := para.X().PPr
 	if pPr == nil {
 		pPr = wml.NewCT_PPr()
@@ -1983,73 +1983,92 @@ func truncStr(s string, n int) string {
 	return s
 }
 
-// v2SetBodyRunFont 正文专用：中文宋体 + 数字/字母 Times New Roman
+// v2WriteRFontsSlots 只改目标字体槽位，返回是否发生写操作。
+// 规则（对照 D2）：①槽位为主题字体引用（AsciiThemeAttr/EastAsiaThemeAttr/HAnsiThemeAttr 非 Unset）时
+// 保留主题引用、不写显式字体；②显式期望值与现值一致时跳过（差异比较后才写）；③eastAsia/ascii/hAnsi
+// 为 nil 指针表示不改动该槽（非 nil 才写，与 getCachedFontName 返回的 *string 直接对接）；
+// ④仅目标槽被修改，rPr 其他子元素（高亮/上标/超链接/字号外）不受影响。
+func v2WriteRFontsSlots(rPr *wml.CT_RPr, eastAsia, ascii, hAnsi *string, sizePt float64, setSize bool) bool {
+	dirty := false
+	if rPr.RFonts == nil {
+		rPr.RFonts = wml.NewCT_Fonts()
+		dirty = true
+	}
+	rf := rPr.RFonts
+	if eastAsia != nil && rf.EastAsiaThemeAttr == wml.ST_ThemeUnset {
+		if rf.EastAsiaAttr == nil || *rf.EastAsiaAttr != *eastAsia {
+			rf.EastAsiaAttr = eastAsia
+			dirty = true
+		}
+	}
+	if ascii != nil && rf.AsciiThemeAttr == wml.ST_ThemeUnset {
+		if rf.AsciiAttr == nil || *rf.AsciiAttr != *ascii {
+			rf.AsciiAttr = ascii
+			dirty = true
+		}
+	}
+	if hAnsi != nil && rf.HAnsiThemeAttr == wml.ST_ThemeUnset {
+		if rf.HAnsiAttr == nil || *rf.HAnsiAttr != *hAnsi {
+			rf.HAnsiAttr = hAnsi
+			dirty = true
+		}
+	}
+	if setSize && sizePt > 0 {
+		halfPt := uint64(sizePt * 2)
+		if rPr.Sz == nil || rPr.Sz.ValAttr.ST_UnsignedDecimalNumber == nil ||
+			*rPr.Sz.ValAttr.ST_UnsignedDecimalNumber != halfPt {
+			rPr.Sz = wml.NewCT_HpsMeasure()
+			rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPt
+			dirty = true
+		}
+		if rPr.SzCs == nil || rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber == nil ||
+			*rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber != halfPt {
+			rPr.SzCs = wml.NewCT_HpsMeasure()
+			rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &halfPt
+			dirty = true
+		}
+	}
+	return dirty
+}
+
+// v2SetRunTriStateBold 三态加粗写入：调用方显式给出 true/false 时，两者都写出 w:val，
+// 避免原实现把"显式非加粗"与"未设置"（B=nil）混同（对照 D2/B 三态）。
+func v2SetRunTriStateBold(rPr *wml.CT_RPr, bold bool) {
+	rPr.B = wml.NewCT_OnOff()
+	rPr.BCs = wml.NewCT_OnOff()
+	v := bold
+	rPr.B.ValAttr = &sharedTypes.ST_OnOff{Bool: &v}
+	rPr.BCs.ValAttr = &sharedTypes.ST_OnOff{Bool: &v}
+}
+
+// v2SetBodyRunFont 正文专用：中文宋体 + 数字/字母 Times New Roman。
+// 只改目标槽位并保留主题字体引用（D2）；已符合的槽不重复写。
 func v2SetBodyRunFont(proc *EnhancedProcessor, run document.Run, sizePt float64, bold bool) {
 	rPr := run.X().RPr
 	if rPr == nil {
 		rPr = wml.NewCT_RPr()
 		run.X().RPr = rPr
 	}
-	if rPr.RFonts == nil {
-		rPr.RFonts = wml.NewCT_Fonts()
-	}
 	eastAsiaFont := proc.getCachedFontName("宋体")
-	rPr.RFonts.EastAsiaAttr = eastAsiaFont
 	tnrFont := proc.getCachedFontName("Times New Roman")
-	rPr.RFonts.AsciiAttr = tnrFont
-	rPr.RFonts.HAnsiAttr = tnrFont
-
-	halfPt := uint64(sizePt * 2)
-	rPr.Sz = wml.NewCT_HpsMeasure()
-	rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPt
-	rPr.SzCs = wml.NewCT_HpsMeasure()
-	rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &halfPt
-
-	if bold {
-		rPr.B = wml.NewCT_OnOff()
-		rPr.BCs = wml.NewCT_OnOff()
-	} else {
-		rPr.B = nil
-		rPr.BCs = nil
-	}
+	v2WriteRFontsSlots(rPr, eastAsiaFont, tnrFont, tnrFont, sizePt, true)
+	v2SetRunTriStateBold(rPr, bold)
 }
 
-// v2SetRunFont 设置 run 字体/字号/加粗（支持取消加粗）
+// v2SetRunFont 设置 run 字体/字号/加粗（支持取消加粗）。
+// 西文槽取值统一经 getEnglishFontName 映射（中文名→英文名：宋体→SimSun、黑体→SimHei 等），
+// 与 v2SetBodyRunFont 及项目全局映射走同一套规则，消除两入口西文槽不一致（对照 D2）。
 func v2SetRunFont(proc *EnhancedProcessor, run document.Run, fontName string, sizePt float64, bold bool) {
 	rPr := run.X().RPr
 	if rPr == nil {
 		rPr = wml.NewCT_RPr()
 		run.X().RPr = rPr
 	}
-
-	if rPr.RFonts == nil {
-		rPr.RFonts = wml.NewCT_Fonts()
-	}
 	fn := proc.getCachedFontName(fontName)
-	rPr.RFonts.EastAsiaAttr = fn
-	asciiFont := fontName
-	if fontName == "宋体" {
-		asciiFont = "SimSun"
-	} else if fontName == "黑体" {
-		asciiFont = "SimHei"
-	}
+	asciiFont := getEnglishFontName(fontName)
 	af := proc.getCachedFontName(asciiFont)
-	rPr.RFonts.AsciiAttr = af
-	rPr.RFonts.HAnsiAttr = af
-
-	halfPt := uint64(sizePt * 2)
-	rPr.Sz = wml.NewCT_HpsMeasure()
-	rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &halfPt
-	rPr.SzCs = wml.NewCT_HpsMeasure()
-	rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &halfPt
-
-	if bold {
-		rPr.B = wml.NewCT_OnOff()
-		rPr.BCs = wml.NewCT_OnOff()
-	} else {
-		rPr.B = nil
-		rPr.BCs = nil
-	}
+	v2WriteRFontsSlots(rPr, fn, af, af, sizePt, true)
+	v2SetRunTriStateBold(rPr, bold)
 
 	_ = measurement.Distance(0) // keep import
 }

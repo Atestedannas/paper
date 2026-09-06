@@ -15,9 +15,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
+	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 
 	"gitee.com/greatmusicians/unioffice/document"
 	"gitee.com/greatmusicians/unioffice/schema/soo/ofc/sharedTypes"
@@ -393,17 +395,17 @@ func applyStrictRuleFallbacks(rules *strictTemplateBlockRules) {
 		}
 	}
 
-	// 节点3c：transplanter 路径 — applyStrictRuleFallbacks 后的完整规则
-	DiagPrintf(" ====== 节点3c: transplanter 路径 — applyStrictRuleFallbacks ======")
-	DiagPrintf(" [transplanter] CoverTitleValue: %s", formatSpecCompact(rules.CoverTitleValue))
-	DiagPrintf(" [transplanter] CoverTitleLabel: %s", formatSpecCompact(rules.CoverTitleLabel))
-	DiagPrintf(" [transplanter] CoverInfoValue: %s", formatSpecCompact(rules.CoverInfoValue))
-	DiagPrintf(" [transplanter] CoverInfoLabel: %s", formatSpecCompact(rules.CoverInfoLabel))
+	// 节点3c：规则移植路径 — applyStrictRuleFallbacks 后的完整规则
+	DiagPrintf(" ====== 节点3c: 规则移植路径 — applyStrictRuleFallbacks ======")
+	DiagPrintf(" [移植] 封面标题值：%s", formatSpecCompact(rules.CoverTitleValue))
+	DiagPrintf(" [移植] 封面标题标签：%s", formatSpecCompact(rules.CoverTitleLabel))
+	DiagPrintf(" [移植] 封面信息值：%s", formatSpecCompact(rules.CoverInfoValue))
+	DiagPrintf(" [移植] 封面信息标签：%s", formatSpecCompact(rules.CoverInfoLabel))
 	for kind, spec := range rules.Paragraph {
-		DiagPrintf(" [transplanter] Paragraph[%s]: %s", kind, formatSpecCompact(spec))
+		DiagPrintf(" [移植] 段落[%s]：%s", kind, formatSpecCompact(spec))
 	}
 	for kind, block := range rules.Inline {
-		DiagPrintf(" [transplanter] Inline[%s]: label=%s body=%s",
+		DiagPrintf(" [移植] 行内[%s]：标签=%s 正文=%s",
 			kind, formatSpecCompact(block.LabelSpec), formatSpecCompact(block.BodySpec))
 	}
 }
@@ -1968,16 +1970,27 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 		return err
 	}
 
-	sectionRefs := mapTemplateSectionHeaderFooterRefsWithVisibleHeaders(
-		string(outputEntries["word/document.xml"]),
+	outputXML := string(outputEntries["word/document.xml"])
+	outputSections := describeStrictSections(outputXML)
+	templateSectionRefs := mapTemplateSectionHeaderFooterRefsWithVisibleHeaders(
+		outputXML,
 		string(templateEntries["word/document.xml"]),
 		templateVisibleHeaderRoles(templateEntries),
 	)
-	requiredRelationshipIDs := referencedRelationshipIDs(sectionRefs)
+	// D5: apply a reference-aware per-reference merge instead of replacing the
+	// student's header/footer parts wholesale. For every header/footer slot
+	// (header/footer x default/first/even) of every section, the student's own
+	// reference wins whenever it resolves to a part that carries visible text
+	// (supervisor name, thesis title, custom field, TOC, page number). Only
+	// empty student placeholders adopt the template part. Fully retained
+	// student layouts keep their original part bytes and remain untouched.
+	mixedSectionRefs, requiredRelationshipIDs, retainIDs, guardedParts :=
+		mergeSectionHeaderFooterRefsPerSlot(outputEntries, outputSections, templateSectionRefs)
 	relationshipIDs, copiedParts, err := mergeSelectedDocumentRelationships(
 		outputEntries,
 		templateEntries,
 		requiredRelationshipIDs,
+		retainIDs,
 	)
 	if err != nil {
 		return err
@@ -1986,10 +1999,163 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 		return err
 	}
 	mergeCopiedPartContentTypes(outputEntries, templateEntries, copiedParts)
-	mergeDocumentSectionHeaderFooterRefsWithPlan(outputEntries, sectionRefs, relationshipIDs)
-	syncEvenOddHeadersSetting(outputEntries, templateEntries)
+	mergeDocumentSectionHeaderFooterRefsWithPlan(outputEntries, mixedSectionRefs, relationshipIDs)
+	if len(copiedParts) > 0 {
+		// The package-level even/odd switch follows the template only when
+		// template header/footer parts were actually adopted. A fully
+		// retained student layout must not be normalized against a template
+		// that contributed no header/footer part.
+		syncEvenOddHeadersSetting(outputEntries, templateEntries)
+	}
+	// D5: fail closed instead of silently discarding a retained student part.
+	if err := verifyStudentHeaderFooterRetained(outputEntries, guardedParts); err != nil {
+		return err
+	}
 
 	return writeDocxEntries(outputPath, outputEntries)
+}
+
+// resolveDocumentHeaderFooterPartNames resolves header/footer reference tags to
+// the concrete part names they point at, so the caller can inspect the bytes
+// and decide whether replacing them would discard student-authored content.
+func resolveDocumentHeaderFooterPartNames(entries map[string][]byte, refs []string) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	relsContent, ok := entries["word/_rels/document.xml.rels"]
+	if !ok {
+		return nil
+	}
+	var relationships strictRelationshipSet
+	if xml.Unmarshal(relsContent, &relationships) != nil {
+		return nil
+	}
+	byID := make(map[string]string, len(relationships.Relationships))
+	for _, rel := range relationships.Relationships {
+		if isHeaderFooterRelationship(rel) {
+			byID[rel.ID] = resolveRelationshipPart("word/document.xml", rel.Target)
+		}
+	}
+	parts := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if id := strictXMLAttributeValue(ref, "r:id"); id != "" {
+			if part, ok := byID[id]; ok {
+				parts = append(parts, part)
+			}
+		}
+	}
+	return parts
+}
+
+// headerFooterPartIsEmptyPlaceholder reports whether a header/footer part is an
+// empty placeholder (no visible text), i.e. it holds no content that would be
+// lost if the template counterpart replaces it.
+func headerFooterPartIsEmptyPlaceholder(entries map[string][]byte, partName string) bool {
+	content, ok := entries[partName]
+	if !ok {
+		return true
+	}
+	for _, text := range extractDocxTextNodes(string(content)) {
+		if strings.TrimSpace(text) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeSectionHeaderFooterRefsPerSlot merges the template's per-section
+// header/footer references with the student's own references slot by slot
+// (header/footer x default/first/even). For every slot, the student's own
+// reference wins whenever it resolves to a part carrying visible content; only
+// empty student placeholders are replaced by the template's part. Student-only
+// slots the template does not provide are kept as-is. The returned refs are the
+// final per-section ref sets for document.xml, together with the template
+// relationship IDs that must be copied in, the student relationship IDs that
+// must remain intact, and the student parts whose visible content is guarded.
+func mergeSectionHeaderFooterRefsPerSlot(
+	entries map[string][]byte,
+	sections []strictSectionDescriptor,
+	templateSectionRefs [][]string,
+) (mixedSectionRefs [][]string, requiredIDs, retainIDs, guardedParts map[string]bool) {
+	mixedSectionRefs = make([][]string, len(sections))
+	requiredIDs = map[string]bool{}
+	retainIDs = map[string]bool{}
+	guardedParts = map[string]bool{}
+	for index, section := range sections {
+		studentByKey := make(map[string]string, len(section.Refs))
+		for _, ref := range section.Refs {
+			if key := headerFooterReferenceKey(ref); key != "" {
+				studentByKey[key] = ref
+			}
+		}
+		selection := make(map[string]string, len(studentByKey))
+		if index < len(templateSectionRefs) {
+			selection = make(map[string]string, len(templateSectionRefs[index])+len(studentByKey))
+			for _, templateRef := range templateSectionRefs[index] {
+				key := headerFooterReferenceKey(templateRef)
+				if key == "" {
+					continue
+				}
+				if studentRef, ok := studentByKey[key]; ok {
+					// Prefer the student's own part unless it is an empty
+					// placeholder; an empty placeholder holds no content that
+					// would be lost, so the template part may take its slot.
+					id := strictXMLAttributeValue(studentRef, "r:id")
+					parts := resolveDocumentHeaderFooterPartNames(entries, []string{studentRef})
+					if len(parts) > 0 && !headerFooterPartIsEmptyPlaceholder(entries, parts[0]) {
+						selection[key] = studentRef
+						if id != "" {
+							retainIDs[id] = true
+							guardedParts[parts[0]] = true
+						}
+						continue
+					}
+				}
+				selection[key] = templateRef
+				if id := strictXMLAttributeValue(templateRef, "r:id"); id != "" {
+					requiredIDs[id] = true
+				}
+			}
+		}
+		// Student slots the template does not declare for this section are
+		// never touched: replacing them would discard student-authored content.
+		for key, studentRef := range studentByKey {
+			if _, used := selection[key]; used {
+				continue
+			}
+			selection[key] = studentRef
+			id := strictXMLAttributeValue(studentRef, "r:id")
+			parts := resolveDocumentHeaderFooterPartNames(entries, []string{studentRef})
+			if id != "" {
+				retainIDs[id] = true
+			}
+			if len(parts) > 0 && !headerFooterPartIsEmptyPlaceholder(entries, parts[0]) {
+				guardedParts[parts[0]] = true
+			}
+		}
+		mixedSectionRefs[index] = orderedHeaderFooterReferenceTags(selection)
+	}
+	return mixedSectionRefs, requiredIDs, retainIDs, guardedParts
+}
+
+// verifyStudentHeaderFooterRetained asserts that the D5 retention guard held:
+// every student header/footer part that carried visible content before the
+// merge must still exist, still carry visible content, and still have an
+// intact relationship closure afterwards. It fails closed instead of
+// silently discarding a retained student part.
+func verifyStudentHeaderFooterRetained(entries map[string][]byte, guardedParts map[string]bool) error {
+	for part := range guardedParts {
+		if _, ok := entries[part]; !ok {
+			return fmt.Errorf("retained header/footer part %s went missing after merge", part)
+		}
+		if headerFooterPartIsEmptyPlaceholder(entries, part) {
+			return fmt.Errorf("retained header/footer part %s lost visible content after merge", part)
+		}
+		if !verifyPartRelationshipClosure(part, entries, map[string]bool{}) {
+			return fmt.Errorf("retained header/footer part %s has broken relationship closure", part)
+		}
+	}
+	return nil
 }
 
 // ensureEvenOddHeadersSetting keeps the package-level switch consistent with
@@ -2054,6 +2220,9 @@ func copyAndMaterializeTemplateHeaderFooter(templatePath, outputPath string, cov
 	if err := copyTemplateHeaderFooterPackage(templatePath, outputPath); err != nil {
 		return err
 	}
+	// D17: 学校名做成可配置项（从模板 profile 页眉提取，取不到回退默认字符串），
+	// 不再硬编码；模板解析成功后按模板路径缓存。
+	schoolName := resolveRunningHeaderSchoolName(templatePath)
 	entries, err := readDocxEntries(outputPath)
 	if err != nil {
 		return err
@@ -2076,8 +2245,8 @@ func copyAndMaterializeTemplateHeaderFooter(templatePath, outputPath string, cov
 				updated = replaceDocxTextNodes(updated, distributeHeaderText(texts, materialized))
 			}
 		}
-		if strings.Contains(visible, "重庆工程学院本科生毕业设计（论文）") && strings.Contains(visible, "绪论") {
-			updated = materializeRunningHeaderStyleRef(updated)
+		if strings.Contains(visible, schoolName) && strings.Contains(visible, "绪论") {
+			updated = materializeRunningHeaderStyleRef(updated, schoolName)
 		}
 		if updated != xmlText {
 			entries[name] = []byte(updated)
@@ -2090,21 +2259,49 @@ func copyAndMaterializeTemplateHeaderFooter(templatePath, outputPath string, cov
 	return writeDocxEntries(outputPath, entries)
 }
 
+// D17：学校名可配置化。
+// 默认兜底串保留历史行为（模板解析失败或页眉未能提取到校名时使用）。
+const defaultRunningHeaderSchoolName = "重庆工程学院本科生毕业设计（论文）"
+
+var collegeNameCache sync.Map // key: templatePath -> string
+
+// resolveRunningHeaderSchoolName 从模板 profile 的页眉文本提取学校名（可配置），
+// 提取不到时回退到 defaultRunningHeaderSchoolName（保留历史行为）。
+// 模板解析成功则按模板路径缓存，避免对每份学生文档重复解析同一模板。
+func resolveRunningHeaderSchoolName(templatePath string) string {
+	if v, ok := collegeNameCache.Load(templatePath); ok {
+		return v.(string)
+	}
+	name := ""
+	if profile, err := templateprofile.Extract(templatePath); err == nil {
+		name = templateprofile.ExtractCollegeName(profile.Header.Text, "")
+	}
+	if name == "" {
+		name = defaultRunningHeaderSchoolName
+	}
+	collegeNameCache.Store(templatePath, name)
+	return name
+}
+
 // materializeRunningHeaderStyleRef keeps the school name and replaces the
 // template's sample "1 绪论" with Word's native current Heading 1 field.
 // The literal result remains as a safe fallback for renderers that do not
 // update fields; Word updates it when the document is opened.
-func materializeRunningHeaderStyleRef(headerXML string) string {
+// schoolName 由调用方传入（可配置），空值时按历史默认串处理。
+func materializeRunningHeaderStyleRef(headerXML, schoolName string) string {
+	if schoolName == "" {
+		schoolName = defaultRunningHeaderSchoolName
+	}
 	if strings.Contains(headerXML, "STYLEREF") {
 		return headerXML
 	}
 	paragraphs := regexp.MustCompile(`(?s)<w:p\b.*?</w:p>`)
 	return paragraphs.ReplaceAllStringFunc(headerXML, func(paragraph string) string {
 		visible := strings.Join(extractDocxTextNodes(paragraph), "")
-		if !strings.Contains(visible, "重庆工程学院本科生毕业设计（论文）") || !strings.Contains(visible, "绪论") {
+		if !strings.Contains(visible, schoolName) || !strings.Contains(visible, "绪论") {
 			return paragraph
 		}
-		schoolAt := strings.Index(paragraph, "重庆工程学院本科生毕业设计（论文）")
+		schoolAt := strings.Index(paragraph, schoolName)
 		runEnd := schoolAt + strings.Index(paragraph[schoolAt:], "</w:r>") + len("</w:r>")
 		closeAt := strings.LastIndex(paragraph, "</w:p>")
 		if schoolAt < 0 || runEnd < schoolAt || closeAt < runEnd {
@@ -2145,6 +2342,14 @@ func verifyCopiedHeaderFooterStructure(templatePath, outputPath string) (int, in
 			if !ok || !isHeaderFooterRelationship(rel) {
 				return 0, 0, false
 			}
+			// D5: the reference kind must match the relationship type. A
+			// headerReference that resolves to a footer part (or vice versa)
+			// means the merging step misrouted content, so verification must
+			// fail closed instead of treating the swap as valid.
+			kind := headerFooterReferenceKind(ref)
+			if relIsHeader := strings.Contains(rel.Type, "/header"); relIsHeader != (kind == "header") {
+				return 0, 0, false
+			}
 			partName := resolveRelationshipPart("word/document.xml", rel.Target)
 			if _, exists := outputEntries[partName]; !exists {
 				return 0, 0, false
@@ -2163,6 +2368,21 @@ func verifyCopiedHeaderFooterStructure(templatePath, outputPath string) (int, in
 		}
 	}
 	return headerCount, footerCount, true
+}
+
+// headerFooterReferenceKind reports whether a header/footer reference tag
+// declares a header ("header") or a footer ("footer"); empty for anything that
+// is not a well-formed reference.
+func headerFooterReferenceKind(ref string) string {
+	for _, prefix := range []string{"<w:headerReference", "<w:footerReference"} {
+		if strings.Contains(ref, prefix) {
+			if strings.Contains(prefix, "header") {
+				return "header"
+			}
+			return "footer"
+		}
+	}
+	return ""
 }
 
 func verifyPartRelationshipClosure(partName string, entries map[string][]byte, visiting map[string]bool) bool {
@@ -2485,6 +2705,7 @@ func mergeSelectedDocumentRelationships(
 	outputEntries,
 	templateEntries map[string][]byte,
 	requiredIDs map[string]bool,
+	retainIDs map[string]bool,
 ) (map[string]string, map[string]string, error) {
 	idMap := map[string]string{}
 	copiedParts := map[string]string{}
@@ -2512,7 +2733,11 @@ func mergeSelectedDocumentRelationships(
 	filtered := make([]strictRelationshipPart, 0, len(outputRels.Relationships)+len(requiredIDs))
 	usedIDs := map[string]bool{}
 	for _, rel := range outputRels.Relationships {
-		if isHeaderFooterRelationship(rel) {
+		// A header/footer relationship referenced by a section that keeps its
+		// own part (D5 retention) must not be pruned here; it stays intact so
+		// the student's visible content is not dropped. Only references that
+		// are about to be replaced by the template are removed.
+		if isHeaderFooterRelationship(rel) && !retainIDs[rel.ID] {
 			continue
 		}
 		filtered = append(filtered, rel)

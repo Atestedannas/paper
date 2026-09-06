@@ -32,6 +32,22 @@ func (r *RuleEngine) Classify(f *ParagraphFeature) ClassifyResult {
 		return ClassifyResult{Label: TypeBody, Confidence: 0.5, Source: "rule", Level: 0}
 	}
 
+	// ────────── 结构信号优先（第1层：pStyle / outlineLvl / numPr） ──────────
+	// 复用 HeadingLevelFromStructure（与 v2_classifier.go structuralSignalType 同源思路），
+	// 命中即直接定级标题，绕过关键词/字号启发式，避免正文识别误判。
+	// 保护：仅当段落确有结构信号时才进入该层（OutlineLvl=-1=未设置哨兵）；
+	// 无任何结构信号的普通正文段落直接跳过，避免零值 outlineLvl 被误判为一级标题。
+	if f.PStyle != "" || f.OutlineLvl >= 0 || f.HasNumPr {
+		if level := HeadingLevelFromStructure(f.PStyle, f.OutlineLvl, f.HasNumPr, text); level > 0 {
+			return ClassifyResult{
+				Label:      fmt.Sprintf("heading_%d", level),
+				Confidence: 0.98,
+				Source:     "rule",
+				Level:      level,
+			}
+		}
+	}
+
 	// ────────── 目录条目（最先检查，因为目录条目可能包含标题样式的文本） ──────────
 	if f.HasTOCIndicator {
 		normalized := text

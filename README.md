@@ -32,6 +32,16 @@ Gitee 是 OSCHINA 推出的基于 Git 的代码托管平台（同时支持 SVN�
 #### 特技
 
 
+1: 继续使用go  unioffice   完成  使用功能函数   func  处理 正文 ，标题1  
+
+2： 使用 word Javascript api  纯前端完成  这个项目  
+3: 使用  open xml sdk  C# 完成   ASP.NET Core
+
+
+
+
+
+
 
 
 

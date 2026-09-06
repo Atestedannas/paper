@@ -31,24 +31,29 @@ type ParagraphSample struct {
 	HasCoverKeywords bool `json:"has_cover_keywords"` // 含封面关键词
 	HasOriginalityKW bool `json:"has_originality_kw"` // 含原创性声明关键词
 
+	// ── 结构信号（D14：纳入训练样本持久化，供重训时训练/推理维度一致）──
+	PStyle     string `gorm:"size:100" json:"p_style"`       // 段落样式 ID，空=未设置
+	OutlineLvl int    `gorm:"default:-1" json:"outline_lvl"` // 大纲级别，-1=未设置（0=1级标题）
+	HasNumPr   bool   `json:"has_num_pr"`                    // 是否含多级编号 numPr
+
 	// 上下文特征
 	PrevType string `gorm:"size:50" json:"prev_type"` // 前一段的分类
 	NextType string `gorm:"size:50" json:"next_type"` // 后一段的分类
 
 	// ── 分类标签 ──
-	RuleLabel       string  `gorm:"size:50" json:"rule_label"`       // 规则引擎给出的标签
-	RuleConfidence  float64 `json:"rule_confidence"`                 // 规则引擎的置信度
-	AILabel         string  `gorm:"size:50" json:"ai_label"`         // AI 仲裁给出的标签
-	AIConfidence    float64 `json:"ai_confidence"`                   // AI 置信度
-	UserLabel       string  `gorm:"size:50" json:"user_label"`       // 用户修正的标签（最高权重）
+	RuleLabel       string  `gorm:"size:50" json:"rule_label"`        // 规则引擎给出的标签
+	RuleConfidence  float64 `json:"rule_confidence"`                  // 规则引擎的置信度
+	AILabel         string  `gorm:"size:50" json:"ai_label"`          // AI 仲裁给出的标签
+	AIConfidence    float64 `json:"ai_confidence"`                    // AI 置信度
+	UserLabel       string  `gorm:"size:50" json:"user_label"`        // 用户修正的标签（最高权重）
 	FinalLabel      string  `gorm:"size:50;index" json:"final_label"` // 最终使用的标签
-	LabelSource     string  `gorm:"size:20" json:"label_source"`     // "rule" / "ai" / "user" / "local_model"
+	LabelSource     string  `gorm:"size:20" json:"label_source"`      // "rule" / "ai" / "user" / "local_model"
 	LocalModelLabel string  `gorm:"size:50" json:"local_model_label"` // 本地模型预测的标签
 
 	// ── 元数据 ──
-	TextSnippet string `gorm:"size:200" json:"text_snippet"` // 文本片段（用于人工审查）
+	TextSnippet string `gorm:"size:200" json:"text_snippet"`      // 文本片段（用于人工审查）
 	DocumentID  string `gorm:"size:100;index" json:"document_id"` // 关联的文档标识
-	ParaIndex   int    `json:"para_index"`                   // 段落在文档中的序号
+	ParaIndex   int    `json:"para_index"`                        // 段落在文档中的序号
 
 	// 训练权重：user > ai > rule
 	Weight float64 `gorm:"default:1.0" json:"weight"`
@@ -64,7 +69,7 @@ type ClassifierModelState struct {
 	SampleCount   int       `gorm:"not null;default:0" json:"sample_count"`
 	Accuracy      float64   `json:"accuracy"`
 	TrainedAt     time.Time `json:"trained_at"`
-	ModelDataJSON string    `gorm:"type:text" json:"model_data_json"` // 序列化的决策树 JSON
+	ModelDataJSON string    `gorm:"type:text" json:"model_data_json"`          // 序列化的决策树 JSON
 	Phase         string    `gorm:"size:20;default:'cold_start'" json:"phase"` // cold_start / apprentice / independent
 	AICallCount   int       `gorm:"default:0" json:"ai_call_count"`
 	CreatedAt     time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`

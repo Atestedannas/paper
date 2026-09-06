@@ -2,6 +2,7 @@ package aiclassifier
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"math"
 	"sort"
@@ -9,16 +10,16 @@ import (
 
 // DecisionNode 决策树节点
 type DecisionNode struct {
-	IsLeaf        bool                    `json:"is_leaf"`
-	Label         string                  `json:"label,omitempty"`
-	Confidence    float64                 `json:"confidence,omitempty"`
-	SampleCount   int                     `json:"sample_count,omitempty"`
-	FeatureIndex  int                     `json:"feature_index,omitempty"`
-	FeatureName   string                  `json:"feature_name,omitempty"`
-	Threshold     float64                 `json:"threshold,omitempty"`
-	Left          *DecisionNode           `json:"left,omitempty"`  // <= threshold
-	Right         *DecisionNode           `json:"right,omitempty"` // > threshold
-	Distribution  map[string]int          `json:"distribution,omitempty"`
+	IsLeaf       bool           `json:"is_leaf"`
+	Label        string         `json:"label,omitempty"`
+	Confidence   float64        `json:"confidence,omitempty"`
+	SampleCount  int            `json:"sample_count,omitempty"`
+	FeatureIndex int            `json:"feature_index,omitempty"`
+	FeatureName  string         `json:"feature_name,omitempty"`
+	Threshold    float64        `json:"threshold,omitempty"`
+	Left         *DecisionNode  `json:"left,omitempty"`  // <= threshold
+	Right        *DecisionNode  `json:"right,omitempty"` // > threshold
+	Distribution map[string]int `json:"distribution,omitempty"`
 }
 
 // LocalClassifier 本地决策树分类器
@@ -58,6 +59,25 @@ func (c *LocalClassifier) Predict(features []float64) ClassifyResult {
 		Source:     "local_model",
 		Level:      detectLevelFromLabel(node.Label),
 	}
+}
+
+// PredictWithFeature 结构信号优先的预测入口。
+// 复用 HeadingLevelFromStructure（与 v2_classifier.go structuralSignalType 同源思路），
+// 命中结构信号直接定级标题，否则回落到特征向量走决策树。
+func (c *LocalClassifier) PredictWithFeature(f *ParagraphFeature) ClassifyResult {
+	// 保护：仅当段落确有结构信号时才以 0.98 置信定级标题（OutlineLvl=-1=未设置哨兵），
+	// 无任何结构信号的普通正文段落回落到特征向量走决策树，避免零值误判为一级标题。
+	if f.PStyle != "" || f.OutlineLvl >= 0 || f.HasNumPr {
+		if level := HeadingLevelFromStructure(f.PStyle, f.OutlineLvl, f.HasNumPr, f.Text); level > 0 {
+			return ClassifyResult{
+				Label:      fmt.Sprintf("heading_%d", level),
+				Confidence: 0.98,
+				Source:     "structure",
+				Level:      level,
+			}
+		}
+	}
+	return c.Predict(f.ToFloat64Slice())
 }
 
 // IsReady 是否已训练完成
@@ -113,10 +133,10 @@ func buildTree(samples []trainingSample, depth, maxDepth, minSamples int) *Decis
 	}
 	if allSame {
 		return &DecisionNode{
-			IsLeaf:      true,
-			Label:       firstLabel,
-			Confidence:  1.0,
-			SampleCount: len(samples),
+			IsLeaf:       true,
+			Label:        firstLabel,
+			Confidence:   1.0,
+			SampleCount:  len(samples),
 			Distribution: map[string]int{firstLabel: len(samples)},
 		}
 	}

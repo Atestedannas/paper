@@ -62,7 +62,7 @@ func BuildRoleFormatPlan(profile *templateprofile.Profile, assignments []rolecla
 		}
 		item.RuleKey = roleToProfileKey(assignment.Role)
 		if item.RuleKey != "" {
-			_, item.Apply = resolveTemplateProfileStyle(profile.Styles, item.RuleKey)
+			_, item.Apply = rolePlanStyleRule(profile, assignment.Role, item.RuleKey)
 		}
 		sectionKey := ""
 		switch assignment.Role {
@@ -207,7 +207,7 @@ func ValidateRoleFormatPlan(ctx context.Context, path string, profile *templatep
 			actualIndex = stable
 		}
 		if item.RuleKey != "" {
-			if expected, found := resolveTemplateProfileStyle(profile.Styles, item.RuleKey); found {
+			if expected, found := rolePlanStyleRule(profile, item.Role, item.RuleKey); found {
 				issues = append(issues, compareRoleStyle(item, expected, styles[actualIndex])...)
 			}
 		}
@@ -293,16 +293,18 @@ func applyRoleFormatPlanToDocumentXML(documentXML string, profile *templateprofi
 			next = removeHeadingNumbering(next)
 		}
 		if item.RuleKey != "" {
-			if rule, found := resolveTemplateProfileStyle(profile.Styles, item.RuleKey); found {
+			if rule, found := rolePlanStyleRule(profile, item.Role, item.RuleKey); found {
 				if style, valid := paragraphStyleFromTemplateProfile(rule); valid {
 					next = applyParagraphStyle(next, style)
 				}
 			}
 		}
 		// CQIE requires one blank 20pt line above and below every chapter title.
-		// This is a school rule, not an incidental template sample value.
+		// This is a school rule, not an incidental template sample value.  The
+		// template's Normal style has a two-character first-line indent; it must
+		// be explicitly reset here or Word centers the title in an indented area.
 		if item.Role == "heading_1" && item.Trusted {
-			next, _ = ooxmlpatch.ApplyParagraphProperties(next, ooxmlpatch.ParagraphPropertiesSpec{BeforeTwips: 400, AfterTwips: 400})
+			next, _ = ooxmlpatch.ApplyParagraphProperties(next, ooxmlpatch.ParagraphPropertiesSpec{BeforeTwips: 400, AfterTwips: 400, FirstLineChars: 0, FirstLineCharsSet: true})
 		}
 		if item.Flow != nil && !item.Flow.ReviewRequired && item.Flow.PageBreakBefore {
 			next, _ = ooxmlpatch.ApplyParagraphProperties(next, ooxmlpatch.ParagraphPropertiesSpec{PageBreakBefore: true})
@@ -313,6 +315,69 @@ func applyRoleFormatPlanToDocumentXML(documentXML string, profile *templateprofi
 		return next
 	})
 	return updated, count
+}
+
+func rolePlanStyleRule(profile *templateprofile.Profile, role, key string) (templateprofile.StyleRule, bool) {
+	rule, ok := resolveTemplateProfileStyle(profile.Styles, key)
+	hard, hardOK := cqieRolePlanHardStyle(role)
+	if !ok {
+		return hard, hardOK
+	}
+	if !hardOK {
+		return rule, true
+	}
+	return mergeRolePlanStyle(rule, hard), true
+}
+
+func cqieRolePlanHardStyle(role string) (templateprofile.StyleRule, bool) {
+	switch role {
+	case "title":
+		return templateprofile.StyleRule{FontEastAsia: "黑体", FontSizeHalfPt: "30", Bold: true, BoldSet: true, Alignment: "center"}, true
+	case "heading_1":
+		return templateprofile.StyleRule{FontEastAsia: "黑体", FontSizeHalfPt: "32", Bold: true, BoldSet: true, Alignment: "center", Line: "400", LineRule: "exact", BeforeTwips: "400", AfterTwips: "400", FirstLineChars: "0"}, true
+	case "heading_2":
+		return templateprofile.StyleRule{FontEastAsia: "黑体", FontSizeHalfPt: "30", Bold: true, BoldSet: true, Alignment: "left", Line: "400", LineRule: "exact", FirstLineChars: "0"}, true
+	case "heading_3":
+		return templateprofile.StyleRule{FontEastAsia: "黑体", FontSizeHalfPt: "28", Bold: true, BoldSet: true, Alignment: "left", Line: "400", LineRule: "exact", FirstLineChars: "200"}, true
+	case "body", "abstract_body", "abstract_en_body":
+		return templateprofile.StyleRule{FontEastAsia: "宋体", FontSizeHalfPt: "24", Bold: false, BoldSet: true, Alignment: "both", Line: "400", LineRule: "exact", FirstLineChars: "200"}, true
+	case "table_caption", "figure_caption", "references":
+		return templateprofile.StyleRule{FontEastAsia: "宋体", FontSizeHalfPt: "21", Bold: false, BoldSet: true}, true
+	default:
+		return templateprofile.StyleRule{}, false
+	}
+}
+
+func mergeRolePlanStyle(base, override templateprofile.StyleRule) templateprofile.StyleRule {
+	if override.FontEastAsia != "" {
+		base.FontEastAsia = override.FontEastAsia
+	}
+	if override.FontSizeHalfPt != "" {
+		base.FontSizeHalfPt = override.FontSizeHalfPt
+	}
+	if override.Alignment != "" {
+		base.Alignment = override.Alignment
+	}
+	if override.Line != "" {
+		base.Line = override.Line
+	}
+	if override.LineRule != "" {
+		base.LineRule = override.LineRule
+	}
+	if override.BeforeTwips != "" {
+		base.BeforeTwips = override.BeforeTwips
+	}
+	if override.AfterTwips != "" {
+		base.AfterTwips = override.AfterTwips
+	}
+	if override.FirstLineChars != "" {
+		base.FirstLineChars = override.FirstLineChars
+	}
+	if override.BoldSet {
+		base.Bold = override.Bold
+		base.BoldSet = true
+	}
+	return base
 }
 
 func applyHeading1Style(paragraph string) string {
