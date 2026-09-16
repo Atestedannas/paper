@@ -342,3 +342,19 @@ https://link.inficheesy.com/proxyseller
 
 
 
+
+
+### 论文格式准确度与 OCR 辅助
+
+在后端 `.env` 中设置 `OCR_ENABLED=false`（本工作区默认），修改后重启后端。
+设置为 `true` 并配置 `PYTHON_SERVICE_URL` 可启用 Python OCR/渲染视觉辅助。
+关闭时跳过工作流模板注册、PDF 位置证据和视觉复核；原生 DOCX 规则解析、段落角色识别与格式应用仍运行。
+未设置开关的旧部署继续沿用 `PYTHON_SERVICE_URL` 是否配置的行为；无效开关值按关闭处理。
+该开关控制可选视觉服务，不禁用其他用途的 Python、Word 或 LibreOffice 工具。
+
+模板样例按章节角色选择，避免摘要、封面或脚注被用作正文规则证据。
+自动行距的 `w:line` 按 240 分之一行解释，固定/最小行距按 twips 解释。
+参考文献、致谢、附录允许不同先后顺序，正文格式不会覆盖脚注。
+
+回归检查：`go test ./internal/core/... ./internal/service ./pkg/fileprocessor ./pkg/formatchecker ./pkg/aiclassifier`。
+这些测试验证已知错误，不能代替按学校分组、人工标注的真实论文准确率评估。

@@ -1919,7 +1919,7 @@ func applyTemplateProfileStylesToDocumentXML(documentXML string, profile *templa
 		case currentSection == "cover" && isTemplateCoverThesisTitle(text):
 			key = "cover_title"
 		case currentSection == "after_cover" && isTemplateCoverThesisTitle(text):
-			key = "cover_title"
+			key = frontMatterTitleStyleKey(profile)
 		case currentSection == "after_cover" && !frontMatterLabel && len([]rune(text)) > 20:
 			key = frontMatterTitleStyleKey(profile)
 		default:

@@ -559,6 +559,15 @@ func (v *FormatVerifier) compareAllWithSpecs(classified map[string][]document.Pa
 			// otherwise the verifier reports intentional differences as errors
 			// and may trigger an unnecessary fallback pass.
 			compareSpec := spec
+			// A3/A4: 摘要/关键词段是"标签+正文"复合段，由 AIFormatApplier 的
+			// applyAbstractLabelExtras 按 run 差异化写入：标签黑体加粗、正文宋体小四
+			// 两端对齐、首行缩进480、行距 line=324 auto（模板样例）。其中正文行距
+			// 以该模板样例值（而非笼统 spec 采样的 400 exact 学生值）为准，验证与
+			// 写入用同一期望，避免 RepairAgent 每轮因行距差异整段重刷、覆盖差异化。
+			if isAbstractLabelCategory(category) && (category == V2Abstract || category == V2EnAbstract) {
+				compareSpec.LineSpacingVal = abstractBodyLineTwips
+				compareSpec.LineSpacingRule = abstractBodyLineRule
+			}
 			_, _, hasComplex, _ := textScriptKinds(text)
 			if !hasComplex {
 				// w:szCs belongs to complex-script runs. A Latin-free Chinese
@@ -673,6 +682,12 @@ func (v *FormatVerifier) autoFixDiffsWithSpecs(
 				continue
 			}
 			applier.ApplySpecToPara(paras[idx], spec)
+			if isAbstractLabelCategory(category) {
+				// A3/A4: 通用修复按整段 spec 重写会清掉标签加粗并把行距改回 400 exact；
+				// 修复后立即重放摘要差异化（标签黑体加粗、正文行距 324auto + 两端对齐 +
+				// 首行缩进480），保证 RepairAgent 兜底修复也不会破坏标签/正文按 run 区分。
+				applier.applyAbstractLabelExtras(paras[idx], category)
+			}
 			fixes++
 			log.Printf("[格式验证修正] %s #%d 已按模板规范重新应用格式", category, idx)
 		}

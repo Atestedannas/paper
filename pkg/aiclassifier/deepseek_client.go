@@ -538,16 +538,28 @@ func (c *DeepSeekWebClient) parseSSEResponse(body io.Reader, contentEncoding str
 						chunkCount++
 						log.Printf("[DeepSeek] SSE: DONE packet content (%d bytes)", len(doneContent))
 					}
-				} else if status == "WIP" && fullContent.Len() == 0 {
-					// WIP 包可能携带 fragments 的初始内容（如 "{\n"），
-					// 后续 APPEND 只追加增量，不含此初始部分
-					for _, f := range vObj.Response.Fragments {
-						if f.Content != "" {
-							fullContent.WriteString(f.Content)
-							chunkCount++
-							inContentStream = true
-							log.Printf("[DeepSeek] SSE received WIP fragment seed bytes=%d", len(f.Content))
+					continue
+				}
+
+				// 首个内容包兜底：若不依赖 status 字面量（网页端可能给
+				// WIP/FINISHED/其它值），只要 current 尚无内容且携带 text
+				// fragments/content，就作为种子接入增量流。这保证单包全量
+				// 响应（无 APPEND 增量）或 status 值变化时不会误判为空 SSE。
+				if fullContent.Len() == 0 {
+					snapshot := vObj.Response.Content
+					if snapshot == "" {
+						var sb strings.Builder
+						for _, f := range vObj.Response.Fragments {
+							sb.WriteString(f.Content)
 						}
+						snapshot = sb.String()
+					}
+					if snapshot != "" {
+						fullContent.Reset()
+						fullContent.WriteString(snapshot)
+						chunkCount++
+						inContentStream = true
+						log.Printf("[DeepSeek] SSE received response snapshot bytes=%d status=%q", len(snapshot), status)
 					}
 				}
 			}

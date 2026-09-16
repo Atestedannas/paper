@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/paper-format-checker/backend/internal/core/evidence"
@@ -50,6 +51,7 @@ func ClassifyStructuredWithEvidence(ctx context.Context, client Client, nodes []
 		return nil, nil
 	}
 	assignments := make([]Assignment, 0, len(requests))
+	var failures []string
 	for _, request := range requests {
 		payload, err := json.Marshal(request)
 		if err != nil {
@@ -62,7 +64,13 @@ Subject:
 ` + string(payload)
 		response, err := client.ChatCompletion(prompt)
 		if err != nil {
-			return nil, err
+			// 非致命上游失败（如 DeepSeek SSE 空响应/超时）只影响当前节点：
+			// 保留该节点的确定性角色并继续其余节点，成功候选照常返回给上层
+			// 合并，避免单个弱信号把整批 LLM 增强全部吞掉（此前一处失败即
+			// return nil, err）。失败以汇总错误的形式上交，外层据此记录日志。
+			log.Printf("[roleclassify] node %s arbitration failed: %v; keeping deterministic role", request.Subject.NodeID, err)
+			failures = append(failures, fmt.Sprintf("node=%s: %v", request.Subject.NodeID, err))
+			continue
 		}
 		response = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(response), "```json"), "```"), "```"))
 		var candidate evidence.CandidateRole
@@ -86,6 +94,9 @@ Subject:
 			evidenceRefs = append(evidenceRefs, "deepseek_uncertainty:"+strings.Join(candidate.Uncertainties, " | "))
 		}
 		assignments = append(assignments, Assignment{NodeID: candidate.NodeID, Role: candidate.Role, Confidence: candidate.Confidence, Evidence: evidenceRefs})
+	}
+	if len(failures) > 0 {
+		return assignments, fmt.Errorf("%d/%d role arbitration requests failed: %s", len(failures), len(requests), strings.Join(failures, "; "))
 	}
 	return assignments, nil
 }
@@ -140,7 +151,7 @@ func Freeze(nodes []paperast.Node) []Assignment {
 	result := make([]Assignment, 0, len(nodes))
 	abstractBodyRole := "abstract_body"
 	for _, node := range nodes {
-		if node.NodeType != "paragraph" || strings.TrimSpace(node.NodeID) == "" {
+		if node.NodeType != "paragraph" || strings.TrimSpace(node.NodeID) == "" || (node.SourcePart != "" && node.SourcePart != "word/document.xml") {
 			continue
 		}
 		role := node.SemanticRole
@@ -164,7 +175,9 @@ func Freeze(nodes []paperast.Node) []Assignment {
 			case "references":
 				role = "references"
 			case "acknowledgements":
-				role = "body"
+				role = "acknowledgements"
+			case "appendix":
+				role = "appendix"
 			default:
 				continue
 			}
@@ -236,11 +249,12 @@ func EnforceDocumentTree(nodes []paperast.Node) []paperast.Node {
 	headingSeen := [5]bool{}
 	for i := range result {
 		node := &result[i]
-		if node.NodeType != "paragraph" {
+		if node.NodeType != "paragraph" || (node.SourcePart != "" && node.SourcePart != "word/document.xml") {
 			continue
 		}
 		nextSection, nextRank := sectionForRole(*node, section, sectionRank)
-		if nextRank < sectionRank {
+		// Schools place references, acknowledgements and appendices in different orders.
+		if nextRank < sectionRank && !(nextRank >= 4 && sectionRank >= 4) {
 			invalidateTreeNode(node, "tree:section_regression")
 			continue
 		}

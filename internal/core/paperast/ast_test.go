@@ -205,7 +205,7 @@ func TestExtractDocumentXMLClassifiesCoverTitleAndAbstractBoundaries(t *testing.
 		`<w:p><w:r><w:t>摘要：这是摘要正文，时间为2026年。</w:t></w:r></w:p>` +
 		`</w:body></w:document>`
 	snapshot := ExtractDocumentXML(xml)
-	want := []string{"cover_title", "cover_date", "cover_title", "abstract_cn"}
+	want := []string{"cover_title", "cover_date", "title", "abstract_cn"}
 	for i, role := range want {
 		if snapshot.Nodes[i].SemanticRole != role {
 			t.Fatalf("node %d role = %q, want %q; node=%#v", i, snapshot.Nodes[i].SemanticRole, role, snapshot.Nodes[i])

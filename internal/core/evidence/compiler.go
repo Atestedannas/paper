@@ -10,6 +10,21 @@ import (
 // Client is the small common boundary shared by the project's DeepSeek clients.
 type Client interface{ ChatCompletion(string) (string, error) }
 
+// IsLLMTransportFailure reports whether err marks a non-fatal upstream LLM
+// failure (empty SSE, stream timeout, connection drop) rather than a model
+// rejection of a proposal. Callers can then degrade gracefully with a clear
+// reason instead of recording the candidate as "rejected".
+func IsLLMTransportFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "response content") ||
+		strings.Contains(msg, "SSE") ||
+		strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "timeout")
+}
+
 // CompileRule asks the model to summarize one already-bounded evidence packet.
 // It returns a proposal only; templatecontract.ApplyCandidateRule remains the
 // required Go-side gate before a rule can affect formatting.

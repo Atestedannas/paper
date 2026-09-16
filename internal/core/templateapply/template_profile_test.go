@@ -1258,7 +1258,7 @@ func TestApplyTemplateProfileStylesPreservesCoverTitleRules(t *testing.T) {
 		`<w:p><w:r><w:t>摘要：</w:t></w:r><w:r><w:t>这是摘要正文。</w:t></w:r></w:p>` +
 		`</w:body></w:document>`
 	updated, count := applyTemplateProfileStylesToDocumentXML(input, profile)
-	if count != 4 || strings.Count(updated, `w:sz w:val="72"`) < 2 {
+	if count != 3 || strings.Count(updated, `w:sz w:val="72"`) != 1 {
 		t.Fatalf("cover title/date rules were not applied deterministically: count=%d xml=%s", count, updated)
 	}
 	if !strings.Contains(updated, `w:sz w:val="32"`) || !strings.Contains(updated, `w:sz w:val="24"`) {

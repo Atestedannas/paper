@@ -43,6 +43,23 @@ func (a *AIFormatApplier) Apply(
 			log.Printf("[AI应用] 跳过 %s (%d段)", category, len(paras))
 			continue
 		}
+		if category == V2ThesisTitle {
+			// 页顶论文题目：模板无独立 spec（题目在封面图中未采样），
+			// 按论文题目规范写入：黑体、二号(22pt=44 halfpt)、加粗、居中（A3）。
+			count := 0
+			for _, para := range paras {
+				if strings.TrimSpace(a.processor.extractParagraphText(para)) == "" {
+					continue
+				}
+				a.applyThesisTitleRule(para)
+				count++
+			}
+			if count > 0 {
+				log.Printf("[AI应用] %s: 修正 %d 段 (页顶论文题目: 黑体二号22pt 加粗 居中)", category, count)
+				total += count
+			}
+			continue
+		}
 		spec, ok := specs[category]
 		if !ok || spec.IsEmpty() {
 			// 没有该类型的模板格式，静默跳过（不污染日志）
@@ -71,6 +88,11 @@ func (a *AIFormatApplier) Apply(
 			}
 			// #endregion agent log H2
 			a.ApplySpecToPara(para, applySpec)
+			if isAbstractLabelCategory(category) {
+				// A3/A4: 摘要/关键词标签 run 差异化（标签加粗、中文标签黑体、
+				// 摘要正文两端对齐 + 模板行距 line=324 auto），修复整段统一套格式。
+				a.applyAbstractLabelExtras(para, category)
+			}
 			count++
 		}
 		if count > 0 {
@@ -636,5 +658,135 @@ func (a *AIFormatApplier) ApplyFontOnlyToTableCellPara(para document.Paragraph, 
 			pPr.RPr = wml.NewCT_ParaRPr()
 		}
 		a.applyFontToParaRPr(pPr.RPr, spec)
+	}
+}
+
+// abstractLabelPrefixes 摘要/关键词段中"标签 run"的识别前缀（含中英文）。
+// 学生模板常把"摘要："/"关键词："/"Abstract:"/"Key words:" 标签与正文写进
+// 同一段落，只有按 run 拆分才能做到"标签加粗、正文不加粗"。
+var abstractLabelPrefixes = map[string][]string{
+	V2Abstract:   {"摘要"},
+	V2Keywords:   {"关键词"},
+	V2EnAbstract: {"Abstract"},
+	V2EnKeywords: {"Key words", "Keywords"},
+}
+
+// abstractBodyLineTwips / abstractBodyLineRule 摘要正文行距的模板样例值
+// （line=324 twips = 140%，rule=auto）。applyAbstractLabelExtras 按此值写入，
+// compareAllWithSpecs 对摘要标签类别用同一值做验证期望，保证"验证/写入"一致：
+// 否则 RepairAgent 会把 324auto 当成与 spec(400 exact) 的差异，每轮整段重刷并
+// 覆盖标签差异化成果（A3/A4 行距过密、标签不被加粗的根因）。
+const abstractBodyLineTwips int64 = 324
+const abstractBodyLineRule = wml.ST_LineSpacingRuleAuto
+
+// isAbstractLabelCategory 判断类别是否需要标签/正文差异化后处理（A3/A4）。
+func isAbstractLabelCategory(category string) bool {
+	_, ok := abstractLabelPrefixes[category]
+	return ok
+}
+
+// applyAbstractLabelExtras 摘要/关键词段后处理（A3/A4）。
+//
+// 前置：ApplySpecToPara 已对整段统一套规范（字号/字体/行距），但学生把
+// "摘要：+正文"合并进同一段落，整段统一套一个 spec 会导致标签与正文同格式。
+// 本函数修正三点：
+//  1. 标签 run（首个非空 run 命中前缀）加粗——中文标签另设黑体
+//     （模板标注"小四号黑体"），英文标签仅加粗（Times New Roman 加粗）；
+//  2. 摘要正文（abstract/en_abstract）行距改回模板样例值 line=324 rule=auto，
+//     消除学生 400 exact 造成的行距过密；
+//  3. 摘要正文两端对齐 + 首行缩进两字符（480 twips，模板标注"首行缩进两个字符"）。
+func (a *AIFormatApplier) applyAbstractLabelExtras(para document.Paragraph, category string) {
+	labelChanged := false
+	for _, run := range para.Runs() {
+		t := strings.TrimSpace(run.Text())
+		if t == "" {
+			continue
+		}
+		labelChanged = a.styleLabelRun(run, category, t)
+		break // 只处理第一个非空 run（标签）
+	}
+	if category == V2Abstract || category == V2EnAbstract {
+		paraProps := para.Properties()
+		paraProps.SetAlignment(wml.ST_JcBoth)
+		pPr := para.X().PPr
+		if pPr == nil {
+			pPr = wml.NewCT_PPr()
+			para.X().PPr = pPr
+		}
+		if pPr.Spacing == nil {
+			pPr.Spacing = wml.NewCT_Spacing()
+		}
+		lv := abstractBodyLineTwips
+		if pPr.Spacing.LineAttr == nil {
+			pPr.Spacing.LineAttr = &wml.ST_SignedTwipsMeasure{}
+		}
+		pPr.Spacing.LineAttr.Int64 = &lv
+		pPr.Spacing.LineRuleAttr = abstractBodyLineRule
+		// 首行缩进两字符（480 twips，模板标注"首行缩进两个字符"）
+		paraProps.SetFirstLineIndent(measurement.Distance(480) * measurement.Twips)
+	}
+	if labelChanged {
+		log.Printf("[AI应用] 摘要/关键词标签已加粗 (category=%s)", category)
+	}
+}
+
+// styleLabelRun 命中标签前缀的 run 加粗（中文类别另设黑体），返回是否命中。
+func (a *AIFormatApplier) styleLabelRun(run document.Run, category, trimmedText string) bool {
+	prefixes, ok := abstractLabelPrefixes[category]
+	if !ok {
+		return false
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(trimmedText, prefix) {
+			rPr := run.X().RPr
+			if rPr == nil {
+				rPr = wml.NewCT_RPr()
+				run.X().RPr = rPr
+			}
+			rPr.B = wml.NewCT_OnOff()
+			rPr.BCs = wml.NewCT_OnOff()
+			if category == V2Abstract || category == V2Keywords {
+				// 中文标签：黑体加粗（模板标注"小四号黑体"）
+				if rPr.RFonts == nil {
+					rPr.RFonts = wml.NewCT_Fonts()
+				}
+				heiti := "黑体"
+				rPr.RFonts.EastAsiaAttr = &heiti
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// applyThesisTitleRule 页顶论文题目写入层修复（A3）。
+// 学生现状：小初(36pt) 宋体加粗居中，超出模板要求。修复为目标规范：
+// 黑体、二号(22pt=sz44 halfpt)、加粗、居中（模板标注"三号黑体居中"，
+// 字号按任务书取二号22pt）。只改字体/字号/加粗/对齐，不触及段落结构。
+func (a *AIFormatApplier) applyThesisTitleRule(para document.Paragraph) {
+	para.Properties().SetAlignment(wml.ST_JcCenter)
+	for _, run := range para.Runs() {
+		rPr := run.X().RPr
+		if rPr == nil {
+			rPr = wml.NewCT_RPr()
+			run.X().RPr = rPr
+		}
+		if rPr.RFonts == nil {
+			rPr.RFonts = wml.NewCT_Fonts()
+		}
+		heiti := "黑体"
+		rPr.RFonts.AsciiAttr = &heiti
+		rPr.RFonts.EastAsiaAttr = &heiti
+		sz := uint64(44) // 二号 = 22pt = 44 halfpt
+		if rPr.Sz == nil {
+			rPr.Sz = wml.NewCT_HpsMeasure()
+		}
+		rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &sz
+		if rPr.SzCs == nil {
+			rPr.SzCs = wml.NewCT_HpsMeasure()
+		}
+		rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber = &sz
+		rPr.B = wml.NewCT_OnOff()
+		rPr.BCs = wml.NewCT_OnOff()
 	}
 }

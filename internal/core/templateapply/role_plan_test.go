@@ -36,6 +36,64 @@ func TestFrozenRolePlanIsIdempotentAndUsesBodyRule(t *testing.T) {
 	}
 }
 
+func TestRolePlanEnglishAbstractStartsNewPage(t *testing.T) {
+	profile := &templateprofile.Profile{
+		Header: templateprofile.HeaderFooterRule{Text: "重庆工程学院本科生毕业设计（论文）"},
+		Styles: map[string]templateprofile.StyleRule{
+			"abstract_en":      {FontEastAsia: "Times New Roman", FontSizeHalfPt: "32", Bold: true, BoldSet: true, Alignment: "center"},
+			"abstract_en_body": {FontEastAsia: "Times New Roman", FontSizeHalfPt: "24", Alignment: "both"},
+			"body":             {FontEastAsia: "宋体", FontSizeHalfPt: "24"},
+		}}
+	assignments := []roleclassify.Assignment{
+		{NodeID: "p:ABS001", Role: "abstract_cn", Confidence: 1, Trusted: true, Index: 0},
+		{NodeID: "p:ABS002", Role: "abstract_en", Confidence: 1, Trusted: true, Index: 1},
+	}
+	documentXML := `<w:document xmlns:w="w" xmlns:w14="w14"><w:body>` +
+		`<w:p w14:paraId="ABS001"><w:r><w:t>摘要：随着…</w:t></w:r></w:p>` +
+		`<w:p w14:paraId="ABS002"><w:r><w:t>Abstract: Objective…</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	updated, changed := applyRoleFormatPlanToDocumentXML(documentXML, profile, assignments)
+	if changed != 1 {
+		t.Fatalf("first pass changed=%d, want 1 (only English abstract)", changed)
+	}
+	if !strings.Contains(updated, `<w:pageBreakBefore/>`) {
+		t.Fatalf("English abstract must start a new page: %s", updated)
+	}
+	if got := strings.Count(updated, `<w:pageBreakBefore/>`); got != 1 {
+		t.Fatalf("exactly one page break expected, got %d: %s", got, updated)
+	}
+	if strings.Contains(strings.Split(updated, `<w:p w14:paraId="ABS002">`)[0], `<w:pageBreakBefore/>`) {
+		t.Fatalf("Chinese abstract must NOT start a new page: %s", updated)
+	}
+	if _, secondChanged := applyRoleFormatPlanToDocumentXML(updated, profile, assignments); secondChanged != 0 {
+		t.Fatalf("second pass changed=%d, want idempotent 0:\n%s", secondChanged, updated)
+	}
+}
+
+// CQIE 学位论文要求中英文摘要分页。独立英文 Abstract 标签段（无内联正文）
+// 同样必须另起新页，保证与中文摘要分离。
+func TestRolePlanStandaloneAbstractLabelStartsNewPage(t *testing.T) {
+	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+		"abstract_en": {FontEastAsia: "Times New Roman", FontSizeHalfPt: "32", Bold: true, BoldSet: true, Alignment: "center"},
+		"body":        {FontEastAsia: "宋体", FontSizeHalfPt: "24"},
+	}}
+	assignments := []roleclassify.Assignment{
+		{NodeID: "p:ABS001", Role: "abstract_cn", Confidence: 1, Trusted: true, Index: 0},
+		{NodeID: "p:ABS002", Role: "abstract_en", Confidence: 1, Trusted: true, Index: 1},
+	}
+	documentXML := `<w:document xmlns:w="w" xmlns:w14="w14"><w:body>` +
+		`<w:p w14:paraId="ABS001"><w:r><w:t>摘要：随着…</w:t></w:r></w:p>` +
+		`<w:p w14:paraId="ABS002"><w:r><w:t>Abstract</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	updated, changed := applyRoleFormatPlanToDocumentXML(documentXML, profile, assignments)
+	if changed != 1 {
+		t.Fatalf("first pass changed=%d, want 1", changed)
+	}
+	if !strings.Contains(updated, `<w:pageBreakBefore/>`) {
+		t.Fatalf("standalone English Abstract label must start a new page: %s", updated)
+	}
+}
+
 func TestRolePlanMapsAbstractBodiesToBodyRules(t *testing.T) {
 	if got := roleToProfileKey("abstract_body"); got != "abstract_body" {
 		t.Fatalf("abstract body mapped to %q", got)
@@ -95,8 +153,11 @@ func TestFrozenRolePlanAppliesTemplateFlowOnceAndIsIdempotent(t *testing.T) {
 	if changed != 3 {
 		t.Fatalf("first pass changed=%d, want 3", changed)
 	}
-	if got := strings.Count(updated, `<w:pageBreakBefore/>`); got != 2 {
-		t.Fatalf("pageBreakBefore count=%d, want 2: %s", got, updated)
+	// Two page breaks come from the plan flow (body_start on the first
+	// chapter, references_title) plus one from the chapter-to-chapter rule now
+	// applied to the second heading_1.
+	if got := strings.Count(updated, `<w:pageBreakBefore/>`); got != 3 {
+		t.Fatalf("pageBreakBefore count=%d, want 3: %s", got, updated)
 	}
 	if got := strings.Count(updated, `<w:keepNext/>`); got != 2 {
 		t.Fatalf("keepNext count=%d, want 2: %s", got, updated)
@@ -104,6 +165,42 @@ func TestFrozenRolePlanAppliesTemplateFlowOnceAndIsIdempotent(t *testing.T) {
 	_, changed = applyRoleFormatPlanToDocumentXML(updated, profile, assignments)
 	if changed != 0 {
 		t.Fatalf("second pass changed=%d, want 0", changed)
+	}
+}
+
+func TestRolePlanBreaksPagesBetweenChapterHeadings(t *testing.T) {
+	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+		"heading_1": {FontSizeHalfPt: "32"},
+	}}
+	assignments := []roleclassify.Assignment{
+		{NodeID: "p:CH0001", Role: "heading_1", Confidence: 1, Trusted: true, Index: 0},
+		{NodeID: "p:CH0002", Role: "heading_1", Confidence: 1, Trusted: true, Index: 1},
+		{NodeID: "p:CH0003", Role: "heading_1", Confidence: 1, Trusted: true, Index: 2},
+	}
+	documentXML := `<w:document xmlns:w="w" xmlns:w14="w14"><w:body>` +
+		`<w:p w14:paraId="CH0001"><w:r><w:t>1 绪论</w:t></w:r></w:p>` +
+		`<w:p w14:paraId="CH0002"><w:r><w:t>2 研究对象与方法</w:t></w:r></w:p>` +
+		`<w:p w14:paraId="CH0003"><w:r><w:t>3 研究结果</w:t></w:r></w:p>` +
+		`</w:body></w:document>`
+	updated, _ := applyRoleFormatPlanToDocumentXML(documentXML, profile, assignments)
+	if got := strings.Count(updated, `<w:pageBreakBefore/>`); got != 2 {
+		t.Fatalf("pageBreakBefore count=%d, want 2 (chapters 2 and 3): %s", got, updated)
+	}
+	first := updated[strings.Index(updated, `paraId="CH0001"`):strings.Index(updated, `paraId="CH0002"`)]
+	if strings.Contains(first, "<w:pageBreakBefore") {
+		t.Fatalf("first chapter must keep starting on the TOC section break: %s", first)
+	}
+	for _, id := range []string{"CH0002", "CH0003"} {
+		seg := updated[strings.Index(updated, `paraId="`+id+`"`):]
+		if end := strings.Index(seg, "</w:p>"); end >= 0 {
+			seg = seg[:end]
+		}
+		if !strings.Contains(seg, "<w:pageBreakBefore") {
+			t.Fatalf("chapter %s must start on a new page: %s", id, seg)
+		}
+	}
+	if _, changed := applyRoleFormatPlanToDocumentXML(updated, profile, assignments); changed != 0 {
+		t.Fatalf("second pass changed=%d, want idempotent 0", changed)
 	}
 }
 
@@ -164,11 +261,13 @@ func TestRolePlanAddsHeading1StyleOnlyForTrustedHeading(t *testing.T) {
 }
 
 func TestRolePlanHardRulesOverrideBadTemplateSamples(t *testing.T) {
-	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
-		"title":     {FontEastAsia: "宋体", FontSizeHalfPt: "72", Bold: true, BoldSet: true},
-		"body":      {FontEastAsia: "宋体", FontSizeHalfPt: "36", Bold: true, BoldSet: true, Line: "360", LineRule: "auto"},
-		"heading_1": {FontEastAsia: "宋体", FontSizeHalfPt: "32", Bold: false, BoldSet: true, Alignment: "left", BeforeTwips: "0", AfterTwips: "0"},
-	}}
+	profile := &templateprofile.Profile{
+		Header: templateprofile.HeaderFooterRule{Text: "重庆工程学院本科生毕业设计（论文）"},
+		Styles: map[string]templateprofile.StyleRule{
+			"title":     {FontEastAsia: "宋体", FontSizeHalfPt: "72", Bold: true, BoldSet: true},
+			"body":      {FontEastAsia: "宋体", FontSizeHalfPt: "36", Bold: true, BoldSet: true, Line: "360", LineRule: "auto"},
+			"heading_1": {FontEastAsia: "宋体", FontSizeHalfPt: "32", Bold: false, BoldSet: true, Alignment: "left", BeforeTwips: "0", AfterTwips: "0"},
+		}}
 	assignments := []roleclassify.Assignment{
 		{NodeID: "p:TITLE", Role: "title", Confidence: 1, Trusted: true, Index: 0},
 		{NodeID: "p:BODY", Role: "body", Confidence: 1, Trusted: true, Index: 1},

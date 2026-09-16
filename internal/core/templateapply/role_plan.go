@@ -220,6 +220,14 @@ func ValidateRoleFormatPlan(ctx context.Context, path string, profile *templatep
 
 func compareRoleStyle(item FormatPlanItem, expected, actual templateprofile.StyleRule) []RolePlanValidationIssue {
 	issues := []RolePlanValidationIssue{}
+	// English abstract paragraphs are a merged label+body layout handled by
+	// splitEnglishAbstractLabel. The whole-paragraph abstract_en rule (bold,
+	// 16pt, centered) no longer describes them, so comparing the aggregate
+	// would raise a false review_required. Label and body properties are
+	// asserted separately by the B4 acceptance check.
+	if item.Role == "abstract_en" {
+		return issues
+	}
 	compare := func(property, want, got string) {
 		if strings.TrimSpace(want) != "" && !strings.EqualFold(strings.TrimSpace(want), strings.TrimSpace(got)) {
 			issues = append(issues, validationIssue(item, property, want, got))
@@ -271,6 +279,19 @@ func applyRoleFormatPlanToDocumentXML(documentXML string, profile *templateprofi
 	}
 	count := 0
 	elementIndex := -1
+	// bodyStartIndex marks the first trusted chapter heading: 1 绪论 already
+	// starts on a fresh page through the TOC section break, so it is the only
+	// heading that must not carry an explicit page break of its own.
+	bodyStartIndex := -1
+	for i, assignment := range assignments {
+		if i >= len(plan) {
+			break
+		}
+		if plan[i].Role == "heading_1" && plan[i].Trusted {
+			bodyStartIndex = assignment.Index
+			break
+		}
+	}
 	updated := templateProfileDocElementPattern.ReplaceAllStringFunc(documentXML, func(paragraph string) string {
 		elementIndex++
 		if strings.HasPrefix(paragraph, "<w:tbl") {
@@ -291,6 +312,13 @@ func applyRoleFormatPlanToDocumentXML(documentXML string, profile *templateprofi
 		if item.Role == "heading_1" && item.Trusted {
 			next = applyHeading1Style(next)
 			next = removeHeadingNumbering(next)
+			// CQIE 基本要求：一级标题（章）之间应换页。首个正文标题
+			// （1 绪论）由目录节的分节符保证另起页，其余章标题在此显式
+			// 声明 pageBreakBefore，不再依赖模板手工空段或正文自然流分页。
+			// 幂等：属性写入器对已存在的 <w:pageBreakBefore/> 原样保留。
+			if elementIndex != bodyStartIndex {
+				next, _ = ooxmlpatch.ApplyParagraphProperties(next, ooxmlpatch.ParagraphPropertiesSpec{PageBreakBefore: true})
+			}
 		}
 		if item.RuleKey != "" {
 			if rule, found := rolePlanStyleRule(profile, item.Role, item.RuleKey); found {
@@ -298,6 +326,23 @@ func applyRoleFormatPlanToDocumentXML(documentXML string, profile *templateprofi
 					next = applyParagraphStyle(next, style)
 				}
 			}
+		}
+		// English abstract: templates commonly merge the "Abstract:" label and
+		// the body into a single paragraph (role=abstract_en). Apply the label
+		// emphasis (bold, 16pt) from the abstract_en title rule only to the
+		// label run, and lay the remaining body out with the abstract_en_body
+		// rule (12pt, not bold, justified) instead of bolding and centering the
+		// whole paragraph. Idempotent for the repair gate.
+		if item.Role == "abstract_en" {
+			if split, ok := splitEnglishAbstractLabel(next, profile, item.RuleKey); ok {
+				next = split
+			}
+		}
+		// CQIE 规范：中英文摘要必须分页。英文摘要（Abstract 标签段）需另起
+		// 新页，与中文摘要/中文关键词分离。以 Abstract 段为定位锚点，幂等
+		// 设置 pageBreakBefore：已存在时 upsert 不变，重复运行 gate 安全。
+		if item.Role == "abstract_en" && strings.HasPrefix(strings.TrimSpace(paragraphPlainText(next)), "Abstract") {
+			next, _ = ooxmlpatch.ApplyParagraphProperties(next, ooxmlpatch.ParagraphPropertiesSpec{PageBreakBefore: true})
 		}
 		// CQIE requires one blank 20pt line above and below every chapter title.
 		// This is a school rule, not an incidental template sample value.  The
@@ -317,8 +362,17 @@ func applyRoleFormatPlanToDocumentXML(documentXML string, profile *templateprofi
 	return updated, count
 }
 
+// RoleStyleRequirement 导出 rolePlanStyleRule，供工作流日志层获取"命中规则的模板要求值"。
+// 仅用于读取/展示，不参与 apply/validation 判定，故对其判定逻辑零影响。
+func RoleStyleRequirement(profile *templateprofile.Profile, role, key string) (templateprofile.StyleRule, bool) {
+	return rolePlanStyleRule(profile, role, key)
+}
+
 func rolePlanStyleRule(profile *templateprofile.Profile, role, key string) (templateprofile.StyleRule, bool) {
 	rule, ok := resolveTemplateProfileStyle(profile.Styles, key)
+	if !profileUsesCQIEHardRules(profile) {
+		return rule, ok
+	}
 	hard, hardOK := cqieRolePlanHardStyle(role)
 	if !ok {
 		return hard, hardOK
@@ -327,6 +381,22 @@ func rolePlanStyleRule(profile *templateprofile.Profile, role, key string) (temp
 		return rule, true
 	}
 	return mergeRolePlanStyle(rule, hard), true
+}
+
+func profileUsesCQIEHardRules(profile *templateprofile.Profile) bool {
+	if profile == nil {
+		return false
+	}
+	text := strings.Join([]string{
+		profile.Source,
+		profile.Header.Text,
+		profile.HeaderFirst.Text,
+		profile.HeaderEven.Text,
+		profile.RulePack.HeaderPolicy,
+		profile.RulePack.OddHeaderText,
+		profile.RulePack.EvenHeaderText,
+	}, " ")
+	return strings.Contains(text, "重庆工程学院")
 }
 
 func cqieRolePlanHardStyle(role string) (templateprofile.StyleRule, bool) {
@@ -339,7 +409,7 @@ func cqieRolePlanHardStyle(role string) (templateprofile.StyleRule, bool) {
 		return templateprofile.StyleRule{FontEastAsia: "黑体", FontSizeHalfPt: "30", Bold: true, BoldSet: true, Alignment: "left", Line: "400", LineRule: "exact", FirstLineChars: "0"}, true
 	case "heading_3":
 		return templateprofile.StyleRule{FontEastAsia: "黑体", FontSizeHalfPt: "28", Bold: true, BoldSet: true, Alignment: "left", Line: "400", LineRule: "exact", FirstLineChars: "200"}, true
-	case "body", "abstract_body", "abstract_en_body":
+	case "body", "abstract_body", "abstract_en_body", "acknowledgements":
 		return templateprofile.StyleRule{FontEastAsia: "宋体", FontSizeHalfPt: "24", Bold: false, BoldSet: true, Alignment: "both", Line: "400", LineRule: "exact", FirstLineChars: "200"}, true
 	case "table_caption", "figure_caption", "references":
 		return templateprofile.StyleRule{FontEastAsia: "宋体", FontSizeHalfPt: "21", Bold: false, BoldSet: true}, true
@@ -420,13 +490,32 @@ func roleToProfileKey(role string) string {
 	switch role {
 	case "heading_1", "heading_2", "heading_3", "heading_4", "body", "references", "references_title", "acknowledgements", "acknowledgements_title", "appendix_title", "appendix", "abstract_title", "abstract_cn", "abstract_body", "abstract_en", "abstract_en_body", "keywords_cn", "keywords_en", "toc_title", "toc_entry", "cover_title", "cover_date", "title", "figure_caption", "table_caption":
 		if role == "acknowledgements" {
-			return "acknowledgements_title"
+			// An acknowledgement body paragraph must use the content rule
+			// (Song 12pt, not bold) rather than the acknowledgements_title
+			// heading rule (black 16pt bold centered) that only the standalone
+			// "致 谢" section label should get. Prefer a dedicated body style,
+			// falling back to the generic body rule.
+			return preferStyleKey("acknowledgements_body", "body")
 		}
 		if role == "abstract_body" {
 			return "abstract_body"
 		}
 		if role == "abstract_title" {
 			return "abstract_cn"
+		}
+		if role == "abstract_cn" {
+			// A Chinese abstract body paragraph (often a merged
+			// "摘要：……" line) must use the abstract body rule (Song 12pt),
+			// not the bold black heading rule that only the standalone
+			// "摘 要" label should get. This matches V2Abstract→abstract_body.
+			return "abstract_body"
+		}
+		if role == "keywords_cn" {
+			// A Chinese keywords paragraph ("关键词：……") must carry the
+			// content rule (Song 12pt) extracted from the trailing content,
+			// falling back to the label rule when the template only has a
+			// separate label style. Matches V2Keywords→{keywords_cn_body,keywords_cn}.
+			return preferStyleKey("keywords_cn_body", "keywords_cn")
 		}
 		if role == "abstract_en_body" {
 			return "abstract_en_body"
@@ -447,4 +536,57 @@ func roleToProfileKey(role string) string {
 	default:
 		return ""
 	}
+}
+
+var rolePlanRunTextPattern = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
+
+func paragraphPlainText(xml string) string {
+	var b strings.Builder
+	for _, m := range rolePlanRunTextPattern.FindAllStringSubmatch(xml, -1) {
+		b.WriteString(m[1])
+	}
+	return b.String()
+}
+
+// splitEnglishAbstractLabel rewrites a merged "Abstract: <body>" paragraph
+// (role=abstract_en) so the label run keeps the template abstract_en title
+// emphasis (bold 16pt) while the remaining body runs follow the
+// abstract_en_body rule (12pt, not bold, justified) and the paragraph-level
+// alignment switches from centered to justified. It is idempotent: a paragraph
+// already laid out this way is returned unchanged (repair gate safe).
+func splitEnglishAbstractLabel(paragraph string, profile *templateprofile.Profile, ruleKey string) (string, bool) {
+	if profile == nil {
+		return paragraph, false
+	}
+	trimmed := strings.TrimSpace(paragraphPlainText(paragraph))
+	body := strings.TrimSpace(strings.TrimPrefix(trimmed, "Abstract:"))
+	if !strings.HasPrefix(trimmed, "Abstract:") || body == "" {
+		// Standalone "Abstract:" label or a non-abstract paragraph: keep the
+		// whole-paragraph abstract_en title rule.
+		return paragraph, false
+	}
+	bodyRule, bodyOK := rolePlanStyleRule(profile, "abstract_en_body", "abstract_en_body")
+	if !bodyOK {
+		return paragraph, false
+	}
+	bodyStyle, bodyValid := paragraphStyleFromTemplateProfile(bodyRule)
+	if !bodyValid {
+		return paragraph, false
+	}
+	next := applyParagraphStyle(paragraph, bodyStyle)
+	labelRule, labelOK := rolePlanStyleRule(profile, "abstract_en", "abstract_en")
+	if labelOK {
+		if labelStyle, labelValid := paragraphStyleFromTemplateProfile(labelRule); labelValid {
+			next = runPattern.ReplaceAllStringFunc(next, func(run string) string {
+				if strings.Contains(run, "<w:instrText") || strings.Contains(run, "<w:fldChar") {
+					return run
+				}
+				if strings.HasPrefix(strings.TrimSpace(paragraphPlainText(run)), "Abstract:") {
+					return applyRunProperties(run, labelStyle)
+				}
+				return run
+			})
+		}
+	}
+	return next, next != paragraph
 }

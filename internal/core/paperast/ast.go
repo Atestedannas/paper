@@ -367,7 +367,7 @@ func ExtractDocumentXML(documentXML string) Snapshot {
 				role, level, evidence = "cover_date", 0, []string{"cover:date"}
 				coverDateSeen = true
 			case coverDateSeen && coverTitleSeen && likelyCoverThesisTitle(text):
-				role, level, evidence = "cover_title", 0, []string{"cover:inner_thesis_title"}
+				role, level, evidence = "title", 0, []string{"cover:inner_thesis_title"}
 			case coverDateSeen && likelyCoverThesisTitle(text):
 				role, level, evidence = "title", 0, []string{"cover:inner_thesis_title"}
 			}

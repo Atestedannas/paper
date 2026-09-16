@@ -381,6 +381,30 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 	smartClassified := classified
 	if len(resolvedSpecs) > 0 {
 		paragraphsByType := v2ParagraphMap(classified)
+		// AGENT-DIAG: dump abstract-related states across pipeline stages
+		dumpAbsStage := func(tag string, m map[string][]document.Paragraph, specs map[string]ParagraphFormatSpec) {
+			for _, key := range []string{"en_abstract", "en_abstract_title", "english_abstract", "abstract", "abstract_title", "en_keywords", "keywords"} {
+				ps, ok := m[key]
+				if !ok {
+					continue
+				}
+				sp, has := specs[key]
+				for _, p := range ps {
+					t := strings.TrimSpace(e.processor.extractParagraphText(p))
+					if t == "" {
+						continue
+					}
+					act := extractParaFormatSpec(p)
+					r := []rune(t)
+					if len(r) > 16 {
+						r = r[:16]
+					}
+					log.Printf("[AGENT][%s] key=%s specPresent=%v reqSizeHalf=%d reqBold=%v curSizeHalf=%d curBold=%v txt=%s",
+						tag, key, has, sp.FontSizeHalfPt, sp.Bold, act.FontSizeHalfPt, act.Bold, string(r))
+				}
+			}
+		}
+		dumpAbsStage("pre-verify", paragraphsByType, resolvedSpecs)
 		verifyAndLockParagraphTypes(e.processor, e.processor.formatLocks, paragraphsByType, resolvedSpecs)
 		appliedCount := NewAIFormatApplier(e.processor).Apply(
 			paragraphsByType,
@@ -392,6 +416,7 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 		}
 		runLog.printf("规则写入结果：实际处理 %d 个非空段落；已符合规则并锁定的类别会跳过重复写入。", appliedCount)
 		verifyAndLockParagraphTypes(e.processor, e.processor.formatLocks, paragraphsByType, resolvedSpecs)
+		dumpAbsStage("post-apply", paragraphsByType, resolvedSpecs)
 		smartClassified = unlockedV2Paragraphs(e.processor.formatLocks, classified)
 	}
 	// The unified rule applier above is the paragraph-format writer. The legacy
@@ -407,6 +432,29 @@ func (e *V2FormatEngine) Process(ctx context.Context, studentDocPath string) (st
 		if repair.TotalFixes > 0 {
 			engineWrite = true
 		}
+		dumpAbsStage2 := func(m map[string][]document.Paragraph, specs map[string]ParagraphFormatSpec) {
+			for _, key := range []string{"en_abstract", "en_abstract_title", "english_abstract", "abstract", "abstract_title", "en_keywords", "keywords"} {
+				ps, ok := m[key]
+				if !ok {
+					continue
+				}
+				sp, has := specs[key]
+				for _, p := range ps {
+					t := strings.TrimSpace(e.processor.extractParagraphText(p))
+					if t == "" {
+						continue
+					}
+					act := extractParaFormatSpec(p)
+					r := []rune(t)
+					if len(r) > 16 {
+						r = r[:16]
+					}
+					log.Printf("[AGENT][post-repair] key=%s specPresent=%v reqSizeHalf=%d reqBold=%v curSizeHalf=%d curBold=%v txt=%s",
+						key, has, sp.FontSizeHalfPt, sp.Bold, act.FontSizeHalfPt, act.Bold, string(r))
+				}
+			}
+		}
+		dumpAbsStage2(v2ParagraphMap(classified), resolvedSpecs)
 		runLog.repair(repair)
 	}
 
@@ -1945,7 +1993,12 @@ func templateProfileBackedSpecs(specs map[string]ParagraphFormatSpec, profile *t
 			}
 		}
 		if !found {
-			if fallback, ok := specs[category]; ok && !fallback.IsEmpty() {
+			// A3: 无模板样本支撑的兜底规则（SampleCount==0，如 legacy cover_title
+			// 误带小初36pt）不是有效模板规范。若写入，模板 profile 无此 style，
+			// verifyAndLockParagraphTypes 会把 V2ThesisTitle 锁成错误的 36pt
+			// （而非期望二号22pt），导致 AIApplier 整段跳过、题目永远修不正。
+			// 只有真实采样过的规则（SampleCount>0）才能作为模板规范。
+			if fallback, ok := specs[category]; ok && !fallback.IsEmpty() && fallback.SampleCount > 0 {
 				if !fallback.Bold && fallback.SampleCount > 0 {
 					fallback.BoldSet = true
 				}

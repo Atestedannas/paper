@@ -953,8 +953,11 @@ func Extract(templatePath string) (*Profile, error) {
 		key := classifyParagraphNumberingAware(para.Text, numberingPatterns)
 		if !sampleRegionStarted && index == coverRegionStart {
 			// The first paragraph of the detected cover block is the template's
-			// cover heading. Keep it separate from the ordinary cover metadata.
-			key = "cover_title"
+			// large cover banner (for example "本科毕业论文（设计）", usually
+			// 36pt). It must not be merged into cover_title, or the thesis
+			// title rule inherits the banner's tiny-print size. Keep it on a
+			// dedicated key that no role rule consumes.
+			key = "cover_heading"
 		}
 		// A numbered heading must never fall through to the body sample pool.
 		// This is important for templates that format headings as Normal and omit

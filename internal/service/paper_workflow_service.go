@@ -403,7 +403,7 @@ func (s *paperWorkflowService) CompileTemplate(ctx context.Context, input Compil
 	if err := s.db.WithContext(ctx).Create(&record).Error; err != nil {
 		return nil, err
 	}
-	if pythonURL := strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")); pythonURL != "" {
+	if pythonURL := pythonVisualServiceURL(); pythonURL != "" {
 		// Registering here gives Python the same template key used by RunJob.
 		// The deterministic Go compiler remains authoritative if Python is unavailable.
 		metadata := map[string]interface{}{
@@ -576,7 +576,7 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 
 func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uuid.UUID) (view *WorkflowJobView, retErr error) {
 	outputPath := ""
-	pythonVisualURL := strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL"))
+	pythonVisualURL := pythonVisualServiceURL()
 	var visual *PythonVisualReport
 	if pythonVisualURL != "" {
 		log.Printf("[PYTHON_VISUAL] v2 workflow enabled url=%s job=%s", pythonVisualURL, id)
@@ -755,18 +755,19 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		}
 		candidates, classifyErr := roleclassify.ClassifyStructuredWithEvidence(ctx, client, ast.Nodes, rolePDFEvidence)
 		if classifyErr != nil {
-			fileprocessor.FormatLogPrintf(ctx, "DeepSeek 段落角色分类失败：%v；保留确定性分类", classifyErr)
-		} else {
-			ast.Nodes = roleclassify.Merge(ast.Nodes, candidates, 0.85)
-			for _, candidate := range candidates {
-				if candidate.Confidence < 0.85 || candidate.Role == "unknown" {
-					fileprocessor.FormatLogPrintf(ctx, "低置信度角色：node=%s role=%s confidence=%.2f evidence=%s",
-						candidate.NodeID, candidate.Role, candidate.Confidence, strings.Join(candidate.Evidence, "; "))
-				}
+			// 非致命 LLM 失败（如 SSE 空响应/超时）已完成 per-node 降级：
+			// 失败节点保留确定性角色，其余成功候选仍继续合并，而非整批丢弃。
+			fileprocessor.FormatLogPrintf(ctx, "DeepSeek 段落角色分类部分失败 %v；保留失败节点确定性分类，继续合并成功候选", classifyErr)
+		}
+		ast.Nodes = roleclassify.Merge(ast.Nodes, candidates, 0.85)
+		for _, candidate := range candidates {
+			if candidate.Confidence < 0.85 || candidate.Role == "unknown" {
+				fileprocessor.FormatLogPrintf(ctx, "低置信度角色：node=%s role=%s confidence=%.2f evidence=%s",
+					candidate.NodeID, candidate.Role, candidate.Confidence, strings.Join(candidate.Evidence, "; "))
 			}
-			if data, marshalErr := json.Marshal(candidates); marshalErr == nil {
-				fileprocessor.FormatLogPrintf(ctx, "DeepSeek 角色分类结果（稳定 NodeID）：%s", string(data))
-			}
+		}
+		if data, marshalErr := json.Marshal(candidates); marshalErr == nil {
+			fileprocessor.FormatLogPrintf(ctx, "DeepSeek 角色分类结果（稳定 NodeID）：%s", string(data))
 		}
 	}
 	ast.Nodes = roleclassify.EnforceDocumentTree(ast.Nodes)
@@ -986,11 +987,15 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		return nil, fmt.Errorf("normalize final OOXML: %w", err)
 	}
 	// 属性顺序修复：确保 OOXML 元素属性按规范顺序排列（兼容不同解析器的序列化差异）
+	coverNormalized, err := templateapply.NormalizeCoverTitleFormat(ctx, outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("normalize cover title format: %w", err)
+	}
 	reordered, err := ooxmlpkg.RepairPropertyOrder(outputPath)
 	if err != nil {
 		return nil, fmt.Errorf("repair final OOXML property order: %w", err)
 	}
-	fileprocessor.FormatLogPrintf(ctx, "最终 OOXML 清理：归一化部件=%d；属性顺序修复=%d。", normalized, reordered)
+	fileprocessor.FormatLogPrintf(ctx, "最终 OOXML 清理：归一化部件=%d；封面规范化=%d；属性顺序修复=%d。", normalized, coverNormalized, reordered)
 
 	// ── 阶段 11：确定性验证 ──
 	// 构建验证器：基于模板 Profile、规则集、AST、修复合同
@@ -1148,6 +1153,8 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			result.VerifyResult.ComplianceReason = "one or more stable-node template properties did not survive final serialization"
 		}
 		fileprocessor.FormatLogPrintf(ctx, "stable NodeID format validation: plan=%d property_errors=%d", len(roleAssignments), len(formatIssues))
+		roleDiffDetails := buildWorkflowRoleFormatLogDetails(ast.Nodes, roleFormatPlan, formatIssues, roleAssignments, profile)
+		fileprocessor.FormatLogRoleParaDiffs(ctx, "第5步：段落级格式差异明细（模板要求→修改后，供人工核查）", roleDiffDetails)
 	}
 	for _, item := range roleFormatPlan {
 		if !roleFormatPlanRequiresReview(item) {
@@ -1245,6 +1252,60 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		}
 		log.Printf("[STRUCTURED_COMPLIANCE] job=%s nodes=%d decisions=%d visual_evidence=%t", job.ID, len(finalAST.Nodes), len(decisions), visual != nil)
 	}
+	// CQIE 规范：摘要页不使用模板手动空段推页的残留。role plan 已给
+	// 英文摘要另起页，此处删除摘要节内纯空段（分节符/目录节不受影响）。
+	// 必须放在所有确定性校验（角色格式校验、结构化合规）之后，因为删除
+	// 空段会前移后续段落索引，任何依赖 assignment.Index 的定位都会错位；
+	// 放在这里则只影响最终展示层，且幂等（无空段时原样返回）。
+	if !transplantEnabled && profileUsesCQIEHardRules(profile) {
+		cleaned, cleanErr := templateapply.CleanAbstractSectionBlankParagraphsInFile(outputPath)
+		if cleanErr != nil {
+			return nil, fmt.Errorf("clean abstract section blank paragraphs: %w", cleanErr)
+		}
+		fileprocessor.FormatLogPrintf(ctx, "摘要节空段清理：删除 %d 段", cleaned)
+		// CQIE 规范：摘要区标签/正文宋体 12pt 不加粗。模板用段落级默认
+		// run 属性把整段涂粗（中文摘要/关键词、英文 Key words 正文），
+		// 此处按正文规范覆写继承层与 run 层；与空段清理同处最终展示层。
+		rebolded, boldErr := templateapply.NormalizeAbstractLabelBoldInFile(outputPath)
+		if boldErr != nil {
+			return nil, fmt.Errorf("normalize abstract label bold: %w", boldErr)
+		}
+		fileprocessor.FormatLogPrintf(ctx, "摘要标签去粗：重写 %d 段", rebolded)
+		// These final display-layer edits are still document mutations. Re-run
+		// the deterministic loop and stable-node gate so the file being offered
+		// for download is the file that was actually verified.
+		if cleaned > 0 || rebolded > 0 {
+			result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
+			if err != nil {
+				return nil, fmt.Errorf("revalidate final display-layer edits: %w", err)
+			}
+			if len(roleAssignments) > 0 {
+				formatIssues, formatErr := templateapply.ValidateRoleFormatPlan(ctx, outputPath, profile, roleAssignments)
+				if formatErr != nil {
+					return nil, fmt.Errorf("revalidate final role format plan: %w", formatErr)
+				}
+				if len(formatIssues) > 0 {
+					result.Status = workflow.StatusManualReview
+					result.VerifyResult.Passed = false
+					result.VerifyResult.ComplianceStatus = "review_required"
+					result.VerifyResult.ComplianceReason = "final display-layer edits did not preserve the role format plan"
+				}
+			}
+			if finalAST, astErr := paperast.Extract(outputPath); astErr != nil {
+				return nil, fmt.Errorf("revalidate final structured compliance: %w", astErr)
+			} else {
+				decisions := EvaluateStructuredCompliance(job.ID.String(), finalAST, rules, visual)
+				appendStructuredComplianceWarnings(&result.VerifyResult, decisions)
+				if structuredComplianceHasFix(decisions) {
+					result.Status = workflow.StatusManualReview
+					result.VerifyResult.Passed = false
+					result.VerifyResult.ComplianceStatus = "review_required"
+					result.VerifyResult.ComplianceReason = "final display-layer edits still have structured compliance findings"
+				}
+			}
+			fileprocessor.FormatLogPrintf(ctx, "最终展示层修改已重新全量校验：通过门禁=%t", result.VerifyResult.Passed)
+		}
+	}
 	if err := workflow.NewStore(s.db).UpdateJobResult(ctx, job.ID, result.Status, stage, downloadPath, result.VerifyResult); err != nil {
 		return nil, err
 	}
@@ -1266,8 +1327,75 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	return s.GetJobForUser(id, userID)
 }
 
+// buildWorkflowRoleFormatLogDetails 汇总稳定 NodeID 计划与逐属性校验残留差异，
+// 生成供人工核查使用的段落级中文明细（位置 + 模板要求→修改后值 + 判定理由）。
+// 对已应用模板规则的段落附带其命中规则的模板要求值（TemplateRule），使
+// residual=0（应用后完全达标）时日志仍能展示"模板要求值"供人工核查。
+func buildWorkflowRoleFormatLogDetails(
+	nodes []paperast.Node,
+	plan []templateapply.FormatPlanItem,
+	issues []templateapply.RolePlanValidationIssue,
+	assignments []roleclassify.Assignment,
+	profile *templateprofile.Profile,
+) []fileprocessor.RoleParaDetail {
+	nodeByID := map[string]paperast.Node{}
+	for _, node := range nodes {
+		nodeByID[node.NodeID] = node
+	}
+	planByID := map[string]templateapply.FormatPlanItem{}
+	for _, item := range plan {
+		planByID[item.NodeID] = item
+	}
+	residualByID := map[string][]fileprocessor.RolePropDiff{}
+	for _, issue := range issues {
+		residualByID[issue.NodeID] = append(residualByID[issue.NodeID], fileprocessor.RolePropDiff{
+			Property: issue.Property, Expected: issue.Expected, Actual: issue.Actual,
+		})
+	}
+	details := make([]fileprocessor.RoleParaDetail, 0, len(assignments))
+	for _, assignment := range assignments {
+		detail := fileprocessor.RoleParaDetail{
+			NodeID: assignment.NodeID, ParaIndex: assignment.Index, Role: assignment.Role,
+		}
+		if node, ok := nodeByID[assignment.NodeID]; ok {
+			detail.Text = node.Text
+		}
+		if item, ok := planByID[assignment.NodeID]; ok {
+			detail.Applied = item.Apply
+			detail.RuleKey = item.RuleKey
+			detail.Reason = item.Reason
+			detail.ReviewRequired = item.Flow != nil && item.Flow.ReviewRequired
+			detail.Residual = append([]fileprocessor.RolePropDiff(nil), residualByID[assignment.NodeID]...)
+			if detail.Applied && item.RuleKey != "" && profile != nil {
+				if rule, found := templateapply.RoleStyleRequirement(profile, item.Role, item.RuleKey); found {
+					ruleCopy := rule
+					detail.TemplateRule = &ruleCopy
+				}
+			}
+		}
+		details = append(details, detail)
+	}
+	return details
+}
+
 func roleFormatPlanRequiresReview(item templateapply.FormatPlanItem) bool {
 	return !item.Apply || (item.Flow != nil && item.Flow.ReviewRequired) || (!item.Trusted && item.Confidence < 0.85)
+}
+
+func profileUsesCQIEHardRules(profile *templateprofile.Profile) bool {
+	if profile == nil {
+		return false
+	}
+	text := strings.Join([]string{
+		profile.Source,
+		profile.Header.Text,
+		profile.HeaderFirst.Text,
+		profile.HeaderEven.Text,
+		profile.RulePack.HeaderPolicy,
+		profile.RulePack.OddHeaderText,
+		profile.RulePack.EvenHeaderText,
+	}, " ")
+	return strings.Contains(text, "重庆工程学院")
 }
 
 func pythonVisualRepairs(report *PythonVisualReport) []map[string]interface{} {

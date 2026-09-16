@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"os"
 	pathpkg "path"
@@ -1547,39 +1548,103 @@ func cloneCellParagraphFormatting(userCell, templateCell document.Cell) {
 }
 
 func formatCoverTitleTable(table document.Table, processor *EnhancedProcessor) {
-	titleSpec := ParagraphFormatSpec{
-		FontEastAsia:     "黑体",
-		FontAscii:        "SimHei",
-		FontSizeHalfPt:   44,
-		FontSizeCSHalfPt: 44,
-		Bold:             true,
-		AlignmentSet:     true,
-		Alignment:        wml.ST_JcCenter,
-		LineSpacingVal:   360,
-		LineSpacingRule:  wml.ST_LineSpacingRuleAuto,
-		ColorHex:         "",
-		Underline:        false,
-		FirstLineIndent:  0,
-		IndentLeft:       0,
-		IndentRight:      0,
+	// A1: 封面"题目"表格仅做版面 schema 修复，不覆写内容字号/字体/下划线：
+	//  ① 统一各行行高（以首行 trHeight 为基准，其余行对齐到同一值，避免 841/668 错行）；
+	//  ② 每个单元格补齐垂直居中（vAlign=center，与首行一致）；
+	//  ③ 空占位单元格中超大字号空 run 的"垫高"压缩到小四（24 半磅），
+	//     消除 row1 左占位 cell 被 36pt 空 run 撑高导致的"题目"标签错行。
+	// 最小侵入：不再套用 titleSpec（黑体22pt无下划线会覆写学生宋体24加粗下划线），
+	// 题目内容行的对齐与下划线保留学生形态（视觉横线 u=single 对齐模板 tcBorders）。
+	if table.X() == nil {
+		return
 	}
-
-	for _, row := range table.Rows() {
-		cells := row.Cells()
-		for idx, cell := range cells {
+	rows := table.Rows()
+	if len(rows) == 0 {
+		return
+	}
+	var targetHeight uint64
+	targetHeightSet := false
+	for _, row := range rows {
+		trPr := row.X().TrPr
+		if trPr == nil || len(trPr.TrHeight) == 0 || trPr.TrHeight[0].ValAttr == nil ||
+			trPr.TrHeight[0].ValAttr.ST_UnsignedDecimalNumber == nil {
+			continue
+		}
+		if !targetHeightSet {
+			targetHeight = *trPr.TrHeight[0].ValAttr.ST_UnsignedDecimalNumber
+			targetHeightSet = true
+			continue
+		}
+		if *trPr.TrHeight[0].ValAttr.ST_UnsignedDecimalNumber != targetHeight {
+			trPr.TrHeight[0].ValAttr.ST_UnsignedDecimalNumber = &targetHeight
+		}
+	}
+	for _, row := range rows {
+		for _, cell := range row.Cells() {
+			tcPr := cell.X().TcPr
+			if tcPr == nil {
+				tcPr = wml.NewCT_TcPr()
+				cell.X().TcPr = tcPr
+			}
+			if tcPr.VAlign == nil {
+				tcPr.VAlign = wml.NewCT_VerticalJc()
+			}
+			tcPr.VAlign.ValAttr = wml.ST_VerticalJcCenter
 			for _, para := range cell.Paragraphs() {
-				if strings.TrimSpace(processor.extractParagraphText(para)) == "" {
+				if strings.TrimSpace(processor.extractParagraphText(para)) != "" {
 					continue
 				}
-				if idx == 0 {
-					cloneParagraphFormattingToAlignment(para, wml.ST_JcCenter)
-				} else {
-					cloneParagraphFormattingToAlignment(para, wml.ST_JcCenter)
-					applyStrictSpecToParagraph(processor, para, titleSpec)
+				// 段落标记 rPr（<w:pPr><w:rPr><w:sz>）的超大字号同样会撑高空
+				// 占位 cell——unioffice 的 Runs() 不包含段落标记，故单独压缩。
+				if pp := para.X().PPr; pp != nil && pp.RPr != nil && pp.RPr.Sz != nil {
+					if pp.RPr.Sz.ValAttr.ST_UnsignedDecimalNumber == nil && pp.RPr.Sz.ValAttr.ST_PositiveUniversalMeasure == nil {
+						// 无有效字号值，无需处理
+					} else if pp.RPr.Sz.ValAttr.ST_UnsignedDecimalNumber != nil &&
+						*pp.RPr.Sz.ValAttr.ST_UnsignedDecimalNumber > 24 {
+						twentyFour := uint64(24)
+						pp.RPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &twentyFour
+					}
+				}
+				for _, r := range para.Runs() {
+					rPr := r.X().RPr
+					if rPr == nil || rPr.Sz == nil ||
+						(rPr.Sz.ValAttr.ST_UnsignedDecimalNumber == nil && rPr.Sz.ValAttr.ST_PositiveUniversalMeasure == nil) {
+						continue
+					}
+					if cur := *rPr.Sz.ValAttr.ST_UnsignedDecimalNumber; cur > 24 {
+						twentyFour := uint64(24)
+						rPr.Sz.ValAttr.ST_UnsignedDecimalNumber = &twentyFour
+					}
 				}
 			}
 		}
 	}
+}
+
+// applyCoverTitleSchemaFix 在模板表格格式化入口对首个表格执行 A1 封面题目栏
+// schema 修复（行高统一/垂直居中/去垫高）。它复用 formatCoverTitleTable 的
+// 保守策略，仅当目标文档首表具备封面题目表特征（首行为"题目/课题名称"标签）时生效。
+func (p *EnhancedProcessor) applyCoverTitleSchemaFix(doc *document.Document) {
+	tables := doc.Tables()
+	if len(tables) == 0 {
+		return
+	}
+	first := tables[0]
+	rows := first.Rows()
+	if len(rows) == 0 {
+		return
+	}
+	// 首行首个单元格文本用于判定封面题目表
+	head := ""
+	for _, para := range rows[0].Cells()[0].Paragraphs() {
+		head += p.extractParagraphText(para)
+	}
+	head = strings.TrimSpace(head)
+	if head == "" || !(strings.Contains(head, "题目") || strings.Contains(head, "课题名称")) {
+		return
+	}
+	formatCoverTitleTable(first, p)
+	log.Printf("[A1] 封面题目表 schema 修复：行高统一 / 垂直居中 / 去除超大字号垫高 run")
 }
 
 func formatCoverInfoTable(table document.Table, processor *EnhancedProcessor) {
@@ -2011,8 +2076,60 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 	if err := verifyStudentHeaderFooterRetained(outputEntries, guardedParts); err != nil {
 		return err
 	}
+	// A2: 页眉文字右端用 tab 右对齐而非空格撑排 — 对刚采用的模板页眉部件
+	// 做空格 run→tab 升级，并在段落 pPr 预制 right tab stop（版心右缘 8820 twips）。
+	// 除本次从模板复制的新部件外，学生文档中已存在、内容即模板页眉（校名+
+	// 章节名+空格撑排）的 header 部件同样属于空格撑排形态，一并升级；空占位
+	// header 与不含特征文字的部件由 normalize 内部白名单过滤，保持不变。
+	headerParts := make(map[string]string, len(copiedParts)+8)
+	for k, v := range copiedParts {
+		headerParts[k] = v
+	}
+	for entryName := range outputEntries {
+		if strings.HasPrefix(entryName, "word/header") && strings.HasSuffix(entryName, ".xml") {
+			headerParts[entryName] = string(outputEntries[entryName])
+		}
+	}
+	if n := normalizeHeaderTabRightAlignment(outputEntries, headerParts); n > 0 {
+		log.Printf("[A2] 页眉部件空格撑排升级为 tab 右对齐: %d 个部件", n)
+	}
 
 	return writeDocxEntries(outputPath, outputEntries)
+}
+
+// normalizeHeaderTabRightAlignment 将页眉部件中的"空格撑排"文字升级为
+// tab 右对齐：把首个 ≥4 连续半角空格组成的 <w:t> 节点替换为 <w:tab/>，
+// 并在所在段落 pPr 注入 right tab 停靠位（8820 twips = 版心右缘），
+// 使章节文字（摘要/目录/绪论/参考文献/致谢）右端对齐。仅处理同时含
+// 校名/论文标题特征且有空格撑排的页眉部件，最小侵入不碰其他部件字节。
+func normalizeHeaderTabRightAlignment(entries map[string][]byte, parts map[string]string) int {
+	spaceRun := regexp.MustCompile(`<w:t(?: [^>]*)?>[ ]{4,}</w:t>`)
+	pPrTag := regexp.MustCompile(`<w:pPr>[\s\S]*?</w:pPr>`)
+	const tabStopXML = `<w:tabs><w:tab w:val="right" w:pos="8820"/></w:tabs>`
+	patched := 0
+	for part, xmlText := range parts {
+		if !strings.Contains(part, "word/header") || !strings.HasSuffix(part, ".xml") {
+			continue
+		}
+		if !spaceRun.MatchString(xmlText) {
+			continue
+		}
+		plain := strings.Join(extractDocxTextNodes(xmlText), "")
+		if !strings.Contains(plain, "毕业设计") && !strings.Contains(plain, "论文") {
+			continue
+		}
+		xmlText = pPrTag.ReplaceAllStringFunc(xmlText, func(ppr string) string {
+			if strings.Contains(ppr, "<w:tabs>") {
+				return ppr
+			}
+			inner := strings.TrimSuffix(strings.TrimPrefix(ppr, "<w:pPr>"), "</w:pPr>")
+			return "<w:pPr>" + tabStopXML + inner + "</w:pPr>"
+		})
+		xmlText = spaceRun.ReplaceAllString(xmlText, `<w:tab/>`)
+		entries[part] = []byte(xmlText)
+		patched++
+	}
+	return patched
 }
 
 // resolveDocumentHeaderFooterPartNames resolves header/footer reference tags to
@@ -2094,6 +2211,19 @@ func mergeSectionHeaderFooterRefsPerSlot(
 			for _, templateRef := range templateSectionRefs[index] {
 				key := headerFooterReferenceKey(templateRef)
 				if key == "" {
+					continue
+				}
+				// 正文主体节（main body）的默认页眉强制采用模板节页眉。
+				// 学生最终文档（如 final.docx）中正文节的"摘要/目录"占位页眉，
+				// 本质是从模板拷贝来的章节页眉部件而非学生自撰信息；若按下方
+				// "学生可见内容优先"规则保留，正文各页将沿袭摘要/目录页眉，
+				// 无法切换到模板正文（绪论）页眉。模板 default header 即为此
+				// 类章节唯一正确的页眉，故对 body 节 default slot 直接取模板。
+				if section.Role == strictSectionBody && key == "header:default" {
+					selection[key] = templateRef
+					if id := strictXMLAttributeValue(templateRef, "r:id"); id != "" {
+						requiredIDs[id] = true
+					}
 					continue
 				}
 				if studentRef, ok := studentByKey[key]; ok {
@@ -4285,6 +4415,7 @@ func classifyTemplateHeaderRole(text string) strictSectionRole {
 
 func describeStrictSections(documentXML string) []strictSectionDescriptor {
 	sectPrPattern := regexp.MustCompile(`<w:sectPr(?:[^>]*/>|[\s\S]*?</w:sectPr>)`)
+	paragraphOpenPattern := regexp.MustCompile(`<w:p[ >]`)
 	matches := sectPrPattern.FindAllStringIndex(documentXML, -1)
 	if len(matches) == 0 {
 		return nil
@@ -4295,6 +4426,49 @@ func describeStrictSections(documentXML string) []strictSectionDescriptor {
 	for index, match := range matches {
 		contextXML := documentXML[previousEnd:match[0]]
 		visibleText := strings.Join(extractDocxTextNodes(contextXML), " ")
+		// 段落级分节符（paragraph-level sectPr）的身份判定按来源逐级回退：
+		// 1) 同一段落内、sectPr 之后的文字（"参考文献/致谢"等标题段首部 pPr
+		//    内嵌 sectPr，标题紧随其后的结构）→ 该标题即新节身份；
+		// 2) 同一段落内、sectPr 之前（pPr 前）的文字（"正文在前、sectPr 段尾"
+		//    的既有文档结构）→ 该段正文属新节开头；
+		// 3) 纯分节符空段（段落自身无文字）→ 新节身份取决于后续节开头文字
+		//    （如独立的分节段后紧随"1 绪论"标题段），取 sectPr 之后到下一
+		//    sectPr 之前的开头 1920 字。
+		// 三种结构覆盖面不同，逐级回退避免把真实文档的纯分节段误判为 body，
+		// 也不会把"标题在 pPr 前"的节身份错位到下一节。
+		if sectPrSitsInsideParagraphPr(documentXML, match[0]) {
+			parStart := -1
+			if opens := paragraphOpenPattern.FindAllStringIndex(documentXML[:match[0]], -1); len(opens) > 0 {
+				parStart = opens[len(opens)-1][0]
+			}
+			paraText := ""
+			if parStart >= 0 {
+				paraText = strings.Join(extractDocxTextNodes(documentXML[parStart:match[0]]), " ")
+			}
+			tailPara := ""
+			if tail := documentXML[match[1]:]; strings.Contains(tail, "</w:p>") {
+				tailPara = tail[:strings.Index(tail, "</w:p>")]
+			}
+			postPara := strings.Join(extractDocxTextNodes(tailPara), " ")
+			switch {
+			case strings.TrimSpace(postPara) != "":
+				visibleText = postPara
+			case strings.TrimSpace(paraText) != "":
+				visibleText = paraText
+			default:
+				postEnd := len(documentXML)
+				if index+1 < len(matches) {
+					postEnd = matches[index+1][0]
+				}
+				postXML := documentXML[match[1]:postEnd]
+				if len(postXML) > 1920 {
+					postXML = postXML[:1920]
+				}
+				if postVisible := strings.Join(extractDocxTextNodes(postXML), " "); strings.TrimSpace(postVisible) != "" {
+					visibleText = postVisible
+				}
+			}
+		}
 		sectPr := documentXML[match[0]:match[1]]
 		sections = append(sections, strictSectionDescriptor{
 			Role: classifyStrictSectionRole(visibleText, index),
@@ -4303,6 +4477,17 @@ func describeStrictSections(documentXML string) []strictSectionDescriptor {
 		previousEnd = match[1]
 	}
 	return sections
+}
+
+// sectPrSitsInsideParagraphPr reports whether the [start,end) sectPr region is
+// nested inside a paragraph's w:pPr (i.e. it is a paragraph-level section
+// break declaring a new section beginning right after the sectPr content),
+// rather than a body-level section properties element.
+func sectPrSitsInsideParagraphPr(documentXML string, start int) bool {
+	head := documentXML[:start]
+	pprStart := strings.LastIndex(head, "<w:pPr>")
+	pprEnd := strings.LastIndex(head, "</w:pPr>")
+	return pprStart > pprEnd
 }
 
 func classifyStrictSectionRole(text string, index int) strictSectionRole {
@@ -4321,20 +4506,24 @@ func classifyStrictSectionRole(text string, index int) strictSectionRole {
 	// Match real Unicode section labels before the legacy encoded aliases
 	// below. The previous aliases were mojibake and caused all body sections
 	// to fall back to the wrong header/footer relationship.
+	// 章节身份优先按最明确的专名标题识别：参考文献 / 致谢 / 附录的判据是
+	// 章专名本身，比下方"编号+空格+汉字"的宽松章节编号规则更精确。若仍把
+	// body 编号规则放在前面，致谢正文开头的自然语言（如"四年 的"）会被当
+	// 作数字章节编号误判为正文节，使该节页眉落到绪论而非致谢。
 	switch {
 	case strings.Contains(compact, "\u76ee\u5f55"):
 		return strictSectionTOC
 	case strings.Contains(compact, "\u6458\u8981"):
 		return strictSectionAbstractCN
-	case strings.Contains(compact, "\u7eea\u8bba") ||
-		regexp.MustCompile(`(?m)(^|\s)[1-9]\d?(?:\.\d+)*\s+[\p{Han}]`).MatchString(string(lead)):
-		return strictSectionBody
 	case strings.Contains(compact, "\u53c2\u8003\u6587\u732e"):
 		return strictSectionReferences
 	case strings.Contains(compact, "\u81f4\u8c22"):
 		return strictSectionAcknowledged
 	case strings.Contains(compact, "\u9644\u5f55"):
 		return strictSectionAppendix
+	case strings.Contains(compact, "\u7eea\u8bba") ||
+		regexp.MustCompile(`(?m)(^|\s)[1-9]\d?(?:\.\d+)*\s+[\p{Han}]`).MatchString(string(lead)):
+		return strictSectionBody
 	}
 	switch {
 	case strings.Contains(compact, "目录") ||
@@ -4345,11 +4534,6 @@ func classifyStrictSectionRole(text string, index int) strictSectionRole {
 		return strictSectionAbstractCN
 	case regexp.MustCompile(`\babstract\b`).MatchString(string(lead)):
 		return strictSectionAbstractEN
-	case strings.Contains(compact, "第") && strings.Contains(compact, "章") ||
-		strings.Contains(compact, "绪论") ||
-		regexp.MustCompile(`(?m)(^|\s)[1-9]\d?(?:\.\d+)*\s+[\p{Han}A-Za-z]`).MatchString(string(lead)) ||
-		regexp.MustCompile(`\b(chapter|body)\b`).MatchString(string(lead)):
-		return strictSectionBody
 	case strings.Contains(compact, "参考文献") ||
 		regexp.MustCompile(`\b(references|bibliography)\b`).MatchString(string(lead)):
 		return strictSectionReferences
@@ -4359,6 +4543,11 @@ func classifyStrictSectionRole(text string, index int) strictSectionRole {
 	case strings.Contains(compact, "附录") ||
 		regexp.MustCompile(`\bappendix\b`).MatchString(string(lead)):
 		return strictSectionAppendix
+	case strings.Contains(compact, "第") && strings.Contains(compact, "章") ||
+		strings.Contains(compact, "绪论") ||
+		regexp.MustCompile(`(?m)(^|\s)[1-9]\d?(?:\.\d+)*\s+[\p{Han}A-Za-z]`).MatchString(string(lead)) ||
+		regexp.MustCompile(`\b(chapter|body)\b`).MatchString(string(lead)):
+		return strictSectionBody
 	default:
 		return strictSectionUnknown
 	}
