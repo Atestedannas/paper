@@ -98,7 +98,7 @@ func (h *PaperWorkflowHandler) CompileTemplate(c *gin.Context) {
 }
 
 func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
-	log.Printf("[WORKFLOW_FLOW] create upload request path=%s method=%s python_url=%q", c.Request.URL.Path, c.Request.Method, strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")))
+	log.Printf("[WORKFLOW_FLOW] create upload request path=%s method=%s python_url=%q", c.Request.URL.Path, c.Request.Method, service.PythonVisualServiceURL())
 	if h == nil || h.svc == nil {
 		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "")
 		return
@@ -278,7 +278,7 @@ func (h *PaperWorkflowHandler) consumePaperJobAccess(c *gin.Context, userID, pap
 }
 
 func (h *PaperWorkflowHandler) RunJob(c *gin.Context) {
-	log.Printf("[WORKFLOW_FLOW] run request job=%s python_url=%q", c.Param("job_id"), strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")))
+	log.Printf("[WORKFLOW_FLOW] run request job=%s python_url=%q", c.Param("job_id"), service.PythonVisualServiceURL())
 	if h == nil || h.svc == nil {
 		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "")
 		return

@@ -223,7 +223,7 @@ func (s PaperService) CheckPaperFormat(userID, paperID, templateID uuid.UUID) (*
 
 	// Keep Go's deterministic OOXML result as the primary result, then add
 	// Python's rendered visual evidence when the service is configured.
-	if pythonURL := pythonVisualServiceURL(); pythonURL != "" {
+	if pythonURL := PythonVisualServiceURL(); pythonURL != "" {
 		visualSpec := buildPythonVisualSpec(template.TemplateID, rulesMap)
 		visual, visualErr := NewPythonVisualClient(pythonURL).CheckStudentPaperWithContext(
 			ctx, paper.FilePath, template.TemplateID, 1, paperID.String(), visualSpec, nil,
@@ -380,7 +380,7 @@ func visualRepairsFromIssues(issues []formatchecker.FormatIssue, selected map[st
 
 // QuickV2Fix 直接运行 V2 引擎修正格式（跳过 CheckPaperFormat，~200ms）
 func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (string, error) {
-	log.Printf("[UPLOAD_FLOW] QuickV2Fix service start input=%s university_id=%d python_url=%q", paperFilePath, universityID, pythonVisualServiceURL())
+	log.Printf("[UPLOAD_FLOW] QuickV2Fix service start input=%s university_id=%d python_url=%q", paperFilePath, universityID, PythonVisualServiceURL())
 	if legacyWritePathDisabled() {
 		return "", ErrLegacyWritePathDisabled
 	}
@@ -449,7 +449,7 @@ func (s PaperService) QuickV2Fix(paperFilePath string, universityID int64) (stri
 // CheckPythonVisualFile runs the rendered visual pipeline for a concrete DOCX.
 // Legacy QuickV2Fix returns before CheckPaperFormat, so it calls this explicitly.
 func (s PaperService) CheckPythonVisualFile(filePath string, universityID int64, documentID string) (*PythonVisualReport, error) {
-	pythonURL := pythonVisualServiceURL()
+	pythonURL := PythonVisualServiceURL()
 	if pythonURL == "" {
 		return nil, nil
 	}
@@ -665,7 +665,7 @@ func (s PaperService) FixPaperFormatWithOptions(userID, paperID, checkResultID u
 
 	var visualVerification *PythonVisualReport
 	var visualVerificationErr string
-	if pythonURL := pythonVisualServiceURL(); pythonURL != "" {
+	if pythonURL := PythonVisualServiceURL(); pythonURL != "" {
 		verifyCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		visualVerification, err = NewPythonVisualClient(pythonURL).CheckStudentPaperWithContext(
 			verifyCtx, fixedPath, template.TemplateID, 1, paperID.String()+"-corrected",

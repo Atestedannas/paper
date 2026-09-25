@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
@@ -2036,19 +2035,23 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 	}
 
 	outputXML := string(outputEntries["word/document.xml"])
+	profile, err := templateprofile.Extract(templatePath)
+	if err != nil {
+		return fmt.Errorf("extract template section requirements: %w", err)
+	}
+	outputXML, _, err = splitTemplateBackMatterSections(outputXML, profile.Sections)
+	if err != nil {
+		return err
+	}
+	outputEntries["word/document.xml"] = []byte(outputXML)
 	outputSections := describeStrictSections(outputXML)
 	templateSectionRefs := mapTemplateSectionHeaderFooterRefsWithVisibleHeaders(
 		outputXML,
 		string(templateEntries["word/document.xml"]),
 		templateVisibleHeaderRoles(templateEntries),
 	)
-	// D5: apply a reference-aware per-reference merge instead of replacing the
-	// student's header/footer parts wholesale. For every header/footer slot
-	// (header/footer x default/first/even) of every section, the student's own
-	// reference wins whenever it resolves to a part that carries visible text
-	// (supervisor name, thesis title, custom field, TOC, page number). Only
-	// empty student placeholders adopt the template part. Fully retained
-	// student layouts keep their original part bytes and remain untouched.
+	// Declared template slots are authoritative. Keep student-only slots
+	// where the template supplies no rule, and preserve their package closure.
 	mixedSectionRefs, requiredRelationshipIDs, retainIDs, guardedParts :=
 		mergeSectionHeaderFooterRefsPerSlot(outputEntries, outputSections, templateSectionRefs)
 	relationshipIDs, copiedParts, err := mergeSelectedDocumentRelationships(
@@ -2064,6 +2067,7 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 		return err
 	}
 	mergeCopiedPartContentTypes(outputEntries, templateEntries, copiedParts)
+	materializeCopiedPageNumbers(outputEntries, copiedParts)
 	mergeDocumentSectionHeaderFooterRefsWithPlan(outputEntries, mixedSectionRefs, relationshipIDs)
 	if len(copiedParts) > 0 {
 		// The package-level even/odd switch follows the template only when
@@ -2076,60 +2080,8 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 	if err := verifyStudentHeaderFooterRetained(outputEntries, guardedParts); err != nil {
 		return err
 	}
-	// A2: 页眉文字右端用 tab 右对齐而非空格撑排 — 对刚采用的模板页眉部件
-	// 做空格 run→tab 升级，并在段落 pPr 预制 right tab stop（版心右缘 8820 twips）。
-	// 除本次从模板复制的新部件外，学生文档中已存在、内容即模板页眉（校名+
-	// 章节名+空格撑排）的 header 部件同样属于空格撑排形态，一并升级；空占位
-	// header 与不含特征文字的部件由 normalize 内部白名单过滤，保持不变。
-	headerParts := make(map[string]string, len(copiedParts)+8)
-	for k, v := range copiedParts {
-		headerParts[k] = v
-	}
-	for entryName := range outputEntries {
-		if strings.HasPrefix(entryName, "word/header") && strings.HasSuffix(entryName, ".xml") {
-			headerParts[entryName] = string(outputEntries[entryName])
-		}
-	}
-	if n := normalizeHeaderTabRightAlignment(outputEntries, headerParts); n > 0 {
-		log.Printf("[A2] 页眉部件空格撑排升级为 tab 右对齐: %d 个部件", n)
-	}
 
 	return writeDocxEntries(outputPath, outputEntries)
-}
-
-// normalizeHeaderTabRightAlignment 将页眉部件中的"空格撑排"文字升级为
-// tab 右对齐：把首个 ≥4 连续半角空格组成的 <w:t> 节点替换为 <w:tab/>，
-// 并在所在段落 pPr 注入 right tab 停靠位（8820 twips = 版心右缘），
-// 使章节文字（摘要/目录/绪论/参考文献/致谢）右端对齐。仅处理同时含
-// 校名/论文标题特征且有空格撑排的页眉部件，最小侵入不碰其他部件字节。
-func normalizeHeaderTabRightAlignment(entries map[string][]byte, parts map[string]string) int {
-	spaceRun := regexp.MustCompile(`<w:t(?: [^>]*)?>[ ]{4,}</w:t>`)
-	pPrTag := regexp.MustCompile(`<w:pPr>[\s\S]*?</w:pPr>`)
-	const tabStopXML = `<w:tabs><w:tab w:val="right" w:pos="8820"/></w:tabs>`
-	patched := 0
-	for part, xmlText := range parts {
-		if !strings.Contains(part, "word/header") || !strings.HasSuffix(part, ".xml") {
-			continue
-		}
-		if !spaceRun.MatchString(xmlText) {
-			continue
-		}
-		plain := strings.Join(extractDocxTextNodes(xmlText), "")
-		if !strings.Contains(plain, "毕业设计") && !strings.Contains(plain, "论文") {
-			continue
-		}
-		xmlText = pPrTag.ReplaceAllStringFunc(xmlText, func(ppr string) string {
-			if strings.Contains(ppr, "<w:tabs>") {
-				return ppr
-			}
-			inner := strings.TrimSuffix(strings.TrimPrefix(ppr, "<w:pPr>"), "</w:pPr>")
-			return "<w:pPr>" + tabStopXML + inner + "</w:pPr>"
-		})
-		xmlText = spaceRun.ReplaceAllString(xmlText, `<w:tab/>`)
-		entries[part] = []byte(xmlText)
-		patched++
-	}
-	return patched
 }
 
 // resolveDocumentHeaderFooterPartNames resolves header/footer reference tags to
@@ -2180,15 +2132,8 @@ func headerFooterPartIsEmptyPlaceholder(entries map[string][]byte, partName stri
 	return true
 }
 
-// mergeSectionHeaderFooterRefsPerSlot merges the template's per-section
-// header/footer references with the student's own references slot by slot
-// (header/footer x default/first/even). For every slot, the student's own
-// reference wins whenever it resolves to a part carrying visible content; only
-// empty student placeholders are replaced by the template's part. Student-only
-// slots the template does not provide are kept as-is. The returned refs are the
-// final per-section ref sets for document.xml, together with the template
-// relationship IDs that must be copied in, the student relationship IDs that
-// must remain intact, and the student parts whose visible content is guarded.
+// mergeSectionHeaderFooterRefsPerSlot applies each declared template slot.
+// Student-only slots remain intact when the template provides no replacement.
 func mergeSectionHeaderFooterRefsPerSlot(
 	entries map[string][]byte,
 	sections []strictSectionDescriptor,
@@ -2212,34 +2157,6 @@ func mergeSectionHeaderFooterRefsPerSlot(
 				key := headerFooterReferenceKey(templateRef)
 				if key == "" {
 					continue
-				}
-				// 正文主体节（main body）的默认页眉强制采用模板节页眉。
-				// 学生最终文档（如 final.docx）中正文节的"摘要/目录"占位页眉，
-				// 本质是从模板拷贝来的章节页眉部件而非学生自撰信息；若按下方
-				// "学生可见内容优先"规则保留，正文各页将沿袭摘要/目录页眉，
-				// 无法切换到模板正文（绪论）页眉。模板 default header 即为此
-				// 类章节唯一正确的页眉，故对 body 节 default slot 直接取模板。
-				if section.Role == strictSectionBody && key == "header:default" {
-					selection[key] = templateRef
-					if id := strictXMLAttributeValue(templateRef, "r:id"); id != "" {
-						requiredIDs[id] = true
-					}
-					continue
-				}
-				if studentRef, ok := studentByKey[key]; ok {
-					// Prefer the student's own part unless it is an empty
-					// placeholder; an empty placeholder holds no content that
-					// would be lost, so the template part may take its slot.
-					id := strictXMLAttributeValue(studentRef, "r:id")
-					parts := resolveDocumentHeaderFooterPartNames(entries, []string{studentRef})
-					if len(parts) > 0 && !headerFooterPartIsEmptyPlaceholder(entries, parts[0]) {
-						selection[key] = studentRef
-						if id != "" {
-							retainIDs[id] = true
-							guardedParts[parts[0]] = true
-						}
-						continue
-					}
 				}
 				selection[key] = templateRef
 				if id := strictXMLAttributeValue(templateRef, "r:id"); id != "" {
@@ -2350,9 +2267,14 @@ func copyAndMaterializeTemplateHeaderFooter(templatePath, outputPath string, cov
 	if err := copyTemplateHeaderFooterPackage(templatePath, outputPath); err != nil {
 		return err
 	}
-	// D17: 学校名做成可配置项（从模板 profile 页眉提取，取不到回退默认字符串），
-	// 不再硬编码；模板解析成功后按模板路径缓存。
-	schoolName := resolveRunningHeaderSchoolName(templatePath)
+	templateEntries, err := readDocxEntries(templatePath)
+	if err != nil {
+		return err
+	}
+	samples, err := runningHeaderSamples(templateEntries)
+	if err != nil {
+		return err
+	}
 	entries, err := readDocxEntries(outputPath)
 	if err != nil {
 		return err
@@ -2375,71 +2297,26 @@ func copyAndMaterializeTemplateHeaderFooter(templatePath, outputPath string, cov
 				updated = replaceDocxTextNodes(updated, distributeHeaderText(texts, materialized))
 			}
 		}
-		if strings.Contains(visible, schoolName) && strings.Contains(visible, "绪论") {
-			updated = materializeRunningHeaderStyleRef(updated, schoolName)
-		}
+		updated = materializeRunningHeaderStyleRef(updated, samples)
 		if updated != xmlText {
 			entries[name] = []byte(updated)
 			changed = true
 		}
 	}
-	if !changed {
+	fieldsChanged, err := repairRunningHeaderEntries(entries)
+	if err != nil {
+		return err
+	}
+	if !changed && !fieldsChanged {
 		return nil
 	}
+	// Newly materialized numeric fields may already be normalized. They still
+	// need refreshing on open rather than keeping the template's cached title.
+	if settings, ok := entries["word/settings.xml"]; ok {
+		updated, _ := ooxmlpatch.ApplySettingsProperties(string(settings), ooxmlpatch.SettingsPropertiesSpec{UpdateFieldsOnOpen: true})
+		entries["word/settings.xml"] = []byte(updated)
+	}
 	return writeDocxEntries(outputPath, entries)
-}
-
-// D17：学校名可配置化。
-// 默认兜底串保留历史行为（模板解析失败或页眉未能提取到校名时使用）。
-const defaultRunningHeaderSchoolName = "重庆工程学院本科生毕业设计（论文）"
-
-var collegeNameCache sync.Map // key: templatePath -> string
-
-// resolveRunningHeaderSchoolName 从模板 profile 的页眉文本提取学校名（可配置），
-// 提取不到时回退到 defaultRunningHeaderSchoolName（保留历史行为）。
-// 模板解析成功则按模板路径缓存，避免对每份学生文档重复解析同一模板。
-func resolveRunningHeaderSchoolName(templatePath string) string {
-	if v, ok := collegeNameCache.Load(templatePath); ok {
-		return v.(string)
-	}
-	name := ""
-	if profile, err := templateprofile.Extract(templatePath); err == nil {
-		name = templateprofile.ExtractCollegeName(profile.Header.Text, "")
-	}
-	if name == "" {
-		name = defaultRunningHeaderSchoolName
-	}
-	collegeNameCache.Store(templatePath, name)
-	return name
-}
-
-// materializeRunningHeaderStyleRef keeps the school name and replaces the
-// template's sample "1 绪论" with Word's native current Heading 1 field.
-// The literal result remains as a safe fallback for renderers that do not
-// update fields; Word updates it when the document is opened.
-// schoolName 由调用方传入（可配置），空值时按历史默认串处理。
-func materializeRunningHeaderStyleRef(headerXML, schoolName string) string {
-	if schoolName == "" {
-		schoolName = defaultRunningHeaderSchoolName
-	}
-	if strings.Contains(headerXML, "STYLEREF") {
-		return headerXML
-	}
-	paragraphs := regexp.MustCompile(`(?s)<w:p\b.*?</w:p>`)
-	return paragraphs.ReplaceAllStringFunc(headerXML, func(paragraph string) string {
-		visible := strings.Join(extractDocxTextNodes(paragraph), "")
-		if !strings.Contains(visible, schoolName) || !strings.Contains(visible, "绪论") {
-			return paragraph
-		}
-		schoolAt := strings.Index(paragraph, schoolName)
-		runEnd := schoolAt + strings.Index(paragraph[schoolAt:], "</w:r>") + len("</w:r>")
-		closeAt := strings.LastIndex(paragraph, "</w:p>")
-		if schoolAt < 0 || runEnd < schoolAt || closeAt < runEnd {
-			return paragraph
-		}
-		field := `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> STYLEREF "heading 1" \* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1 绪论</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>`
-		return paragraph[:runEnd] + field + paragraph[closeAt:]
-	})
 }
 
 func CopyTemplateHeaderFooter(templatePath, outputPath string, coverInfo map[string]string) error {
@@ -2622,6 +2499,9 @@ func postProcessStrictOutput(outputPath string) error {
 		entries["word/document.xml"] = []byte(xmlText)
 	}
 
+	if _, err := repairRunningHeaderEntries(entries); err != nil {
+		return err
+	}
 	return writeDocxEntries(outputPath, entries)
 }
 
@@ -4415,7 +4295,6 @@ func classifyTemplateHeaderRole(text string) strictSectionRole {
 
 func describeStrictSections(documentXML string) []strictSectionDescriptor {
 	sectPrPattern := regexp.MustCompile(`<w:sectPr(?:[^>]*/>|[\s\S]*?</w:sectPr>)`)
-	paragraphOpenPattern := regexp.MustCompile(`<w:p[ >]`)
 	matches := sectPrPattern.FindAllStringIndex(documentXML, -1)
 	if len(matches) == 0 {
 		return nil
@@ -4424,64 +4303,32 @@ func describeStrictSections(documentXML string) []strictSectionDescriptor {
 	sections := make([]strictSectionDescriptor, 0, len(matches))
 	previousEnd := 0
 	for index, match := range matches {
-		contextXML := documentXML[previousEnd:match[0]]
-		visibleText := strings.Join(extractDocxTextNodes(contextXML), " ")
-		// 段落级分节符（paragraph-level sectPr）的身份判定按来源逐级回退：
-		// 1) 同一段落内、sectPr 之后的文字（"参考文献/致谢"等标题段首部 pPr
-		//    内嵌 sectPr，标题紧随其后的结构）→ 该标题即新节身份；
-		// 2) 同一段落内、sectPr 之前（pPr 前）的文字（"正文在前、sectPr 段尾"
-		//    的既有文档结构）→ 该段正文属新节开头；
-		// 3) 纯分节符空段（段落自身无文字）→ 新节身份取决于后续节开头文字
-		//    （如独立的分节段后紧随"1 绪论"标题段），取 sectPr 之后到下一
-		//    sectPr 之前的开头 1920 字。
-		// 三种结构覆盖面不同，逐级回退避免把真实文档的纯分节段误判为 body，
-		// 也不会把"标题在 pPr 前"的节身份错位到下一节。
+		// OOXML stores section properties on the last paragraph of the
+		// section, not on the first paragraph of the following section.
+		// Include the terminating paragraph's runs after its pPr as well.
+		contentEnd := match[0]
+		sectionEnd := match[1]
 		if sectPrSitsInsideParagraphPr(documentXML, match[0]) {
-			parStart := -1
-			if opens := paragraphOpenPattern.FindAllStringIndex(documentXML[:match[0]], -1); len(opens) > 0 {
-				parStart = opens[len(opens)-1][0]
-			}
-			paraText := ""
-			if parStart >= 0 {
-				paraText = strings.Join(extractDocxTextNodes(documentXML[parStart:match[0]]), " ")
-			}
-			tailPara := ""
-			if tail := documentXML[match[1]:]; strings.Contains(tail, "</w:p>") {
-				tailPara = tail[:strings.Index(tail, "</w:p>")]
-			}
-			postPara := strings.Join(extractDocxTextNodes(tailPara), " ")
-			switch {
-			case strings.TrimSpace(postPara) != "":
-				visibleText = postPara
-			case strings.TrimSpace(paraText) != "":
-				visibleText = paraText
-			default:
-				postEnd := len(documentXML)
-				if index+1 < len(matches) {
-					postEnd = matches[index+1][0]
-				}
-				postXML := documentXML[match[1]:postEnd]
-				if len(postXML) > 1920 {
-					postXML = postXML[:1920]
-				}
-				if postVisible := strings.Join(extractDocxTextNodes(postXML), " "); strings.TrimSpace(postVisible) != "" {
-					visibleText = postVisible
-				}
+			if end := strings.Index(documentXML[match[1]:], "</w:p>"); end >= 0 {
+				sectionEnd = match[1] + end + len("</w:p>")
+				contentEnd = sectionEnd
 			}
 		}
+		contextXML := documentXML[previousEnd:contentEnd]
+		visibleText := strings.Join(extractDocxTextNodes(contextXML), " ")
 		sectPr := documentXML[match[0]:match[1]]
 		sections = append(sections, strictSectionDescriptor{
 			Role: classifyStrictSectionRole(visibleText, index),
 			Refs: extractHeaderFooterReferenceTags(sectPr),
 		})
-		previousEnd = match[1]
+		previousEnd = sectionEnd
 	}
 	return sections
 }
 
 // sectPrSitsInsideParagraphPr reports whether the [start,end) sectPr region is
 // nested inside a paragraph's w:pPr (i.e. it is a paragraph-level section
-// break declaring a new section beginning right after the sectPr content),
+// break terminating the section at the end of that paragraph),
 // rather than a body-level section properties element.
 func sectPrSitsInsideParagraphPr(documentXML string, start int) bool {
 	head := documentXML[:start]

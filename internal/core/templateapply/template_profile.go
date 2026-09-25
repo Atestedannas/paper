@@ -2459,6 +2459,9 @@ func resolveTemplateProfileStyle(styles map[string]templateprofile.StyleRule, ke
 }
 
 func paragraphStyleFromTemplateProfile(rule templateprofile.StyleRule) (paragraphStyle, bool) {
+	if rule.ReviewRequired {
+		return paragraphStyle{}, false
+	}
 	style := paragraphStyle{
 		ruleID:          "cqrwst-template-profile-style",
 		message:         "模板画像段落样式",
@@ -2466,6 +2469,7 @@ func paragraphStyleFromTemplateProfile(rule templateprofile.StyleRule) (paragrap
 		asciiFont:       strings.TrimSpace(rule.FontASCII),
 		hAnsiFont:       strings.TrimSpace(rule.FontHAnsi),
 		complexFont:     strings.TrimSpace(rule.FontCS),
+		fontHint:        rule.FontHint,
 		fontSize:        strings.TrimSpace(rule.FontSizeHalfPt),
 		complexSize:     strings.TrimSpace(rule.ComplexSizeHalfPt),
 		bold:            rule.Bold,
@@ -2494,6 +2498,9 @@ func paragraphStyleFromTemplateProfile(rule templateprofile.StyleRule) (paragrap
 	if value, ok := parseTemplateProfileInt(rule.AfterTwips); ok {
 		style.afterTwips = intPtr(value)
 	}
+	if value, ok := parseTemplateProfileInt(rule.FirstLineTwips); ok {
+		style.firstLineTwips = intPtr(value)
+	}
 	if value, ok := parseTemplateProfileInt(rule.FirstLineChars); ok {
 		// OOXML firstLineChars is measured in 1/100ths of a character. Values
 		// above a page width are extraction artefacts (for example 1151 from a
@@ -2514,7 +2521,7 @@ func paragraphStyleFromTemplateProfile(rule templateprofile.StyleRule) (paragrap
 	}
 	ok := style.eastAsiaFont != "" || style.asciiFont != "" || style.hAnsiFont != "" || style.complexFont != "" || style.fontSize != "" ||
 		style.alignment != "" || style.line != "" || style.beforeTwips != nil || style.afterTwips != nil ||
-		style.beforeLines != nil || style.afterLines != nil || style.firstLineChars != nil ||
+		style.beforeLines != nil || style.afterLines != nil || style.firstLineChars != nil || style.firstLineTwips != nil ||
 		style.boldSet || style.bold || style.italicSet || style.italic || style.keepNextSet || style.keepLinesSet || style.widowControlSet
 	return style, ok
 }

@@ -403,7 +403,7 @@ func (s *paperWorkflowService) CompileTemplate(ctx context.Context, input Compil
 	if err := s.db.WithContext(ctx).Create(&record).Error; err != nil {
 		return nil, err
 	}
-	if pythonURL := pythonVisualServiceURL(); pythonURL != "" {
+	if pythonURL := PythonVisualServiceURL(); pythonURL != "" {
 		// Registering here gives Python the same template key used by RunJob.
 		// The deterministic Go compiler remains authoritative if Python is unavailable.
 		metadata := map[string]interface{}{
@@ -456,7 +456,6 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 	schoolID := "single-template"
 	compiledSource := input.FilePath
 	var profile *templateprofile.Profile
-	var administratorOverrides string
 
 	if input.FormatTemplateID != uuid.Nil {
 		var formatTemplate model.FormatTemplate
@@ -474,45 +473,12 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 		}
 		compiledSource = templatePath
 
-		// Profile JSON is only a cache. The selected DOCX always remains the
-		// template skeleton, and a stale cache is rebuilt from that DOCX.
-		if strings.TrimSpace(formatTemplate.FormatRules) != "" {
-			if p, err := templateprofile.Parse(formatTemplate.FormatRules); err == nil {
-				if templateSHA, hashErr := workflowTemplateSHA(templatePath); hashErr != nil {
-					return nil, hashErr
-				} else if p.TemplateSHA == templateSHA && p.Version == templateprofile.Version {
-					profile = p
-				} else {
-					log.Printf("[WORKFLOW_TEMPLATE] cached Profile for template %s is stale (hash/version); rebuilding from DOCX", formatTemplate.ID)
-				}
-			} else {
-				log.Printf("[WORKFLOW_TEMPLATE] failed to parse FormatRules for template %s: %v — falling back to DOCX", formatTemplate.ID, err)
-				administratorOverrides = formatTemplate.FormatRules
-			}
+		var extractErr error
+		profile, extractErr = templateprofile.Extract(templatePath)
+		if extractErr != nil {
+			return nil, fmt.Errorf("extract selected template DOCX: %w", extractErr)
 		}
-		// First use or changed DOCX: extract deterministic rules and refresh the cache.
-		if profile == nil {
-			profile = buildWorkflowTemplateProfile(ctx, templatePath)
-			if profile == nil {
-				return nil, fmt.Errorf("build selected template profile failed")
-			}
-			if administratorOverrides != "" {
-				if err := templateprofile.ApplyFormatRules(profile, administratorOverrides); err != nil {
-					return nil, fmt.Errorf("apply selected template format rule overrides: %w", err)
-				}
-			}
 
-			// Persist the refreshed cache; the DOCX remains the source of truth.
-			rulesJSON := templateprofile.Marshal(profile)
-			if rulesJSON != "" {
-				if err := s.db.WithContext(ctx).Model(&formatTemplate).Update("format_rules", rulesJSON).Error; err != nil {
-					log.Printf("[WORKFLOW_TEMPLATE] failed to persist FormatRules for template %s: %v", formatTemplate.ID, err)
-				} else {
-					log.Printf("[WORKFLOW_TEMPLATE] persisted FormatRules (%d bytes) for template %s — future jobs will skip DOCX parsing",
-						len(rulesJSON), formatTemplate.ID)
-				}
-			}
-		}
 	} else {
 		// No selected template: create the job, but RunJob will stop at manual
 		// review. Never synthesize a school profile or use hardcoded defaults.
@@ -576,8 +542,9 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 
 func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uuid.UUID) (view *WorkflowJobView, retErr error) {
 	outputPath := ""
-	pythonVisualURL := pythonVisualServiceURL()
+	pythonVisualURL := PythonVisualServiceURL()
 	var visual *PythonVisualReport
+	var visualSHA string
 	if pythonVisualURL != "" {
 		log.Printf("[PYTHON_VISUAL] v2 workflow enabled url=%s job=%s", pythonVisualURL, id)
 	}
@@ -674,41 +641,12 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		return nil, err
 	}
 	fileprocessor.FormatLogPrintf(ctx, "输出文件：%s", outputPath)
-	// 从数据库 JSON 字段解析模板 Profile（包含样式、页眉页脚、页面设置等数据）
-
-	profile, err := templateprofile.Parse(job.CompiledTemplate.StyleProfilesJSON)
-
+	// Always use the selected source DOCX; persisted profiles are diagnostic data.
+	profile, err := templateprofile.Extract(job.CompiledTemplate.SourceFilePath)
 	if err != nil {
-		// A parser revision invalidates cached JSON even when the DOCX bytes are
-		// unchanged. Rebuild below from the selected DOCX instead of failing the
-		// job with a stale-profile error.
-		fileprocessor.FormatLogPrintf(ctx, "模板 Profile 缓存不可用（%v），将从选定 DOCX 重新提取", err)
-		profile = nil
+		return nil, fmt.Errorf("extract selected template DOCX: %w", err)
 	}
-	// The database Profile is a cache. Rebuild it only when its recorded source
-	// hash is absent or no longer matches the selected DOCX; explicit test/admin
-	// profiles without a source hash remain usable as overrides.
-	if templatePath := strings.TrimSpace(job.CompiledTemplate.SourceFilePath); templatePath != "" && profile != nil && profile.TemplateSHA != "" {
-		if templateSHA, hashErr := workflowTemplateSHA(templatePath); hashErr == nil && (!strings.EqualFold(profile.TemplateSHA, templateSHA) || profile.Version != templateprofile.Version) {
-			freshProfile, extractErr := templateprofile.Extract(templatePath)
-			if extractErr != nil {
-				return nil, fmt.Errorf("extract selected template profile: %w", extractErr)
-			}
-			profile = freshProfile
-			fileprocessor.FormatLogPrintf(ctx, "模板 Profile 来源：DOCX 已变化，重新读取模板并忽略旧 JSON")
-		}
-	}
-	if profile == nil {
-		templatePath := strings.TrimSpace(job.CompiledTemplate.SourceFilePath)
-		if templatePath == "" {
-			return nil, fmt.Errorf("selected template profile is unavailable and has no DOCX source")
-		}
-		profile, err = templateprofile.Extract(templatePath)
-		if err != nil {
-			return nil, fmt.Errorf("extract selected template profile: %w", err)
-		}
-		fileprocessor.FormatLogPrintf(ctx, "模板 Profile 已从选定 DOCX 重新提取（解析器版本=%s）", templateprofile.Version)
-	}
+	fileprocessor.FormatLogPrintf(ctx, "模板规则直接读取所选 DOCX：%s", job.CompiledTemplate.SourceFilePath)
 	visualProfile = profile
 	fileprocessor.FormatLogProfile(ctx, profile, "第1步：学校模板 Profile")
 	fileprocessor.DiagPrintf("========== [Node 1] Template Profile Parsed ==========\n")
@@ -778,17 +716,6 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		log.Printf("[STRUCTURED_ROLE_PLAN] job=%s nodes=%d decisions=%s", job.ID, len(roleAssignments), string(data))
 		fileprocessor.FormatLogPrintf(ctx, "结构化角色计划：%s", string(data))
 	}
-	roleFormatPlan = templateapply.BuildRoleFormatPlan(profile, roleAssignments)
-	for _, item := range roleFormatPlan {
-		if !roleFormatPlanRequiresReview(item) {
-			continue
-		}
-		fileprocessor.FormatLogPrintf(ctx, "FormatPlan review: node=%s role=%s confidence=%.2f apply=%t reason=%s evidence=%s",
-			item.NodeID, item.Role, item.Confidence, item.Apply, item.Reason, strings.Join(item.Evidence, "; "))
-	}
-	if data, marshalErr := json.Marshal(roleFormatPlan); marshalErr == nil {
-		fileprocessor.FormatLogPrintf(ctx, "冻结后的模板 Profile FormatPlan：%s", string(data))
-	}
 	// OOXML 结构快照：捕获书签、域、公式、图片等受保护对象清单
 	sourceStructure, err := repaircontract.CaptureStructure(job.Paper.FilePath)
 
@@ -846,6 +773,20 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 				fileprocessor.FormatLogPrintf(ctx, "Structured rule candidates (bounded evidence): %s", string(data))
 			}
 		}
+	}
+	// Compile first: the writer and verifier consume the same completed rules.
+	profile = templatecontract.ExecutionProfile(profile, rules)
+	visualProfile = profile
+	roleFormatPlan = templateapply.BuildRoleFormatPlan(profile, roleAssignments)
+	for _, item := range roleFormatPlan {
+		if !roleFormatPlanRequiresReview(item) {
+			continue
+		}
+		fileprocessor.FormatLogPrintf(ctx, "FormatPlan review: node=%s role=%s confidence=%.2f apply=%t reason=%s evidence=%s",
+			item.NodeID, item.Role, item.Confidence, item.Apply, item.Reason, strings.Join(item.Evidence, "; "))
+	}
+	if data, marshalErr := json.Marshal(roleFormatPlan); marshalErr == nil {
+		fileprocessor.FormatLogPrintf(ctx, "冻结后的模板 Profile FormatPlan：%s", string(data))
 	}
 	// contract：修复合同，定义哪些段落需要修复、修复步骤是什么
 	contract := repaircontract.Build(rules, ast)
@@ -982,6 +923,11 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		fileprocessor.FormatLogPrintf(ctx, "stable-node FormatPlan 幂等复检：通过；再次应用修改=0")
 	}
 
+	writtenAST, err := paperast.Extract(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("capture post-write rule observations: %w", err)
+	}
+
 	normalized, err := transplant.NormalizeFinalDOCX(outputPath)
 	if err != nil {
 		return nil, fmt.Errorf("normalize final OOXML: %w", err)
@@ -998,6 +944,9 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	fileprocessor.FormatLogPrintf(ctx, "最终 OOXML 清理：归一化部件=%d；封面规范化=%d；属性顺序修复=%d。", normalized, coverNormalized, reordered)
 
 	// ── 阶段 11：确定性验证 ──
+	if err := fileprocessor.RepairRunningHeaders(outputPath); err != nil {
+		return nil, fmt.Errorf("resolve running-header styles: %w", err)
+	}
 	// 构建验证器：基于模板 Profile、规则集、AST、修复合同
 	verifier := verify.NewVerifierWithTemplateProfileAndClosure(profile, rules, ast, contract)
 	// The role plan is applied and re-read by stable NodeID below.  Its exact
@@ -1177,11 +1126,15 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	if result.Status == workflow.StatusVerifiedPass { // 验证全部通过 → 状态升级为已验证
 		stage = workflow.StageVerified
 	}
-	logWorkflowVerifyResult(ctx, "最终验证", result.VerifyResult)
+	logWorkflowVerifyResult(ctx, "OOXML阶段验证（尚非最终结论）", result.VerifyResult)
 	if pythonVisualURL != "" {
 		pythonVisualDiagnosticAttempted = true
 		visualSpec := workflowVisualSpec(job.CompiledTemplate.TemplateName, profile)
 		log.Printf("[PYTHON_VISUAL] v2 request job=%s template=%s rules=%d output=%s", job.ID, job.CompiledTemplate.TemplateName, workflowVisualRuleCount(visualSpec), outputPath)
+		visualInputSHA, hashErr := workflowTemplateSHA(outputPath)
+		if hashErr != nil {
+			return nil, hashErr
+		}
 		visualCtx, cancel := context.WithTimeout(ctx, workflowPythonVisualTimeout())
 		var visualErr error
 		visual, visualErr = NewPythonVisualClient(pythonVisualURL).CheckStudentPaperWithContext(
@@ -1193,6 +1146,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			log.Printf("[PYTHON_VISUAL] v2 workflow failed job=%s err=%v", job.ID, visualErr)
 			fileprocessor.FormatLogPrintf(ctx, "Python视觉复核失败：%v", visualErr)
 		} else if visual != nil {
+			visualSHA = visualInputSHA
 			log.Printf("[PYTHON_VISUAL] v2 workflow completed job=%s verdict=%s violations=%d reviews=%d", job.ID, visual.VisualVerdict, len(visual.Violations), len(visual.ReviewItems))
 			fileprocessor.FormatLogPrintf(ctx, "Python视觉复核：verdict=%s violations=%d reviews=%d", visual.VisualVerdict, len(visual.Violations), len(visual.ReviewItems))
 			repairs := pythonVisualRepairs(visual)
@@ -1209,6 +1163,11 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 					if err != nil {
 						return nil, err
 					}
+					visualSHA = "" // repairs invalidate the previous rendered evidence
+					postRepairSHA, hashErr := workflowTemplateSHA(outputPath)
+					if hashErr != nil {
+						return nil, hashErr
+					}
 					visualCtx2, cancel2 := context.WithTimeout(ctx, workflowPythonVisualTimeout())
 					visual2, visualErr2 := NewPythonVisualClient(pythonVisualURL).CheckStudentPaperWithContext(
 						visualCtx2, outputPath, job.CompiledTemplate.TemplateName, 1, job.ID.String()+"-workflow-postfix",
@@ -1219,6 +1178,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 						log.Printf("[PYTHON_VISUAL] v2 post-fix verification failed job=%s err=%v", job.ID, visualErr2)
 					} else if visual2 != nil {
 						visual = visual2
+						visualSHA = postRepairSHA
 						log.Printf("[PYTHON_VISUAL] v2 post-fix completed job=%s verdict=%s violations=%d reviews=%d", job.ID, visual.VisualVerdict, len(visual.Violations), len(visual.ReviewItems))
 						fileprocessor.FormatLogPrintf(ctx, "Python视觉二次复核：verdict=%s violations=%d reviews=%d", visual.VisualVerdict, len(visual.Violations), len(visual.ReviewItems))
 					}
@@ -1263,18 +1223,10 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			return nil, fmt.Errorf("clean abstract section blank paragraphs: %w", cleanErr)
 		}
 		fileprocessor.FormatLogPrintf(ctx, "摘要节空段清理：删除 %d 段", cleaned)
-		// CQIE 规范：摘要区标签/正文宋体 12pt 不加粗。模板用段落级默认
-		// run 属性把整段涂粗（中文摘要/关键词、英文 Key words 正文），
-		// 此处按正文规范覆写继承层与 run 层；与空段清理同处最终展示层。
-		rebolded, boldErr := templateapply.NormalizeAbstractLabelBoldInFile(outputPath)
-		if boldErr != nil {
-			return nil, fmt.Errorf("normalize abstract label bold: %w", boldErr)
-		}
-		fileprocessor.FormatLogPrintf(ctx, "摘要标签去粗：重写 %d 段", rebolded)
 		// These final display-layer edits are still document mutations. Re-run
 		// the deterministic loop and stable-node gate so the file being offered
 		// for download is the file that was actually verified.
-		if cleaned > 0 || rebolded > 0 {
+		if cleaned > 0 {
 			result, err = workflow.NewLoopController(nil, nil, verifier).Run(ctx, workflow.RunInput{OutputPath: outputPath})
 			if err != nil {
 				return nil, fmt.Errorf("revalidate final display-layer edits: %w", err)
@@ -1306,6 +1258,50 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			fileprocessor.FormatLogPrintf(ctx, "最终展示层修改已重新全量校验：通过门禁=%t", result.VerifyResult.Passed)
 		}
 	}
+	// No document mutations are allowed beyond this point. Bind all final
+	// evidence to the exact bytes offered for download.
+	finalSHA, hashErr := workflowTemplateSHA(outputPath)
+	if hashErr != nil {
+		return nil, hashErr
+	}
+	if pythonVisualURL != "" && visualSHA != finalSHA {
+		visual = nil
+		visualSHA = ""
+		visualCtx, cancel := context.WithTimeout(ctx, workflowPythonVisualTimeout())
+		fresh, visualErr := NewPythonVisualClient(pythonVisualURL).CheckStudentPaperWithContext(
+			visualCtx, outputPath, job.CompiledTemplate.TemplateName, 1, job.ID.String()+"-final-audit",
+			workflowVisualSpec(job.CompiledTemplate.TemplateName, profile), nil)
+		cancel()
+		if visualErr != nil {
+			fileprocessor.FormatLogPrintf(ctx, "最终文件视觉验证未完成：%v", visualErr)
+		} else if fresh != nil {
+			visual, visualSHA = fresh, finalSHA
+		}
+	}
+	// A renderer must not silently change the artifact it was asked to inspect.
+	// If it does, the hash mismatch below leaves its observations untrusted.
+	finalSHA, hashErr = workflowTemplateSHA(outputPath)
+	if hashErr != nil {
+		return nil, hashErr
+	}
+	finalAST, finalErr := paperast.Extract(outputPath)
+	if finalErr != nil {
+		return nil, fmt.Errorf("extract final rule audit: %w", finalErr)
+	}
+	audit := buildWorkflowRuleAudit(profile, rules, roleFormatPlan, ast, writtenAST, finalAST, finalSHA, visualSHA, visual)
+	audit.Writer = "in_place_role_plan"
+	if transplantEnabled {
+		audit.Writer = "template_transplant"
+	}
+	if err := attachWorkflowRuleAudit(&result, audit); err != nil {
+		return nil, err
+	}
+	stage = workflow.StageManualReview
+	if result.Status == workflow.StatusVerifiedPass && result.VerifyResult.Passed {
+		stage = workflow.StageVerified
+	}
+	fileprocessor.FormatLogPrintf(ctx, "最终规则审计：文件SHA=%s；规则记录=%d；视觉状态=%s；需复核=%t", finalSHA, len(audit.Entries), audit.VisualStatus, audit.NeedsReview)
+	fileprocessor.FormatLogPrintf(ctx, "规则来源→执行→最终验证：%s", string(result.VerifyResult.RuleAudit))
 	if err := workflow.NewStore(s.db).UpdateJobResult(ctx, job.ID, result.Status, stage, downloadPath, result.VerifyResult); err != nil {
 		return nil, err
 	}
@@ -1873,6 +1869,9 @@ func replaceManualFormulaNumberFields(documentXML string) (string, bool) {
 func finalizeGeneratedPaperDOCX(ctx context.Context, outputPath string) error {
 	if strings.TrimSpace(outputPath) == "" {
 		return nil
+	}
+	if err := fileprocessor.RepairRunningHeaders(outputPath); err != nil {
+		return err
 	}
 	verifier := verify.NewVerifier().WithoutSchoolSpecificRules()
 	for _, repair := range []func(string, verify.Result) (bool, error){

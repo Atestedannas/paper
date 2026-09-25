@@ -29,7 +29,7 @@ func main() {
 	// The visual client reads this value at call sites; keep the resolved
 	// configuration (including the local default) visible to the whole process.
 	_ = os.Setenv("PYTHON_SERVICE_URL", cfg.PythonServiceURL)
-	log.Printf("[PYTHON_VISUAL] startup configured url=%s", cfg.PythonServiceURL)
+	log.Printf("[PYTHON_VISUAL] startup enabled=%t", service.PythonVisualServiceURL() != "")
 	if err := logger.InitLogrusJSONFile(""); err != nil {
 		log.Printf("Warning: logrus JSON file init failed: %v", err)
 	}

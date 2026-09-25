@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
@@ -480,7 +481,7 @@ func ExtractDocumentXML(documentXML string) Snapshot {
 			BeforeTwips:     spacingValue(raw, "w:before"),
 			AfterTwips:      spacingValue(raw, "w:after"),
 			LineTwips:       spacingValue(raw, "w:line"),
-			PageBreakBefore: pageBreakBeforePattern.MatchString(raw),
+			PageBreakBefore: ooxmlpatch.ParagraphPageBreakBefore(raw),
 			PageSectionID:   fmt.Sprintf("section:%d", pageSection),
 		}
 		snapshot.Nodes = append(snapshot.Nodes, withRawMetadata(node, raw))
@@ -683,7 +684,7 @@ func extractText(raw string) string {
 // paragraph text. It lets callers distinguish a TOC/PAGE field or a link from
 // ordinary prose without asking an LLM to infer it from flattened text.
 func withRawMetadata(node Node, raw string) Node {
-	node.PageBreakBefore = node.PageBreakBefore || pageBreakBeforePattern.MatchString(raw)
+	node.PageBreakBefore = node.PageBreakBefore || ooxmlpatch.ParagraphPageBreakBefore(raw)
 	node.FieldCodes = extractFieldCodes(raw)
 	node.BookmarkNames = extractAttributeValues(bookmarkNamePattern, raw)
 	node.HyperlinkIDs = extractAttributeValues(hyperlinkIDPattern, raw)

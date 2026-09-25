@@ -215,6 +215,9 @@ func (l *formatRunLog) profile(profile *templateprofile.Profile, heading string)
 	l.printf("模板摘要 SHA：%s", profile.TemplateSHA)
 	l.printf("Profile 版本：%s；提取置信度：%.1f%%", profile.Version, profile.Confidence*100)
 	l.printf("页面：%s", humanPageSetup(profile.PageSetup))
+	if body, ok := profile.Styles["body"]; ok && body.BoldEvidence != "" {
+		l.printf("正文加粗规则依据：%s；排除模板说明段落：%d", body.BoldEvidence, len(profile.ExcludedSamples))
+	}
 
 	keys := sortedStyleKeys(profile.SectionFormats)
 	l.printf("分区格式数量：%d", len(keys))

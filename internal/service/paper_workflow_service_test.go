@@ -271,12 +271,18 @@ func TestPaperWorkflowServiceUsesSelectedFormatTemplateFromCreationThroughOutput
 	if profile.Source != "local" || profile.AI != nil {
 		t.Fatalf("workflow template profile must be deterministic OOXML only: source=%q ai=%#v", profile.Source, profile.AI)
 	}
-	if profile.Styles["heading_1"].FontEastAsia != "AdminFont" || profile.Styles["heading_1"].FontSizeHalfPt != "36" {
-		t.Fatalf("administrator override missing from profile: %#v", profile.Styles["heading_1"])
+	if profile.Styles["heading_1"].FontEastAsia == "AdminFont" {
+		t.Fatalf("database rules overrode source DOCX: %#v", profile.Styles["heading_1"])
+	}
+	var stored model.FormatTemplate
+	if err := db.First(&stored, "id = ?", templateID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.FormatRules != formatRules {
+		t.Error("CreatePaperJob wrote a template profile cache, want source rules unchanged")
 	}
 
-	// The first creation persists a full Profile JSON cache. A second creation
-	// must still bind the school DOCX as the skeleton instead of the student file.
+	// A second creation must still bind the source DOCX, without caching rules.
 	createdFromCache, err := svc.CreatePaperJob(context.Background(), CreatePaperJobInput{
 		UserID:           userID,
 		FormatTemplateID: templateID,
@@ -296,6 +302,22 @@ func TestPaperWorkflowServiceUsesSelectedFormatTemplateFromCreationThroughOutput
 	if compiledFromCache.SourceFilePath != templatePath {
 		t.Fatalf("cached Profile changed skeleton to %q, want %q", compiledFromCache.SourceFilePath, templatePath)
 	}
+	// Change the DOCX after creating both jobs. Execution must read these new
+	// bytes rather than either the school rules or the per-job snapshot.
+	pkg, err := ooxmlpkg.Open(templatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, ok := pkg.Get("word/document.xml")
+	if !ok {
+		t.Fatal("template document.xml missing")
+	}
+	pkg.Set("word/document.xml", []byte(strings.Replace(string(doc),
+		`<w:r><w:t>{{content_blocks}}</w:t></w:r>`,
+		`<w:r><w:rPr><w:rFonts w:eastAsia="FreshSourceFont"/><w:sz w:val="34"/></w:rPr><w:t>1 Introduction</w:t></w:r>`, 1)))
+	if err := pkg.Write(templatePath); err != nil {
+		t.Fatal(err)
+	}
 
 	view, err := svc.RunJob(context.Background(), created.ID.String(), userID)
 	if err != nil {
@@ -305,8 +327,8 @@ func TestPaperWorkflowServiceUsesSelectedFormatTemplateFromCreationThroughOutput
 	if outputPath == "" {
 		outputPath = filepath.Join(outputRoot, created.ID.String(), "final.docx")
 	}
-	if documentXML := readWorkflowDocumentXML(t, outputPath); !strings.Contains(documentXML, `w:eastAsia="AdminFont"`) || !strings.Contains(documentXML, `w:sz w:val="36"`) {
-		t.Fatalf("output did not use the persisted profile: %s", documentXML)
+	if documentXML := readWorkflowDocumentXML(t, outputPath); strings.Contains(documentXML, `w:eastAsia="AdminFont"`) || !strings.Contains(documentXML, `w:eastAsia="FreshSourceFont"`) {
+		t.Fatalf("output used database rules instead of the source DOCX: %s", documentXML)
 	}
 }
 

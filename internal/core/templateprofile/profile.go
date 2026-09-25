@@ -15,12 +15,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 )
 
-// Version is also the deterministic extractor revision. Bumping it invalidates
-// cached profiles when extraction semantics change, even when the DOCX bytes do not.
-const Version = "template-profile-v6"
+// Version identifies serialized diagnostic profiles. Workflow execution reads
+// the selected DOCX directly and does not use these snapshots as a cache.
+const Version = "template-profile-v8"
 
 const templateProfileAIPromptTemplate = `你是“本科毕业论文 DOCX 模板格式规范解析专家”，任务是把 OOXML 本地解析结果转成可执行的论文格式画像 JSON。
 
@@ -86,25 +87,30 @@ type ChatClient interface {
 }
 
 type Profile struct {
-	Version        string                 `json:"version"`
-	Source         string                 `json:"source"`
-	TemplateSHA    string                 `json:"template_sha"`
-	Sections       map[string]SectionRule `json:"sections"`
-	Styles         map[string]StyleRule   `json:"styles"`
-	SectionFormats SectionFormatMap       `json:"section_formats,omitempty"`
-	PageSetup      PageSetupRule          `json:"page_setup,omitempty"`
-	RulePack       RulePack               `json:"rule_pack,omitempty"`
-	Header         HeaderFooterRule       `json:"header"`
-	Footer         HeaderFooterRule       `json:"footer"`
-	HeaderFirst    HeaderFooterRule       `json:"header_first,omitempty"`
-	HeaderEven     HeaderFooterRule       `json:"header_even,omitempty"`
-	FooterFirst    HeaderFooterRule       `json:"footer_first,omitempty"`
-	FooterEven     HeaderFooterRule       `json:"footer_even,omitempty"`
-	AI             *AIProfile             `json:"ai,omitempty"`
-	Numbering      *NumberingProfile      `json:"numbering,omitempty"` // OOXML numbering.xml 精确提取
-	Confidence     float64                `json:"confidence"`
-	Scope          *TemplateScope         `json:"template_scope,omitempty"`
-	Requirements   []string               `json:"requirement_evidence,omitempty"`
+	ExcludedSamples []ExcludedStyleSample `json:"excluded_style_samples,omitempty"`
+	Conflicts       []RuleConflict        `json:"rule_conflicts,omitempty"`
+	// Blank paragraphs are read from the source DOCX for each run, never cached.
+	HeadingBlankBefore *StyleRule             `json:"-"`
+	HeadingBlankAfter  *StyleRule             `json:"-"`
+	Version            string                 `json:"version"`
+	Source             string                 `json:"source"`
+	TemplateSHA        string                 `json:"template_sha"`
+	Sections           map[string]SectionRule `json:"sections"`
+	Styles             map[string]StyleRule   `json:"styles"`
+	SectionFormats     SectionFormatMap       `json:"section_formats,omitempty"`
+	PageSetup          PageSetupRule          `json:"page_setup,omitempty"`
+	RulePack           RulePack               `json:"rule_pack,omitempty"`
+	Header             HeaderFooterRule       `json:"header"`
+	Footer             HeaderFooterRule       `json:"footer"`
+	HeaderFirst        HeaderFooterRule       `json:"header_first,omitempty"`
+	HeaderEven         HeaderFooterRule       `json:"header_even,omitempty"`
+	FooterFirst        HeaderFooterRule       `json:"footer_first,omitempty"`
+	FooterEven         HeaderFooterRule       `json:"footer_even,omitempty"`
+	AI                 *AIProfile             `json:"ai,omitempty"`
+	Numbering          *NumberingProfile      `json:"numbering,omitempty"` // OOXML numbering.xml 精确提取
+	Confidence         float64                `json:"confidence"`
+	Scope              *TemplateScope         `json:"template_scope,omitempty"`
+	Requirements       []string               `json:"requirement_evidence,omitempty"`
 }
 
 // TemplateScope prevents requirements text and the wrong embedded example
@@ -135,51 +141,60 @@ type SectionRule struct {
 }
 
 type StyleRule struct {
-	Label             string        `json:"label"`
-	FontEastAsia      string        `json:"font_east_asia,omitempty"`
-	FontASCII         string        `json:"font_ascii,omitempty"`
-	FontHAnsi         string        `json:"font_hansi,omitempty"`
-	FontCS            string        `json:"font_cs,omitempty"`
-	FontASCIITheme    string        `json:"font_ascii_theme,omitempty"`
-	FontHAnsiTheme    string        `json:"font_hansi_theme,omitempty"`
-	FontEastAsiaTheme string        `json:"font_east_asia_theme,omitempty"`
-	FontCSTheme       string        `json:"font_cs_theme,omitempty"`
-	FontHint          string        `json:"font_hint,omitempty"`
-	FontSizeHalfPt    string        `json:"font_size_half_pt,omitempty"`
-	ComplexSizeHalfPt string        `json:"complex_size_half_pt,omitempty"`
-	Bold              bool          `json:"bold,omitempty"`
-	BoldSet           bool          `json:"bold_set,omitempty"`
-	Italic            bool          `json:"italic,omitempty"`
-	ItalicSet         bool          `json:"italic_set,omitempty"`
-	KeepNext          bool          `json:"keep_next,omitempty"`
-	KeepNextSet       bool          `json:"keep_next_set,omitempty"`
-	KeepLines         bool          `json:"keep_lines,omitempty"`
-	KeepLinesSet      bool          `json:"keep_lines_set,omitempty"`
-	WidowControl      bool          `json:"widow_control,omitempty"`
-	WidowControlSet   bool          `json:"widow_control_set,omitempty"`
-	Alignment         string        `json:"alignment,omitempty"`
-	Line              string        `json:"line,omitempty"`
-	LineRule          string        `json:"line_rule,omitempty"`
-	BeforeTwips       string        `json:"before_twips,omitempty"`
-	AfterTwips        string        `json:"after_twips,omitempty"`
-	BeforeLines       string        `json:"before_lines,omitempty"`
-	AfterLines        string        `json:"after_lines,omitempty"`
-	FirstLineChars    string        `json:"first_line_chars,omitempty"`
-	FirstLineTwips    string        `json:"first_line_twips,omitempty"`
-	OutlineLevel      string        `json:"outline_level,omitempty"`
-	SampleCount       int           `json:"sample_count,omitempty"`
-	Confidence        float64       `json:"confidence,omitempty"`
-	Sources           []StyleSource `json:"sources,omitempty"`
-	InheritanceChain  []string      `json:"inheritance_chain,omitempty"`
+	SelectionEvidence string                      `json:"selection_evidence,omitempty" audit:"-"`
+	ReviewRequired    bool                        `json:"review_required,omitempty" audit:"-"`
+	PropertyEvidence  map[string]PropertyEvidence `json:"property_evidence,omitempty" audit:"-"`
+	RunStyles         []ResolvedRun               `json:"run_styles,omitempty" audit:"-"`
+	Label             string                      `json:"label"`
+	FontEastAsia      string                      `json:"font_east_asia,omitempty"`
+	FontASCII         string                      `json:"font_ascii,omitempty"`
+	FontHAnsi         string                      `json:"font_hansi,omitempty"`
+	FontCS            string                      `json:"font_cs,omitempty"`
+	FontASCIITheme    string                      `json:"font_ascii_theme,omitempty"`
+	FontHAnsiTheme    string                      `json:"font_hansi_theme,omitempty"`
+	FontEastAsiaTheme string                      `json:"font_east_asia_theme,omitempty"`
+	FontCSTheme       string                      `json:"font_cs_theme,omitempty"`
+	FontHint          string                      `json:"font_hint,omitempty"`
+	FontSizeHalfPt    string                      `json:"font_size_half_pt,omitempty"`
+	ComplexSizeHalfPt string                      `json:"complex_size_half_pt,omitempty"`
+	Bold              bool                        `json:"bold,omitempty"`
+	BoldSet           bool                        `json:"bold_set,omitempty"`
+	BoldEvidence      string                      `json:"bold_evidence,omitempty" audit:"-"`
+	Italic            bool                        `json:"italic,omitempty"`
+	ItalicSet         bool                        `json:"italic_set,omitempty"`
+	ItalicEvidence    string                      `json:"italic_evidence,omitempty" audit:"-"`
+	KeepNext          bool                        `json:"keep_next,omitempty"`
+	KeepNextSet       bool                        `json:"keep_next_set,omitempty"`
+	KeepLines         bool                        `json:"keep_lines,omitempty"`
+	KeepLinesSet      bool                        `json:"keep_lines_set,omitempty"`
+	WidowControl      bool                        `json:"widow_control,omitempty"`
+	WidowControlSet   bool                        `json:"widow_control_set,omitempty"`
+	Alignment         string                      `json:"alignment,omitempty"`
+	Line              string                      `json:"line,omitempty"`
+	LineRule          string                      `json:"line_rule,omitempty"`
+	BeforeTwips       string                      `json:"before_twips,omitempty"`
+	AfterTwips        string                      `json:"after_twips,omitempty"`
+	BeforeLines       string                      `json:"before_lines,omitempty"`
+	AfterLines        string                      `json:"after_lines,omitempty"`
+	FirstLineChars    string                      `json:"first_line_chars,omitempty"`
+	FirstLineTwips    string                      `json:"first_line_twips,omitempty"`
+	OutlineLevel      string                      `json:"outline_level,omitempty"`
+	SampleCount       int                         `json:"sample_count,omitempty"`
+	Confidence        float64                     `json:"confidence,omitempty"`
+	Sources           []StyleSource               `json:"sources,omitempty"`
+	InheritanceChain  []string                    `json:"inheritance_chain,omitempty"`
 }
 
 type StyleSource struct {
-	Part             string   `json:"part"`
-	ParagraphIndex   int      `json:"paragraph_index"`
-	Text             string   `json:"text,omitempty"`
-	ParagraphStyleID string   `json:"paragraph_style_id,omitempty"`
-	RunStyleID       string   `json:"run_style_id,omitempty"`
-	InheritanceChain []string `json:"inheritance_chain,omitempty"`
+	PropertyEvidence map[string]PropertyEvidence `json:"property_evidence,omitempty"`
+	EffectiveBold    *bool                       `json:"effective_bold,omitempty"`
+	BoldEvidence     string                      `json:"bold_evidence,omitempty" audit:"-"`
+	Part             string                      `json:"part"`
+	ParagraphIndex   int                         `json:"paragraph_index"`
+	Text             string                      `json:"text,omitempty"`
+	ParagraphStyleID string                      `json:"paragraph_style_id,omitempty"`
+	RunStyleID       string                      `json:"run_style_id,omitempty"`
+	InheritanceChain []string                    `json:"inheritance_chain,omitempty"`
 }
 
 type PageSetupRule struct {
@@ -277,12 +292,15 @@ type numberingReference struct {
 }
 
 type styleDefinitionSet struct {
-	Resolved    map[string]StyleRule
-	Local       map[string]StyleRule
-	BasedOn     map[string]string
-	Numbering   map[string]numberingReference
-	NameToID    map[string]string
-	DocDefaults StyleRule
+	Raw                   map[string]string
+	DocDefaultsXML        string
+	DefaultParagraphStyle string
+	Resolved              map[string]StyleRule
+	Local                 map[string]StyleRule
+	BasedOn               map[string]string
+	Numbering             map[string]numberingReference
+	NameToID              map[string]string
+	DocDefaults           StyleRule
 }
 
 func (definitions styleDefinitionSet) effectiveNumberingReference(styleID string) numberingReference {
@@ -483,8 +501,10 @@ type Options struct {
 }
 
 type paragraph struct {
-	Text string
-	XML  string
+	InTable             bool
+	BlankLineAnnotation bool
+	Text                string
+	XML                 string
 }
 
 var (
@@ -504,7 +524,7 @@ var (
 	paragraphRunPropsPattern     = regexp.MustCompile(`(?s)<w:pPr\b[^>]*>.*?<w:rPr\b[^>]*>.*?</w:rPr>.*?</w:pPr>`)
 	indentPattern                = regexp.MustCompile(`<w:ind\b[^>]*/>`)
 	outlinePattern               = regexp.MustCompile(`<w:outlineLvl\b[^>]*/>`)
-	styleElementPattern          = regexp.MustCompile(`(?s)<w:style\b[^>]*>.*?</w:style>`)
+	styleElementPattern          = regexp.MustCompile(`(?s)<w:style\b[^>]*?(?:/>|>.*?</w:style>)`)
 	styleIDPattern               = regexp.MustCompile(`<w:style\b[^>]*\bw:styleId="([^"]+)"`)
 	styleTypePattern             = regexp.MustCompile(`<w:style\b[^>]*\bw:type="([^"]+)"`)
 	styleNamePattern             = regexp.MustCompile(`<w:name\b[^>]*\bw:val="([^"]+)"`)
@@ -909,6 +929,7 @@ func Extract(templatePath string) (*Profile, error) {
 		numberingPatterns = profile.Numbering.BuildHeadingPatterns()
 	}
 
+	instructionParagraphs, bodyRequirements := templateInstructionParagraphs(paras)
 	styleSamples := map[string][]StyleRule{}
 	bodyStarted := false
 	inTOC := false
@@ -931,6 +952,13 @@ func Extract(templatePath string) (*Profile, error) {
 		}
 	}
 	for index, para := range paras {
+		// A requirements section can contain genuine caption examples. Keep
+		// those in their own role; prose instructions never enter body samples.
+		if instructionParagraphs[index] && classifyCaptionParagraph(para.Text, para.XML, styleDefinitions) == "" {
+			profile.ExcludedSamples = append(profile.ExcludedSamples, ExcludedStyleSample{ParagraphIndex: index + 1, Text: para.Text, Reason: "template_instruction_section"})
+			profile.Requirements = append(profile.Requirements, para.Text)
+			continue
+		}
 		normalized := normalizeLabel(para.Text)
 		lower := strings.ToLower(strings.TrimSpace(para.Text))
 		if !sampleRegionStarted && (normalized == "摘要" || lower == "abstract") {
@@ -1031,25 +1059,44 @@ func Extract(templatePath string) (*Profile, error) {
 		style := extractEffectiveParagraphStyle(key, para.XML, styleSet, profile.Numbering)
 		style = extractRepresentativeRunStyleWithDefinitions(key, para.XML, style, styleDefinitions)
 		style = extractLeadingLabelRunStyleWithDefinitions(key, para.XML, style, styleDefinitions)
+		if key == "body_start" || key == "heading_1" {
+			if profile.HeadingBlankBefore == nil {
+				profile.HeadingBlankBefore = headingBlankStyle(paras, index-1, styleSet, profile.Numbering)
+			}
+			if profile.HeadingBlankAfter == nil {
+				profile.HeadingBlankAfter = headingBlankStyle(paras, index+1, styleSet, profile.Numbering)
+			}
+		}
+		style = resolveEffectiveFormatting(style, formattingInputForRole(key, para.XML), styleSet, profile.Numbering)
+		style.Bold, style.BoldSet, style.BoldEvidence = resolveParagraphBold(formattingInputForRole(key, para.XML), styleSet)
+		style.Italic, style.ItalicSet, style.ItalicEvidence = resolveParagraphEmphasis(formattingInputForRole(key, para.XML), styleSet, true)
 		style = recordStyleSource(style, index, para)
 		styleSamples[key] = append(styleSamples[key], style)
 		if key == "abstract_cn" {
 			abstractBodyKey = "abstract_body"
 			if content, ok := extractTrailingContentRunStyleWithDefinitions("abstract_body", para.XML, styleDefinitions); ok {
+				base := extractEffectiveParagraphStyle(content.Label, runElementPattern.ReplaceAllString(para.XML, ""), styleSet, profile.Numbering)
+				content = mergeStyleRule(base, content)
 				styleSamples["abstract_body"] = append(styleSamples["abstract_body"], recordStyleSource(content, index, para))
 			}
 		} else if key == "abstract_en" {
 			abstractBodyKey = "abstract_en_body"
 			if content, ok := extractTrailingContentRunStyleWithDefinitions("abstract_en_body", para.XML, styleDefinitions); ok {
+				base := extractEffectiveParagraphStyle(content.Label, runElementPattern.ReplaceAllString(para.XML, ""), styleSet, profile.Numbering)
+				content = mergeStyleRule(base, content)
 				styleSamples["abstract_en_body"] = append(styleSamples["abstract_en_body"], recordStyleSource(content, index, para))
 			}
 		} else if key == "keywords_cn" {
 			if content, ok := extractTrailingContentRunStyleWithDefinitions("keywords_cn_body", para.XML, styleDefinitions); ok {
+				base := extractEffectiveParagraphStyle(content.Label, runElementPattern.ReplaceAllString(para.XML, ""), styleSet, profile.Numbering)
+				content = mergeStyleRule(base, content)
 				styleSamples["keywords_cn_body"] = append(styleSamples["keywords_cn_body"], recordStyleSource(content, index, para))
 			}
 			abstractBodyKey = ""
 		} else if key == "keywords_en" {
 			if content, ok := extractTrailingContentRunStyleWithDefinitions("keywords_en_body", para.XML, styleDefinitions); ok {
+				base := extractEffectiveParagraphStyle(content.Label, runElementPattern.ReplaceAllString(para.XML, ""), styleSet, profile.Numbering)
+				content = mergeStyleRule(base, content)
 				styleSamples["keywords_en_body"] = append(styleSamples["keywords_en_body"], recordStyleSource(content, index, para))
 			}
 			abstractBodyKey = ""
@@ -1129,9 +1176,16 @@ func Extract(templatePath string) (*Profile, error) {
 			}
 		}
 		profile.Styles[key] = aggregateStyleRules(key, samples)
+		if key == "body" && strings.HasPrefix(profile.Styles[key].BoldEvidence, "conflicting_body_samples:") {
+			profile.Conflicts = append(profile.Conflicts, RuleConflict{Role: "body", Property: "bold", Evidence: profile.Styles[key].BoldEvidence, Sample: "both bold and nonbold uniform body samples"})
+		}
 	}
 
+	applyBodyRequirements(profile, bodyRequirements)
 	profile.SectionFormats = buildSectionFormatMap(profile.Styles)
+	if len(profile.Conflicts) > 0 {
+		return profile, fmt.Errorf("模板正文规则存在冲突，需确认后再排版：%s", profile.Conflicts[0].Evidence)
+	}
 	return profile, nil
 }
 
@@ -1159,6 +1213,9 @@ func ResolveDocumentEffectiveStyles(docxPath string) (map[int]StyleRule, error) 
 		}
 		style := extractEffectiveParagraphStyle("student", raw, definitions, numbering)
 		style = extractRepresentativeRunStyleWithDefinitions("body", raw, style, definitions.Resolved)
+		style = resolveEffectiveFormatting(style, inlineLabelContent(raw), definitions, numbering)
+		style.Bold, style.BoldSet, style.BoldEvidence = resolveParagraphBold(inlineLabelContent(raw), definitions)
+		style.Italic, style.ItalicSet, style.ItalicEvidence = resolveParagraphEmphasis(inlineLabelContent(raw), definitions, true)
 		style.Label = ""
 		result[index] = style
 	}
@@ -1351,10 +1408,16 @@ func belongsToBodyFamily(key string) bool {
 
 func recordStyleSource(style StyleRule, paragraphIndex int, para paragraph) StyleRule {
 	source := StyleSource{
+		PropertyEvidence: style.PropertyEvidence,
+		BoldEvidence:     style.BoldEvidence,
 		Part:             "word/document.xml",
 		ParagraphIndex:   paragraphIndex + 1,
 		Text:             summarizeSourceText(para.Text),
 		InheritanceChain: append([]string(nil), style.InheritanceChain...),
+	}
+	if style.BoldSet && style.BoldEvidence != "" {
+		value := style.Bold
+		source.EffectiveBold = &value
 	}
 	if match := paragraphStyleIDPattern.FindStringSubmatch(para.XML); len(match) == 2 {
 		source.ParagraphStyleID = match[1]
@@ -1441,7 +1504,7 @@ func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
 	if strings.HasPrefix(label, "heading_") {
 		withSize := make([]StyleRule, 0, len(samples))
 		for _, sample := range samples {
-			if sample.FontSizeHalfPt != "" {
+			if sample.FontSizeHalfPt != "" || sample.PropertyEvidence["FontSizeHalfPt"].Source == "invalid_or_missing_style" || sample.PropertyEvidence["FontSizeHalfPt"].State == "mixed" {
 				withSize = append(withSize, sample)
 			}
 		}
@@ -1503,6 +1566,24 @@ func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
 	}
 	style.BoldSet = boldSamples > 0
 	style.Bold = boldSamples > 0 && boldCount*5 > boldSamples*3
+	if label == "body" {
+		style.BoldEvidence = fmt.Sprintf("resolved_samples=%d bold=%d nonbold=%d excluded=%d", boldSamples, boldCount, boldSamples-boldCount, len(samples)-boldSamples)
+		for _, sample := range samples {
+			if !sample.BoldSet && sample.BoldEvidence != "" && sample.BoldEvidence != "mixed_run_emphasis" && sample.BoldEvidence != "no_visible_text" {
+				style.Bold, style.BoldSet = false, false
+				style.BoldEvidence = "unresolved_body_sample: " + sample.BoldEvidence
+				break
+			}
+		}
+
+		// Disagreement between uniform body examples is a conflict, not a vote
+		// authorizing a document-wide change. Mixed runs already abstain above.
+		if boldCount > 0 && boldCount < boldSamples {
+			style.Bold, style.BoldSet = false, false
+			style.BoldEvidence = "conflicting_body_samples: " + style.BoldEvidence
+		}
+	}
+
 	italicCount, italicSamples := 0, 0
 	for _, sample := range samples {
 		if sample.ItalicSet {
@@ -1514,6 +1595,11 @@ func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
 	}
 	style.ItalicSet = italicSamples > 0
 	style.Italic = italicSamples > 0 && italicCount*5 > italicSamples*3
+	if label == "body" && italicCount > 0 && italicCount < italicSamples {
+		style.Italic, style.ItalicSet = false, false
+		style.ItalicEvidence = "conflicting_body_samples"
+		style.ReviewRequired = true
+	}
 	style.KeepNext, style.KeepNextSet = majorityOnOff(samples, func(sample StyleRule) (bool, bool) { return sample.KeepNext, sample.KeepNextSet })
 	style.KeepLines, style.KeepLinesSet = majorityOnOff(samples, func(sample StyleRule) (bool, bool) { return sample.KeepLines, sample.KeepLinesSet })
 	style.WidowControl, style.WidowControlSet = majorityOnOff(samples, func(sample StyleRule) (bool, bool) { return sample.WidowControl, sample.WidowControlSet })
@@ -1522,6 +1608,7 @@ func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
 		style.Sources = append(style.Sources, sample.Sources...)
 		style.InheritanceChain = appendUniqueStrings(style.InheritanceChain, sample.InheritanceChain...)
 	}
+	retainObservedCombination(&style, samples)
 	style.Confidence = styleConsensusConfidence(samples, style)
 	return style
 }
@@ -2050,6 +2137,7 @@ func extractPageSetup(documentXML string) PageSetupRule {
 }
 
 func collectParagraphs(documentXML string) []paragraph {
+	tableDepth := 0
 	decoder := xml.NewDecoder(strings.NewReader(documentXML))
 	paras := make([]paragraph, 0, 64)
 	depth, textBoxDepth := 0, 0
@@ -2066,6 +2154,9 @@ func collectParagraphs(documentXML string) []paragraph {
 		switch typed := token.(type) {
 		case xml.StartElement:
 			depth++
+			if typed.Name.Local == "tbl" {
+				tableDepth++
+			}
 			if typed.Name.Local == "txbxContent" {
 				textBoxDepth++
 			}
@@ -2073,6 +2164,9 @@ func collectParagraphs(documentXML string) []paragraph {
 				paragraphStart, paragraphDepth = start, depth
 			}
 		case xml.EndElement:
+			if typed.Name.Local == "tbl" {
+				tableDepth--
+			}
 			if typed.Name.Local == "txbxContent" {
 				// Text boxes often contain template annotations. Preserve their XML
 				// in the document, but never treat them as paragraph style samples.
@@ -2082,8 +2176,9 @@ func collectParagraphs(documentXML string) []paragraph {
 			}
 			if typed.Name.Local == "p" && paragraphStart >= 0 && depth == paragraphDepth {
 				raw := documentXML[paragraphStart:int(decoder.InputOffset())]
+				blankLineAnnotation := hasBlankLineAnnotation(raw)
 				raw = textBoxContentPattern.ReplaceAllString(raw, "")
-				paras = append(paras, paragraph{Text: extractText(raw), XML: raw})
+				paras = append(paras, paragraph{Text: extractText(raw), XML: raw, BlankLineAnnotation: blankLineAnnotation, InTable: tableDepth > 0})
 				paragraphStart, paragraphDepth = -1, -1
 			}
 			depth--
@@ -2095,8 +2190,9 @@ func collectParagraphs(documentXML string) []paragraph {
 	matches := paragraphPattern.FindAllString(documentXML, -1)
 	paras = make([]paragraph, 0, len(matches))
 	for _, raw := range matches {
+		blankLineAnnotation := hasBlankLineAnnotation(raw)
 		raw = textBoxContentPattern.ReplaceAllString(raw, "")
-		paras = append(paras, paragraph{Text: extractText(raw), XML: raw})
+		paras = append(paras, paragraph{Text: extractText(raw), XML: raw, BlankLineAnnotation: blankLineAnnotation})
 	}
 	return paras
 }
@@ -2325,7 +2421,7 @@ func detectPageBreakBefore(paras []paragraph, index int) (bool, string) {
 		return false, ""
 	}
 	current := paras[index].XML
-	if strings.Contains(current, "<w:pageBreakBefore") || strings.Contains(current, `<w:br w:type="page"`) {
+	if ooxmlpatch.ParagraphPageBreakBefore(current) || strings.Contains(current, `<w:br w:type="page"`) {
 		return true, "current_paragraph"
 	}
 	for previousIndex, checked := index-1, 0; previousIndex >= 0 && checked < 5; previousIndex, checked = previousIndex-1, checked+1 {
@@ -2637,8 +2733,10 @@ func emptyStyleDefinitionSet() styleDefinitionSet {
 
 func parseStyleDefinitions(stylesXML string) styleDefinitionSet {
 	definitions := emptyStyleDefinitionSet()
+	definitions.Raw = map[string]string{}
 	// Parse docDefaults as the ultimate style inheritance base.
 	if ddMatch := docDefaultsPattern.FindStringSubmatch(stylesXML); len(ddMatch) == 2 {
+		definitions.DocDefaultsXML = ddMatch[1]
 		definitions.DocDefaults = extractStyle("docDefaults", ddMatch[1])
 	}
 
@@ -2648,6 +2746,10 @@ func parseStyleDefinitions(stylesXML string) styleDefinitionSet {
 		if match := styleIDPattern.FindStringSubmatch(element); len(match) == 2 {
 			id := match[1]
 			rawByID[id] = element
+			definitions.Raw[id] = element
+			if a := attrs(element[:strings.Index(element, ">")+1]); a["w:type"] == "paragraph" && (a["w:default"] == "1" || a["w:default"] == "true") {
+				definitions.DefaultParagraphStyle = id
+			}
 			local := extractStyle(id, element)
 			local.InheritanceChain = []string{id}
 			definitions.Local[id] = local
@@ -2785,24 +2887,13 @@ func appendUniqueStrings(base []string, values ...string) []string {
 }
 
 func enabledBold(raw string) bool {
-	// Check <w:bCs> (complex script bold) first, then <w:b>.
-	// Must use precise matching like hasBoldDeclaration/hasItalicDeclaration
-	// to avoid matching <w:br/>, <w:bdr>, <w:body>, etc.
-	for _, tag := range []string{"<w:bCs/>", "<w:bCs ", "<w:bCs>", "<w:b/>", "<w:b ", "<w:b>"} {
-		if index := strings.Index(raw, tag); index >= 0 {
-			end := strings.Index(raw[index:], ">")
-			if end < 0 {
-				continue
-			}
-			value := raw[index : index+end+1]
-			return !strings.Contains(value, `w:val="0"`) && !strings.Contains(value, `w:val="false"`)
-		}
-	}
-	return false
+	p, ok := readBoldProperties(raw)
+	return ok && p.b != nil && *p.b
 }
 
 func hasBoldDeclaration(raw string) bool {
-	return strings.Contains(raw, "<w:b") || strings.Contains(raw, "<w:bCs")
+	p, ok := readBoldProperties(raw)
+	return ok && p.b != nil
 }
 
 func hasItalicDeclaration(raw string) bool {
@@ -2831,6 +2922,9 @@ func enabledProperty(raw string, property string) bool {
 }
 
 func isBodyStyleCandidate(para paragraph) bool {
+	if para.InTable {
+		return false
+	}
 	text := strings.TrimSpace(para.Text)
 	if len([]rune(text)) < 15 || strings.Contains(para.XML, "<w:pict") || strings.Contains(para.XML, "<w:drawing") {
 		return false

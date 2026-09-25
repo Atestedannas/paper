@@ -2,6 +2,7 @@ package verify
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"html"
@@ -56,6 +57,7 @@ type Issue struct {
 }
 
 type Result struct {
+	RuleAudit        json.RawMessage          `json:"rule_audit,omitempty"`
 	Passed           bool                     `json:"passed"`
 	ComplianceStatus string                   `json:"compliance_status"`
 	ComplianceReason string                   `json:"compliance_reason"`
@@ -448,6 +450,9 @@ func addSectionHeaderFooterIssues(document string, result *Result, profiles ...*
 			if len(match) != 2 {
 				continue
 			}
+			if strings.Contains(match[0], `w:type="first"`) && !strings.Contains(section, "<w:titlePg") {
+				continue
+			}
 			if seenFooters[match[1]] > 0 {
 				linked = true
 			}
@@ -461,7 +466,7 @@ func addSectionHeaderFooterIssues(document string, result *Result, profiles ...*
 	if inherited && !templateDriven {
 		appendRepairableIssueOnce(result, "section_header_footer_inherited", "one or more sections do not define their own header/footer references and may inherit content from the previous section; break header/footer links before setting chapter-specific text or page numbers.", documentTarget)
 	}
-	if linked {
+	if linked && !templateDriven {
 		appendRepairableIssueOnce(result, "linked_header_footer_sections", "multiple sections reference the same header/footer part; chapter-specific headers, footer formats, and page numbering may change together instead of independently.", documentTarget)
 	}
 }

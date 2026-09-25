@@ -327,6 +327,17 @@ func (h *AuthHandler) RedirectAlipayLogin(c *gin.Context) {
 // AlipayAuthCallback 支付宝登录回调（GET 重定向 / POST API 均支持）
 func (h *AuthHandler) AlipayAuthCallback(c *gin.Context) {
 	// GET: platform redirect appends auth_code as query param
+
+	if c.Query("flow") != "" || c.Query("flowT") != "" || c.Query("flowSign") != "" {
+		state := c.Query("state")
+		if h.alipayQRSessionStore.HasState(state) {
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusOK, alipayQRLoginConfirmedHTML())
+			return
+		}
+		c.String(http.StatusOK, "success")
+		return
+	}
 	code := c.Query("auth_code")
 	state := c.Query("state")
 	// POST: frontend may send JSON body

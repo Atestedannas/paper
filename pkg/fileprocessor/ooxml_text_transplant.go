@@ -1382,7 +1382,7 @@ func setDocxTagAttr(tagXML, attr, value string) (string, error) {
 		}
 		return tagXML[:insertIndex] + ` ` + attr + `="` + value + `"` + tagXML[insertIndex:], nil
 	}
-	return tagXML[:loc[2]] + value + tagXML[loc[3]:], nil
+	return tagXML[:loc[4]] + value + tagXML[loc[5]:], nil
 }
 
 func scaleDocxWidthsToTotal(widths []int, targetTotal int) []int {

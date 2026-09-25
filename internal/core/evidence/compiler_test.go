@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -22,5 +23,11 @@ func TestCompileRuleAcceptsSelectorContract(t *testing.T) {
 	candidate, err := CompileRule(context.Background(), fakeClient(`{"rule_id":"CQIE.HUMANITIES.H1","selector":{"role":"heading_1","variant":"humanities"},"constraints":{"size_pt":16},"source_evidence_ids":["ev:1"],"confidence":0.98}`), request)
 	if err != nil || candidate.Role != "heading_1" || candidate.Variant != "humanities" || candidate.Selector.Role != "heading_1" {
 		t.Fatalf("CompileRule() = %#v, %v", candidate, err)
+	}
+}
+
+func TestPoWFailureIsServiceFailureNotRuleRejection(t *testing.T) {
+	if !IsLLMTransportFailure(errors.New("PoW challenge failed: pow challenge missing in response")) {
+		t.Fatal("PoW failure must be classified as upstream failure")
 	}
 }

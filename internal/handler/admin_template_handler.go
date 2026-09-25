@@ -564,7 +564,7 @@ func (h *AdminTemplateHandler) UploadTemplateDOCX(c *gin.Context) {
 		return
 	}
 
-	if pythonURL := strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")); pythonURL != "" {
+	if pythonURL := service.PythonVisualServiceURL(); pythonURL != "" {
 		client := service.NewPythonVisualClient(pythonURL)
 		metadata := map[string]interface{}{
 			"templateId": template.TemplateID, "bizId": templateUUID.String(),

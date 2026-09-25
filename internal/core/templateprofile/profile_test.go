@@ -267,11 +267,11 @@ func TestExtractCascadesNumberingLevelBetweenParagraphStyleAndInheritedDefaults(
 	}
 	got := profile.Styles["heading_1"]
 	if got.FontEastAsia != "DirectEast" || got.FontASCII != "CharacterAscii" ||
-		got.FontHAnsi != "ParagraphHAnsi" || got.FontCS != "MajorArabic" || got.FontCSTheme != "majorBidi" {
+		got.FontHAnsi != "ParagraphHAnsi" || got.FontCS != "DefaultCS" || got.FontCSTheme != "" {
 		t.Fatalf("four-slot precedence = %#v", got)
 	}
-	if got.Alignment != "left" || got.Line != "400" || got.LineRule != "exact" ||
-		got.FirstLineTwips != "480" || got.FontSizeHalfPt != "28" {
+	if got.Alignment != "left" || got.Line != "300" || got.LineRule != "exact" ||
+		got.FirstLineTwips != "480" || got.FontSizeHalfPt != "20" {
 		t.Fatalf("paragraph/numbering precedence = %#v", got)
 	}
 	if !got.BoldSet || got.Bold || !got.ItalicSet || got.Italic {
@@ -575,7 +575,7 @@ func TestExtractDetectsChineseChapterAndPageBreakAcrossBlankParagraphs(t *testin
 		"word/document.xml": `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
 			`<w:p><w:r><w:br w:type="page"/></w:r></w:p>` +
 			`<w:p><w:r><w:t></w:t></w:r></w:p>` +
-			`<w:p><w:pPr><w:spacing w:before="240" w:after="120" w:line="400" w:lineRule="exact"/><w:rPr><w:rFonts w:eastAsia="SimSun"/><w:sz w:val="32"/><w:b/></w:rPr></w:pPr><w:r><w:t>第一章 绪论</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:spacing w:before="240" w:after="120" w:line="400" w:lineRule="exact"/><w:rPr><w:rFonts w:eastAsia="SimSun"/><w:sz w:val="32"/><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="SimSun"/><w:sz w:val="32"/><w:b/></w:rPr><w:t>第一章 绪论</w:t></w:r></w:p>` +
 			`</w:body></w:document>`,
 	})
 
@@ -603,10 +603,10 @@ func TestAggregateStyleRulesRequiresBoldSupermajority(t *testing.T) {
 	}
 }
 
-func TestExtractStyleLimitsBoldToRepresentativeRunProperties(t *testing.T) {
+func TestExtractStyleDoesNotUseParagraphMarkToCancelRunBold(t *testing.T) {
 	raw := `<w:p><w:pPr><w:rPr><w:b w:val="0"/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>mixed</w:t></w:r></w:p>`
-	if style := extractStyle("body", raw); style.Bold {
-		t.Fatalf("later bold run should not override paragraph style: %#v", style)
+	if style := extractStyle("body", raw); !style.Bold {
+		t.Fatalf("paragraph mark should not cancel text run bold: %#v", style)
 	}
 }
 
@@ -658,7 +658,7 @@ func TestNumberedHeadingLevelRejectsScientificExpression(t *testing.T) {
 func TestExtractAggregatesRepeatedStylesByMode(t *testing.T) {
 	templatePath := filepath.Join(t.TempDir(), "template.docx")
 	paragraph := func(font, size string) string {
-		return `<w:p><w:pPr><w:rPr><w:rFonts w:eastAsia="` + font + `"/><w:sz w:val="` + size + `"/></w:rPr></w:pPr><w:r><w:t>参考文献</w:t></w:r></w:p>`
+		return `<w:p><w:pPr><w:rPr><w:rFonts w:eastAsia="` + font + `"/><w:sz w:val="` + size + `"/></w:rPr></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="` + font + `"/><w:sz w:val="` + size + `"/></w:rPr><w:t>参考文献</w:t></w:r></w:p>`
 	}
 	writeDocxEntries(t, templatePath, map[string]string{
 		"[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
@@ -880,7 +880,7 @@ func writeTemplateProfileDocx(t *testing.T, path string) {
 			`<w:p><w:pPr><w:spacing w:line="360"/><w:ind w:firstLineChars="200"/><w:rPr><w:rFonts w:eastAsia="宋体" w:ascii="Times New Roman"/><w:sz w:val="24"/></w:rPr></w:pPr><w:r><w:t>正文。</w:t></w:r></w:p>` +
 			`<w:p><w:r><w:t>文献引用：按照其在正文中出现的先后顺序以方括号加阿拉伯数字连续编码，如[1]、[2]，以上标形式进行标注。GB7714-2015</w:t></w:r></w:p>` +
 			`<w:p><w:r><w:br w:type="page"/></w:r></w:p>` +
-			`<w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:rFonts w:eastAsia="宋体" w:ascii="Times New Roman"/><w:sz w:val="28"/><w:b/></w:rPr></w:pPr><w:r><w:t>参考文献</w:t></w:r></w:p>` +
+			`<w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:rFonts w:eastAsia="宋体" w:ascii="Times New Roman"/><w:sz w:val="28"/><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="宋体" w:ascii="Times New Roman"/><w:sz w:val="28"/><w:b/></w:rPr><w:t>参考文献</w:t></w:r></w:p>` +
 			`<w:p><w:r><w:br w:type="page"/></w:r></w:p>` +
 			`<w:p><w:pPr><w:rPr><w:rFonts w:eastAsia="宋体"/><w:sz w:val="24"/></w:rPr></w:pPr><w:r><w:t>致谢</w:t></w:r></w:p>` +
 			`</w:body></w:document>`,

@@ -21,6 +21,7 @@ func IsLLMTransportFailure(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "response content") ||
 		strings.Contains(msg, "SSE") ||
+		strings.Contains(msg, "PoW challenge failed") ||
 		strings.Contains(msg, "deadline exceeded") ||
 		strings.Contains(msg, "timeout")
 }

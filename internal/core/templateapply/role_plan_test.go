@@ -204,7 +204,7 @@ func TestRolePlanBreaksPagesBetweenChapterHeadings(t *testing.T) {
 	}
 }
 
-func TestRolePlanDoesNotApplyUnsafeSectionFlow(t *testing.T) {
+func TestRolePlanAppliesPageBreakWhileDeferringSectionClone(t *testing.T) {
 	profile := &templateprofile.Profile{
 		Styles: map[string]templateprofile.StyleRule{"references_title": {FontSizeHalfPt: "28"}},
 		Sections: map[string]templateprofile.SectionRule{
@@ -218,8 +218,8 @@ func TestRolePlanDoesNotApplyUnsafeSectionFlow(t *testing.T) {
 	}
 	documentXML := `<w:document xmlns:w="w" xmlns:w14="w14"><w:body><w:p w14:paraId="AAA111"><w:r><w:t>References</w:t></w:r></w:p></w:body></w:document>`
 	updated, _ := applyRoleFormatPlanToDocumentXML(documentXML, profile, assignments)
-	if strings.Contains(updated, `<w:pageBreakBefore/>`) {
-		t.Fatalf("unsafe section flow inserted a page break: %s", updated)
+	if !strings.Contains(updated, `<w:pageBreakBefore/>`) || strings.Contains(updated, `<w:sectPr`) {
+		t.Fatalf("required page break must apply without synthesizing a section: %s", updated)
 	}
 }
 
@@ -246,7 +246,7 @@ func TestRolePlanAddsHeading1StyleOnlyForTrustedHeading(t *testing.T) {
 	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
 		"heading_1": {
 			Alignment: "center", Bold: true, BoldSet: true, FontASCII: "黑体", FontCS: "Times New Roman",
-			FontEastAsia: "黑体", FontHAnsi: "黑体", FontSizeHalfPt: "32", ComplexSizeHalfPt: "32", Line: "400", LineRule: "exact",
+			FontEastAsia: "黑体", FontHAnsi: "黑体", FontSizeHalfPt: "32", ComplexSizeHalfPt: "32", Line: "400", LineRule: "exact", BeforeTwips: "400", AfterTwips: "400", FirstLineChars: "0",
 		},
 	}}
 	assignments := []roleclassify.Assignment{{NodeID: "p:AAA111", Role: "heading_1", Confidence: 1, Trusted: true, Index: 0}}
@@ -260,7 +260,7 @@ func TestRolePlanAddsHeading1StyleOnlyForTrustedHeading(t *testing.T) {
 	}
 }
 
-func TestRolePlanHardRulesOverrideBadTemplateSamples(t *testing.T) {
+func TestRolePlanHonorsExplicitTemplateOverSchoolDefaults(t *testing.T) {
 	profile := &templateprofile.Profile{
 		Header: templateprofile.HeaderFooterRule{Text: "重庆工程学院本科生毕业设计（论文）"},
 		Styles: map[string]templateprofile.StyleRule{
@@ -286,14 +286,14 @@ func TestRolePlanHardRulesOverrideBadTemplateSamples(t *testing.T) {
 	title := paragraphContaining(updated, "论文题名")
 	body := paragraphContaining(updated, "正文内容")
 	h1 := paragraphContaining(updated, "1 绪论")
-	if strings.Contains(title, `w:val="72"`) || !strings.Contains(title, `w:val="30"`) {
-		t.Fatalf("title hard rule not applied: %s", title)
+	if !strings.Contains(title, `w:val="72"`) || strings.Contains(title, `w:val="30"`) {
+		t.Fatalf("title explicit template rule not preserved: %s", title)
 	}
-	if strings.Contains(body, `<w:b/>`) || !strings.Contains(body, `w:val="24"`) || !strings.Contains(body, `w:line="400" w:lineRule="exact"`) {
-		t.Fatalf("body hard rule not applied: %s", body)
+	if !strings.Contains(body, `<w:b/>`) || !strings.Contains(body, `w:val="36"`) || !strings.Contains(body, `w:line="360" w:lineRule="auto"`) {
+		t.Fatalf("body explicit template rule not preserved: %s", body)
 	}
-	if !strings.Contains(h1, `w:eastAsia="黑体"`) || !strings.Contains(h1, `w:before="400"`) || !strings.Contains(h1, `w:after="400"`) {
-		t.Fatalf("heading hard rule not applied: %s", h1)
+	if !strings.Contains(h1, `w:eastAsia="宋体"`) || strings.Contains(h1, `w:before="400"`) || strings.Contains(h1, `w:after="400"`) {
+		t.Fatalf("heading explicit template rule not preserved: %s", h1)
 	}
 }
 
@@ -313,5 +313,29 @@ func TestApplyHeading1StyleNormalizesPairedStyleElement(t *testing.T) {
 	}
 	if again := applyHeading1Style(updated); again != updated {
 		t.Fatalf("Heading 1 style is not idempotent:\nfirst:  %s\nsecond: %s", updated, again)
+	}
+}
+
+func TestSectionReviewDoesNotHideRequiredPagination(t *testing.T) {
+	for _, role := range []string{"references_title", "acknowledgements_title", "appendix_title"} {
+		t.Run(role, func(t *testing.T) {
+			path := writeCQRWSTDocx(t, `<w:p w14:paraId="ABC123"><w:r><w:t>Section title</w:t></w:r></w:p>`)
+			profile := &templateprofile.Profile{Sections: map[string]templateprofile.SectionRule{role: {PageBreakBefore: true, SectionBreak: true, SectionBreakType: "nextPage"}}}
+			assignments := []roleclassify.Assignment{{NodeID: "p:ABC123", Role: role, Trusted: true, Confidence: 1, Index: 0}}
+			issues, err := ValidateRoleFormatPlan(context.Background(), path, profile, assignments)
+			if err != nil || len(issues) != 1 || issues[0].Property != "pageBreakBefore" {
+				t.Fatalf("missing pagination must be reported: issues=%v err=%v", issues, err)
+			}
+			if _, err := ApplyRoleFormatPlan(context.Background(), path, profile, assignments); err != nil {
+				t.Fatal(err)
+			}
+			issues, err = ValidateRoleFormatPlan(context.Background(), path, profile, assignments)
+			if err != nil || len(issues) != 0 {
+				t.Fatalf("repaired pagination: issues=%v err=%v", issues, err)
+			}
+			if n, err := CheckRoleFormatPlan(context.Background(), path, profile, assignments); err != nil || n != 0 {
+				t.Fatalf("not idempotent: %d %v", n, err)
+			}
+		})
 	}
 }

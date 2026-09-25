@@ -14,12 +14,14 @@ import (
 type Client interface{ ChatCompletion(string) (string, error) }
 
 type Assignment struct {
-	NodeID     string   `json:"nodeId"`
-	Role       string   `json:"role"`
-	Confidence float64  `json:"confidence"`
-	Evidence   []string `json:"evidence,omitempty"`
-	Trusted    bool     `json:"-"`
-	Index      int      `json:"-"`
+	ReviewReason string   `json:"-"`
+	Text         string   `json:"-"`
+	NodeID       string   `json:"nodeId"`
+	Role         string   `json:"role"`
+	Confidence   float64  `json:"confidence"`
+	Evidence     []string `json:"evidence,omitempty"`
+	Trusted      bool     `json:"-"`
+	Index        int      `json:"-"`
 }
 
 // ClassifyStructured is the production LLM boundary. It submits only short,
@@ -186,9 +188,24 @@ func Freeze(nodes []paperast.Node) []Assignment {
 		}
 		evidence := append([]string(nil), node.Evidence...)
 		evidence = append(evidence, "deterministic:frozen_ast")
+		reviewReason := ""
+		if role == "body" && node.EffectiveStyle != nil {
+			if node.EffectiveStyle.BoldEvidence == "mixed_run_emphasis" || node.EffectiveStyle.ItalicEvidence == "mixed_run_emphasis" {
+				reviewReason = "mixed_body_emphasis_preserve_original"
+			}
+			for _, property := range node.EffectiveStyle.PropertyEvidence {
+				if property.State == "mixed" {
+					reviewReason = "mixed_body_formatting_preserve_original"
+				}
+				if property.Source == "invalid_or_missing_style" {
+					reviewReason = "unresolved_body_style_preserve_original"
+					break
+				}
+			}
+		}
 		result = append(result, Assignment{
-			NodeID: node.NodeID, Role: role, Confidence: node.Confidence,
-			Evidence: evidence, Trusted: true, Index: node.Index,
+			NodeID: node.NodeID, Role: role, Confidence: node.Confidence, Text: node.Text,
+			Evidence: evidence, Trusted: true, Index: node.Index, ReviewReason: reviewReason,
 		})
 	}
 	return result
@@ -246,29 +263,50 @@ func Merge(nodes []paperast.Node, assignments []Assignment, threshold float64) [
 func EnforceDocumentTree(nodes []paperast.Node) []paperast.Node {
 	result := append([]paperast.Node(nil), nodes...)
 	section, sectionRank := "cover", 0
-	headingSeen := [5]bool{}
+	var headings []paperast.Node
 	for i := range result {
 		node := &result[i]
 		if node.NodeType != "paragraph" || (node.SourcePart != "" && node.SourcePart != "word/document.xml") {
 			continue
 		}
+		node.ParentNodeID = ""
 		nextSection, nextRank := sectionForRole(*node, section, sectionRank)
-		// Schools place references, acknowledgements and appendices in different orders.
 		if nextRank < sectionRank && !(nextRank >= 4 && sectionRank >= 4) {
 			invalidateTreeNode(node, "tree:section_regression")
 			continue
 		}
+		if nextSection != section {
+			headings = nil
+		}
 		section, sectionRank = nextSection, nextRank
 		if node.SemanticRole == "heading" {
 			level := node.LogicalLevel
-			if level < 1 || level > 4 || level > 1 && !headingSeen[level-1] {
+			if number := headingNumber(*node); len(number) > 0 && len(number) != level {
+				invalidateTreeNode(node, "tree:number_depth_conflict")
+				continue
+			}
+			// Work on a candidate stack; rejected headings must not change the
+			// parent of subsequent valid content.
+			parentCount := len(headings)
+			for parentCount > 0 && headings[parentCount-1].LogicalLevel >= level {
+				parentCount--
+			}
+			if level < 1 || level > 4 || level > 1 && (parentCount == 0 || headings[parentCount-1].LogicalLevel != level-1) {
 				invalidateTreeNode(node, "tree:missing_heading_parent")
 				continue
 			}
-			headingSeen[level] = true
-			for deeper := level + 1; deeper < len(headingSeen); deeper++ {
-				headingSeen[deeper] = false
+			if parentCount > 0 && !matchingHeadingParent(headings[parentCount-1], *node) {
+				invalidateTreeNode(node, "tree:number_parent_conflict")
+				continue
 			}
+			headings = headings[:parentCount]
+			if parentCount > 0 {
+				node.ParentNodeID = headings[parentCount-1].NodeID
+			}
+			node.SectionID = section
+			headings = append(headings, *node)
+		} else if len(headings) > 0 && section == "body" && (node.SemanticRole == "body_paragraph" || node.SemanticRole == "table_caption" || node.SemanticRole == "figure_caption") {
+			node.ParentNodeID = headings[len(headings)-1].NodeID
 		}
 		if node.SemanticRole == "body_paragraph" || node.SemanticRole == "references" || node.SemanticRole == "acknowledgements" {
 			node.SectionID = section

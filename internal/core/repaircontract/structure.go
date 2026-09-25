@@ -9,6 +9,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 )
 
@@ -161,6 +162,21 @@ func isContentPart(name string) bool {
 }
 
 func capturePartStructure(pkg *ooxmlpkg.DocxPackage, partName string, body []byte, relationships map[string]packageRelationship, snapshot *StructureSnapshot) error {
+	// Header repairs may change a style ID or localized built-in name into an
+	// equivalent selector. Compare that semantic identity, retaining switches.
+	var arguments map[string]string
+	if strings.HasPrefix(partName, "word/header") {
+		if styles, ok := pkg.Get("word/styles.xml"); ok {
+			var err error
+			arguments, err = ooxmlpatch.RunningHeaderStyleArguments(styles)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	fieldIdentity := func(code string) string {
+		return normalizedField(ooxmlpatch.NormalizeStyleRef(code, arguments))
+	}
 	decoder := xml.NewDecoder(strings.NewReader(string(body)))
 	var fields []*complexField
 	var instruction strings.Builder
@@ -192,7 +208,7 @@ func capturePartStructure(pkg *ooxmlpkg.DocxPackage, partName string, body []byt
 				}
 				snapshot.BookmarkEnds[name]++
 			case "fldSimple":
-				snapshot.Fields[normalizedField(attrValue(value.Attr, "instr"))]++
+				snapshot.Fields[fieldIdentity(attrValue(value.Attr, "instr"))]++
 			case "fldChar":
 				switch strings.ToLower(attrValue(value.Attr, "fldCharType")) {
 				case "begin":
@@ -201,7 +217,7 @@ func capturePartStructure(pkg *ooxmlpkg.DocxPackage, partName string, body []byt
 					if len(fields) > 0 {
 						last := fields[len(fields)-1]
 						fields = fields[:len(fields)-1]
-						snapshot.Fields[normalizedField(last.instruction.String())]++
+						snapshot.Fields[fieldIdentity(last.instruction.String())]++
 					}
 				}
 			case "instrText":
@@ -258,7 +274,7 @@ func capturePartStructure(pkg *ooxmlpkg.DocxPackage, partName string, body []byt
 		}
 	}
 	for _, field := range fields {
-		snapshot.Fields[normalizedField(field.instruction.String())]++
+		snapshot.Fields[fieldIdentity(field.instruction.String())]++
 	}
 	return nil
 }

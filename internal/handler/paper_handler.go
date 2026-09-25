@@ -133,7 +133,7 @@ func (h *PaperHandler) formatTemplateGoldenOrFilePath(paper *model.Paper, req Up
 
 // UploadPaper 上传论文；后台异步格式修正经 paperService → ApplyCorrectionsV2，引擎由 pkg/formatengine 编译期常量控制（与 Handler 无直接耦合）。
 func (h *PaperHandler) UploadPaper(c *gin.Context) {
-	log.Printf("[UPLOAD_FLOW] legacy upload request path=%s method=%s python_url=%q", c.Request.URL.Path, c.Request.Method, strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")))
+	log.Printf("[UPLOAD_FLOW] legacy upload request path=%s method=%s python_url=%q", c.Request.URL.Path, c.Request.Method, service.PythonVisualServiceURL())
 	if legacyWritePathDisabled() {
 		utils.ErrorResponse(c, http.StatusGone, legacyWritePathMessage, "")
 		return
@@ -349,7 +349,7 @@ func (h *PaperHandler) bumpUploadPaperQueue() int {
 }
 
 func (h *PaperHandler) runUploadPaperAsyncJob(uid interface{}, p *model.Paper, r UploadPaperRequest) {
-	log.Printf("[UPLOAD_FLOW] legacy async start paper=%s template_id=%d file=%s python_url=%q", p.ID, r.TemplateID, p.FilePath, strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")))
+	log.Printf("[UPLOAD_FLOW] legacy async start paper=%s template_id=%d file=%s python_url=%q", p.ID, r.TemplateID, p.FilePath, service.PythonVisualServiceURL())
 	defer func() {
 		// panic 时回写状态与错误摘要，避免记录永远卡在 processing
 		if rec := recover(); rec != nil {
@@ -386,7 +386,7 @@ func (h *PaperHandler) tryQuickV2FixAfterUpload(p *model.Paper, r UploadPaperReq
 	fixedPath, err := h.paperService.QuickV2Fix(p.FilePath, r.TemplateID)
 	if err == nil && fixedPath != "" {
 		log.Printf("[UPLOAD_FLOW] QuickV2Fix completed paper=%s output=%s", p.ID, fixedPath)
-		if pythonURL := strings.TrimSpace(os.Getenv("PYTHON_SERVICE_URL")); pythonURL != "" {
+		if pythonURL := service.PythonVisualServiceURL(); pythonURL != "" {
 			log.Printf("[PYTHON_VISUAL] legacy post-fix start paper=%s file=%s", p.ID, fixedPath)
 			if _, visualErr := h.paperService.CheckPythonVisualFile(fixedPath, r.TemplateID, p.ID.String()); visualErr != nil {
 				log.Printf("[PYTHON_VISUAL] legacy post-fix error paper=%s err=%v", p.ID, visualErr)

@@ -80,6 +80,7 @@ type ParagraphPropertiesSpec struct {
 	AfterLines         int
 	FirstLineChars     int
 	FirstLineTwips     int
+	FirstLineTwipsSet  bool
 	BeforeLinesSet     bool
 	AfterLinesSet      bool
 	FirstLineCharsSet  bool
@@ -418,12 +419,12 @@ func updateParagraphPropertiesBody(body string, spec ParagraphPropertiesSpec) st
 	}
 	if spec.FirstLineChars > 0 || spec.FirstLineCharsSet {
 		updates := []xmlAttributeUpdate{{"w:firstLineChars", strconv.Itoa(spec.FirstLineChars)}}
-		if spec.FirstLineTwips > 0 {
+		if spec.FirstLineTwips > 0 || spec.FirstLineTwipsSet || (spec.FirstLineCharsSet && spec.FirstLineChars == 0) {
 			updates = append(updates, xmlAttributeUpdate{"w:firstLine", strconv.Itoa(spec.FirstLineTwips)})
 		}
 		body = upsertPropertyElement(body, indentElement, "w:ind", updates, []string{"w:hanging", "w:hangingChars"})
-	} else if spec.FirstLineTwips > 0 {
-		body = upsertPropertyElement(body, indentElement, "w:ind", []xmlAttributeUpdate{{"w:firstLine", strconv.Itoa(spec.FirstLineTwips)}}, []string{"w:hanging", "w:hangingChars"})
+	} else if spec.FirstLineTwips > 0 || spec.FirstLineTwipsSet {
+		body = upsertPropertyElement(body, indentElement, "w:ind", []xmlAttributeUpdate{{"w:firstLine", strconv.Itoa(spec.FirstLineTwips)}}, []string{"w:hanging", "w:hangingChars", "w:firstLineChars"})
 	}
 	if spec.PageBreakBefore {
 		body = upsertOnOffProperty(body, pageBreakBeforeElement, "w:pageBreakBefore", true)

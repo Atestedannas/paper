@@ -389,7 +389,7 @@ func headerXML(text string, spec HeaderFooterPolicySpec) string {
 	body := `<w:r>` + runProperties + `<w:t>` + escapeText(text) + `</w:t></w:r>`
 	if strings.EqualFold(strings.TrimSpace(text), "chapter") {
 		body = `<w:r>` + runProperties + `<w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r>` +
-			`<w:r>` + runProperties + `<w:instrText xml:space="preserve"> STYLEREF Heading1 \* MERGEFORMAT </w:instrText></w:r>` +
+			`<w:r>` + runProperties + `<w:instrText xml:space="preserve"> STYLEREF 1 \* MERGEFORMAT </w:instrText></w:r>` +
 			`<w:r>` + runProperties + `<w:fldChar w:fldCharType="separate"/></w:r>` +
 			`<w:r>` + runProperties + `<w:t></w:t></w:r>` +
 			`<w:r>` + runProperties + `<w:fldChar w:fldCharType="end"/></w:r>`

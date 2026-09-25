@@ -113,6 +113,7 @@ type paragraphStyle struct {
 	asciiFont       string
 	hAnsiFont       string
 	complexFont     string
+	fontHint        string
 	fontSize        string
 	complexSize     string
 	bold            bool
@@ -126,6 +127,7 @@ type paragraphStyle struct {
 	widowControl    bool
 	widowControlSet bool
 	firstLineChars  *int
+	firstLineTwips  *int
 	beforeTwips     *int
 	afterTwips      *int
 	beforeLines     *int
@@ -248,6 +250,10 @@ func profileRuleToParagraphStyle(pr *templateprofile.StyleRule, defaults paragra
 	if pr.AfterLines != "" {
 		ps.afterLines = parseStyleInt(pr.AfterLines)
 	}
+	if pr.FirstLineTwips != "" {
+		ps.firstLineTwips = parseStyleInt(pr.FirstLineTwips)
+	}
+	ps.fontHint = pr.FontHint
 	if pr.FirstLineChars != "" {
 		ps.firstLineChars = parseStyleInt(pr.FirstLineChars)
 	}
@@ -2350,8 +2356,15 @@ func buildParagraphProperties(style paragraphStyle) string {
 		}
 		builder.WriteString(`/>`)
 	}
-	if style.firstLineChars != nil {
-		builder.WriteString(fmt.Sprintf(`<w:ind w:firstLineChars="%d"/>`, *style.firstLineChars))
+	if style.firstLineChars != nil || style.firstLineTwips != nil {
+		builder.WriteString(`<w:ind`)
+		if style.firstLineChars != nil {
+			builder.WriteString(fmt.Sprintf(` w:firstLineChars="%d"`, *style.firstLineChars))
+		}
+		if style.firstLineTwips != nil {
+			builder.WriteString(fmt.Sprintf(` w:firstLine="%d"`, *style.firstLineTwips))
+		}
+		builder.WriteString(`/>`)
 	}
 	if style.alignment != "" {
 		builder.WriteString(fmt.Sprintf(`<w:jc w:val="%s"/>`, style.alignment))
@@ -2372,6 +2385,8 @@ func paragraphStyleToPatchSpec(style paragraphStyle) ooxmlpatch.ParagraphPropert
 		BeforeTwips:       intPointerValue(style.beforeTwips),
 		AfterTwips:        intPointerValue(style.afterTwips),
 		FirstLineChars:    intPointerValue(style.firstLineChars),
+		FirstLineTwips:    intPointerValue(style.firstLineTwips),
+		FirstLineTwipsSet: style.firstLineTwips != nil,
 		BeforeLines:       intPointerValue(style.beforeLines),
 		AfterLines:        intPointerValue(style.afterLines),
 		FirstLineCharsSet: style.firstLineChars != nil,
@@ -2400,6 +2415,7 @@ func paragraphStyleToRunPatchSpec(style paragraphStyle) ooxmlpatch.RunProperties
 	size, _ := strconv.Atoi(strings.TrimSpace(style.fontSize))
 	complexSize, _ := strconv.Atoi(strings.TrimSpace(style.complexSize))
 	return ooxmlpatch.RunPropertiesSpec{
+		FontHint:           style.fontHint,
 		EastAsiaFont:       style.eastAsiaFont,
 		AsciiFont:          style.asciiFont,
 		HAnsiFont:          style.hAnsiFont,
