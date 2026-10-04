@@ -66,12 +66,16 @@ const (
 	sectionAcknowledgements
 )
 
-var headingPattern = regexp.MustCompile(`^(\d+(?:\.\d+)*)(?:\.)?[\s　]+(.+)$`)
-var chineseChapterHeadingPattern = regexp.MustCompile(`^第[一二三四五六七八九十百千万\d]+章\s*(.*)$`)
+var headingPattern = regexp.MustCompile(`^(\d+(?:\.\d+){0,3})(?:\.)?[\s　]+(.+)$`)
+var chineseChapterHeadingPattern = regexp.MustCompile(`^第[一二三四五六七八九十百千万零〇两\d]+章\s*(.*)$`)
+var chineseSectionHeadingPattern = regexp.MustCompile(`^第[一二三四五六七八九十百千万零〇两\d]+节\s*(.*)$`)
 var chineseListHeadingPattern = regexp.MustCompile(`^[一二三四五六七八九十百]+[、．.]\s*(.+)$`)
+var chineseParenthesizedHeadingPattern = regexp.MustCompile(`^（[一二三四五六七八九十]+）\s*(.+)$`)
+var parenthesizedHeadingPattern = regexp.MustCompile(`^（\d+）\s*(.+)$`)
+var appendixHeadingPattern = regexp.MustCompile(`^附录[A-Za-z0-9]+(?:\s+(.+))?$`)
 var paragraphStylePattern = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
 var paragraphOutlinePattern = regexp.MustCompile(`<w:outlineLvl\b[^>]*\bw:val="(\d+)"`)
-var compactHeadingPattern = regexp.MustCompile(`^(\d+\.\d+(?:\.\d+)*)(?:\.)?([^\d\s].+)$`)
+var compactHeadingPattern = regexp.MustCompile(`^(\d+\.\d+(?:\.\d+){0,2})(?:\.)?([^\d\s].+)$`)
 var tocFieldInstructionPattern = regexp.MustCompile(`(?is)<w:instrText\b[^>]*>[^<]*\bTOC(?:\s|\\)`)
 var tocPageNumberPattern = regexp.MustCompile(`(?:\t|[.．·…]{2,})?.*(?:\t|[.．·…]{2,}|\s)(?:[ivxlcdm]+|\d+)\s*$`)
 var bodyElementPattern = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
@@ -715,23 +719,112 @@ func splitSectionMarker(text string, marker string) (string, bool) {
 }
 
 func parseHeading(text string) (Heading, bool) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return Heading{}, false
+	}
+	// Try Arabic numbered headings: 1, 1.1, 1.1.1, 1.1.1.1
 	for _, pattern := range []*regexp.Regexp{headingPattern, compactHeadingPattern} {
-		matches := pattern.FindStringSubmatch(text)
+		matches := pattern.FindStringSubmatch(trimmed)
 		if matches != nil {
 			level := strings.Count(matches[1], ".") + 1
-			return Heading{Level: level, Text: strings.TrimSpace(matches[2])}, true
+			if level < 1 || level > 4 {
+				continue
+			}
+			title := strings.TrimSpace(matches[2])
+			if !isPlausibleHeadingTitle(title, level) || strings.HasPrefix(title, ".") || strings.HasPrefix(title, "．") {
+				continue
+			}
+			return Heading{Level: level, Text: title}, true
 		}
 	}
-	for _, pattern := range []*regexp.Regexp{chineseChapterHeadingPattern, chineseListHeadingPattern} {
-		if matches := pattern.FindStringSubmatch(strings.TrimSpace(text)); len(matches) == 2 {
-			label := strings.TrimSpace(matches[1])
-			if label == "" {
-				label = strings.TrimSpace(text)
-			}
+	// Try Chinese chapter heading: 第X章
+	if matches := chineseChapterHeadingPattern.FindStringSubmatch(trimmed); len(matches) == 2 {
+		label := strings.TrimSpace(matches[1])
+		if label == "" {
+			label = trimmed
+		}
+		if isPlausibleHeadingTitle(label, 1) {
 			return Heading{Level: 1, Text: label}, true
 		}
 	}
+	// Try Chinese section heading: 第X节 (level 2)
+	if matches := chineseSectionHeadingPattern.FindStringSubmatch(trimmed); len(matches) == 2 {
+		label := strings.TrimSpace(matches[1])
+		if label == "" {
+			label = trimmed
+		}
+		if isPlausibleHeadingTitle(label, 2) {
+			return Heading{Level: 2, Text: label}, true
+		}
+	}
+	// Try Chinese list heading: 一、二、三、 (level 1)
+	if matches := chineseListHeadingPattern.FindStringSubmatch(trimmed); len(matches) == 2 {
+		label := strings.TrimSpace(matches[1])
+		if isPlausibleHeadingTitle(label, 1) {
+			return Heading{Level: 1, Text: label}, true
+		}
+	}
+	// Try Chinese parenthesized heading: （一）（二） (level 2)
+	if matches := chineseParenthesizedHeadingPattern.FindStringSubmatch(trimmed); len(matches) == 2 {
+		label := strings.TrimSpace(matches[1])
+		if isPlausibleHeadingTitle(label, 2) {
+			return Heading{Level: 2, Text: label}, true
+		}
+	}
+	// Try parenthesized heading: （1）（2） (level 2)
+	if matches := parenthesizedHeadingPattern.FindStringSubmatch(trimmed); len(matches) == 2 {
+		label := strings.TrimSpace(matches[1])
+		if isPlausibleHeadingTitle(label, 2) {
+			return Heading{Level: 2, Text: label}, true
+		}
+	}
 	return Heading{}, false
+}
+
+// IsPlausibleHeadingTitle shares text-only heading guards with the document AST.
+// Explicit OOXML outline levels are structural evidence and need no such guard.
+func IsPlausibleHeadingTitle(title string, level int) bool {
+	return isPlausibleHeadingTitle(strings.TrimSpace(title), level)
+}
+
+// isPlausibleHeadingTitle filters out obvious false positives for heading detection.
+func isPlausibleHeadingTitle(title string, level int) bool {
+	if title == "" {
+		return false
+	}
+	runes := []rune(title)
+	if len(runes) == 0 {
+		return false
+	}
+	// Headings are usually not too long
+	if len(runes) > 100 {
+		return false
+	}
+	first := runes[0]
+	// Reject if starts with a number (likely scientific expression or date)
+	if first >= '0' && first <= '9' {
+		return false
+	}
+	// Reject common non-heading starting characters
+	if strings.ContainsRune("×+-=/％%°℃", first) {
+		return false
+	}
+	// Reject if title contains sentence-ending punctuation (likely body text)
+	if strings.ContainsAny(title, "。！？；;!?") {
+		return false
+	}
+	if regexp.MustCompile(`(?i)^(?:mm|cm|kg|m/s|nm)(?:\b|[²³])`).MatchString(title) {
+		return false
+	}
+	// Reject date-like patterns at level 1
+	if level == 1 {
+		if strings.HasPrefix(title, "年") || strings.HasPrefix(title, "月") ||
+			strings.HasPrefix(title, "日") || strings.HasPrefix(title, "星") {
+			return false
+		}
+	}
+	return true
 }
 
 func parseCoverField(text string) (string, string, bool) {

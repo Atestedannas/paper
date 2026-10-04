@@ -126,7 +126,13 @@ func DiffSpec(expected, actual ParagraphFormatSpec) []SpecDiff {
 	}
 
 	// 首行缩进（允许 ±40 twips 误差）
-	if expected.FirstLineIndent > 0 {
+	if expected.FirstLineCharsSet {
+		if !actual.FirstLineCharsSet || actual.FirstLineChars != expected.FirstLineChars {
+			diffs = append(diffs, SpecDiff{"first_line_chars", fmt.Sprint(expected.FirstLineChars), fmt.Sprint(actual.FirstLineChars, " (set=", actual.FirstLineCharsSet, ")"), "error"})
+		}
+	} else if expected.FirstLineIndent > 0 && actual.FirstLineCharsSet {
+		diffs = append(diffs, SpecDiff{"first_line_indent", fmt.Sprint(expected.FirstLineIndent), fmt.Sprint(actual.FirstLineChars, " hundredths of a character"), "error"})
+	} else if expected.FirstLineIndent > 0 {
 		diff := int64(expected.FirstLineIndent) - int64(actual.FirstLineIndent)
 		if diff > 40 || diff < -40 {
 			diffs = append(diffs, SpecDiff{
@@ -183,7 +189,13 @@ func DiffSpecExact(expected, actual ParagraphFormatSpec) []SpecDiff {
 	if expected.SpaceAfter > 0 {
 		add("space_after", expected.SpaceAfter, actual.SpaceAfter)
 	}
-	if expected.FirstLineIndent > 0 {
+	if expected.FirstLineCharsSet {
+		if !actual.FirstLineCharsSet || actual.FirstLineChars != expected.FirstLineChars {
+			diffs = append(diffs, SpecDiff{"first_line_chars", fmt.Sprint(expected.FirstLineChars), fmt.Sprint(actual.FirstLineChars, " (set=", actual.FirstLineCharsSet, ")"), "error"})
+		}
+	} else if expected.FirstLineIndent > 0 && actual.FirstLineCharsSet {
+		diffs = append(diffs, SpecDiff{"first_line_indent", fmt.Sprint(expected.FirstLineIndent), fmt.Sprint(actual.FirstLineChars, " hundredths of a character"), "error"})
+	} else if expected.FirstLineIndent > 0 {
 		add("first_line_indent", expected.FirstLineIndent, actual.FirstLineIndent)
 	}
 	if expected.IndentLeft > 0 {

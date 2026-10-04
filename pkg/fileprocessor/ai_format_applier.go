@@ -160,9 +160,7 @@ func (a *AIFormatApplier) applySpecPatchToPara(para document.Paragraph, spec Par
 	}
 
 	// 4. 首行缩进（twips → measurement.Distance）
-	if spec.FirstLineIndent > 0 {
-		paraProps.SetFirstLineIndent(measurement.Distance(spec.FirstLineIndent) * measurement.Twips)
-	}
+	applySpecFirstLineIndent(pPr, spec)
 
 	// 4b. 左右缩进（twips）
 	if spec.IndentLeft > 0 || spec.IndentRight > 0 || pPr.Ind != nil {
@@ -331,13 +329,7 @@ func (a *AIFormatApplier) applySpecToRun(run document.Run, spec ParagraphFormatS
 
 	// 加粗
 	if spec.BoldSet || spec.Bold {
-		if spec.Bold {
-			rPr.B = wml.NewCT_OnOff()
-			rPr.BCs = wml.NewCT_OnOff()
-		} else {
-			rPr.B = nil
-			rPr.BCs = nil
-		}
+		v2SetRunTriStateBold(rPr, spec.Bold)
 	}
 
 	// 斜体
@@ -476,14 +468,18 @@ func buildParagraphSpecPatch(para document.Paragraph, expected ParagraphFormatSp
 	// A numbered heading can still have an explicit first-line indent in the
 	// template (the Chongqing sample uses 560 twips for level-3 headings).
 	// Do not discard that rule merely because the text looks list-like.
-	if expected.FirstLineIndent > 0 {
-		hasCharacterIndent := pPr != nil && pPr.Ind != nil && pPr.Ind.FirstLineCharsAttr != nil
+	if expected.FirstLineCharsSet {
+		if !actual.FirstLineCharsSet || actual.FirstLineChars != expected.FirstLineChars {
+			patch.FirstLineChars = expected.FirstLineChars
+			patch.FirstLineCharsSet = true
+		}
+	} else if expected.FirstLineIndent > 0 {
 		delta := int64(expected.FirstLineIndent) - int64(actual.FirstLineIndent)
 		tolerance := int64(expected.FontSizeHalfPt * 3)
 		if tolerance < 40 {
 			tolerance = 40
 		}
-		if !hasCharacterIndent && (actual.FirstLineIndent == 0 || delta > tolerance || delta < -tolerance) {
+		if actual.FirstLineCharsSet || actual.FirstLineIndent == 0 || delta > tolerance || delta < -tolerance {
 			patch.FirstLineIndent = expected.FirstLineIndent
 		}
 	}
@@ -555,7 +551,7 @@ func hasTypographySpecFields(spec ParagraphFormatSpec) bool {
 
 func hasParagraphSpecFields(spec ParagraphFormatSpec) bool {
 	return hasTypographySpecFields(spec) || spec.AlignmentSet || spec.LineSpacingVal > 0 ||
-		spec.SpaceBefore > 0 || spec.SpaceAfter > 0 || spec.FirstLineIndent > 0 ||
+		spec.SpaceBefore > 0 || spec.SpaceAfter > 0 || spec.FirstLineIndent > 0 || spec.FirstLineCharsSet ||
 		spec.IndentLeft > 0 || spec.IndentRight > 0 || spec.PageBreak ||
 		spec.KeepWithNext || spec.KeepLines || spec.OutlineLevel > 0
 }
@@ -584,8 +580,10 @@ func specManagesDiffField(spec ParagraphFormatSpec, field string) bool {
 		return spec.SpaceBefore > 0
 	case "space_after":
 		return spec.SpaceAfter > 0
+	case "first_line_chars":
+		return spec.FirstLineCharsSet
 	case "first_line_indent":
-		return spec.FirstLineIndent > 0
+		return !spec.FirstLineCharsSet && spec.FirstLineIndent > 0
 	case "indent_left":
 		return spec.IndentLeft > 0
 	case "indent_right":

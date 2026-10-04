@@ -508,51 +508,56 @@ type paragraph struct {
 }
 
 var (
-	paragraphPattern             = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
-	documentBodyNodePattern      = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
-	textBoxContentPattern        = regexp.MustCompile(`(?s)<w:txbxContent(?:\s[^>]*)?>.*?</w:txbxContent>`)
-	textPattern                  = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
-	fontPattern                  = regexp.MustCompile(`<w:rFonts\b[^>]*/>`)
-	sizePattern                  = regexp.MustCompile(`<w:sz\b[^>]*/>`)
-	sizeCsPattern                = regexp.MustCompile(`<w:szCs\b[^>]*/>`)
-	spacingPattern               = regexp.MustCompile(`<w:spacing\b[^>]*/>`)
-	keepNextPattern              = regexp.MustCompile(`<w:keepNext\b[^>]*/>`)
-	keepLinesPattern             = regexp.MustCompile(`<w:keepLines\b[^>]*/>`)
-	widowControlPattern          = regexp.MustCompile(`<w:widowControl\b[^>]*/>`)
-	runPropertiesPattern         = regexp.MustCompile(`(?s)<w:rPr\b[^>]*>.*?</w:rPr>|<w:rPr\b[^>]*/>`)
-	runElementPattern            = regexp.MustCompile(`(?s)<w:r(?:\s[^>]*)?>.*?</w:r>`)
-	paragraphRunPropsPattern     = regexp.MustCompile(`(?s)<w:pPr\b[^>]*>.*?<w:rPr\b[^>]*>.*?</w:rPr>.*?</w:pPr>`)
-	indentPattern                = regexp.MustCompile(`<w:ind\b[^>]*/>`)
-	outlinePattern               = regexp.MustCompile(`<w:outlineLvl\b[^>]*/>`)
-	styleElementPattern          = regexp.MustCompile(`(?s)<w:style\b[^>]*?(?:/>|>.*?</w:style>)`)
-	styleIDPattern               = regexp.MustCompile(`<w:style\b[^>]*\bw:styleId="([^"]+)"`)
-	styleTypePattern             = regexp.MustCompile(`<w:style\b[^>]*\bw:type="([^"]+)"`)
-	styleNamePattern             = regexp.MustCompile(`<w:name\b[^>]*\bw:val="([^"]+)"`)
-	basedOnPattern               = regexp.MustCompile(`<w:basedOn\b[^>]*\bw:val="([^"]+)"`)
-	docDefaultsPattern           = regexp.MustCompile(`(?s)<w:docDefaults\b[^>]*>(.*?)</w:docDefaults>`)
-	paragraphStyleIDPattern      = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
-	runStyleIDPattern            = regexp.MustCompile(`<w:rStyle\b[^>]*\bw:val="([^"]+)"`)
-	numberingPropertiesPattern   = regexp.MustCompile(`(?s)<w:numPr\b[^>]*>.*?</w:numPr>|<w:numPr\b[^>]*/>`)
-	numberingIDPattern           = regexp.MustCompile(`<w:numId\b[^>]*\bw:val="(\d+)"`)
-	numberingLevelIDPattern      = regexp.MustCompile(`<w:ilvl\b[^>]*\bw:val="(\d+)"`)
-	jcPattern                    = regexp.MustCompile(`<w:jc\b[^>]*/>`)
-	sectPrPattern                = regexp.MustCompile(`(?s)<w:sectPr\b[^>]*>.*?</w:sectPr>|<w:sectPr\b[^>]*/>`)
-	pgSzPattern                  = regexp.MustCompile(`<w:pgSz\b[^>]*/>`)
-	pgMarPattern                 = regexp.MustCompile(`<w:pgMar\b[^>]*/>`)
-	attrPattern                  = regexp.MustCompile(`\s([A-Za-z0-9_:]+)="([^"]*)"`)
-	headerFooterReferencePattern = regexp.MustCompile(`<w:(?:header|footer)Reference\b[^>]*/>`)
-	relationshipPattern          = regexp.MustCompile(`<Relationship\b[^>]*/>`)
-	collegeNamePattern           = regexp.MustCompile(`[\p{Han}A-Za-z0-9·-]+(?:大学|学院)`)
-	bodyStartArabicPattern       = regexp.MustCompile(`^1\s+[^\d.]\S*`)
-	heading1ArabicPattern        = regexp.MustCompile(`^\d+\s+\S+`)
-	heading2ArabicPattern        = regexp.MustCompile(`^\d+\.\d+\s+\S+`)
-	heading3ArabicPattern        = regexp.MustCompile(`^\d+\.\d+\.\d+\s+\S+`)
-	heading1ChinesePattern       = regexp.MustCompile(`^第[一二三四五六七八九十百零〇两0-9]+章\s*\S*`)
-	bodyStartChinesePattern      = regexp.MustCompile(`^第[一1]章\s*\S*`)
-	heading1ChineseListPattern   = regexp.MustCompile(`^[一二三四五六七八九十]+[、．.]\s*\S+`)
-	bodyStartChineseListPattern  = regexp.MustCompile(`^一[、．.]\s*\S+`)
-	captionNumberPattern         = regexp.MustCompile(`^(?:\x{8868}|\x{56fe})\s*\d+(?:[.\-]\d+)*`)
-	captionWithSpacePattern      = regexp.MustCompile(`^(?:\x{8868}|\x{56fe})\s*\d+(?:[.\-]\d+)*\s+\S+`)
+	paragraphPattern              = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
+	documentBodyNodePattern       = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
+	textBoxContentPattern         = regexp.MustCompile(`(?s)<w:txbxContent(?:\s[^>]*)?>.*?</w:txbxContent>`)
+	textPattern                   = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
+	fontPattern                   = regexp.MustCompile(`<w:rFonts\b[^>]*/>`)
+	sizePattern                   = regexp.MustCompile(`<w:sz\b[^>]*/>`)
+	sizeCsPattern                 = regexp.MustCompile(`<w:szCs\b[^>]*/>`)
+	spacingPattern                = regexp.MustCompile(`<w:spacing\b[^>]*/>`)
+	keepNextPattern               = regexp.MustCompile(`<w:keepNext\b[^>]*/>`)
+	keepLinesPattern              = regexp.MustCompile(`<w:keepLines\b[^>]*/>`)
+	widowControlPattern           = regexp.MustCompile(`<w:widowControl\b[^>]*/>`)
+	runPropertiesPattern          = regexp.MustCompile(`(?s)<w:rPr\b[^>]*>.*?</w:rPr>|<w:rPr\b[^>]*/>`)
+	runElementPattern             = regexp.MustCompile(`(?s)<w:r(?:\s[^>]*)?>.*?</w:r>`)
+	paragraphRunPropsPattern      = regexp.MustCompile(`(?s)<w:pPr\b[^>]*>.*?<w:rPr\b[^>]*>.*?</w:rPr>.*?</w:pPr>`)
+	indentPattern                 = regexp.MustCompile(`<w:ind\b[^>]*/>`)
+	outlinePattern                = regexp.MustCompile(`<w:outlineLvl\b[^>]*/>`)
+	styleElementPattern           = regexp.MustCompile(`(?s)<w:style\b[^>]*?(?:/>|>.*?</w:style>)`)
+	styleIDPattern                = regexp.MustCompile(`<w:style\b[^>]*\bw:styleId="([^"]+)"`)
+	styleTypePattern              = regexp.MustCompile(`<w:style\b[^>]*\bw:type="([^"]+)"`)
+	styleNamePattern              = regexp.MustCompile(`<w:name\b[^>]*\bw:val="([^"]+)"`)
+	basedOnPattern                = regexp.MustCompile(`<w:basedOn\b[^>]*\bw:val="([^"]+)"`)
+	docDefaultsPattern            = regexp.MustCompile(`(?s)<w:docDefaults\b[^>]*>(.*?)</w:docDefaults>`)
+	paragraphStyleIDPattern       = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
+	runStyleIDPattern             = regexp.MustCompile(`<w:rStyle\b[^>]*\bw:val="([^"]+)"`)
+	numberingPropertiesPattern    = regexp.MustCompile(`(?s)<w:numPr\b[^>]*>.*?</w:numPr>|<w:numPr\b[^>]*/>`)
+	numberingIDPattern            = regexp.MustCompile(`<w:numId\b[^>]*\bw:val="(\d+)"`)
+	numberingLevelIDPattern       = regexp.MustCompile(`<w:ilvl\b[^>]*\bw:val="(\d+)"`)
+	jcPattern                     = regexp.MustCompile(`<w:jc\b[^>]*/>`)
+	sectPrPattern                 = regexp.MustCompile(`(?s)<w:sectPr\b[^>]*>.*?</w:sectPr>|<w:sectPr\b[^>]*/>`)
+	pgSzPattern                   = regexp.MustCompile(`<w:pgSz\b[^>]*/>`)
+	pgMarPattern                  = regexp.MustCompile(`<w:pgMar\b[^>]*/>`)
+	attrPattern                   = regexp.MustCompile(`\s([A-Za-z0-9_:]+)="([^"]*)"`)
+	headerFooterReferencePattern  = regexp.MustCompile(`<w:(?:header|footer)Reference\b[^>]*/>`)
+	relationshipPattern           = regexp.MustCompile(`<Relationship\b[^>]*/>`)
+	collegeNamePattern            = regexp.MustCompile(`[\p{Han}A-Za-z0-9·-]+(?:大学|学院)`)
+	bodyStartArabicPattern        = regexp.MustCompile(`^1[.．、]?\s+[^\d.]\S*`)
+	heading1ArabicPattern         = regexp.MustCompile(`^\d+\s+\S+`)
+	heading2ArabicPattern         = regexp.MustCompile(`^\d+\.\d+\s+\S+`)
+	heading3ArabicPattern         = regexp.MustCompile(`^\d+\.\d+\.\d+\s+\S+`)
+	heading4ArabicPattern         = regexp.MustCompile(`^\d+\.\d+\.\d+\.\d+\s+\S+`)
+	heading1ChinesePattern        = regexp.MustCompile(`^第[一二三四五六七八九十百零〇两0-9]+章\s*\S*`)
+	heading1ChineseSectionPattern = regexp.MustCompile(`^第[一二三四五六七八九十百零〇两0-9]+节\s*\S*`)
+	bodyStartChinesePattern       = regexp.MustCompile(`^第[一1]章\s*\S*`)
+	heading1ChineseListPattern    = regexp.MustCompile(`^[一二三四五六七八九十]+[、．.]\s*\S+`)
+	heading2ChineseListPattern    = regexp.MustCompile(`^（[一二三四五六七八九十]+）\s*\S+`)
+	bodyStartChineseListPattern   = regexp.MustCompile(`^一[、．.]\s*\S+`)
+	headingParenthesizedPattern   = regexp.MustCompile(`^（\d+）\s*\S+`)
+	appendixHeadingPattern        = regexp.MustCompile(`^附录[A-Za-z0-9]+(?:\s+\S+)?$`)
+	captionNumberPattern          = regexp.MustCompile(`^(?:\x{8868}|\x{56fe})\s*\d+(?:[.\-]\d+)*`)
+	captionWithSpacePattern       = regexp.MustCompile(`^(?:\x{8868}|\x{56fe})\s*\d+(?:[.\-]\d+)*\s+\S+`)
 )
 
 type themeFontFamily struct {
@@ -1138,14 +1143,37 @@ func Extract(templatePath string) (*Profile, error) {
 			// would discard every sample, so incomplete templates still work.
 			filtered := samples[:0]
 			for _, sample := range samples {
-				isNumberedHeading := false
+				isNonBody := false
 				for _, source := range sample.Sources {
-					if numberedHeadingLevel(strings.TrimSpace(source.Text)) > 0 {
-						isNumberedHeading = true
+					text := strings.TrimSpace(source.Text)
+					// Skip numbered headings (Arabic and Chinese)
+					if numberedHeadingLevel(text) > 0 {
+						isNonBody = true
+						break
+					}
+					// Skip Chinese chapter headings
+					if heading1ChinesePattern.MatchString(normalizeLabel(text)) ||
+						heading1ChineseListPattern.MatchString(normalizeLabel(text)) {
+						isNonBody = true
+						break
+					}
+					// Skip table/figure captions
+					if captionNumberPattern.MatchString(text) {
+						isNonBody = true
+						break
+					}
+					// Skip reference entries
+					if strings.HasPrefix(text, "[") && strings.Contains(text, "]") {
+						isNonBody = true
+						break
+					}
+					// Skip very short paragraphs (< 8 characters) that are likely labels, not body
+					if len([]rune(text)) < 8 {
+						isNonBody = true
 						break
 					}
 				}
-				if !isNumberedHeading {
+				if !isNonBody {
 					filtered = append(filtered, sample)
 				}
 			}
@@ -1501,17 +1529,7 @@ func mergeStyleRule(base StyleRule, override StyleRule) StyleRule {
 }
 
 func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
-	if strings.HasPrefix(label, "heading_") {
-		withSize := make([]StyleRule, 0, len(samples))
-		for _, sample := range samples {
-			if sample.FontSizeHalfPt != "" || sample.PropertyEvidence["FontSizeHalfPt"].Source == "invalid_or_missing_style" || sample.PropertyEvidence["FontSizeHalfPt"].State == "mixed" {
-				withSize = append(withSize, sample)
-			}
-		}
-		if len(withSize) > 0 {
-			samples = withSize
-		}
-	}
+	// A missing size does not invalidate the sample's other declarations.
 	style := StyleRule{Label: label}
 	style.FontEastAsia = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontEastAsia })
 	style.FontASCII = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontASCII })
@@ -1609,6 +1627,10 @@ func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
 		style.InheritanceChain = appendUniqueStrings(style.InheritanceChain, sample.InheritanceChain...)
 	}
 	retainObservedCombination(&style, samples)
+	if label == "references" {
+		retainReferenceSpacing(&style, samples)
+	}
+	retainPropertyConflicts(&style, samples)
 	style.Confidence = styleConsensusConfidence(samples, style)
 	return style
 }
@@ -2337,15 +2359,39 @@ func classifyParagraphNumberingAware(text string, numberingPatterns map[string]*
 // "1.1研究目的" as well as spaced forms such as "1.1 研究目的". It rejects
 // date-like prose so a sentence beginning with "2026 年" is not a heading.
 func numberedHeadingLevel(text string) int {
-	match := regexp.MustCompile(`^(\d+(?:\.\d+){0,3})\s*(.*)$`).FindStringSubmatch(strings.TrimSpace(text))
+	trimmed := strings.TrimSpace(text)
+	// Try standard Arabic numbered heading: 1, 1.1, 1.1.1, 1.1.1.1
+	match := regexp.MustCompile(`^(\d+(?:\.\d+){0,3})[.．、]?[\s　]+(.*)$`).FindStringSubmatch(trimmed)
 	if len(match) != 3 || strings.TrimSpace(match[2]) == "" {
-		return 0
+		// Try compact form without space: 1.1研究背景
+		match = regexp.MustCompile(`^(\d+\.\d+[.\d]*)[\s　]*(.*)$`).FindStringSubmatch(trimmed)
+		if len(match) != 3 || strings.TrimSpace(match[2]) == "" {
+			// Try Chinese parenthesized: （1）标题
+			if m := regexp.MustCompile(`^（(\d+)）[\s　]*(.+)$`).FindStringSubmatch(trimmed); len(m) == 3 {
+				if plausibleTemplateHeading(m[2]) {
+					return 2
+				}
+			}
+			return 0
+		}
 	}
 	parts := strings.Split(match[1], ".")
 	level := len(parts)
-	if level == 1 {
-		value, err := strconv.Atoi(parts[0])
-		if err != nil || value > 99 {
+	if level < 1 || level > 4 {
+		return 0
+	}
+	// Validate each part is a reasonable number
+	for i, part := range parts {
+		value, err := strconv.Atoi(part)
+		if err != nil || value < 0 {
+			return 0
+		}
+		// First level numbers should be reasonable (not too large)
+		if i == 0 && value > 99 {
+			return 0
+		}
+		// Other levels should also be reasonable
+		if i > 0 && value > 99 {
 			return 0
 		}
 	}
@@ -2357,15 +2403,26 @@ func numberedHeadingLevel(text string) int {
 	// Numeric/scientific expressions such as "8.7×10-2" can match the
 	// numbering prefix regexp, but they are paragraph content, not headings.
 	// Do not let them contaminate heading samples.
-	if first[0] >= '0' && first[0] <= '9' || strings.ContainsRune("×+-=/", first[0]) {
+	if first[0] >= '0' && first[0] <= '9' || strings.ContainsRune("×+-=/％%", first[0]) {
 		return 0
 	}
+	// Headings are typically short; very long text is likely body content
 	if len(first) > 80 || strings.ContainsAny(title, "。！？；;，,") ||
 		strings.HasPrefix(title, "年") || strings.HasPrefix(title, "月") ||
 		strings.HasPrefix(title, "日") || strings.HasPrefix(title, "天") {
 		return 0
 	}
+	// Reject if the title starts with a unit or common body content indicator
+	if strings.HasPrefix(title, "mm") || strings.HasPrefix(title, "cm") ||
+		strings.HasPrefix(title, "kg") || strings.HasPrefix(title, "m/s") {
+		return 0
+	}
 	return level
+}
+
+func plausibleTemplateHeading(text string) bool {
+	text = strings.TrimSpace(text)
+	return text != "" && len([]rune(text)) <= 80 && !strings.ContainsAny(text, "。！？；;!?")
 }
 
 func classifyParagraph(text string) string {
@@ -2376,30 +2433,35 @@ func classifyParagraph(text string) string {
 	// extraction.
 	acknowledgementText := strings.ReplaceAll(normalized, "空一行", "")
 	lower := strings.ToLower(strings.TrimSpace(text))
+	trimmed := strings.TrimSpace(text)
 	switch {
-	case normalized == "目录":
+	case normalized == "目录" || strings.EqualFold(normalized, "contents") || strings.EqualFold(normalized, "tableofcontents"):
 		return "toc_title"
 	case strings.HasPrefix(normalized, "摘要"):
 		return "abstract_cn"
 	case strings.HasPrefix(lower, "abstract"):
 		return "abstract_en"
-	case strings.HasPrefix(normalized, "关键词"):
+	case strings.HasPrefix(normalized, "关键词") || strings.HasPrefix(normalized, "关键字"):
 		return "keywords_cn"
 	case strings.HasPrefix(lower, "keywords") || strings.HasPrefix(lower, "key words"):
 		return "keywords_en"
-	case normalized == "参考文献":
+	case normalized == "参考文献" || normalized == "参 考 文 献":
 		return "references_title"
 	case strings.HasPrefix(normalized, "[") && strings.Contains(normalized, "]"):
 		return "references"
-	case acknowledgementText == "致谢":
+	case acknowledgementText == "致谢" || acknowledgementText == "致 谢":
 		return "acknowledgements_title"
+	case appendixHeadingPattern.MatchString(normalized):
+		return "appendix_title"
 	case IsBodyStartParagraph(text):
 		return "body_start"
-	case heading3ArabicPattern.MatchString(strings.TrimSpace(text)):
+	case numberedHeadingLevel(trimmed) == 4:
+		return "heading_4"
+	case numberedHeadingLevel(trimmed) == 3:
 		return "heading_3"
-	case heading2ArabicPattern.MatchString(strings.TrimSpace(text)):
+	case numberedHeadingLevel(trimmed) == 2 || (heading2ChineseListPattern.MatchString(normalized) || headingParenthesizedPattern.MatchString(normalized) || heading1ChineseSectionPattern.MatchString(normalized)) && plausibleTemplateHeading(trimmed):
 		return "heading_2"
-	case heading1ArabicPattern.MatchString(strings.TrimSpace(text)) || heading1ChinesePattern.MatchString(normalized) || heading1ChineseListPattern.MatchString(normalized):
+	case numberedHeadingLevel(trimmed) == 1 || (heading1ChinesePattern.MatchString(normalized) || heading1ChineseListPattern.MatchString(normalized)) && plausibleTemplateHeading(trimmed):
 		return "heading_1"
 	default:
 		return ""
@@ -2409,11 +2471,18 @@ func classifyParagraph(text string) string {
 func IsBodyStartParagraph(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	normalized := normalizeLabel(text)
-	return bodyStartArabicPattern.MatchString(trimmed) || bodyStartChinesePattern.MatchString(normalized) || bodyStartChineseListPattern.MatchString(normalized)
+	switch strings.ToLower(normalized) {
+	case "引言", "绪论", "前言", "introduction":
+		return true
+	}
+	return bodyStartArabicPattern.MatchString(trimmed) && numberedHeadingLevel(trimmed) == 1 || bodyStartChinesePattern.MatchString(normalized) || bodyStartChineseListPattern.MatchString(normalized)
 }
 
 func isSectionKey(key string) bool {
-	return key == "body_start" || key == "references_title" || key == "acknowledgements_title"
+	return key == "body_start" || key == "references_title" || key == "acknowledgements_title" || key == "appendix_title" ||
+		// The English abstract paragraph carries the template's own page-break
+		// intent; the role plan reads it instead of inventing a CQIE-only break.
+		key == "abstract_en"
 }
 
 func detectPageBreakBefore(paras []paragraph, index int) (bool, string) {
@@ -2802,6 +2871,15 @@ func parseStyleDefinitions(stylesXML string) styleDefinitionSet {
 
 func mergeExtractedStyle(base, override StyleRule, _ string) StyleRule {
 	base.Label = override.Label
+	if override.KeepNextSet {
+		base.KeepNext, base.KeepNextSet = override.KeepNext, true
+	}
+	if override.KeepLinesSet {
+		base.KeepLines, base.KeepLinesSet = override.KeepLines, true
+	}
+	if override.WidowControlSet {
+		base.WidowControl, base.WidowControlSet = override.WidowControl, true
+	}
 	mergeFontSlot(&base.FontEastAsia, &base.FontEastAsiaTheme, override.FontEastAsia, override.FontEastAsiaTheme)
 	mergeFontSlot(&base.FontASCII, &base.FontASCIITheme, override.FontASCII, override.FontASCIITheme)
 	mergeFontSlot(&base.FontHAnsi, &base.FontHAnsiTheme, override.FontHAnsi, override.FontHAnsiTheme)
@@ -2932,7 +3010,10 @@ func isBodyStyleCandidate(para paragraph) bool {
 	if strings.Contains(para.XML, `<w:jc w:val="center"`) || strings.Contains(para.XML, `<w:jc w:val="right"`) {
 		return false
 	}
-	return strings.ContainsAny(text, "。！？.!?；;：:")
+	// Template placeholders can be long runs of text without punctuation.
+	// Accept only explicit repeated body placeholders, not arbitrary labels.
+	placeholder := strings.NewReplacer("正文文字", "", "正文内容", "", "文本", "").Replace(text)
+	return strings.ContainsAny(text, "。！？.!?；;：:") || strings.TrimSpace(placeholder) == ""
 }
 
 func hasTOCLeader(text string) bool {

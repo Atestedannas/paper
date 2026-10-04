@@ -38,7 +38,8 @@ func TestFrozenRolePlanIsIdempotentAndUsesBodyRule(t *testing.T) {
 
 func TestRolePlanEnglishAbstractStartsNewPage(t *testing.T) {
 	profile := &templateprofile.Profile{
-		Header: templateprofile.HeaderFooterRule{Text: "重庆工程学院本科生毕业设计（论文）"},
+		Sections: map[string]templateprofile.SectionRule{"abstract_en": {PageBreakBefore: true, DetectedFrom: "template:abstract_en"}},
+		Header:   templateprofile.HeaderFooterRule{Text: "重庆工程学院本科生毕业设计（论文）"},
 		Styles: map[string]templateprofile.StyleRule{
 			"abstract_en":      {FontEastAsia: "Times New Roman", FontSizeHalfPt: "32", Bold: true, BoldSet: true, Alignment: "center"},
 			"abstract_en_body": {FontEastAsia: "Times New Roman", FontSizeHalfPt: "24", Alignment: "both"},
@@ -73,7 +74,7 @@ func TestRolePlanEnglishAbstractStartsNewPage(t *testing.T) {
 // CQIE 学位论文要求中英文摘要分页。独立英文 Abstract 标签段（无内联正文）
 // 同样必须另起新页，保证与中文摘要分离。
 func TestRolePlanStandaloneAbstractLabelStartsNewPage(t *testing.T) {
-	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+	profile := &templateprofile.Profile{Sections: map[string]templateprofile.SectionRule{"abstract_en": {PageBreakBefore: true, DetectedFrom: "template:abstract_en"}}, Styles: map[string]templateprofile.StyleRule{
 		"abstract_en": {FontEastAsia: "Times New Roman", FontSizeHalfPt: "32", Bold: true, BoldSet: true, Alignment: "center"},
 		"body":        {FontEastAsia: "宋体", FontSizeHalfPt: "24"},
 	}}
@@ -153,11 +154,9 @@ func TestFrozenRolePlanAppliesTemplateFlowOnceAndIsIdempotent(t *testing.T) {
 	if changed != 3 {
 		t.Fatalf("first pass changed=%d, want 3", changed)
 	}
-	// Two page breaks come from the plan flow (body_start on the first
-	// chapter, references_title) plus one from the chapter-to-chapter rule now
-	// applied to the second heading_1.
-	if got := strings.Count(updated, `<w:pageBreakBefore/>`); got != 3 {
-		t.Fatalf("pageBreakBefore count=%d, want 3: %s", got, updated)
+	// Only the two breaks explicitly requested by template flow are inserted.
+	if got := strings.Count(updated, `<w:pageBreakBefore/>`); got != 2 {
+		t.Fatalf("pageBreakBefore count=%d, want 2: %s", got, updated)
 	}
 	if got := strings.Count(updated, `<w:keepNext/>`); got != 2 {
 		t.Fatalf("keepNext count=%d, want 2: %s", got, updated)
@@ -169,7 +168,10 @@ func TestFrozenRolePlanAppliesTemplateFlowOnceAndIsIdempotent(t *testing.T) {
 }
 
 func TestRolePlanBreaksPagesBetweenChapterHeadings(t *testing.T) {
-	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
+	profile := &templateprofile.Profile{Sections: map[string]templateprofile.SectionRule{
+		"body_start": {PageBreakBefore: false, DetectedFrom: "template:first_chapter"},
+		"heading_1":  {PageBreakBefore: true, DetectedFrom: "template:later_chapters"},
+	}, Styles: map[string]templateprofile.StyleRule{
 		"heading_1": {FontSizeHalfPt: "32"},
 	}}
 	assignments := []roleclassify.Assignment{
@@ -204,7 +206,7 @@ func TestRolePlanBreaksPagesBetweenChapterHeadings(t *testing.T) {
 	}
 }
 
-func TestRolePlanAppliesPageBreakWhileDeferringSectionClone(t *testing.T) {
+func TestRolePlanSynthesizesRelationshipSafeSectionBreak(t *testing.T) {
 	profile := &templateprofile.Profile{
 		Styles: map[string]templateprofile.StyleRule{"references_title": {FontSizeHalfPt: "28"}},
 		Sections: map[string]templateprofile.SectionRule{
@@ -213,13 +215,19 @@ func TestRolePlanAppliesPageBreakWhileDeferringSectionClone(t *testing.T) {
 	}
 	assignments := []roleclassify.Assignment{{NodeID: "p:AAA111", Role: "references_title", Confidence: 1, Trusted: true}}
 	plan := BuildRoleFormatPlan(profile, assignments)
-	if plan[0].Flow == nil || !plan[0].Flow.ReviewRequired {
-		t.Fatalf("unsafe section flow must remain review-only: %#v", plan)
+	if plan[0].Flow == nil || plan[0].Flow.ReviewRequired || plan[0].Flow.SectionBreakType != "nextPage" {
+		t.Fatalf("section flow must carry its type without deferral: %#v", plan)
 	}
-	documentXML := `<w:document xmlns:w="w" xmlns:w14="w14"><w:body><w:p w14:paraId="AAA111"><w:r><w:t>References</w:t></w:r></w:p></w:body></w:document>`
+	documentXML := `<w:document xmlns:w="w" xmlns:w14="w14"><w:body><w:p w14:paraId="BBB222"><w:r><w:t>正文内容</w:t></w:r></w:p><w:p w14:paraId="AAA111"><w:r><w:t>References</w:t></w:r></w:p></w:body></w:document>`
 	updated, _ := applyRoleFormatPlanToDocumentXML(documentXML, profile, assignments)
-	if !strings.Contains(updated, `<w:pageBreakBefore/>`) || strings.Contains(updated, `<w:sectPr`) {
-		t.Fatalf("required page break must apply without synthesizing a section: %s", updated)
+	if !strings.Contains(updated, `<w:sectPr><w:type w:val="nextPage"/>`) {
+		t.Fatalf("section break not synthesized: %s", updated)
+	}
+	if strings.Contains(updated, "headerReference") || strings.Contains(updated, "footerReference") {
+		t.Fatalf("synthesized section must not reference header/footer parts: %s", updated)
+	}
+	if _, changed := applyRoleFormatPlanToDocumentXML(updated, profile, assignments); changed != 0 {
+		t.Fatalf("second pass changed=%d, want idempotent 0", changed)
 	}
 }
 
@@ -337,5 +345,23 @@ func TestSectionReviewDoesNotHideRequiredPagination(t *testing.T) {
 				t.Fatalf("not idempotent: %d %v", n, err)
 			}
 		})
+	}
+}
+
+func TestRolePlanAppliesBlankParagraphsBeforeSection(t *testing.T) {
+	profile := &templateprofile.Profile{
+		Styles: map[string]templateprofile.StyleRule{"references_title": {FontSizeHalfPt: "28"}},
+		Sections: map[string]templateprofile.SectionRule{
+			"references_title": {BlankParagraphsBefore: 2},
+		},
+	}
+	assignments := []roleclassify.Assignment{{NodeID: "p:AAA111", Role: "references_title", Confidence: 1, Trusted: true}}
+	documentXML := `<w:document xmlns:w="w" xmlns:w14="w14"><w:body><w:p w14:paraId="BBB222"><w:r><w:t>正文内容</w:t></w:r></w:p><w:p w14:paraId="AAA111"><w:r><w:t>References</w:t></w:r></w:p></w:body></w:document>`
+	updated, _ := applyRoleFormatPlanToDocumentXML(documentXML, profile, assignments)
+	if got := strings.Count(updated, "<w:p><w:r><w:t></w:t></w:r></w:p>"); got != 2 {
+		t.Fatalf("blank paragraph count=%d, want 2: %s", got, updated)
+	}
+	if _, changed := applyRoleFormatPlanToDocumentXML(updated, profile, assignments); changed != 0 {
+		t.Fatalf("second pass changed=%d, want idempotent 0", changed)
 	}
 }

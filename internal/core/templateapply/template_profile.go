@@ -260,14 +260,6 @@ func ApplyTemplateProfileTOCStyles(ctx context.Context, path string, profile *te
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	rule, ok := resolveTemplateProfileStyle(profile.Styles, "toc_entry")
-	if !ok {
-		return 0, nil
-	}
-	style, ok := paragraphStyleFromTemplateProfile(rule)
-	if !ok {
-		return 0, nil
-	}
 	pkg, err := ooxmlpkg.Open(path)
 	if err != nil {
 		return 0, err
@@ -276,11 +268,23 @@ func ApplyTemplateProfileTOCStyles(ctx context.Context, path string, profile *te
 	if !ok {
 		return 0, fmt.Errorf("missing %s", documentTarget)
 	}
-	tocStylePattern := regexp.MustCompile(`(?i)<w:pStyle\b[^>]*w:val="TOC[0-9]+"`)
+	tocStylePattern := regexp.MustCompile(`(?i)<w:pStyle\b[^>]*w:val="TOC([1-9])"`)
 	count := 0
 	updated := paragraphPattern.ReplaceAllStringFunc(string(content), func(paragraph string) string {
 		text := strings.TrimSpace(extractParagraphText(paragraph))
 		if text == "" || !tocStylePattern.MatchString(paragraph) && !isTemplateProfileTOCParagraph(paragraph) {
+			return paragraph
+		}
+		key := "toc_entry"
+		if match := tocStylePattern.FindStringSubmatch(paragraph); len(match) > 1 && match[1] != "1" {
+			key += "_" + match[1]
+		}
+		rule, found := resolveTemplateProfileStyle(profile.Styles, key)
+		if !found {
+			return paragraph
+		}
+		style, executable := paragraphStyleFromTemplateProfile(rule)
+		if !executable {
 			return paragraph
 		}
 		next := applyParagraphStyle(paragraph, style)
@@ -2459,6 +2463,7 @@ func resolveTemplateProfileStyle(styles map[string]templateprofile.StyleRule, ke
 }
 
 func paragraphStyleFromTemplateProfile(rule templateprofile.StyleRule) (paragraphStyle, bool) {
+	rule, _ = templateprofile.ExecutableStyle(rule)
 	if rule.ReviewRequired {
 		return paragraphStyle{}, false
 	}
@@ -2519,7 +2524,7 @@ func paragraphStyleFromTemplateProfile(rule templateprofile.StyleRule) (paragrap
 			style.lineRule = ""
 		}
 	}
-	ok := style.eastAsiaFont != "" || style.asciiFont != "" || style.hAnsiFont != "" || style.complexFont != "" || style.fontSize != "" ||
+	ok := style.eastAsiaFont != "" || style.asciiFont != "" || style.hAnsiFont != "" || style.complexFont != "" || style.fontSize != "" || style.complexSize != "" ||
 		style.alignment != "" || style.line != "" || style.beforeTwips != nil || style.afterTwips != nil ||
 		style.beforeLines != nil || style.afterLines != nil || style.firstLineChars != nil || style.firstLineTwips != nil ||
 		style.boldSet || style.bold || style.italicSet || style.italic || style.keepNextSet || style.keepLinesSet || style.widowControlSet

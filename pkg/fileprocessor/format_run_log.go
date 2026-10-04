@@ -643,6 +643,7 @@ func humanField(value string) string {
 		"space_before":         "段前距",
 		"space_after":          "段后距",
 		"first_line_indent":    "首行缩进",
+		"first_line_chars":     "首行缩进（百分之一字符）",
 		"indent_left":          "左缩进",
 		"indent_right":         "右缩进",
 		"font_size_cs_half_pt": "中文字号原值",

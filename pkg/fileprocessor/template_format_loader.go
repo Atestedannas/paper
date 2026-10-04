@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"gitee.com/greatmusicians/unioffice/document"
@@ -61,14 +60,16 @@ type ParagraphFormatSpec struct {
 	Italic  bool
 
 	// 段落级别属性
-	AlignmentSet    bool      // Alignment字段是否有效
-	Alignment       wml.ST_Jc // 对齐方式
-	LineSpacingVal  int64     // w:spacing@w:line（twips），0表示未设置
-	LineSpacingRule wml.ST_LineSpacingRule
-	SpaceBefore     uint64 // w:spacing@w:before（twips）
-	SpaceAfter      uint64 // w:spacing@w:after（twips）
-	FirstLineIndent uint64 // w:ind@w:firstLine（twips）
-	PageBreak       bool   // w:pageBreakBefore
+	AlignmentSet      bool      // Alignment字段是否有效
+	Alignment         wml.ST_Jc // 对齐方式
+	LineSpacingVal    int64     // w:spacing@w:line（twips），0表示未设置
+	LineSpacingRule   wml.ST_LineSpacingRule
+	SpaceBefore       uint64 // w:spacing@w:before（twips）
+	SpaceAfter        uint64 // w:spacing@w:after（twips）
+	FirstLineIndent   uint64 // w:ind@w:firstLine（twips）
+	FirstLineChars    int64  // w:ind@w:firstLineChars（1/100 character）
+	FirstLineCharsSet bool
+	PageBreak         bool // w:pageBreakBefore
 
 	SampleCount int // 聚合时使用的样本数量
 
@@ -94,22 +95,19 @@ func (s ParagraphFormatSpec) IsEmpty() bool {
 }
 
 // TemplateFormatLoader 从模板docx自动提取段落格式规范
-// 支持内存缓存，同一模板文件只解析一次
+// 每次读取所选模板，避免同路径替换文件后继续使用旧规则。
 type TemplateFormatLoader struct {
 	processor *EnhancedProcessor
-	mu        sync.Mutex
-	cache     map[string]map[string]ParagraphFormatSpec
 }
 
 // NewTemplateFormatLoader 创建模板格式加载器
 func NewTemplateFormatLoader(proc *EnhancedProcessor) *TemplateFormatLoader {
 	return &TemplateFormatLoader{
 		processor: proc,
-		cache:     make(map[string]map[string]ParagraphFormatSpec),
 	}
 }
 
-// LoadFromFile 从模板文件加载格式规范，带内存缓存
+// LoadFromFile 从当前模板文件加载格式规范。
 // templatePath: 模板文件路径（绝对或相对于工作目录）
 func (l *TemplateFormatLoader) LoadFromFile(templatePath string) (map[string]ParagraphFormatSpec, error) {
 	return l.loadFromFile(templatePath, true)
@@ -122,14 +120,6 @@ func (l *TemplateFormatLoader) LoadSampledFromFile(templatePath string) (map[str
 }
 
 func (l *TemplateFormatLoader) loadFromFile(templatePath string, includeNamedStyles bool) (map[string]ParagraphFormatSpec, error) {
-	cacheKey := fmt.Sprintf("%s|named=%t", templatePath, includeNamedStyles)
-	l.mu.Lock()
-	if specs, ok := l.cache[cacheKey]; ok {
-		l.mu.Unlock()
-		log.Printf("[模板加载] 命中缓存: %s (%d种类型)", templatePath, len(specs))
-		return specs, nil
-	}
-	l.mu.Unlock()
 
 	log.Printf("[模板加载] ════════ 开始解析模板格式: %s ════════", templatePath)
 	doc, err := document.Open(templatePath)
@@ -242,10 +232,6 @@ func (l *TemplateFormatLoader) loadFromFile(templatePath string, includeNamedSty
 		}
 	}
 
-	l.mu.Lock()
-	l.cache[cacheKey] = specs
-	l.mu.Unlock()
-
 	log.Printf("[模板加载] ════════ 完成：提取 %d 种格式规范（Named Style=%t） ════════", len(specs), includeNamedStyles)
 	return specs, nil
 }
@@ -273,6 +259,9 @@ func mergeLegacyNamedStyle(sampled, named ParagraphFormatSpec) ParagraphFormatSp
 	if sampled.LineSpacingVal == 0 && named.LineSpacingVal != 0 {
 		sampled.LineSpacingVal = named.LineSpacingVal
 		sampled.LineSpacingRule = named.LineSpacingRule
+	}
+	if !sampled.FirstLineCharsSet && sampled.FirstLineIndent == 0 && named.FirstLineCharsSet {
+		sampled.FirstLineChars, sampled.FirstLineCharsSet = named.FirstLineChars, true
 	}
 	if sampled.FirstLineIndent == 0 && named.FirstLineIndent != 0 {
 		sampled.FirstLineIndent = named.FirstLineIndent
@@ -327,6 +316,11 @@ func mergeFormatSpec(base, override ParagraphFormatSpec) ParagraphFormatSpec {
 	// (i.e., compiled sampling should never downgrade an existing namedStyles value).
 	// This handles both: compiled→namedStyles (base=0 → fill) and
 	// namedStyles→compiled (base=480, override=512 → allow upgrade).
+	if override.FirstLineCharsSet {
+		base.FirstLineChars, base.FirstLineCharsSet = override.FirstLineChars, true
+	} else if override.FirstLineIndent != 0 {
+		base.FirstLineCharsSet = false
+	}
 	if override.FirstLineIndent != 0 && (base.FirstLineIndent == 0 || override.FirstLineIndent > base.FirstLineIndent || override.FirstLineIndent == base.FirstLineIndent) {
 		base.FirstLineIndent = override.FirstLineIndent
 	}
@@ -404,7 +398,11 @@ func extractParaFormatSpec(para document.Paragraph) ParagraphFormatSpec {
 		spec.FirstLineIndent = *pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber
 	}
 
-	spec.PageBreak = pPr.PageBreakBefore != nil
+	if pPr.Ind != nil && pPr.Ind.FirstLineCharsAttr != nil {
+		spec.FirstLineChars = *pPr.Ind.FirstLineCharsAttr
+		spec.FirstLineCharsSet = true
+	}
+	spec.PageBreak = templateOnOffIsTrue(pPr.PageBreakBefore)
 
 	// 左右缩进
 	if pPr.Ind != nil {
@@ -420,10 +418,10 @@ func extractParaFormatSpec(para document.Paragraph) ParagraphFormatSpec {
 		spec.OutlineLevel = int(pPr.OutlineLvl.ValAttr) + 1
 	}
 	if pPr.KeepNext != nil {
-		spec.KeepWithNext = true
+		spec.KeepWithNext = templateOnOffIsTrue(pPr.KeepNext)
 	}
 	if pPr.KeepLines != nil {
-		spec.KeepLines = true
+		spec.KeepLines = templateOnOffIsTrue(pPr.KeepLines)
 	}
 	return completeParagraphFontSpec(spec)
 }
@@ -478,8 +476,9 @@ func extractTemplateRunFormatSpec(run document.Run) (ParagraphFormatSpec, bool) 
 	if rPr.Sz != nil && rPr.Sz.ValAttr.ST_UnsignedDecimalNumber != nil {
 		spec.FontSizeHalfPt = *rPr.Sz.ValAttr.ST_UnsignedDecimalNumber
 	}
-	spec.Bold = rPr.B != nil
-	spec.Italic = rPr.I != nil
+	spec.Bold = templateOnOffIsTrue(rPr.B)
+	spec.BoldSet = rPr.B != nil
+	spec.Italic = templateOnOffIsTrue(rPr.I)
 	if rPr.U != nil {
 		spec.Underline = true
 	}
@@ -490,7 +489,7 @@ func extractTemplateRunFormatSpec(run document.Run) (ParagraphFormatSpec, bool) 
 		spec.FontSizeCSHalfPt = *rPr.SzCs.ValAttr.ST_UnsignedDecimalNumber
 	}
 	spec = completeParagraphFontSpec(spec)
-	if spec.IsEmpty() && spec.ColorHex == "" && !spec.Italic && !spec.Underline {
+	if spec.IsEmpty() && !spec.BoldSet && spec.ColorHex == "" && !spec.Italic && !spec.Underline {
 		return ParagraphFormatSpec{}, false
 	}
 	return spec, true
@@ -633,6 +632,7 @@ func consensusSpec(samples []ParagraphFormatSpec) ParagraphFormatSpec {
 	lineSpacingCounts := make(map[int64]int)
 	lineRuleCounts := make(map[wml.ST_LineSpacingRule]int)
 	firstIndentCounts := make(map[uint64]int)
+	firstCharsCounts := make(map[int64]int)
 
 	var totalSpBefore, totalSpAfter uint64
 
@@ -657,6 +657,9 @@ func consensusSpec(samples []ParagraphFormatSpec) ParagraphFormatSpec {
 		}
 		if s.LineSpacingRule != wml.ST_LineSpacingRuleUnset {
 			lineRuleCounts[s.LineSpacingRule]++
+		}
+		if s.FirstLineCharsSet {
+			firstCharsCounts[s.FirstLineChars]++
 		}
 		if s.FirstLineIndent > 0 {
 			firstIndentCounts[s.FirstLineIndent]++
@@ -697,6 +700,13 @@ func consensusSpec(samples []ParagraphFormatSpec) ParagraphFormatSpec {
 	}
 	if val, count := mostFrequentUint64SpecCount(firstIndentCounts); count > 0 {
 		consensus.FirstLineIndent = val
+	}
+	if len(firstCharsCounts) == 1 {
+		for value, count := range firstCharsCounts {
+			if count == len(samples) {
+				consensus.FirstLineChars, consensus.FirstLineCharsSet = value, true
+			}
+		}
 	}
 	// 段前段后取均值
 	consensus.SpaceBefore = totalSpBefore / n

@@ -75,7 +75,9 @@ type ParagraphPropertiesSpec struct {
 	LineTwips          int
 	LineRule           string
 	BeforeTwips        int
+	BeforeTwipsSet     bool
 	AfterTwips         int
+	AfterTwipsSet      bool
 	BeforeLines        int
 	AfterLines         int
 	FirstLineChars     int
@@ -382,16 +384,16 @@ func updateParagraphPropertiesBody(body string, spec ParagraphPropertiesSpec) st
 	if spec.Alignment != "" {
 		body = upsertPropertyElement(body, jcElement, "w:jc", []xmlAttributeUpdate{{"w:val", spec.Alignment}}, nil)
 	}
-	if spec.BeforeTwips > 0 || spec.AfterTwips > 0 || spec.BeforeLines > 0 || spec.AfterLines > 0 || spec.BeforeLinesSet || spec.AfterLinesSet || spec.LineTwips > 0 || spec.LineRule != "" {
+	if spec.BeforeTwips > 0 || spec.BeforeTwipsSet || spec.AfterTwips > 0 || spec.AfterTwipsSet || spec.BeforeLines > 0 || spec.AfterLines > 0 || spec.BeforeLinesSet || spec.AfterLinesSet || spec.LineTwips > 0 || spec.LineRule != "" {
 		updates := make([]xmlAttributeUpdate, 0, 6)
 		remove := make([]string, 0, 4)
-		if spec.BeforeTwips > 0 {
+		if spec.BeforeTwips > 0 || spec.BeforeTwipsSet {
 			updates = append(updates, xmlAttributeUpdate{"w:before", strconv.Itoa(spec.BeforeTwips)})
 			if !spec.BeforeLinesSet {
 				remove = append(remove, "w:beforeLines", "w:beforeAutospacing")
 			}
 		}
-		if spec.AfterTwips > 0 {
+		if spec.AfterTwips > 0 || spec.AfterTwipsSet {
 			updates = append(updates, xmlAttributeUpdate{"w:after", strconv.Itoa(spec.AfterTwips)})
 			if !spec.AfterLinesSet {
 				remove = append(remove, "w:afterLines", "w:afterAutospacing")
@@ -399,13 +401,13 @@ func updateParagraphPropertiesBody(body string, spec ParagraphPropertiesSpec) st
 		}
 		if spec.BeforeLinesSet {
 			updates = append(updates, xmlAttributeUpdate{"w:beforeLines", strconv.Itoa(spec.BeforeLines)})
-			if spec.BeforeTwips <= 0 {
+			if spec.BeforeTwips <= 0 && !spec.BeforeTwipsSet {
 				remove = append(remove, "w:before", "w:beforeAutospacing")
 			}
 		}
 		if spec.AfterLinesSet {
 			updates = append(updates, xmlAttributeUpdate{"w:afterLines", strconv.Itoa(spec.AfterLines)})
-			if spec.AfterTwips <= 0 {
+			if spec.AfterTwips <= 0 && !spec.AfterTwipsSet {
 				remove = append(remove, "w:after", "w:afterAutospacing")
 			}
 		}

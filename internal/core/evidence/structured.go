@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/paper-format-checker/backend/internal/core/documentrole"
 	"github.com/paper-format-checker/backend/internal/core/paperast"
 )
 
@@ -433,7 +434,7 @@ func ValidateRoleCandidate(request Request, candidate CandidateRole) error {
 	if request.Task != "classify_document_role" || candidate.NodeID != request.Subject.NodeID {
 		return fmt.Errorf("candidate subject does not match structured request")
 	}
-	if candidate.Confidence < 0 || candidate.Confidence > 1 || strings.TrimSpace(candidate.Role) == "" {
+	if math.IsNaN(candidate.Confidence) || math.IsInf(candidate.Confidence, 0) || candidate.Confidence < 0 || candidate.Confidence > 1 || !documentrole.Valid(candidate.Role) {
 		return fmt.Errorf("candidate role or confidence is invalid")
 	}
 	allowed := map[string]bool{}

@@ -72,7 +72,7 @@ jobs:
           cache: true
 
       - name: Test
-        run: go test ./internal/middleware ./internal/handler ./internal/service ./cmd/server
+        run: go test ./internal/eval ./internal/middleware ./internal/handler ./internal/service ./cmd/server
 
       - name: Build Linux binary
         run: |

@@ -375,6 +375,9 @@ func (f *V2SmartFormatter) applyAbstractContentFormat(para document.Paragraph) {
 	pPr.Ind = wml.NewCT_Ind()
 	pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{}
 	pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber = &firstLine
+	if spec != nil {
+		applySpecFirstLineIndent(pPr, *spec)
+	}
 
 	// Label run 属性：从 spec 取字体/字号/加粗
 	labelFontName := "黑体"
@@ -465,6 +468,9 @@ func (f *V2SmartFormatter) applyKeywordsFormat(para document.Paragraph) {
 	pPr.Ind = wml.NewCT_Ind()
 	pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{}
 	pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber = &firstLine
+	if spec != nil {
+		applySpecFirstLineIndent(pPr, *spec)
+	}
 
 	labelFontName := "黑体"
 	labelSizePt := 15.0
@@ -575,6 +581,9 @@ func (f *V2SmartFormatter) applyEnAbstractContentFormat(para document.Paragraph)
 	pPr.Ind = wml.NewCT_Ind()
 	pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{}
 	pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber = &firstLine
+	if spec != nil {
+		applySpecFirstLineIndent(pPr, *spec)
+	}
 
 	labelFontName := "Times New Roman"
 	labelSizePt := 15.0
@@ -661,6 +670,9 @@ func (f *V2SmartFormatter) applyEnKeywordsFormat(para document.Paragraph) {
 	pPr.Ind = wml.NewCT_Ind()
 	pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{}
 	pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber = &firstLine
+	if spec != nil {
+		applySpecFirstLineIndent(pPr, *spec)
+	}
 
 	labelFontName := "Times New Roman"
 	labelSizePt := 15.0
@@ -1349,11 +1361,9 @@ func (f *V2SmartFormatter) formatHeading2(para document.Paragraph) {
 	}
 	// 模板克隆阶段可能保留学生稿上的 w:numPr；与正文里手打的「1.1 …」并存会导致编号重复显示，二级标题规范为数字前缀写在 runs 中，此处去掉列表编号。
 	pPr.NumPr = nil
-	if hasSpec && spec.FirstLineIndent > 0 {
+	if hasSpec && (spec.FirstLineCharsSet || spec.FirstLineIndent > 0) {
 		pPr.Ind = wml.NewCT_Ind()
-		fl := spec.FirstLineIndent
-		pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{}
-		pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber = &fl
+		applySpecFirstLineIndent(pPr, spec)
 	} else {
 		pPr.Ind = nil
 	}
@@ -1394,11 +1404,9 @@ func (f *V2SmartFormatter) formatHeading3(para document.Paragraph) {
 		pPr = wml.NewCT_PPr()
 		para.X().PPr = pPr
 	}
-	if hasSpec && spec.FirstLineIndent > 0 {
+	if hasSpec && (spec.FirstLineCharsSet || spec.FirstLineIndent > 0) {
 		pPr.Ind = wml.NewCT_Ind()
-		fl := spec.FirstLineIndent
-		pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{}
-		pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber = &fl
+		applySpecFirstLineIndent(pPr, spec)
 	} else {
 		pPr.Ind = nil
 	}
@@ -1446,11 +1454,9 @@ func (f *V2SmartFormatter) formatHeading4(para document.Paragraph) {
 		pPr = wml.NewCT_PPr()
 		para.X().PPr = pPr
 	}
-	if hasSpec && spec.FirstLineIndent > 0 {
+	if hasSpec && (spec.FirstLineCharsSet || spec.FirstLineIndent > 0) {
 		pPr.Ind = wml.NewCT_Ind()
-		fl := spec.FirstLineIndent
-		pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{}
-		pPr.Ind.FirstLineAttr.ST_UnsignedDecimalNumber = &fl
+		applySpecFirstLineIndent(pPr, spec)
 	} else {
 		pPr.Ind = nil
 	}

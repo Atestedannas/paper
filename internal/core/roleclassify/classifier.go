@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 
+	"github.com/paper-format-checker/backend/internal/core/documentrole"
 	"github.com/paper-format-checker/backend/internal/core/evidence"
 	"github.com/paper-format-checker/backend/internal/core/paperast"
 )
@@ -14,6 +16,8 @@ import (
 type Client interface{ ChatCompletion(string) (string, error) }
 
 type Assignment struct {
+	LogicalLevel int      `json:"-"`
+	ContextKey   string   `json:"-"`
 	ReviewReason string   `json:"-"`
 	Text         string   `json:"-"`
 	NodeID       string   `json:"nodeId"`
@@ -60,7 +64,7 @@ func ClassifyStructuredWithEvidence(ctx context.Context, client Client, nodes []
 			return nil, err
 		}
 		prompt := `You classify exactly one thesis node subject from structured evidence. Return JSON only. Do not invent format values. A source_evidence_ids item must be copied from this subject's evidence. If evidence is insufficient choose unknown.
-Allowed roles: cover, cover_title, cover_date, title, originality_declaration, abstract_title, abstract_body, abstract_cn, abstract_en, abstract_en_body, keywords_cn, keywords_en, toc_title, toc_entry, heading_1, heading_2, heading_3, heading_4, body, table_caption, figure_caption, formula, references_title, references, acknowledgements_title, acknowledgements, appendix_title, appendix, unknown.
+Allowed roles: ` + documentrole.Names + `.
 Format: {"node_id":"...","role":"...","confidence":0.0,"source_evidence_ids":["ev:subject"],"uncertainties":[]}
 Subject:
 ` + string(payload)
@@ -82,7 +86,7 @@ Subject:
 		if candidate.NodeID != request.Subject.NodeID {
 			return nil, fmt.Errorf("structured role classifier returned an unrequested node %q", candidate.NodeID)
 		}
-		if !validRoles[candidate.Role] {
+		if !documentrole.Valid(candidate.Role) {
 			return nil, fmt.Errorf("structured role classifier returned invalid role %q", candidate.Role)
 		}
 		if err := evidence.ValidateRoleCandidate(request, candidate); err != nil {
@@ -120,17 +124,6 @@ type ValidationIssue struct {
 	Message string `json:"message"`
 }
 
-var validRoles = map[string]bool{
-	"cover": true, "cover_title": true, "cover_date": true, "title": true, "originality_declaration": true,
-	"abstract_title": true, "abstract_body": true, "abstract_cn": true,
-	"abstract_en": true, "abstract_en_body": true, "keywords_cn": true,
-	"keywords_en": true, "toc_title": true, "toc_entry": true,
-	"heading_1": true, "heading_2": true, "heading_3": true, "heading_4": true,
-	"body": true, "body_paragraph": true, "table_caption": true, "figure_caption": true, "formula": true, "references_title": true,
-	"references": true, "acknowledgements_title": true, "acknowledgements": true,
-	"appendix_title": true, "appendix": true, "unknown": true,
-}
-
 type inputNode struct {
 	NodeID      string `json:"nodeId"`
 	Text        string `json:"text"`
@@ -151,6 +144,7 @@ func Classify(ctx context.Context, client Client, nodes []paperast.Node) ([]Assi
 // section boundary has established its context.
 func Freeze(nodes []paperast.Node) []Assignment {
 	result := make([]Assignment, 0, len(nodes))
+	contexts := paperast.ParagraphContextKeys(nodes)
 	abstractBodyRole := "abstract_body"
 	for _, node := range nodes {
 		if node.NodeType != "paragraph" || strings.TrimSpace(node.NodeID) == "" || (node.SourcePart != "" && node.SourcePart != "word/document.xml") {
@@ -183,12 +177,21 @@ func Freeze(nodes []paperast.Node) []Assignment {
 			default:
 				continue
 			}
-		case "blank", "table", "unknown", "header", "footer":
+		case "blank", "table", "header", "footer":
 			continue
 		}
 		evidence := append([]string(nil), node.Evidence...)
 		evidence = append(evidence, "deterministic:frozen_ast")
 		reviewReason := ""
+		if role == documentrole.Unknown || !documentrole.Valid(role) {
+			role = documentrole.Unknown
+			reviewReason = "unknown_role_preserve_original"
+		}
+		for _, item := range node.Evidence {
+			if strings.HasPrefix(item, "deepseek_uncertainty:") {
+				reviewReason = "uncertain_role_preserve_original"
+			}
+		}
 		if role == "body" && node.EffectiveStyle != nil {
 			if node.EffectiveStyle.BoldEvidence == "mixed_run_emphasis" || node.EffectiveStyle.ItalicEvidence == "mixed_run_emphasis" {
 				reviewReason = "mixed_body_emphasis_preserve_original"
@@ -204,8 +207,9 @@ func Freeze(nodes []paperast.Node) []Assignment {
 			}
 		}
 		result = append(result, Assignment{
+			ContextKey: contexts[node.Index], LogicalLevel: node.LogicalLevel,
 			NodeID: node.NodeID, Role: role, Confidence: node.Confidence, Text: node.Text,
-			Evidence: evidence, Trusted: true, Index: node.Index, ReviewReason: reviewReason,
+			Evidence: evidence, Trusted: reviewReason == "", Index: node.Index, ReviewReason: reviewReason,
 		})
 	}
 	return result
@@ -226,11 +230,19 @@ func Merge(nodes []paperast.Node, assignments []Assignment, threshold float64) [
 	result := append([]paperast.Node(nil), nodes...)
 	for i := range result {
 		candidate, ok := byID[result[i].NodeID]
-		if !ok || candidate.Confidence < threshold || candidate.Role == "unknown" {
+		if !ok || !documentrole.Valid(candidate.Role) || math.IsNaN(candidate.Confidence) || math.IsInf(candidate.Confidence, 0) || candidate.Confidence > 1 || candidate.Confidence < threshold || candidate.Role == "unknown" {
 			continue
 		}
 		if result[i].Confidence >= 0.9 && result[i].SemanticRole != "body_paragraph" {
 			continue
+		}
+		uncertain := candidate.ReviewReason != ""
+		for _, item := range candidate.Evidence {
+			uncertain = uncertain || strings.HasPrefix(item, "deepseek_uncertainty:")
+		}
+		if uncertain {
+			result[i].Evidence = append(append([]string(nil), result[i].Evidence...), "deepseek_uncertainty:role_candidate_requires_review")
+			continue // A disputed heading must not change following section roles.
 		}
 		role, level := normalizeRole(candidate.Role)
 		result[i].SemanticRole = role
@@ -317,7 +329,7 @@ func EnforceDocumentTree(nodes []paperast.Node) []paperast.Node {
 
 func sectionForRole(node paperast.Node, current string, rank int) (string, int) {
 	switch node.SemanticRole {
-	case "abstract_cn", "abstract_en", "abstract_title", "abstract_body":
+	case "abstract_cn", "abstract_en", "abstract_title", "abstract_body", "abstract_en_body":
 		return "abstract", 1
 	case "toc_title", "toc_entry":
 		return "toc", 2
@@ -407,24 +419,5 @@ func Validate(nodes []paperast.Node, assignments []Assignment) []ValidationIssue
 }
 
 func normalizeRole(role string) (string, int) {
-	switch role {
-	case "heading_1":
-		return "heading", 1
-	case "heading_2":
-		return "heading", 2
-	case "heading_3":
-		return "heading", 3
-	case "heading_4":
-		return "heading", 4
-	case "body":
-		return "body_paragraph", 0
-	case "abstract_body":
-		return "abstract_cn", 0
-	case "abstract_en_body":
-		return "abstract_en", 0
-	case "references":
-		return "references", 0
-	default:
-		return role, 0
-	}
+	return documentrole.AST(role)
 }

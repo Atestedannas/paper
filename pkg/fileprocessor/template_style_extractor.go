@@ -196,6 +196,10 @@ func (e *TemplateStyleExtractor) extractWithInheritance(
 		}
 		if pPr.Ind != nil {
 			ind := pPr.Ind
+			if ind.FirstLineCharsAttr != nil {
+				spec.FirstLineChars = *ind.FirstLineCharsAttr
+				spec.FirstLineCharsSet = true
+			}
 			// FirstLine 缩进：用 ST_UnsignedDecimalNumber（与 CT_PPr 相同的访问路径）
 			if ind.FirstLineAttr != nil && ind.FirstLineAttr.ST_UnsignedDecimalNumber != nil {
 				spec.FirstLineIndent = *ind.FirstLineAttr.ST_UnsignedDecimalNumber

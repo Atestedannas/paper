@@ -655,7 +655,7 @@ func TestNumberedHeadingLevelRejectsScientificExpression(t *testing.T) {
 	}
 }
 
-func TestExtractAggregatesRepeatedStylesByMode(t *testing.T) {
+func TestExtractRetainsMinorityStyleConflicts(t *testing.T) {
 	templatePath := filepath.Join(t.TempDir(), "template.docx")
 	paragraph := func(font, size string) string {
 		return `<w:p><w:pPr><w:rPr><w:rFonts w:eastAsia="` + font + `"/><w:sz w:val="` + size + `"/></w:rPr></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="` + font + `"/><w:sz w:val="` + size + `"/></w:rPr><w:t>参考文献</w:t></w:r></w:p>`
@@ -669,8 +669,9 @@ func TestExtractAggregatesRepeatedStylesByMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Extract() error = %v", err)
 	}
-	if style := profile.Styles["references_title"]; style.FontEastAsia != "SimSun" || style.FontSizeHalfPt != "24" {
-		t.Fatalf("aggregated style = %#v, want modal font and size", style)
+	style := profile.Styles["references_title"]
+	if style.FontEastAsia != "" || style.FontSizeHalfPt != "" || style.PropertyEvidence["FontEastAsia"].State != "conflicting_samples" || style.PropertyEvidence["FontSizeHalfPt"].State != "conflicting_samples" || !style.ReviewRequired {
+		t.Fatalf("Extract(conflicting repeated styles) = %#v, want font and size conflicts retained", style)
 	}
 }
 

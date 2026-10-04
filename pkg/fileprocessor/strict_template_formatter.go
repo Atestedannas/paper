@@ -1096,12 +1096,10 @@ func applyStrictSpecToParagraph(processor *EnhancedProcessor, para document.Para
 		}
 	}
 
-	if spec.FirstLineIndent > 0 || spec.IndentLeft > 0 || spec.IndentRight > 0 {
+	applySpecFirstLineIndent(pPr, spec)
+	if spec.IndentLeft > 0 || spec.IndentRight > 0 {
 		if pPr.Ind == nil {
 			pPr.Ind = wml.NewCT_Ind()
-		}
-		if spec.FirstLineIndent > 0 {
-			pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{ST_UnsignedDecimalNumber: &spec.FirstLineIndent}
 		}
 		if spec.IndentLeft > 0 {
 			left := int64(spec.IndentLeft)
@@ -1357,12 +1355,10 @@ func applyParagraphLayoutSpecToParagraph(para document.Paragraph, spec Paragraph
 			pPr.Spacing.AfterAttr = &sharedTypes.ST_TwipsMeasure{ST_UnsignedDecimalNumber: &spec.SpaceAfter}
 		}
 	}
-	if spec.FirstLineIndent > 0 || spec.IndentLeft > 0 || spec.IndentRight > 0 {
+	applySpecFirstLineIndent(pPr, spec)
+	if spec.IndentLeft > 0 || spec.IndentRight > 0 {
 		if pPr.Ind == nil {
 			pPr.Ind = wml.NewCT_Ind()
-		}
-		if spec.FirstLineIndent > 0 {
-			pPr.Ind.FirstLineAttr = &sharedTypes.ST_TwipsMeasure{ST_UnsignedDecimalNumber: &spec.FirstLineIndent}
 		}
 		if spec.IndentLeft > 0 {
 			left := int64(spec.IndentLeft)

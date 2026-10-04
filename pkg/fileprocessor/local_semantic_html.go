@@ -514,9 +514,8 @@ func (c *LocalSemanticHTMLConverter) writeSemanticParagraph(doc *document.Docume
 	}
 
 	// first line indent: from spec or fallback
-	if hasSpec && spec.FirstLineIndent != 0 {
-		indentTwips := measurement.Distance(spec.FirstLineIndent) * measurement.Point / 20
-		props.SetFirstLineIndent(indentTwips)
+	if hasSpec && (spec.FirstLineCharsSet || spec.FirstLineIndent != 0) {
+		applySpecFirstLineIndent(props.X(), spec)
 	} else {
 		props.SetFirstLineIndent(2 * measurement.Character)
 	}

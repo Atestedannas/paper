@@ -720,7 +720,7 @@ func (ruleFeatureExtractor) Extract(c *V2DeterministicClassifier, paras []V2Clas
 		fv.FontSizePt = spec.FontSizePt()
 		fv.IsBold = spec.Bold
 		fv.IsCenter = spec.AlignmentSet && spec.Alignment == wml.ST_JcCenter
-		fv.HasIndent = spec.FirstLineIndent > 0 || spec.IndentLeft > 0 || spec.IndentRight > 0
+		fv.HasIndent = (spec.FirstLineCharsSet && spec.FirstLineChars > 0) || spec.FirstLineIndent > 0 || spec.IndentLeft > 0 || spec.IndentRight > 0
 	}
 
 	// 位置：前一个非空段类型
@@ -871,33 +871,63 @@ func structuralSignalType(para document.Paragraph) string {
 	if para.X().PPr == nil {
 		return ""
 	}
-	var style string
-	if para.X().PPr.PStyle != nil {
-		style = strings.ToLower(strings.TrimSpace(para.X().PPr.PStyle.ValAttr))
+	text := normalizeSpaces(strings.TrimSpace(extractParaPlainText(para)))
+	// Section labels keep their semantic role even when styled as Heading 1.
+	if isAbstractTitleKW(text) || isEnAbstractTitleKW(text) || isTOCTitleKW(text) ||
+		isReferencesTitleKW(text) || isAcknowledgementsTitleKW(text) || isAppendixTitleKW(text) || isNotesTitleKW(text) {
+		return ""
 	}
-	switch {
-	case isHeadingStyleName(style, "heading1", "heading 1", "h1", "标题1", "一级标题"):
-		return V2Heading1
-	case isHeadingStyleName(style, "heading2", "heading 2", "h2", "标题2", "二级标题"):
-		return V2Heading2
-	case isHeadingStyleName(style, "heading3", "heading 3", "h3", "标题3", "三级标题"):
-		return V2Heading3
-	case isHeadingStyleName(style, "heading4", "heading 4", "h4", "标题4", "四级标题"):
-		return V2Heading4
-	}
-	// 大纲级别直读（outlineLvl: 0=1级标题，以此类推）
-	if para.X().PPr.OutlineLvl != nil {
-		lvl := int(para.X().PPr.OutlineLvl.ValAttr) + 1
-		switch {
-		case lvl == 1:
-			return V2Heading1
-		case lvl == 2:
-			return V2Heading2
-		case lvl == 3:
-			return V2Heading3
-		case lvl >= 4:
-			return V2Heading4
+	outlineType := func(level int64) string {
+		if level < 0 || level > 8 {
+			return ""
+		} // 9 explicitly means body text.
+		if level > 3 {
+			level = 3
 		}
+		return typeOfHeadingLevel(int(level) + 1)
+	}
+	if outline := para.X().PPr.OutlineLvl; outline != nil {
+		return outlineType(outline.ValAttr)
+	}
+	styleID := para.Style()
+	styleName := styleID
+	seen := map[string]bool{}
+	for id := styleID; id != "" && para.Document != nil; {
+		if seen[id] {
+			return ""
+		}
+		seen[id] = true
+		var definition *wml.CT_Style
+		for _, style := range para.Document.Styles.Styles() {
+			if style.StyleID() == id {
+				definition = style.X()
+				break
+			}
+		}
+		if definition == nil {
+			break
+		}
+		if id == styleID && definition.Name != nil {
+			styleName = definition.Name.ValAttr
+		}
+		if definition.PPr != nil && definition.PPr.OutlineLvl != nil {
+			return outlineType(definition.PPr.OutlineLvl.ValAttr)
+		}
+		if definition.BasedOn == nil {
+			break
+		}
+		id = definition.BasedOn.ValAttr
+	}
+	styleName = strings.ToLower(strings.TrimSpace(styleName))
+	switch {
+	case isHeadingStyleName(styleName, "heading1", "heading 1", "h1", "标题1", "标题 1", "一级标题"):
+		return V2Heading1
+	case isHeadingStyleName(styleName, "heading2", "heading 2", "h2", "标题2", "标题 2", "二级标题"):
+		return V2Heading2
+	case isHeadingStyleName(styleName, "heading3", "heading 3", "h3", "标题3", "标题 3", "三级标题"):
+		return V2Heading3
+	case isHeadingStyleName(styleName, "heading4", "heading 4", "h4", "标题4", "标题 4", "四级标题"):
+		return V2Heading4
 	}
 	// 多级编号（numPr）且文本满足编号标题形态 → 按编号层级定类
 	if para.X().PPr.NumPr != nil {
@@ -926,9 +956,6 @@ func isHeadingStyleName(style string, names ...string) bool {
 		if style == n {
 			return true
 		}
-	}
-	if strings.HasPrefix(style, "heading") {
-		return true
 	}
 	return false
 }
@@ -1030,7 +1057,12 @@ func matchFormatScore(actual ParagraphFormatSpec, expected templateprofile.Style
 			score += 0.1
 		}
 	}
-	if spec.FirstLineIndent > 0 || actual.FirstLineIndent > 0 {
+	if spec.FirstLineCharsSet || actual.FirstLineCharsSet {
+		weight += 0.1
+		if spec.FirstLineCharsSet && actual.FirstLineCharsSet && spec.FirstLineChars == actual.FirstLineChars {
+			score += 0.1
+		}
+	} else if spec.FirstLineIndent > 0 || actual.FirstLineIndent > 0 {
 		weight += 0.1
 		if math.Abs(float64(spec.FirstLineIndent)-float64(actual.FirstLineIndent)) <= 80 {
 			score += 0.1

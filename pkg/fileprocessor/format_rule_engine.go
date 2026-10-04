@@ -161,6 +161,11 @@ func overlayTemplateFormatSpec(base, explicit ParagraphFormatSpec) ParagraphForm
 	if explicit.SpaceAfter > 0 {
 		base.SpaceAfter = explicit.SpaceAfter
 	}
+	if explicit.FirstLineCharsSet {
+		base.FirstLineChars, base.FirstLineCharsSet = explicit.FirstLineChars, true
+	} else if explicit.FirstLineIndent > 0 {
+		base.FirstLineCharsSet = false
+	}
 	if explicit.FirstLineIndent > 0 {
 		base.FirstLineIndent = explicit.FirstLineIndent
 	}
@@ -435,8 +440,10 @@ func styleRuleToFormatSpec(style templateprofile.StyleRule) (ParagraphFormatSpec
 			if spec.FontSizeHalfPt == 0 || v <= spec.FontSizeHalfPt*40 {
 				spec.FirstLineIndent = v
 			}
-		} else if v, err := strconv.ParseUint(style.FirstLineChars, 10, 64); err == nil {
-			spec.FirstLineIndent = v
+		}
+		if v, err := strconv.ParseInt(style.FirstLineChars, 10, 64); err == nil && v >= 0 {
+			spec.FirstLineChars = v
+			spec.FirstLineCharsSet = true
 		}
 	}
 	return spec, !spec.IsEmpty()

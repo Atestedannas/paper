@@ -3,14 +3,17 @@ package paperast
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"html"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
+	"github.com/paper-format-checker/backend/internal/core/paperparse"
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
@@ -27,6 +30,7 @@ type Snapshot struct {
 // PageSection preserves page geometry in Word's source unit (twips).
 // PDF positions are complementary rendered evidence, not a replacement.
 type PageSection struct {
+	BreakType         string `json:"break_type,omitempty"`
 	ID                string `json:"id"`
 	PageWidthTwips    string `json:"page_width_twips,omitempty"`
 	PageHeightTwips   string `json:"page_height_twips,omitempty"`
@@ -95,8 +99,7 @@ var (
 	deletedPattern                = regexp.MustCompile(`(?s)<w:(?:del|moveFrom)\b[^>]*>.*?</w:(?:del|moveFrom)>`)
 	stylePattern                  = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
 	paraIDPattern                 = regexp.MustCompile(`(?:w14:|w:)?paraId="([A-Fa-f0-9]+)"`)
-	outlinePattern                = regexp.MustCompile(`<w:outlineLvl\b[^>]*\bw:val="(\d+)"`)
-	headingPattern                = regexp.MustCompile(`^(\d+(?:\.\d+){0,3})\s+\S+`)
+	headingPattern                = regexp.MustCompile(`^(\d+(?:\.\d+){0,3})\s+(\S.*)$`)
 	compactHeadingPattern         = regexp.MustCompile(`^(\d+(?:\.\d+){1,3})(?:\.)?([^\d\s].+)$`)
 	compactNumberedHeadingPattern = regexp.MustCompile(`^(\d+(?:\.\d+){0,3})[.、．]?\s*([^\d\s].+)$`)
 	chapterPattern                = regexp.MustCompile(`^第[一二三四五六七八九十百千万\d]+章(?:\s*\S+)?$`)
@@ -135,11 +138,11 @@ func Extract(docxPath string) (Snapshot, error) {
 	if !ok {
 		return Snapshot{}, fmt.Errorf("word/document.xml missing")
 	}
-	snapshot := ExtractDocumentXML(string(documentXML))
 	styles, err := templateprofile.ResolveDocumentEffectiveStyles(docxPath)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("resolve effective paragraph styles: %w", err)
 	}
+	snapshot := extractDocumentXML(string(documentXML), styles)
 	for index := range snapshot.Nodes {
 		if style, ok := styles[snapshot.Nodes[index].Index]; ok {
 			copy := style
@@ -309,6 +312,10 @@ func filepathBase(name string) string {
 }
 
 func ExtractDocumentXML(documentXML string) Snapshot {
+	return extractDocumentXML(documentXML, nil)
+}
+
+func extractDocumentXML(documentXML string, styles map[int]templateprofile.StyleRule) Snapshot {
 	snapshot := Snapshot{
 		Version:  Version,
 		Source:   "word/document.xml",
@@ -383,8 +390,21 @@ func ExtractDocumentXML(documentXML string) Snapshot {
 			}
 		}
 		if nodeType == "paragraph" && (role == "body_paragraph" || role == "heading") {
-			if outline, ok := extractOutlineLevel(raw); ok {
-				role, level, evidence = "heading", outline+1, []string{"ooxml:outline_level"}
+			outline, ok := extractOutlineLevel(raw)
+			outlineEvidence := "ooxml:outline_level"
+			if style, found := styles[index]; found {
+				value, err := strconv.Atoi(style.OutlineLevel)
+				outline, ok = value, err == nil && value >= 0 && value <= 8 && style.PropertyEvidence["OutlineLevel"].State == "resolved"
+				outlineEvidence = "ooxml:effective_outline_level"
+			}
+			if ok {
+				role, level, evidence = "heading", outline+1, []string{outlineEvidence}
+				// A copied heading style can cover an entire prose paragraph.
+				// Keep contradictory long text for review, not automatic heading repair.
+				if len([]rune(strings.TrimSpace(text))) > 100 && !paperparse.IsPlausibleHeadingTitle(text, level) {
+					role, level = "unknown", 0
+					evidence = append(evidence, "conflict:outline_with_long_text")
+				}
 			}
 		}
 		if nodeType == "paragraph" && sectionID == "toc" {
@@ -397,12 +417,15 @@ func ExtractDocumentXML(documentXML string) Snapshot {
 		} else if nodeType == "paragraph" && role == "body_paragraph" && chineseListPattern.MatchString(strings.TrimSpace(text)) {
 			role, level, evidence = "heading", 1, []string{"regex:chinese_list_heading"}
 		} else if nodeType == "paragraph" && role == "body_paragraph" {
-			if match := compactNumberedHeadingPattern.FindStringSubmatch(strings.TrimSpace(text)); len(match) == 3 && likelyCompactHeadingTitle(match[2]) {
-				level = strings.Count(match[1], ".") + 1
-				if level == 1 && regexp.MustCompile(`^\d+[.．、]`).MatchString(strings.TrimSpace(text)) {
-					level = 2
+			if match := compactNumberedHeadingPattern.FindStringSubmatch(strings.TrimSpace(text)); len(match) == 3 {
+				candidateLevel := strings.Count(match[1], ".") + 1
+				if likelyCompactHeadingTitle(match[2], candidateLevel) {
+					level = candidateLevel
+					if level == 1 && regexp.MustCompile(`^\d+[.．、]`).MatchString(strings.TrimSpace(text)) {
+						level = 2
+					}
+					role, evidence = "heading", []string{"regex:compact_numbered_heading"}
 				}
-				role, evidence = "heading", []string{"regex:compact_numbered_heading"}
 			}
 		}
 		// Once the references heading has opened its section, keep its entries
@@ -512,6 +535,10 @@ func extractPageSections(documentXML string) []PageSection {
 	sections := make([]PageSection, 0, len(rawSections))
 	for index, raw := range rawSections {
 		section := PageSection{ID: fmt.Sprintf("section:%d", index+1)}
+		section.BreakType = ooxmlAttribute(regexp.MustCompile(`<w:type\b[^>]*/>`).FindString(raw), "val")
+		if section.BreakType == "" {
+			section.BreakType = "nextPage"
+		}
 		if pageSize := pageSizePattern.FindString(raw); pageSize != "" {
 			section.PageWidthTwips = ooxmlAttribute(pageSize, "w")
 			section.PageHeightTwips = ooxmlAttribute(pageSize, "h")
@@ -607,9 +634,14 @@ func likelyCoverThesisTitle(text string) bool {
 	return !strings.Contains(trimmed, "\u5173\u952e\u8bcd") && !strings.HasPrefix(lower, "keywords") && !strings.HasPrefix(lower, "key words")
 }
 
-func likelyCompactHeadingTitle(title string) bool {
+func likelyCompactHeadingTitle(title string, level int) bool {
 	title = strings.TrimSpace(title)
-	return title != "" && len([]rune(title)) <= 32 && !strings.ContainsAny(title, "。！？；;，,")
+	return plausibleNumberedHeadingTitle(title, level) && len([]rune(title)) <= 32 && !strings.ContainsAny(title, "，,")
+}
+
+func plausibleNumberedHeadingTitle(title string, level int) bool {
+	title = strings.TrimSpace(title)
+	return !strings.HasPrefix(title, ".") && !strings.HasPrefix(title, "．") && paperparse.IsPlausibleHeadingTitle(title, level)
 }
 
 func Marshal(snapshot Snapshot) string {
@@ -744,7 +776,7 @@ func classify(nodeType string, text string) (string, int, float64, []string) {
 	switch {
 	case strings.Contains(correctCompact, "\u539f\u521b\u6027\u58f0\u660e") || strings.Contains(correctCompact, "\u539f\u521b\u6027\u7533\u660e") || strings.Contains(correctCompact, "\u5b66\u672f\u8bda\u4fe1\u58f0\u660e"):
 		return "originality_declaration", 0, 0.98, []string{"keyword:originality_declaration"}
-	case correctCompact == "\u76ee\u5f55" || correctCompact == "\u76ee\u6b21":
+	case correctCompact == "\u76ee\u5f55" || correctCompact == "\u76ee\u6b21" || lower == "contents" || lower == "table of contents":
 		return "toc_title", 0, 0.98, []string{"keyword:toc"}
 	case correctCompact == "\u6458\u8981":
 		return "abstract_title", 0, 0.98, []string{"keyword:abstract_title"}
@@ -785,11 +817,11 @@ func classify(nodeType string, text string) (string, int, float64, []string) {
 	case regexp.MustCompile(`^图\d+(\.\d+|-?\d*)?\s*\S*`).MatchString(trimmed):
 		return "figure_caption", 0, 0.90, []string{"regex:figure_caption"}
 	}
-	if match := headingPattern.FindStringSubmatch(trimmed); len(match) == 2 {
+	if match := headingPattern.FindStringSubmatch(trimmed); len(match) == 3 && plausibleNumberedHeadingTitle(match[2], strings.Count(match[1], ".")+1) {
 		level := strings.Count(match[1], ".") + 1
 		return "heading", level, 0.95, []string{"regex:decimal_heading"}
 	}
-	if match := compactHeadingPattern.FindStringSubmatch(trimmed); len(match) == 3 {
+	if match := compactHeadingPattern.FindStringSubmatch(trimmed); len(match) == 3 && plausibleNumberedHeadingTitle(match[2], strings.Count(match[1], ".")+1) {
 		level := strings.Count(match[1], ".") + 1
 		return "heading", level, 0.95, []string{"regex:compact_decimal_heading"}
 	}
@@ -797,15 +829,30 @@ func classify(nodeType string, text string) (string, int, float64, []string) {
 }
 
 func extractOutlineLevel(raw string) (int, bool) {
-	match := outlinePattern.FindStringSubmatch(raw)
-	if len(match) != 2 {
-		return 0, false
+	decoder := xml.NewDecoder(strings.NewReader(raw))
+	var path []string
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return 0, false
+		}
+		switch element := token.(type) {
+		case xml.StartElement:
+			// Only current p/pPr/outlineLvl is active. Revision history and
+			// nested textbox paragraphs cannot supply this paragraph's outline.
+			if len(path) == 2 && path[0] == "p" && path[1] == "pPr" && element.Name.Local == "outlineLvl" {
+				for _, attr := range element.Attr {
+					if attr.Name.Local == "val" {
+						level, err := strconv.Atoi(attr.Value)
+						return level, err == nil && level >= 0 && level <= 8
+					}
+				}
+			}
+			path = append(path, element.Name.Local)
+		case xml.EndElement:
+			path = path[:len(path)-1]
+		}
 	}
-	level := 0
-	if _, err := fmt.Sscanf(match[1], "%d", &level); err != nil || level < 0 || level > 8 {
-		return 0, false
-	}
-	return level, true
 }
 
 func tocStyleLevel(styleID string) (int, bool) {
@@ -821,6 +868,9 @@ func tocStyleLevel(styleID string) (int, bool) {
 }
 
 func confidenceFor(role, nodeType, text, styleID string, evidence []string) float64 {
+	if role == "unknown" {
+		return 0.55
+	}
 	if nodeType == "table" || role == "blank" {
 		return 0.99
 	}
@@ -828,7 +878,9 @@ func confidenceFor(role, nodeType, text, styleID string, evidence []string) floa
 		return 0.99
 	}
 	score := 0.55
-	if len(evidence) > 0 && strings.HasPrefix(evidence[0], "keyword:") {
+	if len(evidence) > 0 && (evidence[0] == "ooxml:outline_level" || evidence[0] == "ooxml:effective_outline_level") {
+		score = 0.95
+	} else if len(evidence) > 0 && strings.HasPrefix(evidence[0], "keyword:") {
 		score = 0.88
 		if !strings.ContainsAny(strings.TrimSpace(text), ":：;；") {
 			score += 0.07

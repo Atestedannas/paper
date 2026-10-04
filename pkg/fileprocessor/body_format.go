@@ -184,7 +184,9 @@ func BodyTextSpecFromParagraphFormatSpec(ps *ParagraphFormatSpec) BodyTextSpec {
 	if ps.LineSpacingVal > 0 {
 		spec.LineSpacingPt = float64(ps.LineSpacingVal) / 20.0
 	}
-	if ps.FirstLineIndent > 0 {
+	if ps.FirstLineCharsSet {
+		spec.FirstLineChars = float64(ps.FirstLineChars) / 100
+	} else if ps.FirstLineIndent > 0 {
 		spec.FirstLineChars = float64(ps.FirstLineIndent) / (spec.FontSizePt * 20)
 	}
 	if ps.AlignmentSet {

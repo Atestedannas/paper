@@ -895,7 +895,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			return nil, fmt.Errorf("apply selected template page setup: %w", applyErr)
 		}
 		fileprocessor.FormatLogPrintf(ctx, "模板页面设置：实际修改=%d", pageChanges)
-		headerChanges, applyErr := templateapply.ApplyTemplateProfileHeaderFormatting(ctx, outputPath, profile)
+		headerChanges, applyErr := templateapply.ApplyTemplateProfileRunningFormatting(ctx, outputPath, profile)
 		if applyErr != nil {
 			return nil, fmt.Errorf("apply selected template header formatting: %w", applyErr)
 		}
@@ -1289,6 +1289,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		return nil, fmt.Errorf("extract final rule audit: %w", finalErr)
 	}
 	audit := buildWorkflowRuleAudit(profile, rules, roleFormatPlan, ast, writtenAST, finalAST, finalSHA, visualSHA, visual)
+	verifyRunningRequirements(&audit, outputPath, job.CompiledTemplate.SourceFilePath, finalAST)
 	audit.Writer = "in_place_role_plan"
 	if transplantEnabled {
 		audit.Writer = "template_transplant"
@@ -1375,7 +1376,7 @@ func buildWorkflowRoleFormatLogDetails(
 }
 
 func roleFormatPlanRequiresReview(item templateapply.FormatPlanItem) bool {
-	return !item.Apply || (item.Flow != nil && item.Flow.ReviewRequired) || (!item.Trusted && item.Confidence < 0.85)
+	return !item.Apply || len(item.ReviewProperties) > 0 || (item.Flow != nil && item.Flow.ReviewRequired) || (!item.Trusted && item.Confidence < 0.85)
 }
 
 func profileUsesCQIEHardRules(profile *templateprofile.Profile) bool {
