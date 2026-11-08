@@ -62,7 +62,7 @@ func (h *UniversityHandler) GetUniversities(c *gin.Context) {
 			universityIDs = append(universityIDs, university.ID)
 		}
 		var templates []model.FormatTemplate
-		if err := database.DB.Where("university_id IN ? AND is_active = ?", universityIDs, true).
+		if err := database.DB.Where("university_id IN ? AND is_active = ? AND is_public = ? AND owner_user_id IS NULL", universityIDs, true, true).
 			Order("updated_at DESC").Find(&templates).Error; err != nil {
 			utils.ErrorResponse(c, http.StatusInternalServerError, "获取高校模板失败", err.Error())
 			return
@@ -170,9 +170,9 @@ func (h *UniversityHandler) DownloadTemplate(c *gin.Context) {
 	// 查找该高校的默认模板（通常是本科论文）
 	var template model.FormatTemplate
 	// 优先查找本科论文模板
-	if err := database.DB.Where("university_id = ? AND is_active = ? AND document_type = ?", id, true, "本科论文").First(&template).Error; err != nil {
+	if err := database.DB.Where("university_id = ? AND is_active = ? AND is_public = ? AND owner_user_id IS NULL AND document_type = ?", id, true, true, "本科论文").First(&template).Error; err != nil {
 		// 如果没找到，查找任意一个激活的模板
-		if err := database.DB.Where("university_id = ? AND is_active = ?", id, true).First(&template).Error; err != nil {
+		if err := database.DB.Where("university_id = ? AND is_active = ? AND is_public = ? AND owner_user_id IS NULL", id, true, true).First(&template).Error; err != nil {
 			utils.ErrorResponse(c, http.StatusNotFound, "该高校暂无格式模板", err.Error())
 			return
 		}

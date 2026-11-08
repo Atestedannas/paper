@@ -15,13 +15,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/paper-format-checker/backend/internal/core/documentrole"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 )
 
 // Version identifies serialized diagnostic profiles. Workflow execution reads
 // the selected DOCX directly and does not use these snapshots as a cache.
-const Version = "template-profile-v8"
+const Version = "template-profile-v21"
 
 const templateProfileAIPromptTemplate = `你是“本科毕业论文 DOCX 模板格式规范解析专家”，任务是把 OOXML 本地解析结果转成可执行的论文格式画像 JSON。
 
@@ -87,8 +88,9 @@ type ChatClient interface {
 }
 
 type Profile struct {
-	ExcludedSamples []ExcludedStyleSample `json:"excluded_style_samples,omitempty"`
-	Conflicts       []RuleConflict        `json:"rule_conflicts,omitempty"`
+	CoverThesisTitles map[string]CoverThesisTitleRule `json:"cover_thesis_titles,omitempty"`
+	ExcludedSamples   []ExcludedStyleSample           `json:"excluded_style_samples,omitempty"`
+	Conflicts         []RuleConflict                  `json:"rule_conflicts,omitempty"`
 	// Blank paragraphs are read from the source DOCX for each run, never cached.
 	HeadingBlankBefore *StyleRule             `json:"-"`
 	HeadingBlankAfter  *StyleRule             `json:"-"`
@@ -116,10 +118,11 @@ type Profile struct {
 // TemplateScope prevents requirements text and the wrong embedded example
 // from contributing style evidence.
 type TemplateScope struct {
-	RequirementsRange  [2]int `json:"requirements_range"`
-	ScienceSampleRange [2]int `json:"science_sample_range"`
-	ArtsSampleRange    [2]int `json:"arts_sample_range"`
-	SelectedSample     string `json:"selected_sample"`
+	RequirementsRange   [2]int `json:"requirements_range"`
+	ScienceSampleRange  [2]int `json:"science_sample_range"`
+	ArtsSampleRange     [2]int `json:"arts_sample_range"`
+	SelectedSample      string `json:"selected_sample"`
+	EmbeddedSampleRange [2]int `json:"embedded_sample_range,omitempty"`
 }
 
 const (
@@ -132,15 +135,25 @@ const (
 type SectionFormatMap map[string]StyleRule
 
 type SectionRule struct {
-	Label                 string `json:"label"`
-	PageBreakBefore       bool   `json:"page_break_before"`
-	SectionBreak          bool   `json:"section_break"`
-	SectionBreakType      string `json:"section_break_type,omitempty"`
-	BlankParagraphsBefore int    `json:"blank_paragraphs_before,omitempty"`
-	DetectedFrom          string `json:"detected_from"`
+	Label                         string `json:"label"`
+	PageBreakBefore               bool   `json:"page_break_before"`
+	SectionBreak                  bool   `json:"section_break"`
+	SectionBreakType              string `json:"section_break_type,omitempty"`
+	BlankParagraphsBefore         int    `json:"blank_paragraphs_before,omitempty"`
+	ObservedBlankParagraphsBefore int    `json:"observed_blank_paragraphs_before,omitempty"`
+	ReviewRequired                bool   `json:"review_required,omitempty"`
+	ReviewReason                  string `json:"review_reason,omitempty"`
+	DetectedFrom                  string `json:"detected_from"`
 }
 
 type StyleRule struct {
+	LeftTwips    string `json:"left_twips,omitempty"`
+	RightTwips   string `json:"right_twips,omitempty"`
+	LeftChars    string `json:"left_chars,omitempty"`
+	RightChars   string `json:"right_chars,omitempty"`
+	HangingTwips string `json:"hanging_twips,omitempty"`
+	HangingChars string `json:"hanging_chars,omitempty"`
+
 	SelectionEvidence string                      `json:"selection_evidence,omitempty" audit:"-"`
 	ReviewRequired    bool                        `json:"review_required,omitempty" audit:"-"`
 	PropertyEvidence  map[string]PropertyEvidence `json:"property_evidence,omitempty" audit:"-"`
@@ -276,14 +289,22 @@ type NumberingLevel struct {
 	Start      int       `json:"start"`       // start value (default 1)
 	PStyle     string    `json:"p_style"`     // linked paragraph style (Heading1, Heading2, …)
 	IsLgl      bool      `json:"is_lgl"`      // <w:isLgl/> flag
-	LvlRestart int       `json:"lvl_restart"` // <w:lvlRestart w:val="..."/>  (-1 = never restart)
+	LvlRestart int       `json:"lvl_restart"` // -1 = omitted; 0 = never restart; otherwise one-based trigger level.
 	Style      StyleRule `json:"style,omitempty"`
 }
 
 // NumberingProfile holds every abstractNum definition found in numbering.xml.
 type NumberingProfile struct {
-	AbstractNums map[int][]NumberingLevel `json:"abstract_nums"` // abstractNumId → levels
-	NumToAbs     map[int]int              `json:"num_to_abs"`    // numId → abstractNumId
+	AbstractNums map[int][]NumberingLevel          `json:"abstract_nums"` // abstractNumId → levels
+	NumToAbs     map[int]int                       `json:"num_to_abs"`    // numId → abstractNumId
+	Overrides    map[int]map[int]NumberingOverride `json:"overrides,omitempty"`
+}
+
+// NumberingOverride belongs to one numId, never to its shared abstractNum.
+type NumberingOverride struct {
+	Start   *int            `json:"start,omitempty"`
+	Level   *NumberingLevel `json:"level,omitempty"`
+	Invalid bool            `json:"invalid,omitempty"`
 }
 
 type numberingReference struct {
@@ -345,12 +366,26 @@ func (np *NumberingProfile) effectiveLevel(reference numberingReference, paragra
 		level = reference.Level
 	}
 	if reference.NumIDSet {
+		if reference.NumID == 0 {
+			return NumberingLevel{}, false
+		}
 		abstractID, ok := np.NumToAbs[reference.NumID]
 		if !ok {
 			return NumberingLevel{}, false
 		}
 		for _, candidate := range np.AbstractNums[abstractID] {
 			if candidate.Level == level {
+				if override, exists := np.Overrides[reference.NumID][level]; exists {
+					if override.Invalid {
+						return NumberingLevel{}, false
+					}
+					if override.Level != nil {
+						candidate = *override.Level
+					}
+					if override.Start != nil {
+						candidate.Start = *override.Start
+					}
+				}
 				return candidate, true
 			}
 		}
@@ -501,16 +536,19 @@ type Options struct {
 }
 
 type paragraph struct {
-	InTable             bool
-	BlankLineAnnotation bool
-	Text                string
-	XML                 string
+	InstructionText          string
+	InTable                  bool
+	BlankLineAnnotation      bool
+	LeadingRenderedPageCache bool
+	Text                     string
+	XML                      string
 }
 
 var (
 	paragraphPattern              = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>`)
 	documentBodyNodePattern       = regexp.MustCompile(`(?s)<w:p(?:\s[^>]*)?>.*?</w:p>|<w:tbl(?:\s[^>]*)?>.*?</w:tbl>`)
 	textBoxContentPattern         = regexp.MustCompile(`(?s)<w:txbxContent(?:\s[^>]*)?>.*?</w:txbxContent>`)
+	manualTOCLeader               = regexp.MustCompile(`\.{2,}\s*(?:[0-9]+|[IVXLCDMivxlcdm]+)\s*$`)
 	textPattern                   = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
 	fontPattern                   = regexp.MustCompile(`<w:rFonts\b[^>]*/>`)
 	sizePattern                   = regexp.MustCompile(`<w:sz\b[^>]*/>`)
@@ -749,12 +787,25 @@ func materializeThemeFonts(raw string, resolver themeFontResolver) string {
 			{"w:eastAsia", "w:eastAsiaTheme", "eastAsia"},
 			{"w:cs", "w:cstheme", "cs"},
 		} {
+			if values[slot.themeAttribute] == "" {
+				continue
+			}
 			if font := resolver.resolve(values[slot.themeAttribute], slot.resolverSlot); font != "" {
 				tag = setXMLAttribute(tag, slot.fontAttribute, font)
+			} else {
+				// A theme reference takes precedence over the concrete name on
+				// the same element. Do not turn that ignored name into a rule
+				// when the current template cannot resolve the theme.
+				tag = removeXMLAttribute(tag, slot.fontAttribute)
 			}
 		}
 		return tag
 	})
+}
+
+func removeXMLAttribute(tag, name string) string {
+	pattern := regexp.MustCompile(`\s+` + regexp.QuoteMeta(name) + `=(?:"[^"]*"|'[^']*')`)
+	return pattern.ReplaceAllString(tag, "")
 }
 
 func setXMLAttribute(tag, name, value string) string {
@@ -792,68 +843,7 @@ func parseNumberingPartWithTheme(part templatePart, themeFonts themeFontResolver
 // ParseNumberingFromRawXML extracts numbering profile from raw numbering.xml content.
 // Exported for use by TemplateParser and other packages that read DOCX differently.
 func ParseNumberingFromRawXML(xmlStr string) *NumberingProfile {
-
-	np := &NumberingProfile{
-		AbstractNums: make(map[int][]NumberingLevel),
-		NumToAbs:     make(map[int]int),
-	}
-
-	// Extract abstractNum blocks: <w:abstractNum w:abstractNumId="N"> ... </w:abstractNum>
-	absNumPattern := regexp.MustCompile(`<w:abstractNum\s+[^>]*?w:abstractNumId="(\d+)"[^>]*>(.*?)</w:abstractNum>`)
-	for _, absMatch := range absNumPattern.FindAllStringSubmatch(xmlStr, -1) {
-		absID, _ := strconv.Atoi(absMatch[1])
-		absBody := absMatch[2]
-
-		var levels []NumberingLevel
-		// Extract level blocks: <w:lvl w:ilvl="N"> ... </w:lvl>
-		lvlPattern := regexp.MustCompile(`<w:lvl\s+[^>]*?w:ilvl="(\d+)"[^>]*>(.*?)</w:lvl>`)
-		for _, lvlMatch := range lvlPattern.FindAllStringSubmatch(absBody, -1) {
-			ilvl, _ := strconv.Atoi(lvlMatch[1])
-			lvlBody := lvlMatch[2]
-
-			level := NumberingLevel{
-				Level:      ilvl,
-				Start:      1,
-				LvlRestart: -1, // default: never restart
-			}
-
-			if m := regexp.MustCompile(`<w:numFmt\s+[^>]*?w:val="([^"]*)"`).FindStringSubmatch(lvlBody); m != nil {
-				level.NumFmt = m[1]
-			}
-			if m := regexp.MustCompile(`<w:lvlText\s+[^>]*?w:val="([^"]*)"`).FindStringSubmatch(lvlBody); m != nil {
-				level.LvlText = m[1]
-			}
-			if m := regexp.MustCompile(`<w:start\s+[^>]*?w:val="(\d+)"`).FindStringSubmatch(lvlBody); m != nil {
-				level.Start, _ = strconv.Atoi(m[1])
-			}
-			if m := regexp.MustCompile(`<w:pStyle\s+[^>]*?w:val="([^"]*)"`).FindStringSubmatch(lvlBody); m != nil {
-				level.PStyle = m[1]
-			}
-			if strings.Contains(lvlBody, "<w:isLgl") {
-				level.IsLgl = true
-			}
-			if m := regexp.MustCompile(`<w:lvlRestart\s+[^>]*?w:val="(\d+)"`).FindStringSubmatch(lvlBody); m != nil {
-				level.LvlRestart, _ = strconv.Atoi(m[1])
-			}
-			level.Style = extractNumberingLevelStyle(absID, ilvl, lvlBody)
-
-			levels = append(levels, level)
-		}
-		np.AbstractNums[absID] = levels
-	}
-
-	// Extract num mappings: <w:num w:numId="N"> <w:abstractNumId w:val="M"/> </w:num>
-	numPattern := regexp.MustCompile(`<w:num\s+[^>]*?w:numId="(\d+)"[^>]*>.*?<w:abstractNumId\s+[^>]*?w:val="(\d+)"`)
-	for _, numMatch := range numPattern.FindAllStringSubmatch(xmlStr, -1) {
-		numID, _ := strconv.Atoi(numMatch[1])
-		absID, _ := strconv.Atoi(numMatch[2])
-		np.NumToAbs[numID] = absID
-	}
-
-	if len(np.AbstractNums) == 0 {
-		return nil
-	}
-	return np
+	return parseNumberingDocumentXML(xmlStr)
 }
 
 func extractNumberingLevelStyle(abstractID, level int, raw string) StyleRule {
@@ -905,11 +895,13 @@ func Extract(templatePath string) (*Profile, error) {
 	paras := collectParagraphs(documentXML)
 	var scope TemplateScope
 	allParas := paras
+	allGuidance := templateRuleGuidanceParagraphs(allParas)
 	scope, paras = SelectTemplateScope(paras)
+	guidanceParas := templateRuleGuidanceParagraphs(paras)
 	if scope.SelectedSample != "" {
 		profile.Scope = &scope
 		for index := scope.RequirementsRange[0]; index < scope.RequirementsRange[1] && index < len(allParas); index++ {
-			if text := strings.TrimSpace(allParas[index].Text); text != "" {
+			if text := strings.TrimSpace(allGuidance[index].Text); text != "" {
 				profile.Requirements = append(profile.Requirements, summarizeSourceText(text))
 			}
 		}
@@ -924,8 +916,14 @@ func Extract(templatePath string) (*Profile, error) {
 		styleSet = parseStyleDefinitions(stylesText)
 		styleDefinitions = styleSet.Resolved
 		tocStyleKeys = buildTOCStyleKeys(styleSet.NameToID)
+		levels := TOCStyleLevels(stylesText)
+		for id := range tocStyleKeys {
+			if levels[id] <= 0 {
+				delete(tocStyleKeys, id)
+			}
+		}
 	}
-	profile.RulePack = extractLocalRulePack(paras)
+	profile.RulePack = extractLocalRulePack(guidanceParas)
 	extractHeaderFooterVariantsFromParts(profile, parts, documentXML, themeFonts)
 
 	// Build numbering-derived heading patterns (OOXML precise, no AI guessing)
@@ -934,8 +932,9 @@ func Extract(templatePath string) (*Profile, error) {
 		numberingPatterns = profile.Numbering.BuildHeadingPatterns()
 	}
 
-	instructionParagraphs, bodyRequirements := templateInstructionParagraphs(paras)
+	instructionParagraphs, bodyRequirements := templateInstructionParagraphs(guidanceParas)
 	styleSamples := map[string][]StyleRule{}
+	confirmedTOCSamples := map[string]bool{}
 	bodyStarted := false
 	inTOC := false
 	coverTitlePending := false
@@ -952,11 +951,33 @@ func Extract(templatePath string) (*Profile, error) {
 		if coverRegionStart >= 0 && coverRegionEnd < 0 && strings.Contains(candidateText, "原创性声明") {
 			coverRegionEnd = i
 		}
-		if normalizeLabel(candidate.Text) == "摘要" || strings.EqualFold(strings.TrimSpace(candidate.Text), "abstract") {
+		if normalizeLabel(templateHeadingText(candidate.Text)) == "摘要" || strings.EqualFold(strings.TrimSpace(candidate.Text), "abstract") {
 			break
 		}
 	}
+	tocFieldParagraphs := templateTOCFieldParagraphs(paras)
+	annotatedTOC := annotatedTOCEntries(paras, tocStyleKeys)
 	for index, para := range paras {
+		confirmedTOCKey := ""
+		if reason := tocFieldParagraphs[index]; reason != "" {
+			if reason == "ooxml:toc_field_result" {
+				confirmedTOCKey, _ = tocStyleKey(para.XML, tocStyleKeys)
+			}
+			if confirmedTOCKey == "" {
+				profile.ExcludedSamples = append(profile.ExcludedSamples, ExcludedStyleSample{ParagraphIndex: index + 1, Text: para.Text, Reason: reason})
+				continue
+			}
+			// A complete field plus an exact TOC level is directory evidence.
+			// Cache text must not change abstract/body/instruction state.
+			style := extractEffectiveParagraphStyle(confirmedTOCKey, para.XML, styleSet, profile.Numbering)
+			style = extractRepresentativeRunStyleWithDefinitions(confirmedTOCKey, para.XML, style, styleDefinitions)
+			style = resolveEffectiveFormatting(style, para.XML, styleSet, profile.Numbering)
+			style.Bold, style.BoldSet, style.BoldEvidence = resolveParagraphBold(para.XML, styleSet)
+			style.Italic, style.ItalicSet, style.ItalicEvidence = resolveParagraphEmphasis(para.XML, styleSet, true)
+			styleSamples[confirmedTOCKey] = append(styleSamples[confirmedTOCKey], recordStyleSource(style, index, para))
+			confirmedTOCSamples[confirmedTOCKey] = true
+			continue
+		}
 		// A requirements section can contain genuine caption examples. Keep
 		// those in their own role; prose instructions never enter body samples.
 		if instructionParagraphs[index] && classifyCaptionParagraph(para.Text, para.XML, styleDefinitions) == "" {
@@ -964,13 +985,25 @@ func Extract(templatePath string) (*Profile, error) {
 			profile.Requirements = append(profile.Requirements, para.Text)
 			continue
 		}
-		normalized := normalizeLabel(para.Text)
+		normalized := normalizeLabel(templateHeadingText(para.Text))
 		lower := strings.ToLower(strings.TrimSpace(para.Text))
 		if !sampleRegionStarted && (normalized == "摘要" || lower == "abstract") {
 			sampleRegionStarted = true
 			coverSamples := styleSamples["cover_title"]
 			coverFieldSamples := styleSamples["cover"]
+			retainedTOC := map[string][]StyleRule{}
+			for key := range confirmedTOCSamples {
+				retainedTOC[key] = styleSamples[key]
+			}
+			for _, titleKey := range []string{"toc_title", "toc_title_en"} {
+				if len(styleSamples[titleKey]) == 1 {
+					retainedTOC[titleKey] = styleSamples[titleKey]
+				}
+			}
 			styleSamples = map[string][]StyleRule{}
+			for key, samples := range retainedTOC {
+				styleSamples[key] = samples
+			}
 			if len(coverSamples) > 0 {
 				styleSamples["cover_title"] = coverSamples
 			}
@@ -984,6 +1017,18 @@ func Extract(templatePath string) (*Profile, error) {
 			bodyStarted, inTOC, coverTitlePending = false, false, false
 		}
 		key := classifyParagraphNumberingAware(para.Text, numberingPatterns)
+		sampleLevel := templateSampleHeadingLevel(para.Text)
+		if sampleLevel == 1 {
+			key = "body_start"
+		} else if sampleLevel > 1 {
+			key = fmt.Sprintf("heading_%d", sampleLevel)
+		}
+		if key == "toc_title" && (strings.EqualFold(normalized, "contents") || strings.EqualFold(normalized, "tableofcontents")) {
+			key = "toc_title_en"
+		}
+		if hasDisplayFormula(para.XML) {
+			key = "formula"
+		}
 		if !sampleRegionStarted && index == coverRegionStart {
 			// The first paragraph of the detected cover block is the template's
 			// large cover banner (for example "本科毕业论文（设计）", usually
@@ -1005,7 +1050,7 @@ func Extract(templatePath string) (*Profile, error) {
 		}
 		if (key == "body_start" || strings.HasPrefix(key, "heading_")) &&
 			!hasSemanticOutlineLevel(para.XML) && isBodyStyleCandidate(para) &&
-			numberedHeadingLevel(strings.TrimSpace(para.Text)) == 0 {
+			numberedHeadingLevel(strings.TrimSpace(para.Text)) == 0 && sampleLevel == 0 {
 			key = ""
 		}
 		if abstractBodyKey != "" && key == "" && isBodyStyleCandidate(para) {
@@ -1017,19 +1062,33 @@ func Extract(templatePath string) (*Profile, error) {
 			key = "cover_title"
 			coverTitlePending = false
 		}
-		if key == "toc_title" {
+		if key == "toc_title" || key == "toc_title_en" {
 			inTOC = true
 		} else if inTOC {
-			if tocKey, ok := tocStyleKey(para.XML, tocStyleKeys); ok {
+			if annotation, ok := annotatedTOC[index]; ok && annotation.level > 1 {
+				key = fmt.Sprintf("toc_entry_%d", annotation.level)
+				confirmedTOCSamples[key] = true
+			} else if tocKey, ok := tocStyleKey(para.XML, tocStyleKeys); ok {
 				key = tocKey
+				confirmedTOCSamples[key] = true
+			} else if hasManualTOCPageResult(para) {
+				key = manualTOCStyleKey(key)
+				if key == "" {
+					profile.ExcludedSamples = append(profile.ExcludedSamples, ExcludedStyleSample{ParagraphIndex: index + 1, Text: para.Text, Reason: "manual_toc_level_unresolved"})
+					continue
+				}
 			} else if hasTOCLeader(para.Text) {
 				key = "toc_entry"
+			} else if hasManualTOCPlaceholderPage(para.Text) {
+				profile.ExcludedSamples = append(profile.ExcludedSamples, ExcludedStyleSample{ParagraphIndex: index + 1, Text: para.Text, Reason: "manual_toc_level_unresolved"})
+				continue
 			} else if key == "body_start" || strings.HasPrefix(key, "heading_") {
 				inTOC = false
 			}
 		}
 		if key == "body_start" {
 			bodyStarted = true
+			abstractBodyKey = ""
 		} else if key == "references_title" || key == "acknowledgements_title" {
 			bodyStarted = false
 		} else if key == "" && bodyStarted && isBodyStyleCandidate(para) {
@@ -1073,8 +1132,19 @@ func Extract(templatePath string) (*Profile, error) {
 			}
 		}
 		style = resolveEffectiveFormatting(style, formattingInputForRole(key, para.XML), styleSet, profile.Numbering)
+		if key == "toc_title" && formattingInputForRole(key, para.XML) != para.XML &&
+			(style.FirstLineChars != "" && style.FirstLineChars != "0" || style.FirstLineTwips != "" && style.FirstLineTwips != "0") {
+			// The teaching note shared this indent; it is not evidence for the label alone.
+			style.FirstLineChars, style.FirstLineTwips = "", ""
+			for _, name := range []string{"FirstLineChars", "FirstLineTwips"} {
+				style.PropertyEvidence[name] = PropertyEvidence{State: "unresolved", Source: "annotated_title_indent_requires_review"}
+			}
+		}
 		style.Bold, style.BoldSet, style.BoldEvidence = resolveParagraphBold(formattingInputForRole(key, para.XML), styleSet)
 		style.Italic, style.ItalicSet, style.ItalicEvidence = resolveParagraphEmphasis(formattingInputForRole(key, para.XML), styleSet, true)
+		if key == "formula" || key == "formula_number" {
+			style = FormulaParagraphStyle(style)
+		}
 		style = recordStyleSource(style, index, para)
 		styleSamples[key] = append(styleSamples[key], style)
 		if key == "abstract_cn" {
@@ -1105,7 +1175,7 @@ func Extract(templatePath string) (*Profile, error) {
 				styleSamples["keywords_en_body"] = append(styleSamples["keywords_en_body"], recordStyleSource(content, index, para))
 			}
 			abstractBodyKey = ""
-		} else if key == "toc_title" {
+		} else if key == "toc_title" || key == "toc_title_en" {
 			abstractBodyKey = ""
 		}
 		if key == "body_start" {
@@ -1116,14 +1186,13 @@ func Extract(templatePath string) (*Profile, error) {
 		if isSectionKey(key) {
 			breakBefore, detectedFrom := detectPageBreakBefore(paras, index)
 			sectionBreak, sectionType := detectSectionBreak(paras, index)
-			profile.Sections[key] = SectionRule{
-				Label:                 key,
-				PageBreakBefore:       breakBefore,
-				SectionBreak:          sectionBreak,
-				SectionBreakType:      sectionType,
-				BlankParagraphsBefore: blankParagraphsBefore(paras, index),
-				DetectedFrom:          detectedFrom,
-			}
+			profile.Sections[key] = compileSectionBlankParagraphs(paras, index, SectionRule{
+				Label:            key,
+				PageBreakBefore:  breakBefore,
+				SectionBreak:     sectionBreak,
+				SectionBreakType: sectionType,
+				DetectedFrom:     detectedFrom,
+			})
 		}
 		// A template may contain several complete example papers. Mixing later
 		// examples into the first one produces a synthetic style that exists in
@@ -1204,12 +1273,42 @@ func Extract(templatePath string) (*Profile, error) {
 			}
 		}
 		profile.Styles[key] = aggregateStyleRules(key, samples)
+		if key == "formula" || key == "formula_number" {
+			profile.Styles[key] = FormulaParagraphStyle(profile.Styles[key])
+		}
 		if key == "body" && strings.HasPrefix(profile.Styles[key].BoldEvidence, "conflicting_body_samples:") {
 			profile.Conflicts = append(profile.Conflicts, RuleConflict{Role: "body", Property: "bold", Evidence: profile.Styles[key].BoldEvidence, Sample: "both bold and nonbold uniform body samples"})
 		}
 	}
 
+	applyAnnotatedTOCRequirements(profile, annotatedTOC)
+	applyDeclaredTOCStyles(profile, stylesText, styleSet)
 	applyBodyRequirements(profile, bodyRequirements)
+	applyConfirmedInstructionGuidance(profile, confirmedInstructionGuidance(guidanceParas), guidanceParas)
+	if indices := namedBodyInstructionIndices(guidanceParas); len(indices) > 0 {
+		guide := make([]paragraph, 0, len(indices))
+		for _, index := range indices {
+			guide = append(guide, guidanceParas[index])
+		}
+		applyNormativeLayout(profile, guide, guidanceParas)
+	}
+	if scope.RequirementsRange[1] > 0 {
+		applyNormativeLayout(profile, allGuidance[:scope.RequirementsRange[1]], guidanceParas)
+	}
+	joined := ""
+	for _, para := range guidanceParas {
+		joined += para.Text + "\n"
+	}
+	if documentrole.HasTemplatePlaceholders(joined) {
+		var guidance []paragraph
+		for _, para := range guidanceParas {
+			if documentrole.IsTemplateFormatNote(para.Text) {
+				guidance = append(guidance, para)
+			}
+		}
+		applyNormativeLayout(profile, guidance, guidanceParas)
+	}
+	extractCoverThesisTitles(profile, paras, styleSet, profile.Numbering)
 	profile.SectionFormats = buildSectionFormatMap(profile.Styles)
 	if len(profile.Conflicts) > 0 {
 		return profile, fmt.Errorf("模板正文规则存在冲突，需确认后再排版：%s", profile.Conflicts[0].Evidence)
@@ -1238,6 +1337,9 @@ func ResolveDocumentEffectiveStyles(docxPath string) (map[int]StyleRule, error) 
 	for index, raw := range documentBodyNodePattern.FindAllString(documentXML, -1) {
 		if !strings.HasPrefix(raw, "<w:p") {
 			continue
+		}
+		if start, end, valid := ooxmlpkg.LegacyParagraphTargetRange(raw); valid {
+			raw = raw[start:end]
 		}
 		style := extractEffectiveParagraphStyle("student", raw, definitions, numbering)
 		style = extractRepresentativeRunStyleWithDefinitions("body", raw, style, definitions.Resolved)
@@ -1519,6 +1621,24 @@ func mergeStyleRule(base StyleRule, override StyleRule) StyleRule {
 	if override.FirstLineChars != "" {
 		base.FirstLineChars = override.FirstLineChars
 	}
+	if override.LeftTwips != "" {
+		base.LeftTwips = override.LeftTwips
+	}
+	if override.RightTwips != "" {
+		base.RightTwips = override.RightTwips
+	}
+	if override.LeftChars != "" {
+		base.LeftChars = override.LeftChars
+	}
+	if override.RightChars != "" {
+		base.RightChars = override.RightChars
+	}
+	if override.HangingTwips != "" {
+		base.HangingTwips = override.HangingTwips
+	}
+	if override.HangingChars != "" {
+		base.HangingChars = override.HangingChars
+	}
 	if override.SampleCount > 0 {
 		base.SampleCount = override.SampleCount
 		base.Confidence = override.Confidence
@@ -1529,6 +1649,7 @@ func mergeStyleRule(base StyleRule, override StyleRule) StyleRule {
 }
 
 func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
+	samples = scopeFontSamples(samples)
 	// A missing size does not invalidate the sample's other declarations.
 	style := StyleRule{Label: label}
 	style.FontEastAsia = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FontEastAsia })
@@ -1567,6 +1688,13 @@ func aggregateStyleRules(label string, samples []StyleRule) StyleRule {
 	style.AfterLines = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.AfterLines })
 	style.FirstLineChars = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FirstLineChars })
 	style.FirstLineTwips = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.FirstLineTwips })
+	style.LeftTwips = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.LeftTwips })
+	style.RightTwips = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.RightTwips })
+	style.LeftChars = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.LeftChars })
+	style.RightChars = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.RightChars })
+	style.HangingTwips = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.HangingTwips })
+	style.HangingChars = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.HangingChars })
+
 	style.OutlineLevel = mostCommonStyleValue(samples, func(sample StyleRule) string { return sample.OutlineLevel })
 	boldCount := 0
 	boldSamples := 0
@@ -1990,13 +2118,17 @@ func applyStyleOverride(profile *Profile, key string, raw map[string]interface{}
 			style.LineRule = value
 		}
 	}
-	if chars, ok := numberRule(raw["first_line_indent"]); ok {
-		if strings.EqualFold(stringRule(raw["first_line_indent_unit"]), "cm") {
-			chars /= 0.37
+	if chars, twips, ok := firstLineIndentOverride(raw); ok {
+		style.FirstLineChars, style.FirstLineTwips = chars, twips
+		style.HangingChars, style.HangingTwips = "", ""
+		evidence := make(map[string]PropertyEvidence, len(style.PropertyEvidence)+4)
+		for name, value := range style.PropertyEvidence {
+			evidence[name] = value
 		}
-		if chars >= 0 && chars <= 10 {
-			style.FirstLineChars = strconv.Itoa(int(chars * 100))
+		for name, value := range map[string]string{"FirstLineChars": chars, "FirstLineTwips": twips, "HangingChars": "", "HangingTwips": ""} {
+			evidence[name] = PropertyEvidence{State: "resolved", Value: value, Source: "explicit_requirement: administrator_format_rules.first_line_indent"}
 		}
+		style.PropertyEvidence = evidence
 	}
 	if twips, ok := numberRule(raw["paragraph_before_twips"]); ok && twips >= 0 {
 		style.BeforeTwips = strconv.Itoa(int(twips))
@@ -2011,6 +2143,69 @@ func applyStyleOverride(profile *Profile, key string, raw map[string]interface{}
 		style.AfterLines = strconv.Itoa(int(lines * 100))
 	}
 	profile.Styles[key] = style
+}
+
+// firstLineIndentOverride accepts complete measurements, not numbers embedded in prose.
+func firstLineIndentOverride(raw map[string]interface{}) (string, string, bool) {
+	canonicalUnit := func(unit string) string {
+		switch strings.ToLower(strings.TrimSpace(unit)) {
+		case "":
+			return ""
+		case "cm", "厘米":
+			return "cm"
+		case "char", "chars", "character", "characters", "字", "字符", "个字符":
+			return "chars"
+		default:
+			return "invalid"
+		}
+	}
+	unit := ""
+	if input, exists := raw["first_line_indent_unit"]; exists {
+		text, ok := input.(string)
+		if !ok {
+			return "", "", false
+		}
+		unit = canonicalUnit(text)
+		if unit == "invalid" {
+			return "", "", false
+		}
+	}
+	var value float64
+	switch input := raw["first_line_indent"].(type) {
+	case float64:
+		value = input
+	case string:
+		match := regexp.MustCompile(`^([+]?(?:\d+(?:\.\d*)?|\.\d+))\s*([A-Za-z]+|个字符|字符|厘米|字)?$`).FindStringSubmatch(strings.TrimSpace(input))
+		if len(match) != 3 {
+			return "", "", false
+		}
+		parsed, err := strconv.ParseFloat(match[1], 64)
+		if err != nil {
+			return "", "", false
+		}
+		value = parsed
+		if suffix := canonicalUnit(match[2]); suffix != "" {
+			if suffix == "invalid" || unit != "" && unit != suffix {
+				return "", "", false
+			}
+			unit = suffix
+		}
+	default:
+		return "", "", false
+	}
+	if unit == "cm" {
+		// A physical measure stays physical; 1440 twips equal one 2.54 cm inch.
+		twips := value * 1440 / 2.54
+		if twips >= 0 && twips <= (1<<31)-1 {
+			return "", strconv.FormatInt(int64(twips+0.5), 10), true
+		}
+		return "", "", false
+	}
+	// Unitless legacy values are characters, never an estimate from font size.
+	if value >= 0 && value <= 10 {
+		return strconv.Itoa(int(value*100 + 0.5)), "", true
+	}
+	return "", "", false
 }
 
 func applyHeaderFooterOverrides(profile *Profile, rules map[string]interface{}) {
@@ -2164,6 +2359,7 @@ func collectParagraphs(documentXML string) []paragraph {
 	paras := make([]paragraph, 0, 64)
 	depth, textBoxDepth := 0, 0
 	paragraphStart, paragraphDepth := -1, -1
+	var leadingCache leadingRenderedPageCache
 	for {
 		start := int(decoder.InputOffset())
 		token, err := decoder.Token()
@@ -2172,6 +2368,9 @@ func collectParagraphs(documentXML string) []paragraph {
 		}
 		if err != nil {
 			break
+		}
+		if paragraphStart >= 0 {
+			leadingCache.observe(token)
 		}
 		switch typed := token.(type) {
 		case xml.StartElement:
@@ -2184,6 +2383,8 @@ func collectParagraphs(documentXML string) []paragraph {
 			}
 			if typed.Name.Local == "p" && paragraphStart < 0 && textBoxDepth == 0 {
 				paragraphStart, paragraphDepth = start, depth
+				leadingCache = leadingRenderedPageCache{}
+				leadingCache.observe(typed)
 			}
 		case xml.EndElement:
 			if typed.Name.Local == "tbl" {
@@ -2198,9 +2399,10 @@ func collectParagraphs(documentXML string) []paragraph {
 			}
 			if typed.Name.Local == "p" && paragraphStart >= 0 && depth == paragraphDepth {
 				raw := documentXML[paragraphStart:int(decoder.InputOffset())]
+				instructionText := extractText(strings.Join(textBoxContentPattern.FindAllString(raw, -1), " "))
 				blankLineAnnotation := hasBlankLineAnnotation(raw)
 				raw = textBoxContentPattern.ReplaceAllString(raw, "")
-				paras = append(paras, paragraph{Text: extractText(raw), XML: raw, BlankLineAnnotation: blankLineAnnotation, InTable: tableDepth > 0})
+				paras = append(paras, paragraph{Text: extractText(raw), XML: raw, InstructionText: instructionText, BlankLineAnnotation: blankLineAnnotation, InTable: tableDepth > 0, LeadingRenderedPageCache: leadingCache.found})
 				paragraphStart, paragraphDepth = -1, -1
 			}
 			depth--
@@ -2236,6 +2438,9 @@ func SelectTemplateScope(paras []paragraph) (TemplateScope, []paragraph) {
 		}
 	}
 	if science < 0 && arts < 0 {
+		if start, ok := embeddedTemplateStart(paras); ok {
+			return TemplateScope{SelectedSample: "embedded", RequirementsRange: [2]int{0, start}, EmbeddedSampleRange: [2]int{start, len(paras)}}, paras[start:]
+		}
 		return TemplateScope{}, paras
 	}
 	if science < 0 {
@@ -2269,12 +2474,8 @@ func extractText(raw string) string {
 func buildTOCStyleKeys(nameToID map[string]string) map[string]string {
 	result := map[string]string{}
 	for name, id := range nameToID {
-		normalized := strings.ToLower(strings.NewReplacer(" ", "", "_", "", "-", "").Replace(name))
-		if !strings.HasPrefix(normalized, "toc") {
-			continue
-		}
-		level, err := strconv.Atoi(strings.TrimPrefix(normalized, "toc"))
-		if err != nil || level < 1 || level > 9 {
+		level := TOCStyleLevel(name)
+		if level == 0 {
 			continue
 		}
 		key := "toc_entry"
@@ -2426,25 +2627,19 @@ func plausibleTemplateHeading(text string) bool {
 }
 
 func classifyParagraph(text string) string {
-	normalized := normalizeLabel(text)
+	normalized := normalizeLabel(templateHeadingText(text))
 	// Templates frequently put the sample heading in a shape with helper
 	// placeholders such as “空一行空一行致  谢”. Ignore those placeholders for
 	// semantic classification while retaining the original XML for style
 	// extraction.
 	acknowledgementText := strings.ReplaceAll(normalized, "空一行", "")
-	lower := strings.ToLower(strings.TrimSpace(text))
 	trimmed := strings.TrimSpace(text)
+	frontmatterRole, _ := frontmatterLabelPrefix(text)
 	switch {
 	case normalized == "目录" || strings.EqualFold(normalized, "contents") || strings.EqualFold(normalized, "tableofcontents"):
 		return "toc_title"
-	case strings.HasPrefix(normalized, "摘要"):
-		return "abstract_cn"
-	case strings.HasPrefix(lower, "abstract"):
-		return "abstract_en"
-	case strings.HasPrefix(normalized, "关键词") || strings.HasPrefix(normalized, "关键字"):
-		return "keywords_cn"
-	case strings.HasPrefix(lower, "keywords") || strings.HasPrefix(lower, "key words"):
-		return "keywords_en"
+	case frontmatterRole != "":
+		return frontmatterRole
 	case normalized == "参考文献" || normalized == "参 考 文 献":
 		return "references_title"
 	case strings.HasPrefix(normalized, "[") && strings.Contains(normalized, "]"):
@@ -2469,6 +2664,7 @@ func classifyParagraph(text string) string {
 }
 
 func IsBodyStartParagraph(text string) bool {
+	text = templateHeadingText(text)
 	trimmed := strings.TrimSpace(text)
 	normalized := normalizeLabel(text)
 	switch strings.ToLower(normalized) {
@@ -2480,9 +2676,9 @@ func IsBodyStartParagraph(text string) bool {
 
 func isSectionKey(key string) bool {
 	return key == "body_start" || key == "references_title" || key == "acknowledgements_title" || key == "appendix_title" ||
-		// The English abstract paragraph carries the template's own page-break
-		// intent; the role plan reads it instead of inventing a CQIE-only break.
-		key == "abstract_en"
+		// Abstract labels carry the template's observed page-boundary intent;
+		// missing evidence remains false instead of inventing a page break.
+		key == "abstract_cn" || key == "abstract_en"
 }
 
 func detectPageBreakBefore(paras []paragraph, index int) (bool, string) {
@@ -2509,7 +2705,7 @@ func detectPageBreakBefore(paras []paragraph, index int) (bool, string) {
 
 func blankParagraphsBefore(paras []paragraph, index int) int {
 	count := 0
-	for i := index - 1; i >= 0 && strings.TrimSpace(paras[i].Text) == ""; i-- {
+	for i := index - 1; i >= 0 && i < len(paras) && isPureBlankParagraph(paras[i]); i-- {
 		count++
 	}
 	return count
@@ -2633,6 +2829,13 @@ func extractStyle(label string, raw string) StyleRule {
 			style.FirstLineChars = ""
 		}
 		style.FirstLineTwips = attributes["w:firstLine"]
+		style.LeftTwips = attributes["w:left"]
+		style.RightTwips = attributes["w:right"]
+		style.LeftChars = attributes["w:leftChars"]
+		style.RightChars = attributes["w:rightChars"]
+		style.HangingTwips = attributes["w:hanging"]
+		style.HangingChars = attributes["w:hangingChars"]
+
 	}
 	if outline := outlinePattern.FindString(raw); outline != "" {
 		style.OutlineLevel = attrs(outline)["w:val"]
@@ -2665,13 +2868,8 @@ func extractLeadingLabelRunStyleWithDefinitions(label, paragraphXML string, base
 	}
 	for _, run := range runElementPattern.FindAllString(paragraphXML, -1) {
 		text := strings.TrimSpace(extractText(run))
-		normalized := normalizeLabel(text)
-		lower := strings.ToLower(text)
-		matches := label == "abstract_cn" && strings.HasPrefix(normalized, "摘要") ||
-			label == "keywords_cn" && strings.HasPrefix(normalized, "关键词") ||
-			label == "abstract_en" && strings.HasPrefix(lower, "abstract") ||
-			label == "keywords_en" && (strings.HasPrefix(lower, "keywords") || strings.HasPrefix(lower, "key words"))
-		if matches {
+		role, _ := frontmatterLabelPrefix(text)
+		if role == label {
 			return mergeExtractedStyle(base, extractEffectiveRunStyle(label, run, definitions), run)
 		}
 	}
@@ -2713,20 +2911,21 @@ func extractTrailingContentRunStyle(label, paragraphXML string) (StyleRule, bool
 }
 
 func extractTrailingContentRunStyleWithDefinitions(label, paragraphXML string, definitions map[string]StyleRule) (StyleRule, bool) {
-	seenLabel := false
-	for _, run := range runElementPattern.FindAllString(paragraphXML, -1) {
-		text := strings.TrimSpace(extractText(run))
-		if text == "" {
-			continue
+	runs := runElementPattern.FindAllString(paragraphXML, -1)
+	var text strings.Builder
+	for _, run := range runs {
+		text.WriteString(extractText(run))
+	}
+	content := frontmatterContentOffset(text.String(), label)
+	if content < 0 {
+		return StyleRule{}, false
+	}
+	offset := 0
+	for _, run := range runs {
+		offset += len(extractText(run))
+		if offset > content {
+			return extractEffectiveRunStyle(label, run, definitions), true
 		}
-		if !seenLabel {
-			seenLabel = true
-			continue
-		}
-		if strings.Trim(text, "：:；;，,。 ") == "" {
-			continue
-		}
-		return extractEffectiveRunStyle(label, run, definitions), true
 	}
 	return StyleRule{}, false
 }
@@ -2925,6 +3124,24 @@ func mergeExtractedStyle(base, override StyleRule, _ string) StyleRule {
 	if override.FirstLineChars != "" {
 		base.FirstLineChars = override.FirstLineChars
 	}
+	if override.LeftTwips != "" {
+		base.LeftTwips = override.LeftTwips
+	}
+	if override.RightTwips != "" {
+		base.RightTwips = override.RightTwips
+	}
+	if override.LeftChars != "" {
+		base.LeftChars = override.LeftChars
+	}
+	if override.RightChars != "" {
+		base.RightChars = override.RightChars
+	}
+	if override.HangingTwips != "" {
+		base.HangingTwips = override.HangingTwips
+	}
+	if override.HangingChars != "" {
+		base.HangingChars = override.HangingChars
+	}
 	if override.FirstLineTwips != "" {
 		base.FirstLineTwips = override.FirstLineTwips
 	}
@@ -3004,7 +3221,7 @@ func isBodyStyleCandidate(para paragraph) bool {
 		return false
 	}
 	text := strings.TrimSpace(para.Text)
-	if len([]rune(text)) < 15 || strings.Contains(para.XML, "<w:pict") || strings.Contains(para.XML, "<w:drawing") {
+	if len([]rune(text)) < 15 {
 		return false
 	}
 	if strings.Contains(para.XML, `<w:jc w:val="center"`) || strings.Contains(para.XML, `<w:jc w:val="right"`) {
@@ -3017,7 +3234,7 @@ func isBodyStyleCandidate(para paragraph) bool {
 }
 
 func hasTOCLeader(text string) bool {
-	return strings.Count(text, "．")+strings.Count(text, "…") >= 3
+	return strings.Count(text, "．")+strings.Count(text, "…") >= 3 || manualTOCLeader.MatchString(text)
 }
 
 func extractHeaderFooter(pkg *ooxmlpkg.DocxPackage, header bool, themeFonts themeFontResolver) HeaderFooterRule {

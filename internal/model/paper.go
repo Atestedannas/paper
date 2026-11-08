@@ -22,7 +22,10 @@ type Paper struct {
 	SelectedTemplateID *uuid.UUID `gorm:"type:uuid;index" json:"selected_template_id"`
 
 	// 修正后的文件
-	CorrectedFilePath string `gorm:"size:255" json:"corrected_file_path"` // 修正后的文件路径
+	CorrectedFilePath string `gorm:"size:255" json:"corrected_file_path"` // 修正后的文件路径（v2 闭环由 RunJob 回写）
+
+	// v2 闭环任务关联：历史页/兼容接口据此找到最新 job，避免回退到 v1 引擎
+	LatestJobID *uuid.UUID `gorm:"type:uuid;index" json:"latest_job_id,omitempty"`
 
 	// 解析信息（系统自动解析的信息）
 	ParsedInfo            string `gorm:"type:jsonb" json:"parsed_info"`             // 解析出的论文结构信息

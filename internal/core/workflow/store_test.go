@@ -28,6 +28,8 @@ func TestStoreUpdateJobResultPersistsStatusAndVerifyJSON(t *testing.T) {
 			stage text NOT NULL,
 			download_path text,
 			verify_result_json text NOT NULL,
+			result_summary_json text NOT NULL DEFAULT '{}',
+			confirmed integer NOT NULL DEFAULT 0,
 			created_at datetime,
 			updated_at datetime
 		)

@@ -516,11 +516,8 @@ func (s *AlipayPagePayService) CreateTradePagePay(order *model.Order, paymentAmo
 	log.Printf("[CreateTradePagePay] ReturnURL: %s", s.effectiveReturnURL())
 	log.Printf("[CreateTradePagePay] GatewayURL: %s", s.GetGatewayURL())
 
-	// 配置不完整或私钥无效时降级为演示 URL
 	if !s.isAlipayConfigComplete() {
-		demo := s.demoAlipayQrContent(order, paymentAmount)
-		log.Printf("[CreateTradePagePay] 支付宝配置不完整/私钥无效，返回演示 URL: %s", demo)
-		return demo, nil
+		return "", fmt.Errorf("alipay payment config is incomplete or private key is invalid")
 	}
 
 	subject := "论文格式检查服务"
@@ -593,9 +590,7 @@ func (s *AlipayPagePayService) CreateTradeWapPay(order *model.Order, paymentAmou
 	log.Printf("[CreateTradeWapPay] GatewayURL: %s", s.GetGatewayURL())
 
 	if !s.isAlipayConfigComplete() {
-		demo := s.demoAlipayQrContent(order, paymentAmount)
-		log.Printf("[CreateTradeWapPay] 配置不完整，返回演示 URL: %s", demo)
-		return demo, nil
+		return "", fmt.Errorf("alipay payment config is incomplete or private key is invalid")
 	}
 
 	subject := "论文格式检查服务"
@@ -718,22 +713,13 @@ func (s *AlipayPagePayService) isAlipayConfigComplete() bool {
 	return true
 }
 
-// demoAlipayQrContent 返回演示用的二维码内容（不能真实付款，仅作 UI 展示）
-func (s *AlipayPagePayService) demoAlipayQrContent(order *model.Order, amount float64) string {
-	return fmt.Sprintf("https://qr.alipay.com/demo?order=%s&amount=%.2f&t=%d",
-		order.OrderNo, amount, time.Now().Unix())
-}
-
 func (s *AlipayPagePayService) CreateTradePrecreate(order *model.Order, paymentAmount float64) (string, error) {
 	log.Printf("[CreateTradePrecreate] 开始生成支付宝扫码支付 - AppID: %s, Amount: %.2f", s.effectiveAppID(), paymentAmount)
 	log.Printf("[CreateTradePrecreate] NotifyURL: %s", s.effectiveNotifyURL())
 	log.Printf("[CreateTradePrecreate] GatewayURL: %s", s.GetGatewayURL())
 
-	// 配置不完整或私钥无效时降级为演示二维码
 	if !s.isAlipayConfigComplete() {
-		demo := s.demoAlipayQrContent(order, paymentAmount)
-		log.Printf("[CreateTradePrecreate] 支付宝配置不完整/私钥无效，返回演示二维码: %s", demo)
-		return demo, nil
+		return "", fmt.Errorf("alipay payment config is incomplete or private key is invalid")
 	}
 
 	subject := "论文格式检查服务"

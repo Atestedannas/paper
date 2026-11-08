@@ -57,7 +57,7 @@ func formatTemplateDocumentPath(template model.FormatTemplate) string {
 
 func activeTemplateForUniversity(universityID int64) (model.FormatTemplate, error) {
 	var templates []model.FormatTemplate
-	if err := database.DB.Preload("University").Where("university_id = ? AND is_active = ?", universityID, true).
+	if err := database.DB.Preload("University").Where("university_id = ? AND is_active = ? AND is_public = ? AND owner_user_id IS NULL", universityID, true, true).
 		Order("updated_at DESC").Find(&templates).Error; err != nil {
 		return model.FormatTemplate{}, err
 	}
@@ -183,6 +183,9 @@ func (s PaperService) CheckPaperFormat(userID, paperID, templateID uuid.UUID) (*
 	var template model.FormatTemplate
 	if err := database.DB.Where("id = ?", templateID).First(&template).Error; err != nil {
 		return nil, fmt.Errorf("failed to get format template: %v", err)
+	}
+	if !template.IsActive || !template.AccessibleTo(paper.UserID) {
+		return nil, fmt.Errorf("failed to get format template: %w", gorm.ErrRecordNotFound)
 	}
 
 	// 4. 瑙ｆ瀽鏍煎紡瑙勫垯
@@ -1205,6 +1208,14 @@ func (s PaperService) GetAllPapers(page, pageSize int) ([]model.Paper, int64, er
 }
 
 // ResolveCorrectedPaperFile resolves an already-generated corrected file for download.
+//
+// v2 闭环是唯一写入方：RunJob 结束时回写 paper.corrected_file_path，
+// 因此 corrected_file_path 是权威来源，命中即返回。
+//
+// 下面的文件名候选只在「纯 legacy 论文」上兜底——即该论文从未跑过 v2 任务
+// （latest_job_id 为空）。v2 论文若 corrected_file_path 缺失，说明产物真的没了，
+// 此时绝不能退回按文件名猜测：corrected/<name>_v2_corrected.docx 是 v1 引擎的
+// 旧产物，拿它冒充 v2 结果会把效果很差的 v1 稿子展示给学生。
 func (s PaperService) ResolveCorrectedPaperFile(userID, paperID uuid.UUID) (string, error) {
 	paper, err := s.GetPaperByID(userID, paperID)
 	if err != nil {
@@ -1215,6 +1226,12 @@ func (s PaperService) ResolveCorrectedPaperFile(userID, paperID uuid.UUID) (stri
 		if _, err := os.Stat(filepath.Clean(paper.CorrectedFilePath)); err == nil {
 			return paper.CorrectedFilePath, nil
 		}
+	}
+
+	// v2 论文不回退到文件名猜测：产物缺失就是缺失，让调用方拿到 404，
+	// 由前端引导用户重新运行任务，而不是展示一份 v1 旧稿。
+	if paper.LatestJobID != nil {
+		return "", fmt.Errorf("%w for paper %s", ErrCorrectedFileNotFound, paperID)
 	}
 
 	ext := filepath.Ext(paper.FilePath)
@@ -1475,6 +1492,9 @@ func (s PaperService) buildCheckReportData(userID, checkResultID uuid.UUID) (*ch
 	var template model.FormatTemplate
 	if err := database.DB.Where("id = ?", checkResult.TemplateID).First(&template).Error; err != nil {
 		return nil, fmt.Errorf("failed to get format template: %w", err)
+	}
+	if !template.AccessibleTo(paper.UserID) {
+		return nil, fmt.Errorf("failed to get format template: %w", gorm.ErrRecordNotFound)
 	}
 
 	issues, err := parseIssuesFromRaw(checkResult.Issues)

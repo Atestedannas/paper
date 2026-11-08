@@ -617,7 +617,7 @@ func TestApplyFormatRulesSupportsExplicitIndentAndSpacingUnits(t *testing.T) {
 		t.Fatalf("ApplyFormatRules() error = %v", err)
 	}
 	style := profile.Styles["body_start"]
-	if style.FirstLineChars != "200" || style.BeforeTwips != "240" || style.AfterTwips != "120" {
+	if style.FirstLineChars != "" || style.FirstLineTwips != "420" || style.BeforeTwips != "240" || style.AfterTwips != "120" {
 		t.Fatalf("explicit units not converted correctly: %#v", style)
 	}
 }

@@ -94,6 +94,11 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 
 // GetOrderByID 根据ID获取订单
 func (h *OrderHandler) GetOrderByID(c *gin.Context) {
+	userID, ok := authenticatedUserID(c)
+	if !ok || userID == uuid.Nil {
+		utils.Unauthorized(c, "user not authenticated")
+		return
+	}
 	// 解析订单ID
 	orderID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -103,7 +108,7 @@ func (h *OrderHandler) GetOrderByID(c *gin.Context) {
 
 	// 获取订单信息
 	order, err := h.orderService.GetOrderByID(orderID)
-	if err != nil {
+	if err != nil || order == nil || order.UserID != userID {
 		utils.NotFound(c, "订单不存在")
 		return
 	}
@@ -159,10 +164,20 @@ func (h *OrderHandler) UpdateOrderStatus(c *gin.Context) {
 
 // CancelOrder 取消订单
 func (h *OrderHandler) CancelOrder(c *gin.Context) {
+	userID, ok := authenticatedUserID(c)
+	if !ok || userID == uuid.Nil {
+		utils.Unauthorized(c, "user not authenticated")
+		return
+	}
 	// 解析订单ID
 	orderID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		utils.BadRequest(c, "invalid order id")
+		return
+	}
+	order, err := h.orderService.GetOrderByID(orderID)
+	if err != nil || order == nil || order.UserID != userID {
+		utils.NotFound(c, "订单不存在")
 		return
 	}
 

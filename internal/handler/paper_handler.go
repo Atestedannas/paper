@@ -904,7 +904,7 @@ func readFormatStandardsPagination(c *gin.Context) (page, pageSize int) {
 func formatStandardsBaseQuery(c *gin.Context) *gorm.DB {
 	q := database.DB.Model(&model.FormatTemplate{}).Preload("University")
 	if !strings.Contains(c.FullPath(), "/admin/") {
-		q = q.Where("is_active = ? AND is_public = ?", true, true)
+		q = q.Where("is_active = ? AND is_public = ? AND owner_user_id IS NULL", true, true)
 	}
 	return q
 }

@@ -204,6 +204,13 @@ type RuleSelector struct {
 }
 
 var allowedRuleConstraints = map[string]bool{
+	"left_twips":    true,
+	"right_twips":   true,
+	"left_chars":    true,
+	"right_chars":   true,
+	"hanging_twips": true,
+	"hanging_chars": true,
+
 	"font.east_asia": true, "font.ascii": true, "size_pt": true,
 	"font":      true,
 	"alignment": true, "spacing_before_pt": true, "spacing_after_pt": true,
@@ -398,6 +405,11 @@ func validateConstraint(key string, value any) error {
 	case "bold":
 		if _, ok := value.(bool); !ok {
 			return fmt.Errorf("candidate bold must be boolean")
+		}
+	case "left_twips", "right_twips", "left_chars", "right_chars", "hanging_twips", "hanging_chars":
+		n, ok := finiteNumber(value)
+		if !ok || n != math.Trunc(n) || n < -2147483648 || n > 2147483647 || (strings.HasPrefix(key, "hanging_") && n < 0) {
+			return fmt.Errorf("candidate %s must be a valid native-unit integer", key)
 		}
 	case "first_line_chars":
 		if n, ok := finiteNumber(value); !ok || n < 0 || n > 1000 {

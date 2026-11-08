@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/paper-format-checker/backend/internal/core/blockmap"
 	"github.com/paper-format-checker/backend/internal/core/evidence"
+	"github.com/paper-format-checker/backend/internal/core/formatcheck"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/paperast"
 	"github.com/paper-format-checker/backend/internal/core/paperparse"
@@ -40,10 +41,11 @@ import (
 )
 
 var (
-	ErrInvalidJobID        = errors.New("invalid job id")
-	ErrInvalidPaperUpload  = errors.New("invalid paper upload")
-	ErrTemplateDOCXMissing = errors.New("selected template has no readable DOCX file")
-	ErrServiceUnavailable  = errors.New("paper workflow service unavailable")
+	ErrInvalidJobID          = errors.New("invalid job id")
+	ErrInvalidPaperUpload    = errors.New("invalid paper upload")
+	ErrTemplateDOCXMissing   = errors.New("selected template has no readable DOCX file")
+	ErrServiceUnavailable    = errors.New("paper workflow service unavailable")
+	ErrWorkflowInputsChanged = errors.New("workflow source or template binding conflicts; create a new job with the intended files")
 )
 
 func workflowVisualSpec(templateID string, profile *templateprofile.Profile) map[string]interface{} {
@@ -223,24 +225,60 @@ var workflowBookmarkStartIDPattern = regexp.MustCompile(`<w:bookmarkStart\b[^>]*
 var workflowBookmarkStartPattern = regexp.MustCompile(`<w:bookmarkStart\b[^>]*\bw:name="([^"]+)"[^>]*/>`)
 var workflowAlternateContentPattern = regexp.MustCompile(`(?s)<mc:AlternateContent\b.*?</mc:AlternateContent>`)
 var workflowDrawingExtentPattern = regexp.MustCompile(`<(?:wp:extent|a:ext)\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"[^>]*/>`)
-var renderedCurrentBodyPagePattern = regexp.MustCompile(`\x{7b2c}\s*(\d+)\s*\x{9875}\s*\x{5171}`)
 var renderedHeadingPattern = regexp.MustCompile(`^(\d+(?:\.\d+){0,2})\s*(\S.*)$`)
-var renderedHeadingNumberPattern = regexp.MustCompile(`^\d+(?:\.\d+){0,2}$`)
 var renderedTOCEntryWithPagePattern = regexp.MustCompile(`\s[1-9]\d*$`)
 var formulaNumberLinePattern = regexp.MustCompile(`^\s*[\(（](\d+)[-.．](\d+)[\)）]\s*$`)
 var workflowTemplateAnchorPattern = regexp.MustCompile(`\{\{[a-z][a-z0-9_]*\}\}`)
 var workflowReviewMarkupPattern = regexp.MustCompile(`<w:(?:ins|del|moveFrom|moveTo|commentRangeStart|commentReference)\b`)
 
 type WorkflowJobView struct {
-	ID                 uuid.UUID `json:"id"`
-	PaperID            uuid.UUID `json:"paper_id"`
-	UserID             uuid.UUID `json:"user_id"`
-	CompiledTemplateID uuid.UUID `json:"compiled_template_id"`
-	Status             string    `json:"status"`
-	Stage              string    `json:"stage"`
-	DownloadPath       string    `json:"download_path"`
-	DownloadURL        string    `json:"download_url,omitempty"`
-	DownloadReady      bool      `json:"download_ready"`
+	FormatCompliance   *formatcheck.Report `json:"format_compliance,omitempty"`
+	ID                 uuid.UUID           `json:"id"`
+	PaperID            uuid.UUID           `json:"paper_id"`
+	UserID             uuid.UUID           `json:"user_id"`
+	CompiledTemplateID uuid.UUID           `json:"compiled_template_id"`
+	Status             string              `json:"status"`
+	Stage              string              `json:"stage"`
+	DownloadPath       string              `json:"download_path"`
+	DownloadURL        string              `json:"download_url,omitempty"`
+	DownloadReady      bool                `json:"download_ready"`
+	// Confirmed 用户是否已确认修改内容（「确认后下载」的 UI 约束）
+	Confirmed bool `json:"confirmed"`
+
+	// 以下字段原先要前端二次请求 GET /api/v1/papers/:id 才能拼出来，
+	// 现在由 job 视图一次带出，避免对比页发两次请求。
+	PaperTitle      string    `json:"paper_title,omitempty"`
+	FileName        string    `json:"file_name,omitempty"`
+	FileSize        int64     `json:"file_size,omitempty"`
+	FileType        string    `json:"file_type,omitempty"`
+	PageCount       int       `json:"page_count,omitempty"`
+	SchoolName      string    `json:"school_name,omitempty"`
+	TemplateName    string    `json:"template_name,omitempty"`
+	TemplateVersion string    `json:"template_version,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+
+	// 预览地址：只校验登录+归属，永不收费；下载才走计费闸口。
+	PreviewURL          string `json:"preview_url,omitempty"`
+	PreviewCorrectedURL string `json:"preview_corrected_url,omitempty"`
+
+	// 差异明细走独立的 /diff 分页接口；轮询接口只带聚合统计，不返回几百 KB 的原文。
+	Summary    *WorkflowJobSummary `json:"summary,omitempty"`
+	HasDiff    bool                `json:"has_diff"`
+	VerifyPass bool                `json:"verify_passed"`
+}
+
+// WorkflowJobSummary 是后端聚合好的修正统计，前端直接展示，不做二次计算。
+type WorkflowJobSummary struct {
+	TotalChanges     int            `json:"total_changes"`
+	ByCategory       map[string]int `json:"by_category"`
+	RulesChecked     int            `json:"rules_checked"`
+	RulesPassed      int            `json:"rules_passed"`
+	RulesReview      int            `json:"rules_review"`
+	RulesFailed      int            `json:"rules_failed"`
+	Passed           bool           `json:"passed"`
+	ComplianceStatus string         `json:"compliance_status"`
+	PageCount        int            `json:"page_count"`
 }
 
 type CompiledTemplateView struct {
@@ -260,13 +298,14 @@ type CompileTemplateInput struct {
 }
 
 type CreatePaperJobInput struct {
-	UserID           uuid.UUID
-	FormatTemplateID uuid.UUID
-	Title            string
-	FilePath         string
-	FileName         string
-	FileSize         int64
-	FileType         string
+	ComplianceContext formatcheck.Context
+	UserID            uuid.UUID
+	FormatTemplateID  uuid.UUID
+	Title             string
+	FilePath          string
+	FileName          string
+	FileSize          int64
+	FileType          string
 }
 
 type PaperWorkflowService interface {
@@ -275,6 +314,18 @@ type PaperWorkflowService interface {
 	RunJob(ctx context.Context, id string, userID uuid.UUID) (*WorkflowJobView, error)
 	GetJob(id string) (*WorkflowJobView, error)
 	GetJobForUser(id string, userID uuid.UUID) (*WorkflowJobView, error)
+	// GetJobDiffForUser 返回分页差异明细，数据源是 job 的 rule_audit，不碰 check_results。
+	GetJobDiffForUser(id string, userID uuid.UUID, opts WorkflowDiffOptions) (*WorkflowDiffPage, error)
+	// ConfirmJob 标记任务已由用户确认，仅在确认后才允许下载修正稿。
+	ConfirmJob(id string, userID uuid.UUID, confirmed bool) (*WorkflowJobView, error)
+}
+
+// WorkflowDiffOptions 差异明细的查询条件。
+type WorkflowDiffOptions struct {
+	Category string
+	Severity string
+	Page     int
+	PageSize int
 }
 
 type paperWorkflowService struct {
@@ -446,6 +497,9 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 	if strings.TrimSpace(input.Title) == "" {
 		input.Title = input.FileName
 	}
+	if err := formatcheck.ValidateContext(input.ComplianceContext); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidPaperUpload, err)
+	}
 
 	paperID := uuid.New()
 	templateID := uuid.New()
@@ -461,6 +515,9 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 		var formatTemplate model.FormatTemplate
 		if err := s.db.WithContext(ctx).Preload("University").First(&formatTemplate, "id = ? AND is_active = ?", input.FormatTemplateID, true).Error; err != nil {
 			return nil, err
+		}
+		if !formatTemplate.AccessibleTo(input.UserID) {
+			return nil, gorm.ErrRecordNotFound
 		}
 		selectedTemplateID = &formatTemplate.ID
 		templateName = formatTemplate.Name
@@ -485,7 +542,25 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 		profile = nil
 	}
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	sourceSHA, err := workflowTemplateSHA(input.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("bind source manuscript: %w", err)
+	}
+	templateSHA := ""
+	if profile != nil {
+		templateSHA, err = workflowTemplateSHA(compiledSource)
+		if err != nil {
+			return nil, fmt.Errorf("bind selected template: %w", err)
+		}
+	}
+	diagnosis := formatcheck.Diagnose(input.ComplianceContext,
+		formatcheck.Artifact{Name: input.FileName, SHA256: sourceSHA},
+		formatcheck.Artifact{Name: templateName, Version: templateVersion, SHA256: templateSHA}, time.Now().UTC().Format(time.RFC3339))
+	initialResult, err := json.Marshal(verify.Result{FormatCompliance: &diagnosis})
+	if err != nil {
+		return nil, fmt.Errorf("marshal format preflight: %w", err)
+	}
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		paper := model.Paper{
 			ID:                    paperID,
 			UserID:                input.UserID,
@@ -498,6 +573,7 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 			AutoDetectedTemplates: "[]",
 			Status:                string(workflow.StatusUploaded),
 			SelectedTemplateID:    selectedTemplateID,
+			LatestJobID:           &jobID,
 		}
 		if err := tx.Create(&paper).Error; err != nil {
 			return err
@@ -529,7 +605,7 @@ func (s *paperWorkflowService) CreatePaperJob(ctx context.Context, input CreateP
 			CompiledTemplateID: templateID,
 			Status:             string(workflow.StatusUploaded),
 			Stage:              "queued",
-			VerifyResultJSON:   "{}",
+			VerifyResultJSON:   string(initialResult),
 		}
 		return tx.Create(&job).Error
 	})
@@ -584,6 +660,11 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	// 论文文件路径为空 → 用户未上传文件，拒绝执行
 	if strings.TrimSpace(job.Paper.FilePath) == "" {
 		return nil, ErrInvalidPaperUpload
+	}
+	// Persist a read-only diagnosis before any formatter or renderer can write.
+	diagnosis, err := s.preflightWorkflowFormatCompliance(ctx, &job)
+	if err != nil {
+		return nil, err
 	}
 
 	// ── 阶段 1.5：创建格式运行日志（format run log） ──
@@ -859,6 +940,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	// Profile 为 nil：无模板 Profile 可参照，标记为需人工审核并直接返回
 	if profile == nil {
 		result := verify.Result{
+			FormatCompliance: diagnosis,
 			Passed:           false,
 			ComplianceStatus: "review_required",
 			ComplianceReason: "no template profile is configured for this workflow; school-specific compliance cannot be proven",
@@ -906,7 +988,14 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	// 归一化：移除多余的 XML 命名空间、空白节点等冗余部件
 	// Apply the frozen semantic plan after the single profile baseline pass.
 	// No later document-wide formatter runs after this point.
+	var numberedMathSplits []templateapply.NumberedMathSplit
 	if !transplantEnabled && len(roleAssignments) > 0 {
+		roleAssignments, numberedMathSplits, err = repairWorkflowNumberedMath(ctx, outputPath, roleAssignments)
+		if err != nil {
+			return nil, fmt.Errorf("separate terminal numbered equations from prose: %w", err)
+		}
+		roleFormatPlan = templateapply.BuildRoleFormatPlan(profile, roleAssignments)
+		fileprocessor.FormatLogPrintf(ctx, "正文末尾编号公式独立成段：%d；原段落ID、正文run与公式OMML保留；新增公式布局待渲染复核", len(numberedMathSplits))
 		applied, planErr := templateapply.ApplyRoleFormatPlan(ctx, outputPath, profile, roleAssignments)
 		if planErr != nil {
 			return nil, fmt.Errorf("apply stable-node role format plan: %w", planErr)
@@ -1203,7 +1292,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 		result.VerifyResult.Warnings = append(result.VerifyResult.Warnings, verify.Issue{Kind: "structured_compliance_unavailable", Severity: "warning", Message: astErr.Error(), Target: outputPath})
 		log.Printf("[STRUCTURED_COMPLIANCE] skipped job=%s reason=extract_final_ast err=%v", job.ID, astErr)
 	} else {
-		decisions := EvaluateStructuredCompliance(job.ID.String(), finalAST, rules, visual)
+		decisions := evaluateStructuredComplianceWithPlan(job.ID.String(), finalAST, rules, visual, roleFormatPlan)
 		appendStructuredComplianceWarnings(&result.VerifyResult, decisions)
 		if structuredComplianceHasFix(decisions) {
 			result.Status = workflow.StatusManualReview
@@ -1246,7 +1335,7 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			if finalAST, astErr := paperast.Extract(outputPath); astErr != nil {
 				return nil, fmt.Errorf("revalidate final structured compliance: %w", astErr)
 			} else {
-				decisions := EvaluateStructuredCompliance(job.ID.String(), finalAST, rules, visual)
+				decisions := evaluateStructuredComplianceWithPlan(job.ID.String(), finalAST, rules, visual, roleFormatPlan)
 				appendStructuredComplianceWarnings(&result.VerifyResult, decisions)
 				if structuredComplianceHasFix(decisions) {
 					result.Status = workflow.StatusManualReview
@@ -1258,8 +1347,70 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 			fileprocessor.FormatLogPrintf(ctx, "最终展示层修改已重新全量校验：通过门禁=%t", result.VerifyResult.Passed)
 		}
 	}
+	// Local pagination is independent from the optional OCR/visual service.
+	var tocNumberRepairs []paperast.TOCNumberRepair
+	if !transplantEnabled && len(paperast.PlanTOCNumberRepairs(ast.Nodes)) > 0 {
+		updatedRoles, numericRepairs, repairErr := repairWorkflowTOCNumbers(outputPath, sourceStructure, ast.Nodes, roleAssignments)
+		if repairErr != nil {
+			return nil, fmt.Errorf("repair derived TOC numbers: %w", repairErr)
+		}
+		roleAssignments = updatedRoles
+		tocNumberRepairs = numericRepairs
+		fileprocessor.FormatLogPrintf(ctx, "目录数字前缀修复：依据正文编号修复 %d 项；标题文字和链接目标不变", len(numericRepairs))
+	}
+	var tcSourceRepairs []paperast.TCNumberRepair
+	if !transplantEnabled {
+		tcSourceRepairs, err = repairWorkflowTCNumbers(outputPath, ast.Nodes)
+		if err != nil {
+			return nil, fmt.Errorf("repair source TC numbers: %w", err)
+		}
+		fileprocessor.FormatLogPrintf(ctx, "目录TC源域数字修复：依据原稿正文编号修复 %d 项，避免目录重建恢复旧数字", len(tcSourceRepairs))
+	}
+	var coverTitlePlan []templateapply.CoverThesisTitlePlan
+	if !transplantEnabled {
+		coverTitlePlan, err = repairWorkflowCoverThesisTitles(outputPath, job.Paper.FilePath, profile)
+		if err != nil {
+			return nil, fmt.Errorf("repair cover thesis titles: %w", err)
+		}
+		fileprocessor.FormatLogPrintf(ctx, "封面真实题名独立计划：%d 项；横幅、表单题名与段落布局保留独立复核", len(coverTitlePlan))
+	}
+	tocTabRepairs, tocTabErr := repairWorkflowTOCPageTabs(outputPath)
+	if tocTabErr != nil {
+		return nil, fmt.Errorf("repair TOC page tabs: %w", tocTabErr)
+	}
+	fileprocessor.FormatLogPrintf(ctx, "目录页码制表位修复：清理 %d 项页码前的冲突制表位；保留原右制表位", len(tocTabRepairs))
+	tocReport, tocErr := refreshLocalTOC(ctx, outputPath)
+	if tocErr != nil || tocReport.Reason != "" {
+		reason := tocReport.Reason
+		if len(tocReport.Unverified) > 0 {
+			reason += "; unverified entries: " + strings.Join(tocReport.Unverified, " | ")
+		}
+		if tocErr != nil {
+			reason = tocErr.Error()
+		}
+		result.VerifyResult.RepairableIssues = append(result.VerifyResult.RepairableIssues, verify.Issue{Kind: "toc_page_cache_unverified", Severity: "warning", Message: reason, Target: outputPath})
+		result.VerifyResult.Passed = false
+		result.Status = workflow.StatusManualReview
+		result.VerifyResult.ComplianceStatus = "review_required"
+	}
+	fileprocessor.FormatLogPrintf(ctx, "本地目录页码：条目=%d 已验证=%d 缓存修改=%t 复核原因=%s", tocReport.Entries, tocReport.Verified, tocReport.Changed, tocReport.Reason)
+	if tocReport.Changed && len(roleAssignments) > 0 {
+		issues, err := templateapply.ValidateRoleFormatPlan(ctx, outputPath, profile, roleAssignments)
+		if err != nil {
+			return nil, fmt.Errorf("validate role targets after pagination: %w", err)
+		}
+		if len(issues) > 0 {
+			result.VerifyResult.RepairableIssues = append(result.VerifyResult.RepairableIssues, verify.Issue{Kind: "post_pagination_role_format", Severity: "warning", Message: fmt.Sprintf("%d role properties or identities failed after TOC refresh", len(issues)), Target: outputPath})
+			result.VerifyResult.Passed = false
+			result.Status = workflow.StatusManualReview
+			result.VerifyResult.ComplianceStatus = "review_required"
+		}
+	}
 	// No document mutations are allowed beyond this point. Bind all final
 	// evidence to the exact bytes offered for download.
+	if err := collectWorkflowFinalPDF(ctx, outputPath, &result); err != nil {
+		return nil, err
+	}
 	finalSHA, hashErr := workflowTemplateSHA(outputPath)
 	if hashErr != nil {
 		return nil, hashErr
@@ -1284,11 +1435,21 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	if hashErr != nil {
 		return nil, hashErr
 	}
+	if err := s.verifyWorkflowFormatBindings(ctx, &job, diagnosis); err != nil {
+		return nil, err
+	}
 	finalAST, finalErr := paperast.Extract(outputPath)
 	if finalErr != nil {
 		return nil, fmt.Errorf("extract final rule audit: %w", finalErr)
 	}
+	fileprocessor.FormatLogPrintf(ctx, "最终目录链接与标题核验：问题=%d", applyTOCIntegrityGate(&result, finalAST.Nodes))
 	audit := buildWorkflowRuleAudit(profile, rules, roleFormatPlan, ast, writtenAST, finalAST, finalSHA, visualSHA, visual)
+	appendCaptionBindingAudit(&audit, outputPath, profile, roleAssignments, finalAST)
+	appendTOCNumberRepairAudit(&audit, tocNumberRepairs, finalAST.Nodes)
+	appendTOCPageTabAudit(&audit, tocTabRepairs, finalAST.Nodes)
+	appendTCNumberRepairAudit(&audit, tcSourceRepairs, finalAST.Nodes)
+	appendCoverThesisTitleAudit(&audit, outputPath, coverTitlePlan)
+	appendNumberedMathSplitAudit(&audit, outputPath, numberedMathSplits)
 	verifyRunningRequirements(&audit, outputPath, job.CompiledTemplate.SourceFilePath, finalAST)
 	audit.Writer = "in_place_role_plan"
 	if transplantEnabled {
@@ -1297,6 +1458,11 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	if err := attachWorkflowRuleAudit(&result, audit); err != nil {
 		return nil, err
 	}
+	completeWorkflowFormatCompliance(diagnosis, audit, result.VerifyResult, finalSHA)
+	if diagnosis.PDFDiagnostics != nil && diagnosis.PDFDiagnostics.Status == formatcheck.Conflict {
+		markWorkflowPDFReview(&result, "pdf_preflight_stale", diagnosis.PDFDiagnostics.Reason, outputPath)
+	}
+	result.VerifyResult.FormatCompliance = diagnosis
 	stage = workflow.StageManualReview
 	if result.Status == workflow.StatusVerifiedPass && result.VerifyResult.Passed {
 		stage = workflow.StageVerified
@@ -1305,6 +1471,29 @@ func (s *paperWorkflowService) RunJob(ctx context.Context, id string, userID uui
 	fileprocessor.FormatLogPrintf(ctx, "规则来源→执行→最终验证：%s", string(result.VerifyResult.RuleAudit))
 	if err := workflow.NewStore(s.db).UpdateJobResult(ctx, job.ID, result.Status, stage, downloadPath, result.VerifyResult); err != nil {
 		return nil, err
+	}
+
+	// ── 阶段 16.2：聚合修正统计 ──
+	// 「23 处修改 / 47 项规则 / 分类占比」由后端算一次存库，
+	// 不让前端从几百 KB 的 rule_audit.entries 里硬算。
+	summary := buildWorkflowJobSummary(audit, result.VerifyResult)
+	if err := s.db.WithContext(ctx).Model(&model.PaperWorkflowJob{}).Where("id = ?", job.ID).
+		Update("result_summary_json", mustWorkflowJSON(summary)).Error; err != nil {
+		return nil, fmt.Errorf("persist result summary: %w", err)
+	}
+
+	// ── 阶段 16.5：回写 paper 层 ──
+	// v2 只写 paper_workflow_jobs，历史页与 v1 兼容接口读的是 paper 表；
+	// 不回写会让 corrected_file_path 恒为空、status 永远停在 uploaded。
+	// 这里是 v2 产物对外的唯一权威出口，不回退到 v1 引擎。
+	if err := s.db.WithContext(ctx).Model(&model.Paper{}).Where("id = ?", job.PaperID).
+		Updates(map[string]any{
+			"corrected_file_path": downloadPath,
+			"status":              string(result.Status),
+			"latest_job_id":       job.ID,
+			"updated_at":          time.Now().UTC(),
+		}).Error; err != nil {
+		return nil, fmt.Errorf("write back paper result: %w", err)
 	}
 
 	// ── 阶段 17：SHA256 完整性校验 ──
@@ -1486,129 +1675,6 @@ func repairRenderedPageFooterTotal(outputPath string, result verify.Result) (boo
 		return false, nil
 	}
 	return true, pkg.Write(outputPath)
-}
-
-func repairRenderedTOCPageNumbers(outputPath string, result verify.Result) (bool, error) {
-	if result.RenderResult == nil || len(result.RenderResult.PageTexts) == 0 {
-		return false, nil
-	}
-	pkg, err := ooxmlpkg.Open(outputPath)
-	if err != nil {
-		return false, err
-	}
-	content, ok := pkg.Get("word/document.xml")
-	if !ok {
-		return false, nil
-	}
-	headingKeys := tocCachedHeadingKeys(string(content))
-	pageByHeading := renderedHeadingPages(result.RenderResult.PageTexts, headingKeys)
-	if len(pageByHeading) == 0 {
-		return false, nil
-	}
-	updated, changed := replaceTOCCachedPageNumbers(string(content), pageByHeading)
-	if !changed {
-		return false, nil
-	}
-	pkg.Set("word/document.xml", []byte(updated))
-	return true, pkg.Write(outputPath)
-}
-
-func replaceTOCCachedPageNumbers(documentXML string, pageByHeading map[string]int) (string, bool) {
-	inTOC := false
-	changed := false
-	updated := workflowParagraphPattern.ReplaceAllStringFunc(documentXML, func(paragraph string) string {
-		if strings.Contains(paragraph, `TOC \o "1-3"`) || strings.Contains(paragraph, " TOC ") {
-			inTOC = true
-			return paragraph
-		}
-		if inTOC && strings.Contains(paragraph, `w:fldCharType="end"`) {
-			inTOC = false
-			return paragraph
-		}
-		if !inTOC || strings.Contains(paragraph, "<w:instrText") {
-			return paragraph
-		}
-		text := tocCacheHeadingText(paragraph)
-		key := canonicalRenderedHeadingKey(text)
-		page := pageByHeading[key]
-		if key == "" || page <= 0 || renderedTOCEntryWithPagePattern.MatchString(text) {
-			return paragraph
-		}
-		changed = true
-		return replaceFirstWorkflowText(paragraph, text+"    "+strconv.Itoa(page))
-	})
-	return updated, changed
-}
-
-func tocCacheHeadingText(paragraph string) string {
-	text := strings.TrimSpace(workflowParagraphText(paragraph))
-	if !strings.Contains(paragraph, "<w:tab") {
-		return text
-	}
-	matches := workflowTextValuePattern.FindAllStringSubmatch(paragraph, -1)
-	if len(matches) == 0 || len(matches[0]) < 2 {
-		return text
-	}
-	return strings.TrimSpace(html.UnescapeString(matches[0][1]))
-}
-
-func tocCachedHeadingKeys(documentXML string) []string {
-	inTOC := false
-	keys := make([]string, 0)
-	for _, paragraph := range workflowParagraphPattern.FindAllString(documentXML, -1) {
-		if strings.Contains(paragraph, `TOC \o "1-3"`) || strings.Contains(paragraph, " TOC ") {
-			inTOC = true
-			continue
-		}
-		if inTOC && strings.Contains(paragraph, `w:fldCharType="end"`) {
-			break
-		}
-		if inTOC {
-			if key := canonicalRenderedHeadingKey(tocCacheHeadingText(paragraph)); key != "" {
-				keys = append(keys, key)
-			}
-		}
-	}
-	return keys
-}
-
-func renderedHeadingPages(pageTexts []string, headingKeys []string) map[string]int {
-	pages := map[string]int{}
-	for _, pageText := range pageTexts {
-		bodyPage := renderedCurrentBodyPage(pageText)
-		if bodyPage <= 0 {
-			continue
-		}
-		compactPage := strings.ReplaceAll(strings.Join(strings.Fields(pageText), ""), " ", "")
-		for _, key := range headingKeys {
-			if key != "" && pages[key] == 0 && strings.Contains(compactPage, key) {
-				pages[key] = bodyPage
-			}
-		}
-	}
-	return pages
-}
-
-func renderedCurrentBodyPage(pageText string) int {
-	match := renderedCurrentBodyPagePattern.FindStringSubmatch(pageText)
-	if len(match) != 2 {
-		return 0
-	}
-	page, _ := strconv.Atoi(match[1])
-	return page
-}
-
-func canonicalRenderedHeadingKey(text string) string {
-	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
-	fields := strings.Fields(text)
-	if len(fields) >= 3 && fields[0] == fields[1] && renderedHeadingNumberPattern.MatchString(fields[0]) {
-		text = fields[0] + " " + strings.Join(fields[2:], " ")
-	}
-	match := renderedHeadingPattern.FindStringSubmatch(text)
-	if len(match) != 3 {
-		return ""
-	}
-	return strings.ReplaceAll(match[1]+" "+match[2], " ", "")
 }
 
 func replaceFirstWorkflowText(paragraph string, text string) string {
@@ -2065,6 +2131,67 @@ func (s *paperWorkflowService) GetJobForUser(id string, userID uuid.UUID) (*Work
 	}
 
 	return s.getJobView("id = ? AND user_id = ?", jobID, userID)
+}
+
+func (s *paperWorkflowService) ConfirmJob(id string, userID uuid.UUID, confirmed bool) (*WorkflowJobView, error) {
+	if err := s.validateReady(context.Background()); err != nil {
+		return nil, err
+	}
+
+	jobID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidJobID, err)
+	}
+
+	// 先校验归属：只能确认自己的 job
+	var job model.PaperWorkflowJob
+	if err := s.db.First(&job, "id = ? AND user_id = ?", jobID, userID).Error; err != nil {
+		return nil, err
+	}
+
+	// 更新确认标记
+	if err := s.db.Model(&job).Update("confirmed", confirmed).Error; err != nil {
+		return nil, err
+	}
+
+	return s.getJobView("id = ? AND user_id = ?", jobID, userID)
+}
+
+// GetJobDiffForUser 返回该 job 的分页差异明细。
+//
+// 数据源是 job 自己的 verify_result_json.rule_audit —— 不是 check_results。
+// v2 闭环从不写 check_results，所以 v1 的 /papers/:id/review-diffs 对 v2 任务
+// 永远是「暂无差异报告」，这也是为什么必须另开这条接口。
+func (s *paperWorkflowService) GetJobDiffForUser(id string, userID uuid.UUID, opts WorkflowDiffOptions) (*WorkflowDiffPage, error) {
+	if err := s.validateReady(context.Background()); err != nil {
+		return nil, err
+	}
+
+	jobID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidJobID, err)
+	}
+
+	var job model.PaperWorkflowJob
+	if err := s.db.First(&job, "id = ? AND user_id = ?", jobID, userID).Error; err != nil {
+		return nil, err
+	}
+
+	view, err := s.getJobView("id = ? AND user_id = ?", jobID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	ruleAuditJSON := ""
+	if raw := strings.TrimSpace(job.VerifyResultJSON); raw != "" && raw != "{}" {
+		var verifyResult verify.Result
+		if err := json.Unmarshal([]byte(raw), &verifyResult); err == nil {
+			ruleAuditJSON = string(verifyResult.RuleAudit)
+		}
+	}
+
+	page := BuildWorkflowDiffPage(job.ID.String(), ruleAuditJSON, view.Summary, opts.Category, opts.Severity, opts.Page, opts.PageSize)
+	return &page, nil
 }
 
 // validateReady 在执行工作流前做基础环境校验，确保上下文有效、服务实例可用。
@@ -2634,7 +2761,8 @@ func isASCIIWhitespace(b byte) bool {
 func (s *paperWorkflowService) getJobView(query any, args ...any) (*WorkflowJobView, error) {
 	var job model.PaperWorkflowJob
 	conds := append([]any{query}, args...)
-	if err := s.db.First(&job, conds...).Error; err != nil {
+	// Preload 论文与编译模板：job 视图要带标题/大小/学校模板名，避免前端二次请求。
+	if err := s.db.Preload("Paper").Preload("CompiledTemplate").First(&job, conds...).Error; err != nil {
 		return nil, err
 	}
 
@@ -2646,10 +2774,32 @@ func (s *paperWorkflowService) getJobView(query any, args ...any) (*WorkflowJobV
 		Status:             job.Status,
 		Stage:              job.Stage,
 		DownloadPath:       job.DownloadPath,
+		Confirmed:          job.Confirmed,
+		PaperTitle:         job.Paper.Title,
+		FileName:           job.Paper.FileName,
+		FileSize:           job.Paper.FileSize,
+		FileType:           job.Paper.FileType,
+		SchoolName:         job.CompiledTemplate.SchoolID,
+		TemplateName:       job.CompiledTemplate.TemplateName,
+		TemplateVersion:    job.CompiledTemplate.TemplateVersion,
+		CreatedAt:          job.CreatedAt,
+		UpdatedAt:          job.UpdatedAt,
 	}
 	view.DownloadReady = workflowDownloadReady(job)
 	if strings.TrimSpace(view.DownloadPath) != "" {
 		view.DownloadURL = workflowJobDownloadURL(view.ID)
+	}
+	view.PreviewURL = workflowJobPreviewURL(view.ID, workflowPreviewSideOriginal)
+	if view.DownloadReady {
+		view.PreviewCorrectedURL = workflowJobPreviewURL(view.ID, workflowPreviewSideCorrected)
+	}
+	view.Summary, view.HasDiff, view.VerifyPass = workflowJobSummaryFromJSON(job.ResultSummaryJSON, job.VerifyResultJSON)
+	var verification verify.Result
+	if err := json.Unmarshal([]byte(job.VerifyResultJSON), &verification); err == nil {
+		view.FormatCompliance = verification.FormatCompliance
+	}
+	if view.Summary != nil && view.PageCount == 0 {
+		view.PageCount = view.Summary.PageCount
 	}
 	return view, nil
 }
@@ -2666,6 +2816,53 @@ func workflowDownloadReady(job model.PaperWorkflowJob) bool {
 
 func workflowJobDownloadURL(id uuid.UUID) string {
 	return "/api/v2/jobs/" + id.String() + "/download"
+}
+
+const (
+	workflowPreviewSideOriginal  = "original"
+	workflowPreviewSideCorrected = "corrected"
+)
+
+// workflowJobPreviewURL 指向只读预览接口。预览只校验登录与归属，不参与计费。
+func workflowJobPreviewURL(id uuid.UUID, side string) string {
+	return "/api/v2/jobs/" + id.String() + "/preview?side=" + side
+}
+
+// workflowJobSummaryFromJSON 读取聚合统计；老任务没有 result_summary_json，
+// 退化为只从 verify_result_json 里取 page_count / passed，绝不现场重算统计。
+func workflowJobSummaryFromJSON(summaryJSON, verifyJSON string) (*WorkflowJobSummary, bool, bool) {
+	var summary WorkflowJobSummary
+	hasSummary := false
+	if raw := strings.TrimSpace(summaryJSON); raw != "" && raw != "{}" {
+		if err := json.Unmarshal([]byte(raw), &summary); err == nil {
+			hasSummary = true
+		}
+	}
+
+	hasDiff := false
+	verifyPass := false
+	if raw := strings.TrimSpace(verifyJSON); raw != "" && raw != "{}" {
+		var verifyResult verify.Result
+		if err := json.Unmarshal([]byte(raw), &verifyResult); err == nil {
+			verifyPass = verifyResult.Passed
+			hasDiff = len(verifyResult.RepairableIssues) > 0 || len(verifyResult.FatalIssues) > 0 || len(verifyResult.Warnings) > 0
+			if verifyResult.RenderResult != nil && summary.PageCount == 0 {
+				summary.PageCount = verifyResult.RenderResult.PageCount
+			}
+		}
+	}
+	// 聚合统计里的 passed 是判定结论；verify_result_json 缺失或为空时以它为准，
+	// 避免前端拿到 summary.passed=true 却看到 verify_passed=false 的自相矛盾。
+	if summary.Passed {
+		verifyPass = true
+	}
+	if !hasSummary {
+		if summary.PageCount == 0 && !verifyPass {
+			return nil, hasDiff, verifyPass
+		}
+		return &summary, hasDiff, verifyPass
+	}
+	return &summary, hasDiff, verifyPass
 }
 
 func workflowJSON(value any) (string, error) {

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/paper-format-checker/backend/internal/core/documentrole"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/paperparse"
@@ -38,6 +39,7 @@ type PageSection struct {
 	MarginRightTwips  string `json:"margin_right_twips,omitempty"`
 	MarginBottomTwips string `json:"margin_bottom_twips,omitempty"`
 	MarginLeftTwips   string `json:"margin_left_twips,omitempty"`
+	GutterTwips       string `json:"gutter_twips,omitempty"`
 	HeaderMarginTwips string `json:"header_margin_twips,omitempty"`
 	FooterMarginTwips string `json:"footer_margin_twips,omitempty"`
 	Orientation       string `json:"orientation,omitempty"`
@@ -60,29 +62,38 @@ type Stats struct {
 }
 
 type Node struct {
-	NodeID          string                     `json:"node_id"`
-	OfficePath      string                     `json:"office_path,omitempty"`
-	ParaID          string                     `json:"para_id,omitempty"`
-	SourcePart      string                     `json:"source_part"`
-	ParentNodeID    string                     `json:"parent_node_id,omitempty"`
-	Index           int                        `json:"index"`
-	NodeType        string                     `json:"node_type"`
-	Text            string                     `json:"text,omitempty"`
-	SemanticRole    string                     `json:"semantic_role"`
-	LogicalLevel    int                        `json:"logical_level,omitempty"`
-	CurrentStyle    string                     `json:"current_style_id,omitempty"`
-	SectionID       string                     `json:"section_id"`
-	Confidence      float64                    `json:"confidence"`
-	Evidence        []string                   `json:"evidence,omitempty"`
-	BeforeTwips     int                        `json:"before_twips,omitempty"`
-	AfterTwips      int                        `json:"after_twips,omitempty"`
-	LineTwips       int                        `json:"line_twips,omitempty"`
-	PageBreakBefore bool                       `json:"page_break_before,omitempty"`
-	PageSectionID   string                     `json:"page_section_id,omitempty"`
-	EffectiveStyle  *templateprofile.StyleRule `json:"effective_style,omitempty"`
-	FieldCodes      []string                   `json:"field_codes,omitempty"`
-	BookmarkNames   []string                   `json:"bookmark_names,omitempty"`
-	HyperlinkIDs    []string                   `json:"hyperlink_ids,omitempty"`
+	NodeID           string                          `json:"node_id"`
+	OfficePath       string                          `json:"office_path,omitempty"`
+	ParaID           string                          `json:"para_id,omitempty"`
+	SourcePart       string                          `json:"source_part"`
+	ParentNodeID     string                          `json:"parent_node_id,omitempty"`
+	Index            int                             `json:"index"`
+	NodeType         string                          `json:"node_type"`
+	Text             string                          `json:"text,omitempty"`
+	SemanticRole     string                          `json:"semantic_role"`
+	LogicalLevel     int                             `json:"logical_level,omitempty"`
+	CurrentStyle     string                          `json:"current_style_id,omitempty"`
+	SectionID        string                          `json:"section_id"`
+	Confidence       float64                         `json:"confidence"`
+	Evidence         []string                        `json:"evidence,omitempty"`
+	BeforeTwips      int                             `json:"before_twips,omitempty"`
+	AfterTwips       int                             `json:"after_twips,omitempty"`
+	LineTwips        int                             `json:"line_twips,omitempty"`
+	PageBreakBefore  bool                            `json:"page_break_before,omitempty"`
+	PageSectionID    string                          `json:"page_section_id,omitempty"`
+	EffectiveStyle   *templateprofile.StyleRule      `json:"effective_style,omitempty"`
+	Numbering        *templateprofile.NumberingLabel `json:"numbering,omitempty"`
+	EffectiveTabs    *templateprofile.TabStopSet     `json:"effective_tabs,omitempty"`
+	FieldCodes       []string                        `json:"field_codes,omitempty"`
+	TCEntries        []TCEntry                       `json:"tc_entries,omitempty"`
+	TOCIdentifier    string                          `json:"toc_identifier,omitempty"`
+	TOCFieldID       int                             `json:"toc_field_id,omitempty"`
+	TOCLinkText      string                          `json:"toc_link_text,omitempty"`
+	HyperlinkAnchors []string                        `json:"hyperlink_anchors,omitempty"`
+	BookmarkNames    []string                        `json:"bookmark_names,omitempty"`
+	HyperlinkIDs     []string                        `json:"hyperlink_ids,omitempty"`
+	TOCTarget        *TOCTargetRelation              `json:"toc_target,omitempty"`
+	ChapterGroup     *ChapterHeadingGroup            `json:"chapter_group,omitempty"`
 }
 
 type ValidationIssue struct {
@@ -95,10 +106,8 @@ var (
 	nodeTypePattern               = regexp.MustCompile(`^<w:(p|tbl)\b`)
 	textPattern                   = regexp.MustCompile(`(?s)<w:t\b[^>]*>(.*?)</w:t>`)
 	mathTextPattern               = regexp.MustCompile(`(?s)<m:t\b[^>]*>(.*?)</m:t>`)
-	ommlPattern                   = regexp.MustCompile(`(?s)<m:(?:oMath|oMathPara)\b`)
 	deletedPattern                = regexp.MustCompile(`(?s)<w:(?:del|moveFrom)\b[^>]*>.*?</w:(?:del|moveFrom)>`)
 	stylePattern                  = regexp.MustCompile(`<w:pStyle\b[^>]*\bw:val="([^"]+)"`)
-	paraIDPattern                 = regexp.MustCompile(`(?:w14:|w:)?paraId="([A-Fa-f0-9]+)"`)
 	headingPattern                = regexp.MustCompile(`^(\d+(?:\.\d+){0,3})\s+(\S.*)$`)
 	compactHeadingPattern         = regexp.MustCompile(`^(\d+(?:\.\d+){1,3})(?:\.)?([^\d\s].+)$`)
 	compactNumberedHeadingPattern = regexp.MustCompile(`^(\d+(?:\.\d+){0,3})[.、．]?\s*([^\d\s].+)$`)
@@ -142,13 +151,28 @@ func Extract(docxPath string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("resolve effective paragraph styles: %w", err)
 	}
-	snapshot := extractDocumentXML(string(documentXML), styles)
+	styleXML, _ := pkg.Get("word/styles.xml")
+	numberingXML, _ := pkg.Get("word/numbering.xml")
+	labels := templateprofile.ResolveNumberingLabels(string(documentXML), string(styleXML), string(numberingXML))
+	tabs := templateprofile.ResolveDocumentTabStops(string(documentXML), string(styleXML))
+	snapshot := extractDocumentXML(string(documentXML), styles, templateprofile.TOCStyleLevels(string(styleXML)))
 	for index := range snapshot.Nodes {
+		if snapshot.Nodes[index].SectionID == "toc" && snapshot.Nodes[index].SemanticRole == "toc_entry" {
+			if set, ok := tabs[snapshot.Nodes[index].Index]; ok {
+				copy := set
+				snapshot.Nodes[index].EffectiveTabs = &copy
+			}
+		}
+		if label, ok := labels[snapshot.Nodes[index].Index]; ok {
+			copy := label
+			snapshot.Nodes[index].Numbering = &copy
+		}
 		if style, ok := styles[snapshot.Nodes[index].Index]; ok {
 			copy := style
 			snapshot.Nodes[index].EffectiveStyle = &copy
 		}
 	}
+	snapshot.Nodes = ResolveChapterHeadingGroups(snapshot.Nodes)
 	appendNonBodyParts(&snapshot, pkg)
 	return snapshot, nil
 }
@@ -315,7 +339,7 @@ func ExtractDocumentXML(documentXML string) Snapshot {
 	return extractDocumentXML(documentXML, nil)
 }
 
-func extractDocumentXML(documentXML string, styles map[int]templateprofile.StyleRule) Snapshot {
+func extractDocumentXML(documentXML string, styles map[int]templateprofile.StyleRule, tocMaps ...map[string]int) Snapshot {
 	snapshot := Snapshot{
 		Version:  Version,
 		Source:   "word/document.xml",
@@ -326,9 +350,15 @@ func extractDocumentXML(documentXML string, styles map[int]templateprofile.Style
 	coverDateSeen := false
 	coverTitleSeen := false
 	abstractEnglish := false
+	translation := false
+	frontmatterContentRole := ""
+	isTemplate := documentrole.HasTemplatePlaceholders(extractText(documentXML))
+	referenceExamples := false
 	fallbackIDOccurrences := map[string]int{}
 	pageSection := 1
-	matches := bodyChildPattern.FindAllStringIndex(documentXML, -1)
+	matches := completeTextboxParagraphs(documentXML, bodyChildPattern.FindAllStringIndex(documentXML, -1))
+	declarations := declarationRegion(documentXML, matches)
+	tocFields := tocFieldParagraphs(documentXML, matches)
 	textboxRanges := textboxPattern.FindAllStringIndex(documentXML, -1)
 	for index, match := range matches {
 		// The non-nesting paragraph matcher sees a <w:p> inside a text box as
@@ -341,16 +371,7 @@ func extractDocumentXML(documentXML string, styles map[int]templateprofile.Style
 				insideTextbox = true
 				break
 			}
-			if match[0] < textbox[1] && match[1] > textbox[0] {
-				start, end := 0, len(textSource)
-				if textbox[0] > match[0] {
-					start = textbox[0] - match[0]
-				}
-				if textbox[1] < match[1] {
-					end = textbox[1] - match[0]
-				}
-				textSource = textSource[:start] + textSource[end:]
-			}
+
 		}
 		if insideTextbox {
 			continue
@@ -363,10 +384,16 @@ func extractDocumentXML(documentXML string, styles map[int]templateprofile.Style
 		text := extractText(textboxPattern.ReplaceAllString(textSource, ""))
 		styleID := extractStyleID(raw)
 		role, level, _, evidence := classify(nodeType, text)
-		if nodeType == "paragraph" && ommlPattern.MatchString(raw) {
-			role, level, evidence = "formula", 0, []string{"ooxml:omml_formula"}
+		captionReference := len(evidence) > 0 && evidence[0] == "regex:caption_reference_prose"
+		if nodeType == "paragraph" && strings.Contains(raw, "oMath") {
+			if mathRole, mathEvidence := classifyMathParagraph(raw, sectionID == "body"); mathRole != "" && (mathRole != "body_paragraph" || role == "body_paragraph") {
+				role, level, evidence = mathRole, 0, []string{mathEvidence}
+			}
 		}
-		if nodeType == "paragraph" && sectionID == "cover" {
+		if nodeType == "paragraph" && sectionID == "abstract" && role == "abstract_cn" && !strings.HasPrefix(strings.Join(strings.Fields(text), ""), "摘要：") && !strings.HasPrefix(strings.Join(strings.Fields(text), ""), "摘要:") {
+			role, evidence = "abstract_body", []string{"state:abstract_section"}
+		}
+		if nodeType == "paragraph" && sectionID == "cover" && role == "body_paragraph" {
 			switch {
 			case isCoverTitleText(text):
 				role, level, evidence = "cover_title", 0, []string{"cover:title"}
@@ -383,13 +410,13 @@ func extractDocumentXML(documentXML string, styles map[int]templateprofile.Style
 		if nodeType == "paragraph" && role == "body_paragraph" {
 			trimmed := strings.TrimSpace(text)
 			switch {
-			case correctChapterPattern.MatchString(trimmed):
+			case correctChapterPattern.MatchString(trimmed) && paperparse.IsPlausibleHeadingTitle(trimmed, 1):
 				role, level, evidence = "heading", 1, []string{"regex:chinese_chapter_heading"}
-			case correctChineseListPattern.MatchString(trimmed):
+			case correctChineseListPattern.MatchString(trimmed) && paperparse.IsPlausibleHeadingTitle(trimmed, 1):
 				role, level, evidence = "heading", 1, []string{"regex:chinese_list_heading"}
 			}
 		}
-		if nodeType == "paragraph" && (role == "body_paragraph" || role == "heading") {
+		if nodeType == "paragraph" && !captionReference && (role == "body_paragraph" || role == "heading") {
 			outline, ok := extractOutlineLevel(raw)
 			outlineEvidence := "ooxml:outline_level"
 			if style, found := styles[index]; found {
@@ -404,17 +431,28 @@ func extractDocumentXML(documentXML string, styles map[int]templateprofile.Style
 				if len([]rune(strings.TrimSpace(text))) > 100 && !paperparse.IsPlausibleHeadingTitle(text, level) {
 					role, level = "unknown", 0
 					evidence = append(evidence, "conflict:outline_with_long_text")
+				} else if strings.Count(text, "。") >= 2 {
+					role, level = "unknown", 0
+					evidence = append(evidence, "conflict:outline_with_prose_sentences")
 				}
 			}
 		}
-		if nodeType == "paragraph" && sectionID == "toc" {
-			if tocLevel, ok := tocStyleLevel(styleID); ok {
+		if nodeType == "paragraph" && sectionID == "toc" && strings.TrimSpace(text) != "" {
+			tocLevel := templateprofile.TOCStyleLevel(styleID)
+			if len(tocMaps) > 0 {
+				if declared, found := tocMaps[0][styleID]; found {
+					tocLevel = declared
+				}
+			}
+			if tocLevel > 0 {
 				role, level, evidence = "toc_entry", tocLevel, []string{"ooxml:toc_style"}
+			} else if tocLevel < 0 {
+				role, level, evidence = "unknown", 0, []string{"conflict:toc_style_identity"}
 			}
 		}
-		if nodeType == "paragraph" && role == "body_paragraph" && chapterPattern.MatchString(strings.TrimSpace(text)) {
+		if nodeType == "paragraph" && role == "body_paragraph" && chapterPattern.MatchString(strings.TrimSpace(text)) && paperparse.IsPlausibleHeadingTitle(text, 1) {
 			role, level, evidence = "heading", 1, []string{"regex:chinese_chapter_heading"}
-		} else if nodeType == "paragraph" && role == "body_paragraph" && chineseListPattern.MatchString(strings.TrimSpace(text)) {
+		} else if nodeType == "paragraph" && role == "body_paragraph" && chineseListPattern.MatchString(strings.TrimSpace(text)) && paperparse.IsPlausibleHeadingTitle(text, 1) {
 			role, level, evidence = "heading", 1, []string{"regex:chinese_list_heading"}
 		} else if nodeType == "paragraph" && role == "body_paragraph" {
 			if match := compactNumberedHeadingPattern.FindStringSubmatch(strings.TrimSpace(text)); len(match) == 3 {
@@ -427,6 +465,12 @@ func extractDocumentXML(documentXML string, styles map[int]templateprofile.Style
 					role, evidence = "heading", []string{"regex:compact_numbered_heading"}
 				}
 			}
+		}
+		if nodeType == "paragraph" && translationSectionTitle(text) && (sectionID == "references" || sectionID == "appendix" || translation) {
+			translation = true
+			role, level, evidence = "appendix_title", 0, []string{"context:translation_boundary"}
+		} else if role == "appendix_title" {
+			translation = false
 		}
 		// Once the references heading has opened its section, keep its entries
 		// distinct from ordinary body paragraphs so the formatter can apply the
@@ -455,6 +499,85 @@ func extractDocumentXML(documentXML string, styles map[int]templateprofile.Style
 				}
 			}
 		}
+		if fieldEvidence, found := tocFields[index]; found && nodeType == "paragraph" && text != "" {
+			if role != "toc_entry" {
+				role, level = "toc_entry", 0
+			}
+			evidence = append(evidence, fieldEvidence.Evidence)
+			for _, item := range evidence {
+				if strings.HasPrefix(item, "conflict:") {
+					role, level = "unknown", 0
+				}
+			}
+			sectionID = "toc"
+		}
+		if declarations[index] && nodeType == "paragraph" && text != "" {
+			// Declaration layout is not a body-heading rule. Preserve it for
+			// review until the selected template supplies a specific contract.
+			role, level, evidence = "unknown", 0, []string{"context:frontmatter_declaration_region", "review:preserve_declaration_format"}
+			sectionID = "cover"
+			if generalThesisDeclarationTitle(strings.Join(strings.Fields(text), "")) {
+				role = "originality_declaration_title"
+			}
+		}
+		if nodeType == "paragraph" {
+			compact := strings.Join(strings.Fields(text), "")
+			if declarations[index] {
+				switch {
+				case declarationTitle(compact):
+					role = "originality_declaration_title"
+					if strings.Contains(compact, "授权") {
+						role = "authorization_declaration_title"
+					}
+				case strings.Count(compact, "签名") >= 2:
+					role = "declaration_signature_dual"
+				case strings.Contains(compact, "签名"):
+					role = "declaration_signature"
+				case isCoverDateText(compact):
+					role = "declaration_date"
+				case strings.Contains(compact, "本人声明") || strings.HasPrefix(compact, "本人郑重声明") || strings.HasPrefix(compact, "本人郑重承诺"):
+					role = "originality_declaration"
+				case strings.Contains(compact, "使用授权") || strings.Contains(compact, "有权保留"):
+					role = "authorization_declaration"
+				}
+				evidence = append(evidence, "review:frontmatter_contract")
+				if title, body := frontmatterFormTitle(compact); title != "" {
+					role, frontmatterContentRole = title, body
+				} else if role == "unknown" && frontmatterContentRole != "" {
+					role = frontmatterContentRole
+				}
+			}
+			if sectionID == "cover" && strings.Contains(compact, "AI工具使用") && strings.HasSuffix(compact, "说明表") {
+				role, level = "ai_tool_declaration_title", 0
+				evidence = append(evidence, "review:frontmatter_contract")
+			}
+			if isTemplate && strings.TrimSpace(text) != "" {
+				if role == "references_title" || role == "appendix_title" || role == "acknowledgements_title" || role == "heading" {
+					referenceExamples = false
+				}
+				if sectionID == "references" && strings.Contains(text, "格式示例如下") {
+					referenceExamples = true
+				}
+				if referenceExamples && sectionID == "references" {
+					role, level, evidence = "template_example", 0, []string{"context:template_reference_examples", "review:template_content"}
+				} else if documentrole.IsTemplateFormatNote(text) {
+					role, level, evidence = "template_note", 0, []string{"context:template_placeholders", "review:template_content"}
+				}
+			}
+			if subfigureLabelPattern.MatchString(strings.TrimSpace(text)) && index+1 < len(matches) {
+				next := extractText(documentXML[matches[index+1][0]:matches[index+1][1]])
+				nextRole, _, _, _ := classify("paragraph", next)
+				if nextRole == "figure_caption" {
+					role, level, evidence = "figure_caption", 0, []string{"context:subfigure_labels_followed_by_caption"}
+				}
+			}
+			if isTemplate && formulaNumberPattern.MatchString(compact) {
+				role, level, evidence = "formula_number", 0, []string{"context:template_formula_number", "review:template_content"}
+			}
+		}
+		if nodeType == "paragraph" && strings.Contains(raw, "<w:txbxContent") {
+			evidence = append(evidence, "review:mixed_textbox_paragraph")
+		}
 		confidence := confidenceFor(role, nodeType, text, styleID, evidence)
 		if role == "abstract_en" {
 			abstractEnglish = true
@@ -473,6 +596,14 @@ func extractDocumentXML(documentXML string, styles map[int]templateprofile.Style
 		} else if role == "appendix_title" {
 			sectionID = "appendix"
 		}
+		nodeSection := sectionID
+		if declarations[index] {
+			nodeSection = "cover"
+		}
+		if translation {
+			nodeSection = "translation"
+			evidence = append(evidence, "review:translation_contract")
+		}
 		paraID := extractParaID(raw)
 		nodeID := fmt.Sprintf("p:%06d", index)
 		if paraID != "" {
@@ -488,6 +619,8 @@ func extractDocumentXML(documentXML string, styles map[int]templateprofile.Style
 			nodeID = fmt.Sprintf("p:%x:%03d", digest[:6], fallbackIDOccurrences[identity])
 		}
 		node := Node{
+			TOCIdentifier:   tocFields[index].Identifier,
+			TOCFieldID:      tocFields[index].ID,
 			NodeID:          nodeID,
 			OfficePath:      fmt.Sprintf("/body/p[%d]", index+1),
 			ParaID:          paraID,
@@ -498,7 +631,7 @@ func extractDocumentXML(documentXML string, styles map[int]templateprofile.Style
 			SemanticRole:    role,
 			LogicalLevel:    level,
 			CurrentStyle:    styleID,
-			SectionID:       sectionID,
+			SectionID:       nodeSection,
 			Confidence:      confidence,
 			Evidence:        evidence,
 			BeforeTwips:     spacingValue(raw, "w:before"),
@@ -526,7 +659,10 @@ func extractDocumentXML(documentXML string, styles map[int]templateprofile.Style
 			pageSection++
 		}
 	}
+	resolveLinkedTOCLevels(&snapshot)
 	annotateTOCMatches(&snapshot)
+	snapshot.Nodes = ResolveTOCTargetRelations(snapshot.Nodes)
+	snapshot.Nodes = ResolveChapterHeadingGroups(snapshot.Nodes)
 	return snapshot
 }
 
@@ -549,6 +685,7 @@ func extractPageSections(documentXML string) []PageSection {
 			section.MarginRightTwips = ooxmlAttribute(margins, "right")
 			section.MarginBottomTwips = ooxmlAttribute(margins, "bottom")
 			section.MarginLeftTwips = ooxmlAttribute(margins, "left")
+			section.GutterTwips = ooxmlAttribute(margins, "gutter")
 			section.HeaderMarginTwips = ooxmlAttribute(margins, "header")
 			section.FooterMarginTwips = ooxmlAttribute(margins, "footer")
 		}
@@ -718,7 +855,16 @@ func extractText(raw string) string {
 func withRawMetadata(node Node, raw string) Node {
 	node.PageBreakBefore = node.PageBreakBefore || ooxmlpatch.ParagraphPageBreakBefore(raw)
 	node.FieldCodes = extractFieldCodes(raw)
+	node.TCEntries = ParseTCEntries(raw)
+	if match := regexp.MustCompile(`(?s)<w:hyperlink\b[^>]*w:anchor="[^"]+"[^>]*>(.*?)</w:hyperlink>`).FindStringSubmatch(raw); len(match) == 2 {
+		link := match[1]
+		if tab := strings.Index(link, "<w:tab"); tab >= 0 {
+			link = link[:tab]
+		}
+		node.TOCLinkText = extractText(link)
+	}
 	node.BookmarkNames = extractAttributeValues(bookmarkNamePattern, raw)
+	node.HyperlinkAnchors = extractAttributeValues(regexp.MustCompile(`<w:hyperlink\b[^>]*\bw:anchor="([^"]+)"`), raw)
 	node.HyperlinkIDs = extractAttributeValues(hyperlinkIDPattern, raw)
 	return node
 }
@@ -747,11 +893,7 @@ func extractAttributeValues(pattern *regexp.Regexp, raw string) []string {
 }
 
 func extractParaID(raw string) string {
-	match := paraIDPattern.FindStringSubmatch(raw)
-	if len(match) == 2 {
-		return match[1]
-	}
-	return ""
+	return ooxmlpkg.ParagraphParaID(raw)
 }
 
 func extractStyleID(raw string) string {
@@ -782,16 +924,23 @@ func classify(nodeType string, text string) (string, int, float64, []string) {
 		return "abstract_title", 0, 0.98, []string{"keyword:abstract_title"}
 	case strings.HasPrefix(correctCompact, "\u6458\u8981"):
 		return "abstract_cn", 0, 0.96, []string{"keyword:abstract_cn"}
-	case strings.HasPrefix(correctCompact, "\u5173\u952e\u8bcd"):
+	case strings.HasPrefix(correctCompact, "\u5173\u952e\u8bcd") || strings.HasPrefix(correctCompact, "关键字"):
 		return "keywords_cn", 0, 0.96, []string{"keyword:keywords_cn"}
 	case correctCompact == "\u53c2\u8003\u6587\u732e":
 		return "references_title", 0, 0.98, []string{"keyword:references"}
 	case correctCompact == "\u81f4\u8c22":
 		return "acknowledgements_title", 0, 0.98, []string{"keyword:acknowledgements"}
-	case correctTableCaptionPattern.MatchString(trimmed), continuedTableCaptionPattern.MatchString(trimmed):
+	case chineseCaptionProse.MatchString(strings.Join(strings.Fields(trimmed), "")):
+		return "body_paragraph", 0, 0.90, []string{"regex:caption_reference_prose"}
+	case (correctTableCaptionPattern.MatchString(correctCompact) || continuedTableCaptionPattern.MatchString(correctCompact)) && !captionDiscussion(trimmed):
 		return "table_caption", 0, 0.90, []string{"regex:table_caption"}
-	case correctFigureCaptionPattern.MatchString(trimmed):
+	case correctFigureCaptionPattern.MatchString(correctCompact) && !captionDiscussion(trimmed):
 		return "figure_caption", 0, 0.90, []string{"regex:figure_caption"}
+	case englishCaption.MatchString(trimmed) && !captionDiscussion(trimmed):
+		if strings.HasPrefix(strings.ToLower(trimmed), "table") {
+			return "table_caption", 0, .90, []string{"regex:english_table_caption"}
+		}
+		return "figure_caption", 0, .90, []string{"regex:english_figure_caption"}
 	case appendixTitlePattern.MatchString(trimmed):
 		return "appendix_title", 0, 0.96, []string{"regex:appendix_title"}
 	}
@@ -812,9 +961,9 @@ func classify(nodeType string, text string) (string, int, float64, []string) {
 		return "references_title", 0, 0.98, []string{"keyword:参考文献"}
 	case compact == "致谢":
 		return "acknowledgements_title", 0, 0.98, []string{"keyword:致谢"}
-	case regexp.MustCompile(`^(?:续\s*)?表\s*\d+(\.\d+|-?\d*)?\s*\S*`).MatchString(trimmed):
+	case regexp.MustCompile(`^(?:续\s*)?表\s*\d+(\.\d+|-?\d*)?\s*\S*`).MatchString(trimmed) && !captionDiscussion(trimmed):
 		return "table_caption", 0, 0.90, []string{"regex:table_caption"}
-	case regexp.MustCompile(`^图\d+(\.\d+|-?\d*)?\s*\S*`).MatchString(trimmed):
+	case regexp.MustCompile(`^图\d+(\.\d+|-?\d*)?\s*\S*`).MatchString(trimmed) && !captionDiscussion(trimmed):
 		return "figure_caption", 0, 0.90, []string{"regex:figure_caption"}
 	}
 	if match := headingPattern.FindStringSubmatch(trimmed); len(match) == 3 && plausibleNumberedHeadingTitle(match[2], strings.Count(match[1], ".")+1) {
@@ -853,18 +1002,6 @@ func extractOutlineLevel(raw string) (int, bool) {
 			path = path[:len(path)-1]
 		}
 	}
-}
-
-func tocStyleLevel(styleID string) (int, bool) {
-	normalized := strings.ToLower(strings.NewReplacer(" ", "", "_", "", "-", "").Replace(strings.TrimSpace(styleID)))
-	if !strings.HasPrefix(normalized, "toc") {
-		return 0, false
-	}
-	level := 0
-	if _, err := fmt.Sscanf(strings.TrimPrefix(normalized, "toc"), "%d", &level); err != nil || level < 1 || level > 9 {
-		return 0, false
-	}
-	return level, true
 }
 
 func confidenceFor(role, nodeType, text, styleID string, evidence []string) float64 {

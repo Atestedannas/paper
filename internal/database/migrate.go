@@ -274,6 +274,14 @@ func insertDefaultSystemSettings() {
 			IsSecret:    false,
 		},
 		{
+			// 免费下载次数（按用户，复用 user.free_checks 计数）。
+			// 后台改这个值即可调整「所有注册用户能免费下载几次」。
+			Key:         "free_download_limit",
+			Value:       "2",
+			Description: "免费用户下载次数限制",
+			IsSecret:    false,
+		},
+		{
 			Key:         "wechat_app_id",
 			Value:       "",
 			Description: "寰俊灏忕▼搴廇ppID",

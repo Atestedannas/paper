@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/paper-format-checker/backend/internal/config"
@@ -12,9 +11,11 @@ import (
 	"github.com/paper-format-checker/backend/internal/middleware"
 	"github.com/paper-format-checker/backend/internal/service"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -570,7 +571,7 @@ func main() {
 		// Template import route (for admin template library)
 		templates := apiV1.Group("/templates", middleware.AuthMiddleware(cfg, database.DB), middleware.AdminMiddleware())
 		{
-			templates.POST("/import", paperHandler.UploadTemplate)
+			templates.POST("/import", paperHandler.ImportTemplate)
 		}
 
 		// Contact form routes
@@ -824,7 +825,13 @@ func main() {
 		apiV2.POST("/papers", paperWorkflowHandler.CreatePaperJob)
 		apiV2.POST("/jobs/:job_id/run", paperWorkflowHandler.RunJob)
 		apiV2.GET("/jobs/:job_id", paperWorkflowHandler.GetJob)
+		// 预览：只校验登录+归属，永不收费（Content-Disposition: inline）
+		apiV2.GET("/jobs/:job_id/preview", paperWorkflowHandler.PreviewJob)
+		// 差异明细：分页返回，数据源是 job 的 rule_audit（v2 不写 check_results）
+		apiV2.GET("/jobs/:job_id/diff", paperWorkflowHandler.GetJobDiff)
+		// 下载：计费闸口（订单/卡密/免费额度/会员/管理员），幂等不重复扣
 		apiV2.GET("/jobs/:job_id/download", paperWorkflowHandler.DownloadJob)
+		apiV2.PATCH("/jobs/:job_id/confirm", paperWorkflowHandler.ConfirmJob)
 	}
 
 	// Health check route
@@ -839,7 +846,7 @@ func main() {
 	})
 
 	// Start server
-	serverAddr := fmt.Sprintf(":%d", cfg.Server.Port)
+	serverAddr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

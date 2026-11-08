@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/paper}"
 SERVICE_NAME="${SERVICE_NAME:-paper.service}"
@@ -90,7 +90,13 @@ rollback() {
   fi
 }
 
-trap rollback ERR
+deployment_failed() {
+  local status=$?
+  trap - ERR
+  rollback
+  exit "$status"
+}
+trap deployment_failed ERR
 
 log "stop ${SERVICE_NAME}"
 systemctl stop "$SERVICE_NAME" || true
@@ -107,16 +113,18 @@ fi
 
 log "start ${SERVICE_NAME}"
 if ! systemctl start "$SERVICE_NAME"; then
+  rollback
+  trap - ERR
   diagnose_service
   fail "failed to start ${SERVICE_NAME}"
 fi
 
 log "waiting health check: ${HEALTH_URL}"
 for i in $(seq 1 "$HEALTH_RETRIES"); do
-  if curl -fsS "$HEALTH_URL" >/dev/null; then
+  if curl --connect-timeout 5 --max-time 10 -fsS "$HEALTH_URL" >/dev/null; then
     trap - ERR
     log "deploy success"
-    systemctl status "$SERVICE_NAME" --no-pager
+    systemctl status "$SERVICE_NAME" --no-pager || true
     exit 0
   fi
   log "health check attempt ${i}/${HEALTH_RETRIES} failed"
@@ -124,5 +132,6 @@ for i in $(seq 1 "$HEALTH_RETRIES"); do
 done
 
 rollback
+trap - ERR
 diagnose_service
 fail "service did not become healthy after $((HEALTH_RETRIES * 2)) seconds"

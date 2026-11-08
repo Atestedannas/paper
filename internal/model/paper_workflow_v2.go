@@ -35,8 +35,11 @@ type PaperWorkflowJob struct {
 	Stage              string    `gorm:"size:32;not null;default:'queued'" json:"stage"`
 	DownloadPath       string    `gorm:"size:255" json:"download_path"`
 	VerifyResultJSON   string    `gorm:"type:jsonb;not null;default:'{}'" json:"verify_result_json"`
-	CreatedAt          time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
-	UpdatedAt          time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
+	// ResultSummaryJSON 由 UpdateJobResult 顺手聚合，避免前端从 rule_audit 硬算统计
+	ResultSummaryJSON string    `gorm:"type:jsonb;not null;default:'{}'" json:"result_summary_json"`
+	Confirmed         bool      `gorm:"default:false;not null" json:"confirmed"`
+	CreatedAt         time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
+	UpdatedAt         time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"updated_at"`
 
 	Paper            Paper                `gorm:"foreignKey:PaperID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"paper,omitempty"`
 	User             User                 `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"user,omitempty"`

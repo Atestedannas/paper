@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/paper-format-checker/backend/internal/core/formatcheck"
 	"github.com/paper-format-checker/backend/internal/core/goldenregression"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/core/paperast"
@@ -57,6 +58,7 @@ type Issue struct {
 }
 
 type Result struct {
+	FormatCompliance *formatcheck.Report      `json:"format_compliance,omitempty"`
 	RuleAudit        json.RawMessage          `json:"rule_audit,omitempty"`
 	Passed           bool                     `json:"passed"`
 	ComplianceStatus string                   `json:"compliance_status"`
@@ -676,7 +678,7 @@ func addTableFormattingIssues(document string, result *Result, profiles ...*temp
 		if !tableLayoutIsStable(table) {
 			appendRepairableIssueOnce(result, "table_layout_not_centered", "table should be centered, non-floating, and constrained to the page text area.", documentTarget)
 		}
-		if !tableHasRepeatingHeader(table) {
+		if len(verifyTableRowPattern.FindAllStringIndex(table, 2)) > 1 && !tableHasRepeatingHeader(table) {
 			appendRepairableIssueOnce(result, "table_repeating_header_missing", "long tables should mark the first row as a repeating header row.", documentTarget)
 		}
 		if tableStyle != nil && !tableCellsFollowStyle(table, tableStyle) {

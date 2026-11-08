@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paper-format-checker/backend/internal/core/pdfpreflight"
 	"rsc.io/pdf"
 )
 
@@ -79,38 +80,42 @@ type SamePageRule struct {
 }
 
 type Options struct {
-	Enabled         bool
-	Strict          bool
-	OutputDir       string
-	Renderer        Renderer
-	Rasterizer      Rasterizer
-	PNGOutputDir    string
-	TextExtractor   TextExtractor
-	RequiredText    []string
-	ForbiddenText   []string
-	SamePageRules   []SamePageRule
-	TextStyleRules  []TextStyleRule
-	AllowBlankPage  map[int]bool
-	CheckPageFooter bool
+	Enabled               bool
+	Strict                bool
+	OutputDir             string
+	Renderer              Renderer
+	Rasterizer            Rasterizer
+	PNGOutputDir          string
+	TextExtractor         TextExtractor
+	RequiredText          []string
+	ForbiddenText         []string
+	SamePageRules         []SamePageRule
+	TextStyleRules        []TextStyleRule
+	AllowBlankPage        map[int]bool
+	CheckPageFooter       bool
+	PDFPreflightInspector pdfpreflight.Inspector
 }
 
 type Result struct {
-	Enabled   bool       `json:"enabled"`
-	Passed    bool       `json:"passed"`
-	PDFPath   string     `json:"pdf_path,omitempty"`
-	PNGPaths  []string   `json:"png_paths,omitempty"`
-	PageCount int        `json:"page_count"`
-	Issues    []Issue    `json:"issues,omitempty"`
-	PageTexts []string   `json:"-"`
-	TextSpans []TextSpan `json:"-"`
+	SourceSHA256 string               `json:"source_sha256,omitempty"`
+	PDFSHA256    string               `json:"pdf_sha256,omitempty"`
+	PDFPreflight *pdfpreflight.Report `json:"pdf_preflight,omitempty"`
+	Enabled      bool                 `json:"enabled"`
+	Passed       bool                 `json:"passed"`
+	PDFPath      string               `json:"pdf_path,omitempty"`
+	PNGPaths     []string             `json:"png_paths,omitempty"`
+	PageCount    int                  `json:"page_count"`
+	Issues       []Issue              `json:"issues,omitempty"`
+	PageTexts    []string             `json:"-"`
+	TextSpans    []TextSpan           `json:"-"`
 }
 
 func DefaultEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("RENDER_VERIFY_ENABLED")), "true")
 }
 
-func Check(ctx context.Context, docxPath string, options Options) (Result, error) {
-	result := Result{Enabled: options.Enabled}
+func Check(ctx context.Context, docxPath string, options Options) (result Result, retErr error) {
+	result = Result{Enabled: options.Enabled}
 	if !options.Enabled {
 		result.Passed = true
 		return result, nil
@@ -130,6 +135,26 @@ func Check(ctx context.Context, docxPath string, options Options) (Result, error
 	if renderer == nil {
 		return Result{}, fmt.Errorf("renderer is required")
 	}
+	sourceSHA, err := pdfpreflight.FileSHA256(docxPath)
+	if err != nil {
+		return Result{}, fmt.Errorf("bind render source: %w", err)
+	}
+	result.SourceSHA256 = sourceSHA
+	// Every returned observation must still refer to the same source and PDF.
+	defer func() {
+		actual, err := pdfpreflight.FileSHA256(docxPath)
+		if err != nil || actual != sourceSHA {
+			result.Issues = append(result.Issues, Issue{Kind: "render_source_changed", Severity: SeverityFatal, Message: "render source changed or became unreadable during verification", Target: docxPath})
+			result.Passed, result.PDFPreflight = false, nil
+		}
+		if result.PDFSHA256 != "" {
+			actual, err := pdfpreflight.FileSHA256(result.PDFPath)
+			if err != nil || actual != result.PDFSHA256 {
+				result.Issues = append(result.Issues, Issue{Kind: "render_pdf_changed", Severity: SeverityFatal, Message: "rendered PDF changed or became unreadable during verification", Target: result.PDFPath})
+				result.Passed, result.PDFPreflight, result.PNGPaths = false, nil, nil
+			}
+		}
+	}()
 	extractor := options.TextExtractor
 	if extractor == nil {
 		extractor = RscPDFTextExtractor{}
@@ -145,9 +170,13 @@ func Check(ctx context.Context, docxPath string, options Options) (Result, error
 
 	artifact, err := renderer.RenderPDF(ctx, docxPath, outputDir)
 	if err != nil {
+		severity := severityForStrict(options.Strict)
+		if options.PDFPreflightInspector != nil {
+			severity = SeverityError
+		}
 		result.Issues = append(result.Issues, Issue{
 			Kind:     "render_pdf",
-			Severity: severityForStrict(options.Strict),
+			Severity: severity,
 			Message:  fmt.Sprintf("render DOCX to PDF failed: %v", err),
 			Target:   docxPath,
 		})
@@ -155,6 +184,25 @@ func Check(ctx context.Context, docxPath string, options Options) (Result, error
 		return result, nil
 	}
 	result.PDFPath = artifact.Path
+	result.PDFSHA256, err = pdfpreflight.FileSHA256(artifact.Path)
+	if err != nil {
+		result.Issues = append(result.Issues, Issue{Kind: "bind_rendered_pdf", Severity: SeverityError, Message: fmt.Sprintf("cannot bind rendered PDF bytes: %v", err), Target: artifact.Path})
+		return result, nil
+	}
+	if actual, err := pdfpreflight.FileSHA256(docxPath); err != nil || actual != sourceSHA {
+		return result, nil // deferred source gate records the rejected mutation.
+	}
+	if options.PDFPreflightInspector != nil {
+		report, err := options.PDFPreflightInspector.Inspect(ctx, artifact.Path)
+		if err == nil {
+			err = report.ValidateForPDF(artifact.Path)
+		}
+		if err != nil {
+			result.Issues = append(result.Issues, Issue{Kind: "pdf_preflight_unavailable", Severity: SeverityError, Message: fmt.Sprintf("PDF preflight observations were not verified: %v", err), Target: artifact.Path})
+		} else {
+			result.PDFPreflight = &report
+		}
+	}
 
 	if strings.TrimSpace(options.PNGOutputDir) != "" {
 		rasterizer := options.Rasterizer
@@ -176,7 +224,11 @@ func Check(ctx context.Context, docxPath string, options Options) (Result, error
 
 	var pageTexts []string
 	var textSpans []TextSpan
-	if layoutExtractor, ok := extractor.(LayoutExtractor); ok {
+	if contextual, ok := extractor.(interface {
+		ExtractPageTextsContext(context.Context, string) ([]string, error)
+	}); ok {
+		pageTexts, err = contextual.ExtractPageTextsContext(ctx, artifact.Path)
+	} else if layoutExtractor, ok := extractor.(LayoutExtractor); ok {
 		pageTexts, textSpans, err = layoutExtractor.ExtractPageLayout(artifact.Path)
 	} else {
 		pageTexts, err = extractor.ExtractPageTexts(artifact.Path)
@@ -194,6 +246,10 @@ func Check(ctx context.Context, docxPath string, options Options) (Result, error
 	result.PageTexts = pageTexts
 	result.TextSpans = textSpans
 	result.PageCount = len(pageTexts)
+	if result.PDFPreflight != nil && result.PDFPreflight.PageCount != result.PageCount {
+		result.Issues = append(result.Issues, Issue{Kind: "pdf_preflight_page_count", Severity: SeverityError, Message: "PDF preflight page count differs from the text extractor", Target: artifact.Path})
+		result.PDFPreflight = nil
+	}
 	validateRenderedText(&result, options)
 	result.Passed = !hasBlockingIssues(result.Issues)
 	return result, nil
@@ -304,7 +360,16 @@ func (RscPDFTextExtractor) ExtractPageTexts(pdfPath string) ([]string, error) {
 }
 
 func (RscPDFTextExtractor) ExtractPageLayout(pdfPath string) ([]string, []TextSpan, error) {
-	reader, err := pdf.Open(pdfPath)
+	file, err := os.Open(pdfPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	reader, err := pdf.NewReader(file, info.Size())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -412,38 +477,48 @@ func validateRenderedText(result *Result, options Options) {
 
 func validateTextStyles(result *Result, rules []TextStyleRule) {
 	for _, rule := range rules {
-		span, ok := findTextSpan(result.TextSpans, rule.Text)
-		if !ok {
+		targets := findTextStyleTargets(result.TextSpans, rule.Text)
+		occurrences := len(targets)
+		if needle := normalizeText(rule.Text); needle != "" {
+			pageOccurrences := 0
+			for _, page := range result.PageTexts {
+				pageOccurrences += strings.Count(normalizeText(page), needle)
+			}
+			// A second occurrence with unlocatable span geometry must not be
+			// hidden by the one occurrence that could be precisely located.
+			occurrences = max(occurrences, pageOccurrences)
+		}
+		if occurrences > 1 {
+			result.Issues = append(result.Issues, Issue{Kind: "rendered_style_target_ambiguous", Severity: SeverityError, Message: fmt.Sprintf("rendered PDF has %d style target occurrences without unique location evidence", occurrences), Target: rule.Name})
+			continue
+		}
+		if len(targets) == 0 {
 			result.Issues = append(result.Issues, Issue{Kind: "rendered_style_target_missing", Severity: SeverityError, Message: "rendered PDF cannot locate style target", Target: rule.Name})
 			continue
 		}
-		if expected := normalizeFontName(rule.FontContains); expected != "" && !strings.Contains(normalizeFontName(span.Font), expected) {
-			result.Issues = append(result.Issues, Issue{Kind: "rendered_font_mismatch", Severity: SeverityError, Message: fmt.Sprintf("rendered font %q does not match %q", span.Font, rule.FontContains), Target: rule.Name})
-		}
-		if rule.FontSize > 0 {
-			tolerance := rule.SizeTolerance
-			if tolerance <= 0 {
-				tolerance = 0.25
+		target := targets[0]
+		for _, span := range target.spans {
+			if expected := normalizeFontName(rule.FontContains); expected != "" && !strings.Contains(normalizeFontName(span.Font), expected) {
+				result.Issues = append(result.Issues, Issue{Kind: "rendered_font_mismatch", Severity: SeverityError, Message: fmt.Sprintf("rendered font %q does not match %q", span.Font, rule.FontContains), Target: rule.Name})
 			}
-			if abs(span.FontSize-rule.FontSize) > tolerance {
-				result.Issues = append(result.Issues, Issue{Kind: "rendered_font_size_mismatch", Severity: SeverityError, Message: fmt.Sprintf("rendered font size %.2fpt does not match %.2fpt", span.FontSize, rule.FontSize), Target: rule.Name})
+			if rule.FontSize > 0 {
+				tolerance := rule.SizeTolerance
+				if tolerance <= 0 {
+					tolerance = 0.25
+				}
+				if abs(span.FontSize-rule.FontSize) > tolerance {
+					result.Issues = append(result.Issues, Issue{Kind: "rendered_font_size_mismatch", Severity: SeverityError, Message: fmt.Sprintf("rendered font size %.2fpt does not match %.2fpt", span.FontSize, rule.FontSize), Target: rule.Name})
+				}
 			}
 		}
-		if expected := strings.ToLower(strings.TrimSpace(rule.Alignment)); expected != "" && span.PageWidth > 0 && renderedAlignment(span) != expected {
-			result.Issues = append(result.Issues, Issue{Kind: "rendered_alignment_mismatch", Severity: SeverityError, Message: fmt.Sprintf("rendered alignment %q does not match %q", renderedAlignment(span), expected), Target: rule.Name})
+		if expected := strings.ToLower(strings.TrimSpace(rule.Alignment)); expected != "" {
+			if !target.exactBounds || target.bounds.PageWidth <= 0 || target.bounds.Width <= 0 {
+				result.Issues = append(result.Issues, Issue{Kind: "rendered_alignment_target_unresolved", Severity: SeverityError, Message: "rendered PDF cannot isolate complete style target bounds", Target: rule.Name})
+			} else if actual := renderedAlignment(target.bounds); actual != expected {
+				result.Issues = append(result.Issues, Issue{Kind: "rendered_alignment_mismatch", Severity: SeverityError, Message: fmt.Sprintf("rendered alignment %q does not match %q", actual, expected), Target: rule.Name})
+			}
 		}
 	}
-}
-
-func findTextSpan(spans []TextSpan, text string) (TextSpan, bool) {
-	needle := normalizeText(text)
-	for _, span := range spans {
-		value := normalizeText(span.Text)
-		if value != "" && (strings.Contains(value, needle) || strings.Contains(needle, value)) {
-			return span, true
-		}
-	}
-	return TextSpan{}, false
 }
 
 func renderedAlignment(span TextSpan) string {
@@ -477,6 +552,10 @@ type PythonPDFTextExtractor struct {
 }
 
 func (e PythonPDFTextExtractor) ExtractPageTexts(pdfPath string) ([]string, error) {
+	return e.ExtractPageTextsContext(context.Background(), pdfPath)
+}
+
+func (e PythonPDFTextExtractor) ExtractPageTextsContext(ctx context.Context, pdfPath string) ([]string, error) {
 	binary := strings.TrimSpace(e.Binary)
 	if binary == "" {
 		binary = strings.TrimSpace(os.Getenv("PDF_TEXT_PYTHON"))
@@ -485,11 +564,18 @@ func (e PythonPDFTextExtractor) ExtractPageTexts(pdfPath string) ([]string, erro
 		return nil, fmt.Errorf("PDF_TEXT_PYTHON is not configured")
 	}
 	script := `import json, sys
-import pdfplumber
-with pdfplumber.open(sys.argv[1]) as pdf:
-    sys.stdout.buffer.write(json.dumps([(page.extract_text() or "") for page in pdf.pages], ensure_ascii=False).encode("utf-8"))
+try:
+    import pdfplumber
+except ModuleNotFoundError:
+    import fitz
+    with fitz.open(sys.argv[1]) as pdf:
+        pages = [page.get_text(sort=True) for page in pdf]
+else:
+    with pdfplumber.open(sys.argv[1]) as pdf:
+        pages = [(page.extract_text() or "") for page in pdf.pages]
+sys.stdout.buffer.write(json.dumps(pages, ensure_ascii=False).encode("utf-8"))
 `
-	output, err := exec.Command(binary, "-c", script, pdfPath).CombinedOutput()
+	output, err := exec.CommandContext(ctx, binary, "-c", script, pdfPath).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("pdfplumber extract: %w, output: %s", err, strings.TrimSpace(string(output)))
 	}

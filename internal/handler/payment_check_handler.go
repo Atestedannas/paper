@@ -59,6 +59,9 @@ func paperServicePrice(config map[string]interface{}, serviceType string) float6
 	}
 
 	switch serviceType {
+	case "paper_download":
+		price, _ := config["paper_download"].(float64)
+		return price
 	case "format_check":
 		return formatCheck
 	case "format_fix":

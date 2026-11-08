@@ -16,16 +16,19 @@ import (
 type Client interface{ ChatCompletion(string) (string, error) }
 
 type Assignment struct {
-	LogicalLevel int      `json:"-"`
-	ContextKey   string   `json:"-"`
-	ReviewReason string   `json:"-"`
-	Text         string   `json:"-"`
-	NodeID       string   `json:"nodeId"`
-	Role         string   `json:"role"`
-	Confidence   float64  `json:"confidence"`
-	Evidence     []string `json:"evidence,omitempty"`
-	Trusted      bool     `json:"-"`
-	Index        int      `json:"-"`
+	TOCTarget    *paperast.TOCTargetRelation   `json:"tocTarget,omitempty"`
+	ChapterGroup *paperast.ChapterHeadingGroup `json:"chapterGroup,omitempty"`
+	TOCIdentity  string                        `json:"-"`
+	LogicalLevel int                           `json:"-"`
+	ContextKey   string                        `json:"-"`
+	ReviewReason string                        `json:"-"`
+	Text         string                        `json:"-"`
+	NodeID       string                        `json:"nodeId"`
+	Role         string                        `json:"role"`
+	Confidence   float64                       `json:"confidence"`
+	Evidence     []string                      `json:"evidence,omitempty"`
+	Trusted      bool                          `json:"-"`
+	Index        int                           `json:"-"`
 }
 
 // ClassifyStructured is the production LLM boundary. It submits only short,
@@ -37,6 +40,7 @@ func ClassifyStructured(ctx context.Context, client Client, nodes []paperast.Nod
 
 // ClassifyStructuredWithEvidence uses pre-format PDF coordinates as a
 // structural cue while keeping font/size observations out of role decisions.
+// Valid assignments are returned even when other subjects fail validation.
 func ClassifyStructuredWithEvidence(ctx context.Context, client Client, nodes []paperast.Node, pdfEvidenceByNode map[string][]evidence.Item) ([]Assignment, error) {
 	if ctx == nil || client == nil {
 		return nil, fmt.Errorf("role classifier context or client is nil")
@@ -81,16 +85,20 @@ Subject:
 		response = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(response), "```json"), "```"), "```"))
 		var candidate evidence.CandidateRole
 		if err := json.Unmarshal([]byte(response), &candidate); err != nil {
-			return nil, fmt.Errorf("structured role classifier invalid JSON: %w", err)
+			failures = append(failures, fmt.Sprintf("node=%s: structured role classifier invalid JSON: %v", request.Subject.NodeID, err))
+			continue
 		}
 		if candidate.NodeID != request.Subject.NodeID {
-			return nil, fmt.Errorf("structured role classifier returned an unrequested node %q", candidate.NodeID)
+			failures = append(failures, fmt.Sprintf("node=%s: structured role classifier returned an unrequested node %q", request.Subject.NodeID, candidate.NodeID))
+			continue
 		}
 		if !documentrole.Valid(candidate.Role) {
-			return nil, fmt.Errorf("structured role classifier returned invalid role %q", candidate.Role)
+			failures = append(failures, fmt.Sprintf("node=%s: structured role classifier returned invalid role %q", request.Subject.NodeID, candidate.Role))
+			continue
 		}
 		if err := evidence.ValidateRoleCandidate(request, candidate); err != nil {
-			return nil, err
+			failures = append(failures, fmt.Sprintf("node=%s: %v", request.Subject.NodeID, err))
+			continue
 		}
 		evidenceRefs := make([]string, 0, len(candidate.SourceEvidenceIDs)+1)
 		for _, id := range candidate.SourceEvidenceIDs {
@@ -107,7 +115,19 @@ Subject:
 	return assignments, nil
 }
 
+func protectedRoleEvidence(node paperast.Node) bool {
+	for _, item := range node.Evidence {
+		if item == "review:template_content" || item == "review:frontmatter_contract" || item == "review:translation_contract" || item == "review:inline_math_paragraph" || item == "ooxml:inline_math_body_prose" || item == "regex:caption_reference_prose" {
+			return true
+		}
+	}
+	return false
+}
+
 func needsSemanticArbitration(node paperast.Node) bool {
+	if protectedRoleEvidence(node) {
+		return false
+	}
 	if node.NodeType != "paragraph" || strings.TrimSpace(node.Text) == "" || node.SectionID == "toc" || (node.SourcePart != "" && node.SourcePart != "word/document.xml") {
 		return false
 	}
@@ -143,6 +163,8 @@ func Classify(ctx context.Context, client Client, nodes []paperast.Node) ([]Assi
 // plan consumed by the formatter. Body text becomes actionable only after a
 // section boundary has established its context.
 func Freeze(nodes []paperast.Node) []Assignment {
+	nodes = paperast.ResolveTOCTargetRelations(nodes)
+	nodes = paperast.ResolveChapterHeadingGroups(nodes)
 	result := make([]Assignment, 0, len(nodes))
 	contexts := paperast.ParagraphContextKeys(nodes)
 	abstractBodyRole := "abstract_body"
@@ -153,7 +175,7 @@ func Freeze(nodes []paperast.Node) []Assignment {
 		role := node.SemanticRole
 		if role == "abstract_cn" {
 			abstractBodyRole = "abstract_body"
-		} else if role == "abstract_en" {
+		} else if role == "abstract_en" || role == "abstract_en_title" {
 			abstractBodyRole = "abstract_en_body"
 		}
 		switch role {
@@ -164,7 +186,7 @@ func Freeze(nodes []paperast.Node) []Assignment {
 			role = fmt.Sprintf("heading_%d", node.LogicalLevel)
 		case "body_paragraph":
 			switch node.SectionID {
-			case "body":
+			case "body", "translation":
 				role = "body"
 			case "abstract":
 				role = abstractBodyRole
@@ -183,11 +205,23 @@ func Freeze(nodes []paperast.Node) []Assignment {
 		evidence := append([]string(nil), node.Evidence...)
 		evidence = append(evidence, "deterministic:frozen_ast")
 		reviewReason := ""
+		if node.SectionID == "translation" {
+			reviewReason = "translation_contract_missing_preserve_original"
+		}
+		if role == "toc_entry" && node.LogicalLevel == 0 {
+			reviewReason = "toc_level_unresolved_preserve_original"
+		}
 		if role == documentrole.Unknown || !documentrole.Valid(role) {
 			role = documentrole.Unknown
 			reviewReason = "unknown_role_preserve_original"
 		}
 		for _, item := range node.Evidence {
+			if item == "review:template_content" || item == "review:frontmatter_contract" {
+				reviewReason = "protected_template_or_frontmatter_preserve_original"
+			}
+			if item == "review:mixed_textbox_paragraph" {
+				reviewReason = "mixed_textbox_paragraph_preserve_original"
+			}
 			if strings.HasPrefix(item, "deepseek_uncertainty:") {
 				reviewReason = "uncertain_role_preserve_original"
 			}
@@ -207,7 +241,10 @@ func Freeze(nodes []paperast.Node) []Assignment {
 			}
 		}
 		result = append(result, Assignment{
-			ContextKey: contexts[node.Index], LogicalLevel: node.LogicalLevel,
+			TOCTarget:    node.TOCTarget,
+			ChapterGroup: node.ChapterGroup,
+			TOCIdentity:  paperast.TOCEntryIdentity(node),
+			ContextKey:   contexts[node.Index], LogicalLevel: node.LogicalLevel,
 			NodeID: node.NodeID, Role: role, Confidence: node.Confidence, Text: node.Text,
 			Evidence: evidence, Trusted: reviewReason == "", Index: node.Index, ReviewReason: reviewReason,
 		})
@@ -229,6 +266,9 @@ func Merge(nodes []paperast.Node, assignments []Assignment, threshold float64) [
 	original := append([]paperast.Node(nil), nodes...)
 	result := append([]paperast.Node(nil), nodes...)
 	for i := range result {
+		if protectedRoleEvidence(result[i]) {
+			continue
+		}
 		candidate, ok := byID[result[i].NodeID]
 		if !ok || !documentrole.Valid(candidate.Role) || math.IsNaN(candidate.Confidence) || math.IsInf(candidate.Confidence, 0) || candidate.Confidence > 1 || candidate.Confidence < threshold || candidate.Role == "unknown" {
 			continue
@@ -328,6 +368,14 @@ func EnforceDocumentTree(nodes []paperast.Node) []paperast.Node {
 }
 
 func sectionForRole(node paperast.Node, current string, rank int) (string, int) {
+	for _, item := range node.Evidence {
+		if item == "review:frontmatter_contract" && node.SectionID == "cover" {
+			return "cover", 0
+		}
+	}
+	if node.SectionID == "translation" {
+		return "translation", 6
+	}
 	switch node.SemanticRole {
 	case "abstract_cn", "abstract_en", "abstract_title", "abstract_body", "abstract_en_body":
 		return "abstract", 1

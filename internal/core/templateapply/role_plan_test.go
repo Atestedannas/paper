@@ -250,7 +250,7 @@ func TestValidateRoleFormatPlanReportsAndClearsNodeProperties(t *testing.T) {
 	}
 }
 
-func TestRolePlanAddsHeading1StyleOnlyForTrustedHeading(t *testing.T) {
+func TestRolePlanAddsOutlineOnlyForTrustedHeading(t *testing.T) {
 	profile := &templateprofile.Profile{Styles: map[string]templateprofile.StyleRule{
 		"heading_1": {
 			Alignment: "center", Bold: true, BoldSet: true, FontASCII: "黑体", FontCS: "Times New Roman",
@@ -260,8 +260,8 @@ func TestRolePlanAddsHeading1StyleOnlyForTrustedHeading(t *testing.T) {
 	assignments := []roleclassify.Assignment{{NodeID: "p:AAA111", Role: "heading_1", Confidence: 1, Trusted: true, Index: 0}}
 	input := `<w:document xmlns:w="w" xmlns:w14="w14"><w:body><w:p w14:paraId="AAA111"><w:r><w:t>1 绪论</w:t></w:r></w:p></w:body></w:document>`
 	updated, changed := applyRoleFormatPlanToDocumentXML(input, profile, assignments)
-	if changed != 1 || !strings.Contains(updated, `<w:pStyle w:val="Heading1"/>`) || !strings.Contains(updated, `w:before="400"`) || !strings.Contains(updated, `w:after="400"`) || !strings.Contains(updated, `w:firstLineChars="0"`) || strings.Contains(updated, `<w:numPr>`) {
-		t.Fatalf("trusted heading did not receive Heading 1 style: %s", updated)
+	if changed != 1 || strings.Contains(updated, `<w:pStyle w:val="Heading1"/>`) || !strings.Contains(updated, `<w:outlineLvl w:val="0"/>`) || !strings.Contains(updated, `w:before="400"`) || !strings.Contains(updated, `w:after="400"`) || !strings.Contains(updated, `w:firstLineChars="0"`) || strings.Contains(updated, `<w:numPr>`) {
+		t.Fatalf("trusted heading did not preserve style and receive outline level: %s", updated)
 	}
 	if repeated, secondChanged := applyRoleFormatPlanToDocumentXML(updated, profile, assignments); secondChanged != 0 {
 		t.Fatalf("second pass changed=%d, want 0:\nfirst:  %s\nsecond: %s", secondChanged, updated, repeated)

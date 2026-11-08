@@ -4,32 +4,37 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/paper-format-checker/backend/internal/core/documentrole"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpatch"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
+	"github.com/paper-format-checker/backend/internal/core/paperast"
 	"github.com/paper-format-checker/backend/internal/core/roleclassify"
 	"github.com/paper-format-checker/backend/internal/core/templateprofile"
 )
 
-var rolePlanParaID = regexp.MustCompile(`(?:w14:|w:)?paraId="([A-Fa-f0-9]+)"`)
-
 type FormatPlanItem struct {
-	ReviewProperties []string  `json:"reviewProperties,omitempty"`
-	NodeID           string    `json:"nodeId"`
-	Role             string    `json:"role"`
-	RuleKey          string    `json:"ruleKey,omitempty"`
-	Confidence       float64   `json:"confidence"`
-	Trusted          bool      `json:"trusted"`
-	Apply            bool      `json:"apply"`
-	Reason           string    `json:"reason,omitempty"`
-	Evidence         []string  `json:"evidence,omitempty"`
-	Flow             *FlowPlan `json:"flow,omitempty"`
+	TOCTarget            *paperast.TOCTargetRelation   `json:"tocTarget,omitempty"`
+	ChapterGroup         *paperast.ChapterHeadingGroup `json:"chapterGroup,omitempty"`
+	ParagraphOnly        bool                          `json:"paragraphOnly,omitempty"`
+	PreserveRunSemantics bool                          `json:"preserveRunSemantics,omitempty"`
+	ReviewProperties     []string                      `json:"reviewProperties,omitempty"`
+	NodeID               string                        `json:"nodeId"`
+	Role                 string                        `json:"role"`
+	RuleKey              string                        `json:"ruleKey,omitempty"`
+	Confidence           float64                       `json:"confidence"`
+	Trusted              bool                          `json:"trusted"`
+	Apply                bool                          `json:"apply"`
+	Reason               string                        `json:"reason,omitempty"`
+	Evidence             []string                      `json:"evidence,omitempty"`
+	Flow                 *FlowPlan                     `json:"flow,omitempty"`
 }
 
 type FlowPlan struct {
 	RuleKey               string   `json:"ruleKey,omitempty"`
+	KeepNext              bool     `json:"keepNext,omitempty"`
 	PageBreakBefore       bool     `json:"pageBreakBefore,omitempty"`
 	BlankParagraphsBefore int      `json:"blankParagraphsBefore,omitempty"`
 	SectionBreakType      string   `json:"sectionBreakType,omitempty"`
@@ -48,17 +53,24 @@ type RolePlanValidationIssue struct {
 func BuildRoleFormatPlan(profile *templateprofile.Profile, assignments []roleclassify.Assignment) []FormatPlanItem {
 	plan := make([]FormatPlanItem, 0, len(assignments))
 	firstBodyHeadingSeen := false
-	for _, assignment := range assignments {
+	for assignmentIndex, assignment := range assignments {
 		item := FormatPlanItem{
-			NodeID: assignment.NodeID, Role: assignment.Role, Confidence: assignment.Confidence, Trusted: assignment.Trusted,
+			TOCTarget:    assignment.TOCTarget,
+			ChapterGroup: assignment.ChapterGroup,
+			NodeID:       assignment.NodeID, Role: assignment.Role, Confidence: assignment.Confidence, Trusted: assignment.Trusted,
 			Evidence: append([]string(nil), assignment.Evidence...),
 		}
-		if assignment.ReviewReason != "" {
+		item.ParagraphOnly = assignment.Role == "body" && slices.Contains(assignment.Evidence, "ooxml:inline_math_body_prose")
+		if item.ParagraphOnly {
+			item.ReviewProperties = []string{"runFormat"}
+		}
+		item.PreserveRunSemantics = !item.ParagraphOnly && mixedBodyEligible(profile, assignment)
+		if assignment.ReviewReason != "" && !item.PreserveRunSemantics {
 			item.Reason = assignment.ReviewReason
 			plan = append(plan, item)
 			continue
 		}
-		if (!assignment.Trusted && assignment.Confidence < 0.85) || assignment.Role == documentrole.Unknown || !documentrole.Valid(assignment.Role) {
+		if (!item.PreserveRunSemantics && !assignment.Trusted && assignment.Confidence < 0.85) || assignment.Role == documentrole.Unknown || !documentrole.Valid(assignment.Role) {
 			item.Reason = "unknown_or_low_confidence_preserve_original"
 			plan = append(plan, item)
 			continue
@@ -68,10 +80,17 @@ func BuildRoleFormatPlan(profile *templateprofile.Profile, assignments []rolecla
 			plan = append(plan, item)
 			continue
 		}
-		item.RuleKey = RoleStyleKey(assignment.Role, assignment.Text, assignment.LogicalLevel)
+		item.RuleKey = roleStyleKeyForAssignment(profile, assignment)
 		if item.RuleKey != "" {
 			rule, found := rolePlanStyleRule(profile, assignment.Role, item.RuleKey)
-			rule, item.ReviewProperties = templateprofile.ExecutableStyle(rule)
+			if item.ParagraphOnly {
+				rule = templateprofile.FormulaParagraphStyle(rule)
+			}
+			if item.PreserveRunSemantics {
+				rule = mixedBodyRule(rule)
+			}
+			rule, blocked := templateprofile.ExecutableStyle(rule)
+			item.ReviewProperties = append(item.ReviewProperties, blocked...)
 			if found && rule.ReviewRequired {
 				item.Reason = "template_style_conflict_preserve_original"
 				plan = append(plan, item)
@@ -84,6 +103,11 @@ func BuildRoleFormatPlan(profile *templateprofile.Profile, assignments []rolecla
 			}
 		}
 		sectionKey := assignment.Role
+		if sectionKey == "abstract_title" {
+			sectionKey = "abstract_cn"
+		} else if sectionKey == "abstract_en_title" {
+			sectionKey = "abstract_en"
+		}
 		switch assignment.Role {
 		case "heading_1":
 			if !firstBodyHeadingSeen {
@@ -105,9 +129,22 @@ func BuildRoleFormatPlan(profile *templateprofile.Profile, assignments []rolecla
 				PageBreakBefore:       section.PageBreakBefore,
 				BlankParagraphsBefore: section.BlankParagraphsBefore,
 				SectionBreakType:      section.SectionBreakType,
+				ReviewRequired:        section.ReviewRequired,
 			}
 			if section.DetectedFrom != "" {
 				flow.Evidence = append(flow.Evidence, section.DetectedFrom)
+			}
+			if section.ReviewReason != "" {
+				flow.Evidence = append(flow.Evidence, section.ReviewReason,
+					fmt.Sprintf("observed_blank_paragraphs_before:%d", section.ObservedBlankParagraphsBefore))
+			}
+			if assignment.ChapterGroup != nil && assignment.ChapterGroup.PrimaryNodeID != assignment.NodeID {
+				flow.PageBreakBefore, flow.SectionBreakType, flow.BlankParagraphsBefore = false, "", 0
+				flow.Evidence = append(flow.Evidence, "chapter_group:"+assignment.ChapterGroup.ID)
+			} else if flow.PageBreakBefore && strings.HasPrefix(section.DetectedFrom, "explicit_requirement:") && unresolvedBilingualHeadingBoundary(assignments, assignmentIndex) {
+				flow.PageBreakBefore, flow.SectionBreakType, flow.BlankParagraphsBefore = false, "", 0
+				flow.ReviewRequired = true
+				flow.Evidence = append(flow.Evidence, "adjacent_bilingual_heading_boundary_unresolved")
 			}
 			item.Flow = flow
 			// A section break is synthesized relationship-safely: the new section
@@ -115,6 +152,20 @@ func BuildRoleFormatPlan(profile *templateprofile.Profile, assignments []rolecla
 			// because no headerReference/footerReference is written, so only the
 			// break type and page setup are copied from the template.
 			item.Apply = item.Apply || flow.PageBreakBefore || section.SectionBreak || section.BlankParagraphsBefore > 0
+		}
+		if chapterGroupContinues(assignments, assignmentIndex) {
+			if item.Flow == nil {
+				item.Flow = &FlowPlan{RuleKey: "chapter_group"}
+			}
+			item.Flow.KeepNext = true
+			item.Flow.Evidence = append(item.Flow.Evidence, assignment.ChapterGroup.Evidence...)
+		}
+		if bindTOCTitleToEntry(profile, assignments, assignmentIndex) {
+			if item.Flow == nil {
+				item.Flow = &FlowPlan{RuleKey: "toc_title_binding"}
+			}
+			item.Flow.KeepNext = true
+			item.Flow.Evidence = append(item.Flow.Evidence, "context:trusted_toc_title_followed_by_first_entry")
 		}
 		if !item.Apply {
 			item.Reason = "template_rule_missing_preserve_original"
@@ -142,14 +193,8 @@ func ApplyRoleFormatPlan(ctx context.Context, path string, profile *templateprof
 	if !ok {
 		return 0, fmt.Errorf("missing %s", documentTarget)
 	}
-	updated, count := applyRoleFormatPlanToDocumentXML(string(content), profile, assignments)
+	updated, count := applyRoleFormatPlanToDocumentXML(string(content), profile, assignments, figureEffectiveImageStyles(path, string(content)))
 	pkg.Set(documentTarget, []byte(updated))
-	if styles, ok := pkg.Get("word/styles.xml"); ok && appliesHeading1(profile, remapRoleAssignments(string(content), assignments)) {
-		cleaned := removeHeading1AutoNumbering(string(styles))
-		if cleaned != string(styles) {
-			pkg.Set("word/styles.xml", []byte(cleaned))
-		}
-	}
 	if err := pkg.Write(path); err != nil {
 		return 0, err
 	}
@@ -182,7 +227,7 @@ func CheckRoleFormatPlan(ctx context.Context, path string, profile *templateprof
 	if !ok {
 		return 0, fmt.Errorf("missing %s", documentTarget)
 	}
-	_, count := applyRoleFormatPlanToDocumentXML(string(content), profile, assignments)
+	_, count := applyRoleFormatPlanToDocumentXML(string(content), profile, assignments, figureEffectiveImageStyles(path, string(content)))
 	return count, nil
 }
 
@@ -207,6 +252,8 @@ func ValidateRoleFormatPlan(ctx context.Context, path string, profile *templatep
 	if !ok {
 		return nil, fmt.Errorf("missing %s", documentTarget)
 	}
+	styleContent, _ := pkg.Get("word/styles.xml")
+	logicalAlignmentIsLTR := !possibleRTLParagraph(string(content)) && !possibleRTLParagraph(string(styleContent))
 	paragraphs, indexByID := map[int]string{}, map[string]int{}
 	assignments = remapRoleAssignments(string(content), assignments)
 	index := -1
@@ -214,12 +261,14 @@ func ValidateRoleFormatPlan(ctx context.Context, path string, profile *templatep
 		index++
 		if strings.HasPrefix(raw, "<w:p") {
 			paragraphs[index] = raw
-			if match := rolePlanParaID.FindStringSubmatch(raw); len(match) >= 2 {
-				indexByID["P:"+strings.ToUpper(match[1])] = index
+			if id := ooxmlpkg.ParagraphParaID(raw); id != "" {
+				indexByID["P:"+strings.ToUpper(id)] = index
 			}
 		}
 		return raw
 	})
+	paragraphs[index+1] = terminalSectionProperties(string(content))
+	captionBindings := tableCaptionBindingObservations(string(content), profile, assignments)
 	plan := BuildRoleFormatPlan(profile, assignments)
 	issues := []RolePlanValidationIssue{}
 	for i, assignment := range assignments {
@@ -227,7 +276,7 @@ func ValidateRoleFormatPlan(ctx context.Context, path string, profile *templatep
 			issues = append(issues, RolePlanValidationIssue{NodeID: assignment.NodeID, Role: assignment.Role, Property: "targetNode", Expected: assignment.NodeID, Actual: "missing_or_ambiguous"})
 			continue
 		}
-		if i >= len(plan) || !plan[i].Apply {
+		if i >= len(plan) {
 			continue
 		}
 		item := plan[i]
@@ -235,23 +284,64 @@ func ValidateRoleFormatPlan(ctx context.Context, path string, profile *templatep
 		if stable, found := indexByID[strings.ToUpper(assignment.NodeID)]; found {
 			actualIndex = stable
 		}
+		binding, hasBinding := captionBindings[actualIndex]
+		if hasBinding && !binding.KeepNext {
+			issues = append(issues, validationIssue(item, "keepNext", "true", "missing_direct_keep_next"))
+		}
+		if item.Flow != nil && item.Flow.KeepNext && (!styles[actualIndex].KeepNextSet || !styles[actualIndex].KeepNext) {
+			property := "tocTitleKeepNext"
+			if item.ChapterGroup != nil {
+				property = "chapterGroupKeepNext"
+			}
+			issues = append(issues, validationIssue(item, property, "true", "false"))
+		}
+		if !item.Apply {
+			continue
+		}
+		if item.PreserveRunSemantics && !safeMixedBody(paragraphs[actualIndex]) {
+			issues = append(issues, validationIssue(item, "mixedRunSafety", "plain_text_runs", "requires_review"))
+			continue
+		}
 		if item.RuleKey != "" {
 			if expected, found := rolePlanStyleRule(profile, item.Role, item.RuleKey); found {
-				issues = append(issues, compareRoleStyle(item, expected, styles[actualIndex])...)
+				if item.ParagraphOnly {
+					expected = templateprofile.FormulaParagraphStyle(expected)
+				}
+				if item.PreserveRunSemantics {
+					expected = mixedBodyRule(expected)
+				}
+				actual := styles[actualIndex]
+				if hasBinding || (item.Flow != nil && item.Flow.KeepNext) {
+					// The binding check above is independent of sampled typography;
+					// TOC titles may satisfy it through effective inherited formatting.
+					expected.KeepNextSet = false
+				}
+				if logicalAlignmentIsLTR {
+					if actual.Alignment == "start" {
+						actual.Alignment = "left"
+					}
+					if actual.Alignment == "end" {
+						actual.Alignment = "right"
+					}
+					if expected.Alignment == "start" {
+						expected.Alignment = "left"
+					}
+					if expected.Alignment == "end" {
+						expected.Alignment = "right"
+					}
+				}
+				issues = append(issues, compareRoleStyle(item, expected, actual)...)
 			}
 		}
-		pageBreak := ooxmlpatch.ParagraphPageBreakBefore(paragraphs[actualIndex])
-		if item.Role == "heading_1" && profile.HeadingBlankBefore != nil && isHeadingBlank(paragraphs[actualIndex-1]) {
-			pageBreak = pageBreak || ooxmlpatch.ParagraphPageBreakBefore(paragraphs[actualIndex-1])
-		}
+		pageBreak := hasRolePageBoundary(paragraphs, actualIndex)
 		if item.Flow != nil && item.Flow.PageBreakBefore && !pageBreak {
 			issues = append(issues, validationIssue(item, "pageBreakBefore", "true", "false"))
 		}
 		if item.Role == "heading_1" && item.Trusted {
-			if profile.HeadingBlankBefore != nil && !isHeadingBlank(paragraphs[actualIndex-1]) {
+			if profile.HeadingBlankBefore != nil && chapterGroupFirst(assignment) && !isHeadingBlank(paragraphs[actualIndex-1]) {
 				issues = append(issues, validationIssue(item, "blankParagraphBefore", "1", "0"))
 			}
-			if profile.HeadingBlankAfter != nil && !isHeadingBlank(paragraphs[actualIndex+1]) {
+			if profile.HeadingBlankAfter != nil && chapterGroupLast(assignment) && !isHeadingBlank(paragraphs[actualIndex+1]) {
 				issues = append(issues, validationIssue(item, "blankParagraphAfter", "1", "0"))
 			}
 		}
@@ -273,9 +363,15 @@ func compareRoleStyle(item FormatPlanItem, expected, actual templateprofile.Styl
 			issues = append(issues, validationIssue(item, property, want, got))
 		}
 	}
-	compare("font.eastAsia", expected.FontEastAsia, actual.FontEastAsia)
-	compare("font.ascii", expected.FontASCII, actual.FontASCII)
-	compare("font.hAnsi", expected.FontHAnsi, actual.FontHAnsi)
+	compareFont := func(property, slot, want, got string) {
+		if item.PreserveRunSemantics && templateprofile.FontSlotDefinitelyUnused(slot, actual.RunStyles) {
+			return
+		}
+		compare(property, want, got)
+	}
+	compareFont("font.eastAsia", "FontEastAsia", expected.FontEastAsia, actual.FontEastAsia)
+	compareFont("font.ascii", "FontASCII", expected.FontASCII, actual.FontASCII)
+	compareFont("font.hAnsi", "FontHAnsi", expected.FontHAnsi, actual.FontHAnsi)
 	compare("font.cs", expected.FontCS, actual.FontCS)
 	compare("fontSizeHalfPt", expected.FontSizeHalfPt, actual.FontSizeHalfPt)
 	compare("complexSizeHalfPt", expected.ComplexSizeHalfPt, actual.ComplexSizeHalfPt)
@@ -286,9 +382,25 @@ func compareRoleStyle(item FormatPlanItem, expected, actual templateprofile.Styl
 	compare("afterTwips", expected.AfterTwips, actual.AfterTwips)
 	compare("beforeLines", expected.BeforeLines, actual.BeforeLines)
 	compare("afterLines", expected.AfterLines, actual.AfterLines)
-	compare("firstLineChars", expected.FirstLineChars, actual.FirstLineChars)
-	if expected.FirstLineChars == "" {
-		compare("firstLineTwips", expected.FirstLineTwips, actual.FirstLineTwips)
+	for _, pair := range []struct{ name, chars, twips, actualChars, actualTwips string }{
+		{"left", expected.LeftChars, expected.LeftTwips, actual.LeftChars, actual.LeftTwips},
+		{"right", expected.RightChars, expected.RightTwips, actual.RightChars, actual.RightTwips},
+		{"hanging", expected.HangingChars, expected.HangingTwips, actual.HangingChars, actual.HangingTwips},
+	} {
+		if pair.chars != "" {
+			compare(pair.name+"Chars", pair.chars, pair.actualChars)
+		} else if pair.twips != "" {
+			compare(pair.name+"Twips", pair.twips, pair.actualTwips)
+			if pair.actualChars != "" {
+				issues = append(issues, validationIssue(item, pair.name+"Unit", "twips", "inherited_or_direct_chars_override"))
+			}
+		}
+	}
+	if expected.HangingChars == "" && expected.HangingTwips == "" {
+		compare("firstLineChars", expected.FirstLineChars, actual.FirstLineChars)
+		if expected.FirstLineChars == "" {
+			compare("firstLineTwips", expected.FirstLineTwips, actual.FirstLineTwips)
+		}
 	}
 	// Undeclared off and unresolved effective formatting are different states.
 	// Mixed runs, invalid XML values and missing inheritance cannot prove a
@@ -335,7 +447,11 @@ func validationIssue(item FormatPlanItem, property, expected, actual string) Rol
 	return RolePlanValidationIssue{NodeID: item.NodeID, Role: item.Role, Property: property, Expected: expected, Actual: actual}
 }
 
-func applyRoleFormatPlanToDocumentXML(documentXML string, profile *templateprofile.Profile, assignments []roleclassify.Assignment) (string, int) {
+func applyRoleFormatPlanToDocumentXML(documentXML string, profile *templateprofile.Profile, assignments []roleclassify.Assignment, figureStyles ...figureLayoutStyles) (string, int) {
+	originalXML := documentXML
+	// Establish the target section before checking pagination, so an odd/next
+	// page start is not followed by an unnecessary direct paragraph page break.
+	documentXML, sectionCount := applySectionBreaksToDocumentXML(documentXML, profile, assignments)
 	assignments = remapRoleAssignments(documentXML, assignments)
 	plan := BuildRoleFormatPlan(profile, assignments)
 	byID := map[string]FormatPlanItem{}
@@ -345,45 +461,73 @@ func applyRoleFormatPlanToDocumentXML(documentXML string, profile *templateprofi
 			break
 		}
 		byID[strings.ToUpper(assignment.NodeID)] = plan[i]
-		if assignment.Trusted {
+		if assignment.Trusted || plan[i].PreserveRunSemantics {
 			byIndex[assignment.Index] = plan[i]
 		}
 	}
-	count := 0
+	count := sectionCount
 	elementIndex := -1
+	paragraphs := map[int]string{}
+	elements := templateProfileDocElementPattern.FindAllString(documentXML, -1)
+	for i, raw := range elements {
+		if strings.HasPrefix(raw, "<w:p") {
+			paragraphs[i] = raw
+		}
+	}
+	paragraphs[len(elements)] = terminalSectionProperties(documentXML)
+	captionBindings := tableCaptionBindingObservations(documentXML, profile, assignments)
 	updated := templateProfileDocElementPattern.ReplaceAllStringFunc(documentXML, func(paragraph string) string {
 		elementIndex++
 		if strings.HasPrefix(paragraph, "<w:tbl") {
 			return paragraph
 		}
 		item, ok := byIndex[elementIndex]
-		if match := rolePlanParaID.FindStringSubmatch(paragraph); len(match) >= 2 {
-			if stable, found := byID["P:"+strings.ToUpper(match[1])]; found {
+		if id := ooxmlpkg.ParagraphParaID(paragraph); id != "" {
+			if stable, found := byID["P:"+strings.ToUpper(id)]; found {
 				item, ok = stable, true
 			}
 		}
 		if !ok || !item.Apply {
+			// A proven table association is independent of missing or disputed
+			// font properties; keep the caption attached without restyling it.
+			if _, hasBinding := captionBindings[elementIndex]; hasBinding || (item.Flow != nil && item.Flow.KeepNext) {
+				next, _ := applyLegacyParagraphSpec(paragraph, ooxmlpatch.ParagraphPropertiesSpec{KeepNext: true, KeepNextSet: true})
+				if next != paragraph {
+					count++
+				}
+				return next
+			}
 			return paragraph
 		}
 		next := paragraph
-		// Add the semantic style before the property writer, so its canonical
-		// OOXML ordering is produced in the first pass as well as later passes.
+		// Preserve the student's style reference and inherited numbering. A
+		// template's style ID is not necessarily defined in the target package.
+		// Direct properties implement the known rule; outline records the role.
 		if item.Role == "heading_1" && item.Trusted {
-			// Changing pStyle changes inherited properties too. When a property
-			// needs review, retain the student's style and write only known values.
-			if len(item.ReviewProperties) == 0 {
-				next = applyHeading1Style(next)
-				next = removeHeadingNumbering(next)
-			}
 			// The target package may not define Heading1 (or may define it
 			// without an outline). Preserve the recognized structural role
 			// explicitly so unnumbered chapters survive the next parse.
-			next, _ = ooxmlpatch.ApplyParagraphProperties(next, ooxmlpatch.ParagraphPropertiesSpec{OutlineLevel: 0, OutlineLevelSet: true})
+			next, _ = applyLegacyParagraphSpec(next, ooxmlpatch.ParagraphPropertiesSpec{OutlineLevel: 0, OutlineLevelSet: true})
 		}
 		if item.RuleKey != "" {
 			if rule, found := rolePlanStyleRule(profile, item.Role, item.RuleKey); found {
+				if item.ParagraphOnly {
+					rule = templateprofile.FormulaParagraphStyle(rule)
+				}
+				if item.PreserveRunSemantics {
+					rule = mixedBodyRule(rule)
+				}
 				if style, valid := paragraphStyleFromTemplateProfile(rule); valid {
-					next = applyParagraphStyle(next, style)
+					if item.PreserveRunSemantics {
+						next = applyMixedBodyStyle(next, style)
+					} else if item.ParagraphOnly || item.Role == "formula" || item.Role == "formula_number" {
+						next = applyParagraphProperties(next, style)
+					} else {
+						next = applyParagraphStyle(next, style)
+					}
+					if item.Role == "toc_entry" {
+						next = resetTOCPointSpacingUnits(next, rule)
+					}
 				}
 			}
 		}
@@ -406,8 +550,11 @@ func applyRoleFormatPlanToDocumentXML(documentXML string, profile *templateprofi
 			next = applyInlineLabel(next, profile, "keywords_cn", "关键词：")
 			next = applyInlineLabel(next, profile, "keywords_cn", "关键词:")
 		}
-		if item.Flow != nil && item.Flow.PageBreakBefore {
-			next, _ = ooxmlpatch.ApplyParagraphProperties(next, ooxmlpatch.ParagraphPropertiesSpec{PageBreakBefore: true})
+		if item.Flow != nil && item.Flow.PageBreakBefore && !hasRolePageBoundary(paragraphs, elementIndex) {
+			next, _ = applyLegacyParagraphSpec(next, ooxmlpatch.ParagraphPropertiesSpec{PageBreakBefore: true})
+		}
+		if _, hasBinding := captionBindings[elementIndex]; hasBinding || (item.Flow != nil && item.Flow.KeepNext) {
+			next, _ = applyLegacyParagraphSpec(next, ooxmlpatch.ParagraphPropertiesSpec{KeepNext: true, KeepNextSet: true})
 		}
 		if next != paragraph {
 			count++
@@ -415,11 +562,15 @@ func applyRoleFormatPlanToDocumentXML(documentXML string, profile *templateprofi
 		return next
 	})
 	updated = applyHeadingBlanks(updated, profile, assignments)
-	updated, sectionCount := applySectionBreaksToDocumentXML(updated, profile, assignments)
-	count += sectionCount
 	updated, blankCount := applyBlankParagraphsBeforeToDocumentXML(updated, profile, assignments)
 	count += blankCount
-	if updated == documentXML {
+	var targetFigureStyles figureLayoutStyles
+	if len(figureStyles) == 1 {
+		targetFigureStyles = figureStyles[0]
+	}
+	updated, figureCount := applyFigureCaptionsBelow(updated, profile, assignments, targetFigureStyles)
+	count += figureCount
+	if updated == originalXML {
 		return updated, 0
 	}
 	if count == 0 {
@@ -435,7 +586,11 @@ func RoleStyleRequirement(profile *templateprofile.Profile, role, key string) (t
 }
 
 func rolePlanStyleRule(profile *templateprofile.Profile, role, key string) (templateprofile.StyleRule, bool) {
-	return resolveTemplateProfileStyle(profile.Styles, key)
+	rule, found := resolveTemplateProfileStyle(profile.Styles, key)
+	if role == "formula" || role == "formula_number" {
+		rule = templateprofile.FormulaParagraphStyle(rule)
+	}
+	return rule, found
 }
 
 func applyHeading1Style(paragraph string) string {
@@ -475,7 +630,12 @@ func removeHeading1AutoNumbering(stylesXML string) string {
 }
 
 func roleToProfileKey(role string) string {
+	if role == "abstract_en_title" {
+		return "abstract_en"
+	}
 	switch role {
+	case "formula", "formula_number":
+		return role
 	case "heading_1", "heading_2", "heading_3", "heading_4", "body", "references", "references_title", "acknowledgements", "acknowledgements_title", "appendix_title", "appendix", "abstract_title", "abstract_cn", "abstract_body", "abstract_en", "abstract_en_body", "keywords_cn", "keywords_en", "toc_title", "toc_entry", "cover_title", "cover_date", "title", "figure_caption", "table_caption":
 		if role == "acknowledgements" {
 			// An acknowledgement body paragraph must use the content rule

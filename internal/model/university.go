@@ -33,17 +33,18 @@ type University struct {
 
 // FormatTemplate 格式模板模型（核心模型 - 支持从论文解析）
 type FormatTemplate struct {
-	ID           uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	TemplateID   string    `gorm:"size:100;uniqueIndex;not null" json:"template_id"` // 业务模板ID
-	Name         string    `gorm:"size:100;not null" json:"name"`                    // 模板名称
-	UniversityID *int64    `gorm:"index" json:"university_id"`                       // 所属高校ID
-	DocumentType string    `gorm:"size:50" json:"document_type"`                     // 文档类型：本科论文、硕士论文、博士论文
-	Subject      string    `gorm:"size:20" json:"subject"`                           // 学科类别: 文科/理科/综合
-	FilePath     string    `gorm:"size:500" json:"file_path"`                        // 上传的格式要求文件路径
-	Source       string    `gorm:"size:50;default:system" json:"source"`             // 来源: system, university_upload, user_upload, auto_parsed
-	Version      string    `gorm:"size:20;default:1.0" json:"version"`               // 版本号
-	IsPublic     bool      `gorm:"default:true" json:"is_public"`                    // 是否公开
-	IsActive     bool      `gorm:"default:true" json:"is_active"`                    // 是否激活
+	ID           uuid.UUID  `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	TemplateID   string     `gorm:"size:100;uniqueIndex;not null" json:"template_id"` // 业务模板ID
+	Name         string     `gorm:"size:100;not null" json:"name"`                    // 模板名称
+	UniversityID *int64     `gorm:"index" json:"university_id"`                       // 所属高校ID
+	OwnerUserID  *uuid.UUID `gorm:"type:uuid;index" json:"owner_user_id,omitempty"`   // nil identifies a school catalogue template.
+	DocumentType string     `gorm:"size:50" json:"document_type"`                     // 文档类型：本科论文、硕士论文、博士论文
+	Subject      string     `gorm:"size:20" json:"subject"`                           // 学科类别: 文科/理科/综合
+	FilePath     string     `gorm:"size:500" json:"file_path"`                        // 上传的格式要求文件路径
+	Source       string     `gorm:"size:50;default:system" json:"source"`             // 来源: system, university_upload, user_upload, auto_parsed
+	Version      string     `gorm:"size:20;default:1.0" json:"version"`               // 版本号
+	IsPublic     bool       `gorm:"default:true" json:"is_public"`                    // 是否公开
+	IsActive     bool       `gorm:"default:true" json:"is_active"`                    // 是否激活
 
 	// 格式规范内容（JSON格式存储完整的格式规范）
 	FormatRules string `gorm:"type:jsonb;not null" json:"format_rules"` // 完整的格式规范JSON
@@ -65,6 +66,14 @@ type FormatTemplate struct {
 	// 关联
 	University *University `gorm:"foreignKey:UniversityID" json:"university,omitempty"`
 	Papers     []Paper     `gorm:"foreignKey:SelectedTemplateID" json:"papers,omitempty"`
+}
+
+// AccessibleTo keeps student uploads private even if their public flag is set.
+func (t FormatTemplate) AccessibleTo(userID uuid.UUID) bool {
+	if t.OwnerUserID != nil {
+		return userID != uuid.Nil && *t.OwnerUserID == userID
+	}
+	return t.IsPublic
 }
 
 type FormatTemplateRuleRevision struct {

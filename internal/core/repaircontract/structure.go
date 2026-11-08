@@ -21,6 +21,11 @@ type StructureSnapshot struct {
 	BookmarkEnds          map[string]int `json:"bookmark_ends"`
 	Fields                map[string]int `json:"fields"`
 	Formulas              int            `json:"formulas"`
+	FormulaContent        map[string]int `json:"formula_content"`
+	TableTopology         map[string]int `json:"table_topology"`
+	TableContent          map[string]int `json:"table_content"`
+	NoteBindings          map[string]int `json:"note_bindings"`
+	RevisionContent       map[string]int `json:"revision_content"`
 	Drawings              int            `json:"drawings"`
 	Pictures              int            `json:"pictures"`
 	FootnoteReferences    int            `json:"footnote_references"`
@@ -32,6 +37,7 @@ type StructureSnapshot struct {
 	EndnoteDefinitions    int            `json:"endnote_definitions"`
 	CommentDefinitions    int            `json:"comment_definitions"`
 	Hyperlinks            map[string]int `json:"hyperlinks"`
+	LinkBindings          map[string]int `json:"link_bindings"`
 	VerticalAlignments    map[string]int `json:"vertical_alignments"`
 	MediaHashes           map[string]int `json:"media_hashes"`
 	ReferencedImageHashes map[string]int `json:"referenced_image_hashes"`
@@ -86,9 +92,23 @@ func CaptureStructure(docxPath string) (StructureSnapshot, error) {
 		if !ok {
 			return StructureSnapshot{}, fmt.Errorf("read OOXML content part %s", name)
 		}
+		if err := captureFormulaContent(name, body, &snapshot); err != nil {
+			return StructureSnapshot{}, err
+		}
 		relationships, err := relationshipsForPart(pkg, name)
 		if err != nil {
 			return StructureSnapshot{}, err
+		}
+		if err := captureContentBindings(pkg, name, body, relationships, &snapshot); err != nil {
+			return StructureSnapshot{}, err
+		}
+		if name == "word/document.xml" {
+			if err := captureTableTopology(body, &snapshot); err != nil {
+				return StructureSnapshot{}, err
+			}
+			if err := captureLinkBindings(body, relationships, &snapshot); err != nil {
+				return StructureSnapshot{}, err
+			}
 		}
 		if err := capturePartStructure(pkg, name, body, relationships, &snapshot); err != nil {
 			return StructureSnapshot{}, fmt.Errorf("parse OOXML content part %s: %w", name, err)
@@ -110,6 +130,11 @@ func ValidateStructurePreserved(before, after StructureSnapshot) []ValidationIss
 	issues = appendMissing(issues, "structure_bookmark_ends", "bookmark end markers", before.BookmarkEnds, after.BookmarkEnds, true)
 	issues = appendMissing(issues, "structure_fields", "fields", before.Fields, after.Fields, true)
 	issues = appendCountLoss(issues, "structure_formulas", "formulas", before.Formulas, after.Formulas)
+	issues = appendMissing(issues, "structure_formula_content", "formula content", before.FormulaContent, after.FormulaContent, true)
+	issues = appendMissing(issues, "structure_table_topology", "table row/cell and merge structure", before.TableTopology, after.TableTopology, true)
+	issues = appendMissing(issues, "structure_table_content", "table cell content bindings", before.TableContent, after.TableContent, true)
+	issues = appendMissing(issues, "structure_note_binding", "note targets and paragraph content", before.NoteBindings, after.NoteBindings, true)
+	issues = appendMissing(issues, "structure_revision_content", "tracked revision content", before.RevisionContent, after.RevisionContent, true)
 	issues = appendCountLoss(issues, "structure_drawings", "drawings", before.Drawings, after.Drawings)
 	issues = appendCountLoss(issues, "structure_pictures", "pictures", before.Pictures, after.Pictures)
 	issues = appendCountLoss(issues, "structure_footnote_references", "footnote references", before.FootnoteReferences, after.FootnoteReferences)
@@ -121,6 +146,7 @@ func ValidateStructurePreserved(before, after StructureSnapshot) []ValidationIss
 	issues = appendCountLoss(issues, "structure_endnote_definitions", "endnote definitions", before.EndnoteDefinitions, after.EndnoteDefinitions)
 	issues = appendCountLoss(issues, "structure_comment_definitions", "comment definitions", before.CommentDefinitions, after.CommentDefinitions)
 	issues = appendMissing(issues, "structure_hyperlinks", "hyperlinks", before.Hyperlinks, after.Hyperlinks, true)
+	issues = appendMissing(issues, "structure_link_binding", "link text and destination", before.LinkBindings, after.LinkBindings, true)
 	issues = appendMissing(issues, "structure_vertical_alignments", "superscript/subscript properties", before.VerticalAlignments, after.VerticalAlignments, true)
 	issues = appendMissing(issues, "structure_media", "media content", before.MediaHashes, after.MediaHashes, false)
 	issues = appendMissing(issues, "structure_image_relationships", "referenced image content", before.ReferencedImageHashes, after.ReferencedImageHashes, true)
@@ -134,7 +160,13 @@ func newStructureSnapshot() StructureSnapshot {
 		Bookmarks:             map[string]int{},
 		BookmarkEnds:          map[string]int{},
 		Fields:                map[string]int{},
+		FormulaContent:        map[string]int{},
+		TableTopology:         map[string]int{},
+		TableContent:          map[string]int{},
+		NoteBindings:          map[string]int{},
+		RevisionContent:       map[string]int{},
 		Hyperlinks:            map[string]int{},
+		LinkBindings:          map[string]int{},
 		VerticalAlignments:    map[string]int{},
 		MediaHashes:           map[string]int{},
 		ReferencedImageHashes: map[string]int{},

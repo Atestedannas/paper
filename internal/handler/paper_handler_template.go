@@ -19,6 +19,7 @@ import (
 	"github.com/paper-format-checker/backend/internal/model"
 	"github.com/paper-format-checker/backend/internal/utils"
 	"github.com/paper-format-checker/backend/pkg/formatchecker"
+	"gorm.io/gorm"
 )
 
 func (h *PaperHandler) saveUploadedFile(c *gin.Context, file *multipart.FileHeader, paperID string) (string, error) {
@@ -66,10 +67,22 @@ func (h *PaperHandler) applyCorrectionsAndGenerateFile(originalPath string, issu
 	return correctedPath, nil
 }
 
+const templateCatalogueImportContextKey = "paper.template.catalogue-import"
+
+// ImportTemplate publishes a new catalogue version on the admin-only import route.
+func (h *PaperHandler) ImportTemplate(c *gin.Context) {
+	c.Set(templateCatalogueImportContextKey, true)
+	h.UploadTemplate(c)
+}
+
 // UploadTemplate 上传高校论文格式模板
 // 支持格式：.docx .doc .pdf .txt .md .rtf .html .htm
 // 表单字段 parse_mode: "auto"（默认）/ "sample"（格式范例）/ "description"（格式说明）
 func (h *PaperHandler) UploadTemplate(c *gin.Context) {
+	if actor, ok := authenticatedUserID(c); !ok || actor == uuid.Nil {
+		utils.ErrorResponse(c, http.StatusUnauthorized, "user not authenticated", "")
+		return
+	}
 	var formatText string
 
 	// 优先从表单文本字段获取（纯文本模式）
@@ -108,7 +121,7 @@ func (h *PaperHandler) UploadTemplate(c *gin.Context) {
 	}
 
 	// 创建上传目录
-	uploadDir := filepath.Join("uploads", "templates")
+	uploadDir := filepath.Join("private", "template_uploads", "incoming")
 	if err := os.MkdirAll(uploadDir, 0755); err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "创建上传目录失败", err.Error())
 		return
@@ -279,57 +292,30 @@ func (h *PaperHandler) processTemplateSample(c *gin.Context, filePath, ext, extr
 			utils.ErrorResponse(c, http.StatusInternalServerError, "创建高校记录失败", err.Error())
 			return
 		}
-	} else if description != "" {
-		database.DB.Model(&university).Update("description", description)
-	}
-
-	var existingTemplate model.FormatTemplate
-	err = database.DB.Where("university_id = ? AND document_type = ? AND subject = ?",
-		university.ID, documentType, subject).First(&existingTemplate).Error
-	if err == nil {
-		stablePath, persistErr := persistTemplateDOCX(existingTemplate.ID, docxPath)
-		if persistErr != nil {
-			utils.ErrorResponse(c, http.StatusInternalServerError, "保存模板文件失败", persistErr.Error())
-			return
-		}
-		updates := map[string]interface{}{
-			"format_rules":         string(formatRulesJSON),
-			"file_path":            stablePath,
-			"golden_template_path": stablePath,
-			"updated_at":           time.Now(),
-		}
-		if description != "" {
-			updates["description"] = description
-		}
-		if err := database.UpdateFormatTemplateWithAudit(&existingTemplate, updates, auditActorID(c)); err != nil {
-			utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式模板失败", err.Error())
-			return
-		}
-		utils.Success(c, templateUploadResponse("格式模板已更新（格式范例模式）", existingTemplate.ID, "sample", university, documentType, subject))
-		return
 	}
 
 	newTemplateID := uuid.New()
-	stablePath, err := persistTemplateDOCX(newTemplateID, docxPath)
+	stablePath, err := persistUploadedTemplateDOCX(c, newTemplateID, docxPath)
 	if err != nil {
 		utils.ErrorResponse(c, http.StatusInternalServerError, "保存模板文件失败", err.Error())
 		return
 	}
 	newTemplate := model.FormatTemplate{
-		ID:           newTemplateID,
-		TemplateID:   uuid.New().String(),
-		Name:         fmt.Sprintf("%s%s格式标准", universityName, documentType),
-		UniversityID: &university.ID,
-		DocumentType: documentType,
-		Subject:      subject,
-		Source:       "sample_upload",
-		IsActive:     true,
-		IsPublic:     true,
-		FilePath:     stablePath,
-		FormatRules:  string(formatRulesJSON),
-		Description:  description,
+		ID:                 newTemplateID,
+		TemplateID:         uuid.New().String(),
+		Name:               fmt.Sprintf("%s%s格式标准", universityName, documentType),
+		UniversityID:       &university.ID,
+		DocumentType:       documentType,
+		Subject:            subject,
+		Source:             "sample_upload",
+		IsActive:           true,
+		FilePath:           stablePath,
+		GoldenTemplatePath: stablePath,
+		FormatRules:        string(formatRulesJSON),
+		Description:        description,
 	}
-	if err := database.DB.Create(&newTemplate).Error; err != nil {
+	if err := createUploadedTemplate(c, &newTemplate); err != nil {
+		_ = os.Remove(stablePath)
 		utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())
 		return
 	}
@@ -351,6 +337,63 @@ func persistTemplateDOCX(templateID uuid.UUID, sourcePath string) (string, error
 		return "", err
 	}
 	return targetPath, nil
+}
+
+func persistStudentTemplateDOCX(templateID uuid.UUID, sourcePath string) (string, error) {
+	content, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	targetDir := filepath.Join("private", "template_uploads", templateID.String())
+	if err := os.MkdirAll(targetDir, 0700); err != nil {
+		return "", err
+	}
+	targetPath := filepath.Join(targetDir, "template.docx")
+	file, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return "", err
+	}
+	if _, err := file.Write(content); err != nil {
+		_ = file.Close()
+		_ = os.Remove(targetPath)
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(targetPath)
+		return "", err
+	}
+	return targetPath, nil
+}
+
+func persistUploadedTemplateDOCX(c *gin.Context, templateID uuid.UUID, sourcePath string) (string, error) {
+	if c.GetBool(templateCatalogueImportContextKey) {
+		return persistTemplateDOCX(templateID, sourcePath)
+	}
+	return persistStudentTemplateDOCX(templateID, sourcePath)
+}
+
+func createUploadedTemplate(c *gin.Context, template *model.FormatTemplate) error {
+	owner, ok := authenticatedUserID(c)
+	if !ok || owner == uuid.Nil {
+		return fmt.Errorf("authenticated template owner is required")
+	}
+	public := c.GetBool(templateCatalogueImportContextKey)
+	template.OwnerUserID = &owner
+	if public {
+		template.OwnerUserID = nil
+	}
+	template.IsPublic = public
+	return database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(template).Error; err != nil {
+			return err
+		}
+		// GORM's legacy default:true replaces zero-value false during Create.
+		if err := tx.Model(template).Update("is_public", public).Error; err != nil {
+			return err
+		}
+		template.IsPublic = public
+		return nil
+	})
 }
 
 // processTemplateText 用提取的文本解析并保存格式模板（公共逻辑）
@@ -442,66 +485,36 @@ func (h *PaperHandler) processTemplateText(c *gin.Context, formatText string, up
 			utils.ErrorResponse(c, http.StatusInternalServerError, "创建高校记录失败", err.Error())
 			return
 		}
-	} else if description != "" {
-		database.DB.Model(&university).Update("description", description)
-	}
-
-	var existingTemplate model.FormatTemplate
-	err = database.DB.Where("university_id = ? AND document_type = ? AND subject = ?",
-		university.ID, documentType, subject).First(&existingTemplate).Error
-	if err == nil {
-		updates := map[string]interface{}{
-			"format_rules":     string(formatRulesJSON),
-			"parse_confidence": parseResult.Quality.QualityScore,
-			"updated_at":       time.Now(),
-		}
-		if docxPath != "" {
-			stablePath, persistErr := persistTemplateDOCX(existingTemplate.ID, docxPath)
-			if persistErr != nil {
-				utils.ErrorResponse(c, http.StatusInternalServerError, "保存模板文件失败", persistErr.Error())
-				return
-			}
-			updates["file_path"] = stablePath
-			updates["golden_template_path"] = stablePath
-		}
-		if description != "" {
-			updates["description"] = description
-		}
-		if err := database.UpdateFormatTemplateWithAudit(&existingTemplate, updates, auditActorID(c)); err != nil {
-			utils.ErrorResponse(c, http.StatusInternalServerError, "更新格式模板失败", err.Error())
-			return
-		}
-		response := templateUploadResponse("格式模板已更新", existingTemplate.ID, "", university, documentType, subject)
-		response["parse_quality"] = parseResult.Quality
-		utils.Success(c, response)
-		return
 	}
 
 	newTemplateID := uuid.New()
 	stablePath := ""
 	if docxPath != "" {
-		stablePath, err = persistTemplateDOCX(newTemplateID, docxPath)
+		stablePath, err = persistUploadedTemplateDOCX(c, newTemplateID, docxPath)
 		if err != nil {
 			utils.ErrorResponse(c, http.StatusInternalServerError, "保存模板文件失败", err.Error())
 			return
 		}
 	}
 	newTemplate := model.FormatTemplate{
-		ID:              newTemplateID,
-		TemplateID:      uuid.New().String(),
-		Name:            fmt.Sprintf("%s%s格式标准", universityName, documentType),
-		UniversityID:    &university.ID,
-		DocumentType:    documentType,
-		Subject:         subject,
-		Source:          "university_upload",
-		IsActive:        true,
-		IsPublic:        true,
-		FilePath:        stablePath,
-		FormatRules:     string(formatRulesJSON),
-		ParseConfidence: parseResult.Quality.QualityScore,
-		Description:     description,
+		ID:                 newTemplateID,
+		TemplateID:         uuid.New().String(),
+		Name:               fmt.Sprintf("%s%s格式标准", universityName, documentType),
+		UniversityID:       &university.ID,
+		DocumentType:       documentType,
+		Subject:            subject,
+		Source:             "university_upload",
+		IsActive:           true,
+		FilePath:           stablePath,
+		GoldenTemplatePath: stablePath,
+		FormatRules:        string(formatRulesJSON),
+		ParseConfidence:    parseResult.Quality.QualityScore,
+		Description:        description,
 	}
-	if err := database.DB.Create(&newTemplate).Error; err != nil {
+	if err := createUploadedTemplate(c, &newTemplate); err != nil {
+		if stablePath != "" {
+			_ = os.Remove(stablePath)
+		}
 		utils.ErrorResponse(c, http.StatusInternalServerError, "创建格式模板失败", err.Error())
 		return
 	}

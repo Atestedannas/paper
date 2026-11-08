@@ -167,8 +167,19 @@ func (s *PromoCodeService) ListGrants(ctx context.Context, codeID uuid.UUID) ([]
 	return grants, err
 }
 
+// validPromoService 卡密可用于哪些服务。
+//
+// check_and_fix：一次完整的检查+修正（宣传用）
+// paper_download：仅解锁下载（宣传/补偿用）
+//
+// 两种卡密共用同一张表，靠 service_type 区分，避免开第二套核销逻辑。
 func validPromoService(value string) bool {
-	return value == "check_and_fix"
+	switch value {
+	case "check_and_fix", "paper_download":
+		return true
+	default:
+		return false
+	}
 }
 
 func promoCodeHash(value string) string {

@@ -22,7 +22,22 @@ import (
 type fakePaperWorkflowService struct {
 	job      *service.WorkflowJobView
 	template *service.CompiledTemplateView
+	diff     *service.WorkflowDiffPage
 	err      error
+}
+
+func (f fakePaperWorkflowService) GetJobDiffForUser(id string, userID uuid.UUID, opts service.WorkflowDiffOptions) (*service.WorkflowDiffPage, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.diff, nil
+}
+
+func (f fakePaperWorkflowService) ConfirmJob(id string, userID uuid.UUID, confirmed bool) (*service.WorkflowJobView, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.job, nil
 }
 
 func (f fakePaperWorkflowService) CompileTemplate(context.Context, service.CompileTemplateInput) (*service.CompiledTemplateView, error) {
@@ -295,6 +310,245 @@ func TestPaperWorkflowHandlerDownloadJobRejectsSymlink(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
 	}
+}
+
+// ── 差异明细接口 ──
+
+func TestPaperWorkflowHandlerGetJobDiffReturnsPage(t *testing.T) {
+	jobID := uuid.New()
+	userID := uuid.New()
+	rec := performPaperWorkflowDiffAsUser(t, NewPaperWorkflowHandler(fakePaperWorkflowService{
+		diff: &service.WorkflowDiffPage{
+			JobID:      jobID.String(),
+			Total:      2,
+			Page:       1,
+			PageSize:   20,
+			TotalPages: 1,
+			Entries: []service.WorkflowDiffEntry{
+				{RuleID: "style.body.font_size_half_pt", Category: "font", Severity: "error", Changed: true},
+			},
+		},
+	}), jobID.String(), userID, "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !containsWorkflowHandlerText(body, "style.body.font_size_half_pt") {
+		t.Fatalf("body = %q, want diff entries", body)
+	}
+}
+
+func TestPaperWorkflowHandlerGetJobDiffRequiresAuth(t *testing.T) {
+	jobID := uuid.New()
+	rec := performPaperWorkflowDiffWithUserValue(t, NewPaperWorkflowHandler(fakePaperWorkflowService{}), jobID.String(), nil, "")
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestPaperWorkflowHandlerGetJobDiffPropagatesNotFound(t *testing.T) {
+	jobID := uuid.New()
+	rec := performPaperWorkflowDiffAsUser(t, NewPaperWorkflowHandler(fakePaperWorkflowService{
+		err: gorm.ErrRecordNotFound,
+	}), jobID.String(), uuid.New(), "")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func performPaperWorkflowDiffAsUser(t *testing.T, handler *PaperWorkflowHandler, jobID string, userID uuid.UUID, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	return performPaperWorkflowDiffWithUserValue(t, handler, jobID, userID, query)
+}
+
+func performPaperWorkflowDiffWithUserValue(t *testing.T, handler *PaperWorkflowHandler, jobID string, userID any, query string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		if userID != nil {
+			c.Set("user_id", userID)
+		}
+		c.Next()
+	})
+	router.GET("/jobs/:job_id/diff", handler.GetJobDiff)
+
+	target := "/jobs/" + jobID + "/diff"
+	if query != "" {
+		target += "?" + query
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+// ── 预览接口 ──
+// 预览不收费，因此更要守住路径边界；这几条是防路径穿越的回归测试。
+
+func TestSafePreviewPathRejectsEscapesAndNonDocx(t *testing.T) {
+	workDir := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(workDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+
+	uploads := filepath.Join(workDir, "uploads", "workflow_inputs", "u")
+	if err := os.MkdirAll(uploads, 0755); err != nil {
+		t.Fatalf("mkdir uploads: %v", err)
+	}
+	goodDocx := filepath.Join(uploads, "paper.docx")
+	if err := os.WriteFile(goodDocx, []byte("PK"), 0644); err != nil {
+		t.Fatalf("write docx: %v", err)
+	}
+	notDocx := filepath.Join(uploads, "paper.pdf")
+	if err := os.WriteFile(notDocx, []byte("%PDF"), 0644); err != nil {
+		t.Fatalf("write pdf: %v", err)
+	}
+	outside := filepath.Join(workDir, "secret.docx")
+	if err := os.WriteFile(outside, []byte("PK"), 0644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+
+	h := &PaperWorkflowHandler{}
+
+	if _, ok := h.safePreviewPath(goodDocx); !ok {
+		t.Fatalf("safePreviewPath(%q) = false, want true", goodDocx)
+	}
+	if _, ok := h.safePreviewPath(outside); ok {
+		t.Fatalf("safePreviewPath(%q) = true, want false (outside uploads)", outside)
+	}
+	if _, ok := h.safePreviewPath(notDocx); ok {
+		t.Fatalf("safePreviewPath(%q) = true, want false (not docx)", notDocx)
+	}
+	if _, ok := h.safePreviewPath(""); ok {
+		t.Fatal("safePreviewPath(empty) = true, want false")
+	}
+	if _, ok := h.safePreviewPath(filepath.Join(uploads, "missing.docx")); ok {
+		t.Fatal("safePreviewPath(missing) = true, want false")
+	}
+}
+
+func TestPaperWorkflowHandlerPreviewRejectsInvalidSide(t *testing.T) {
+	jobID := uuid.New()
+	userID := uuid.New()
+	rec := performPaperWorkflowPreviewAsUser(t, NewPaperWorkflowHandler(fakePaperWorkflowService{
+		job: &service.WorkflowJobView{ID: jobID, UserID: userID},
+	}), jobID.String(), userID, "sideways")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestPaperWorkflowHandlerPreviewCorrectedNotReadyReturnsConflict(t *testing.T) {
+	jobID := uuid.New()
+	userID := uuid.New()
+	rec := performPaperWorkflowPreviewAsUser(t, NewPaperWorkflowHandler(fakePaperWorkflowService{
+		job: &service.WorkflowJobView{ID: jobID, UserID: userID, Status: string(workflow.StatusUploaded)},
+	}), jobID.String(), userID, "corrected")
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
+func TestPaperWorkflowHandlerPreviewRequiresAuthenticatedUser(t *testing.T) {
+	jobID := uuid.New()
+	rec := performPaperWorkflowPreviewWithUserValue(t, NewPaperWorkflowHandler(fakePaperWorkflowService{}), jobID.String(), nil, "original")
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestPaperWorkflowHandlerPreviewServiceNilReturnsConflict(t *testing.T) {
+	rec := performPaperWorkflowPreviewAsUser(t, NewPaperWorkflowHandler(nil), uuid.New().String(), uuid.New(), "original")
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+}
+
+func TestPaperWorkflowHandlerPreviewReturnsInlineNotAttachment(t *testing.T) {
+	// 预览接口要求产物位于 uploads/ 之下（safePreviewPath 的边界），
+	// 因此这里构造真实的 uploads/workflow_outputs/<job>/final.docx 布局。
+	workDir := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(workDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+
+	root := filepath.Join(workDir, "uploads", "workflow_outputs")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatalf("mkdir workflow_outputs: %v", err)
+	}
+	path := filepath.Join(root, "final.docx")
+	if err := os.WriteFile(path, []byte("docx bytes"), 0644); err != nil {
+		t.Fatalf("write docx: %v", err)
+	}
+
+	jobID := uuid.New()
+	userID := uuid.New()
+	rec := performPaperWorkflowPreviewAsUser(t, NewPaperWorkflowHandlerWithDownloadRoot(fakePaperWorkflowService{
+		job: &service.WorkflowJobView{
+			ID:           jobID,
+			UserID:       userID,
+			Status:       string(workflow.StatusVerifiedPass),
+			Stage:        workflow.StageVerified,
+			DownloadPath: path,
+		},
+	}, root), jobID.String(), userID, "corrected")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	disposition := rec.Header().Get("Content-Disposition")
+	if !strings.HasPrefix(disposition, "inline") {
+		t.Fatalf("Content-Disposition = %q, want inline (preview must not trigger download)", disposition)
+	}
+	if strings.HasPrefix(disposition, "attachment") {
+		t.Fatalf("Content-Disposition = %q, preview must never be attachment", disposition)
+	}
+	if rec.Body.String() != "docx bytes" {
+		t.Fatalf("body = %q, want file bytes", rec.Body.String())
+	}
+}
+
+func performPaperWorkflowPreviewAsUser(t *testing.T, handler *PaperWorkflowHandler, jobID string, userID uuid.UUID, side string) *httptest.ResponseRecorder {
+	t.Helper()
+	return performPaperWorkflowPreviewWithUserValue(t, handler, jobID, userID, side)
+}
+
+func performPaperWorkflowPreviewWithUserValue(t *testing.T, handler *PaperWorkflowHandler, jobID string, userID any, side string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		if userID != nil {
+			c.Set("user_id", userID)
+		}
+		c.Next()
+	})
+	router.GET("/jobs/:job_id/preview", handler.PreviewJob)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/jobs/"+jobID+"/preview?side="+side, nil)
+	router.ServeHTTP(rec, req)
+	return rec
 }
 
 func performPaperWorkflowDownload(t *testing.T, handler *PaperWorkflowHandler, jobID string) *httptest.ResponseRecorder {

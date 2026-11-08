@@ -44,12 +44,26 @@ func TestVerifierRenderGateAddsRepairableIssue(t *testing.T) {
 	if len(result.RepairableIssues) == 0 {
 		t.Fatalf("RepairableIssues = none, want render same-page issue")
 	}
+	found := false
+	for _, issue := range result.RepairableIssues {
+		if issue.Kind == "render_same_page_rule_failed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("render same-page regression lost its intended failure: %+v", result.RepairableIssues)
+	}
 }
 
 type fakeRenderGateRenderer struct{}
 
-func (fakeRenderGateRenderer) RenderPDF(context.Context, string, string) (renderverify.PDFArtifact, error) {
-	return renderverify.PDFArtifact{Path: "paper.pdf"}, nil
+func (fakeRenderGateRenderer) RenderPDF(_ context.Context, source, _ string) (renderverify.PDFArtifact, error) {
+	// The extractor is a fake, but binding requires an actual renderer artifact.
+	path := filepath.Join(filepath.Dir(source), "paper.pdf")
+	if err := os.WriteFile(path, []byte("%PDF-1.4\n% rendered fixture"), 0600); err != nil {
+		return renderverify.PDFArtifact{}, err
+	}
+	return renderverify.PDFArtifact{Path: path}, nil
 }
 
 type fakeRenderGateExtractor struct {

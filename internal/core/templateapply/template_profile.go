@@ -268,18 +268,47 @@ func ApplyTemplateProfileTOCStyles(ctx context.Context, path string, profile *te
 	if !ok {
 		return 0, fmt.Errorf("missing %s", documentTarget)
 	}
-	tocStylePattern := regexp.MustCompile(`(?i)<w:pStyle\b[^>]*w:val="TOC([1-9])"`)
+	styleXML, _ := pkg.Get("word/styles.xml")
+	tocLevels := templateprofile.TOCStyleLevels(string(styleXML))
+	entryAssignments, err := legacyTOCEntryAssignments(path, string(content), tocLevels)
+	if err != nil {
+		return 0, fmt.Errorf("identify TOC entry targets: %w", err)
+	}
+	titleBindings, err := legacyTOCTitleBindings(path, string(content), profile)
+	if err != nil {
+		return 0, fmt.Errorf("identify TOC title bindings: %w", err)
+	}
+	tocStylePattern := regexp.MustCompile(`<w:pStyle\b[^>]*w:val="([^"]+)"`)
 	count := 0
 	updated := paragraphPattern.ReplaceAllStringFunc(string(content), func(paragraph string) string {
+		if titleBindings[paragraph] {
+			next, _ := applyLegacyParagraphSpec(paragraph, ooxmlpatch.ParagraphPropertiesSpec{KeepNext: true, KeepNextSet: true})
+			if next != paragraph {
+				count++
+			}
+			return next
+		}
 		text := strings.TrimSpace(extractParagraphText(paragraph))
-		if text == "" || !tocStylePattern.MatchString(paragraph) && !isTemplateProfileTOCParagraph(paragraph) {
+		level := 0
+		if match := tocStylePattern.FindStringSubmatch(paragraph); len(match) == 2 {
+			level = templateprofile.TOCStyleLevel(match[1])
+			if declared, found := tocLevels[match[1]]; found {
+				level = declared
+			}
+		}
+		if assignment, exists := entryAssignments[paragraph]; exists {
+			if assignment.Role != "toc_entry" || assignment.ReviewReason != "" {
+				return paragraph
+			}
+			level = assignment.LogicalLevel
+		}
+		if text == "" || level <= 0 {
 			return paragraph
 		}
-		key := "toc_entry"
-		if match := tocStylePattern.FindStringSubmatch(paragraph); len(match) > 1 && match[1] != "1" {
-			key += "_" + match[1]
+		rule, found := RoleStyleRequirementForText(profile, "toc_entry", text, level)
+		if assignment, exists := entryAssignments[paragraph]; exists {
+			rule, found = RoleStyleRequirementForAssignment(profile, assignment)
 		}
-		rule, found := resolveTemplateProfileStyle(profile.Styles, key)
 		if !found {
 			return paragraph
 		}
@@ -288,6 +317,7 @@ func ApplyTemplateProfileTOCStyles(ctx context.Context, path string, profile *te
 			return paragraph
 		}
 		next := applyParagraphStyle(paragraph, style)
+		next = resetTOCPointSpacingUnits(next, rule)
 		if next != paragraph {
 			count++
 		}
@@ -2456,7 +2486,15 @@ func preferStyleKey(primary string, fallback string) string {
 func resolveTemplateProfileStyle(styles map[string]templateprofile.StyleRule, key string) (templateprofile.StyleRule, bool) {
 	for _, candidate := range strings.Split(key, "\x00") {
 		if style, ok := styles[candidate]; ok {
-			return style, true
+			return templateprofile.CaptionLanguageStyle(styles["figure_caption"], style, candidate), true
+		}
+	}
+	for _, candidate := range strings.Split(key, "\x00") {
+		if strings.HasPrefix(candidate, "toc_entry_") {
+			level, err := strconv.Atoi(strings.TrimPrefix(candidate, "toc_entry_"))
+			if err == nil && level > 1 && level <= 9 {
+				return templateprofile.ExplicitUniformTOCFonts(styles["toc_entry"], candidate)
+			}
 		}
 	}
 	return templateprofile.StyleRule{}, false
@@ -2503,6 +2541,24 @@ func paragraphStyleFromTemplateProfile(rule templateprofile.StyleRule) (paragrap
 	if value, ok := parseTemplateProfileInt(rule.AfterTwips); ok {
 		style.afterTwips = intPtr(value)
 	}
+	if value, ok := parseTemplateProfileInt(rule.LeftTwips); ok {
+		style.leftTwips = intPtr(value)
+	}
+	if value, ok := parseTemplateProfileInt(rule.RightTwips); ok {
+		style.rightTwips = intPtr(value)
+	}
+	if value, ok := parseTemplateProfileInt(rule.LeftChars); ok {
+		style.leftChars = intPtr(value)
+	}
+	if value, ok := parseTemplateProfileInt(rule.RightChars); ok {
+		style.rightChars = intPtr(value)
+	}
+	if value, ok := parseTemplateProfileInt(rule.HangingTwips); ok {
+		style.hangingTwips = intPtr(value)
+	}
+	if value, ok := parseTemplateProfileInt(rule.HangingChars); ok {
+		style.hangingChars = intPtr(value)
+	}
 	if value, ok := parseTemplateProfileInt(rule.FirstLineTwips); ok {
 		style.firstLineTwips = intPtr(value)
 	}
@@ -2524,7 +2580,7 @@ func paragraphStyleFromTemplateProfile(rule templateprofile.StyleRule) (paragrap
 			style.lineRule = ""
 		}
 	}
-	ok := style.eastAsiaFont != "" || style.asciiFont != "" || style.hAnsiFont != "" || style.complexFont != "" || style.fontSize != "" || style.complexSize != "" ||
+	ok := style.leftTwips != nil || style.rightTwips != nil || style.leftChars != nil || style.rightChars != nil || style.hangingTwips != nil || style.hangingChars != nil || style.eastAsiaFont != "" || style.asciiFont != "" || style.hAnsiFont != "" || style.complexFont != "" || style.fontSize != "" || style.complexSize != "" ||
 		style.alignment != "" || style.line != "" || style.beforeTwips != nil || style.afterTwips != nil ||
 		style.beforeLines != nil || style.afterLines != nil || style.firstLineChars != nil || style.firstLineTwips != nil ||
 		style.boldSet || style.bold || style.italicSet || style.italic || style.keepNextSet || style.keepLinesSet || style.widowControlSet

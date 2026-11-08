@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/paper-format-checker/backend/internal/core/formatcheck"
 	"github.com/paper-format-checker/backend/internal/core/ooxmlpkg"
 	"github.com/paper-format-checker/backend/internal/database"
 	"github.com/paper-format-checker/backend/internal/model"
@@ -28,6 +29,7 @@ type PaperWorkflowHandler struct {
 	svc          service.PaperWorkflowService
 	downloadRoot string
 	promoCodes   *service.PromoCodeService
+	guard        *service.DownloadAccessGuard
 }
 
 func NewPaperWorkflowHandler(svc service.PaperWorkflowService) *PaperWorkflowHandler {
@@ -35,7 +37,29 @@ func NewPaperWorkflowHandler(svc service.PaperWorkflowService) *PaperWorkflowHan
 }
 
 func NewPaperWorkflowHandlerWithDownloadRoot(svc service.PaperWorkflowService, root string) *PaperWorkflowHandler {
-	return &PaperWorkflowHandler{svc: svc, downloadRoot: root, promoCodes: service.NewPromoCodeService(database.DB)}
+	return &PaperWorkflowHandler{
+		svc:          svc,
+		downloadRoot: root,
+		promoCodes:   service.NewPromoCodeService(database.DB),
+		guard:        service.NewDownloadAccessGuard(database.DB),
+	}
+}
+
+// accessGuard 惰性初始化：测试里可能构造没有 database.DB 的 handler。
+func (h *PaperWorkflowHandler) accessGuard() *service.DownloadAccessGuard {
+	if h.guard == nil {
+		h.guard = service.NewDownloadAccessGuard(database.DB)
+	}
+	return h.guard
+}
+
+// freeChecksRemaining 返回用户剩余免费额度，供前端展示「还剩 N 次免费下载」。
+func (h *PaperWorkflowHandler) freeChecksRemaining(userID uuid.UUID) int {
+	var user model.User
+	if err := database.DB.Select("free_checks").First(&user, "id = ?", userID).Error; err != nil {
+		return 0
+	}
+	return user.FreeChecks
 }
 
 func (h *PaperWorkflowHandler) CompileTemplate(c *gin.Context) {
@@ -61,7 +85,6 @@ func (h *PaperWorkflowHandler) CompileTemplate(c *gin.Context) {
 		utils.ErrorResponse(c, http.StatusBadRequest, "only .docx files are supported", "")
 		return
 	}
-
 	safeName := filepath.Base(file.Filename)
 	inputDir := filepath.Join("uploads", "workflow_templates")
 	if err := os.MkdirAll(inputDir, 0755); err != nil {
@@ -110,12 +133,9 @@ func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
 		return
 	}
 
-	grantID, orderID, err := h.authorizePaperJob(c, userID)
-	if err != nil {
-		utils.ErrorResponse(c, http.StatusPaymentRequired, err.Error(), "")
-		return
-	}
-
+	// 方案 A：创建任务不收费。
+	// 用户可以先跑、先看对比、满意了再付——收费统一在下载环节（AccessGuard）。
+	// 卡密/订单不再在此时核销，避免「付了钱却没生成出可用文件」的坏体验。
 	file, err := c.FormFile("paper")
 	if err != nil {
 		file, err = c.FormFile("file")
@@ -129,6 +149,11 @@ func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
 		return
 	}
 
+	complianceContext, err := formatcheck.DecodeContext(c.PostForm("compliance_context"))
+	if err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "invalid compliance_context", err.Error())
+		return
+	}
 	safeName := filepath.Base(file.Filename)
 	storedName := uuid.New().String() + "_" + safeName
 	inputDir := filepath.Join("uploads", "workflow_inputs", userID.String())
@@ -162,21 +187,18 @@ func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
 	}
 
 	job, err := h.svc.CreatePaperJob(c.Request.Context(), service.CreatePaperJobInput{
-		UserID:           userID,
-		FormatTemplateID: templateID,
-		Title:            strings.TrimSpace(c.PostForm("title")),
-		FilePath:         inputPath,
-		FileName:         safeName,
-		FileSize:         file.Size,
-		FileType:         "docx",
+		ComplianceContext: complianceContext,
+		UserID:            userID,
+		FormatTemplateID:  templateID,
+		Title:             strings.TrimSpace(c.PostForm("title")),
+		FilePath:          inputPath,
+		FileName:          safeName,
+		FileSize:          file.Size,
+		FileType:          "docx",
 	})
 	if err != nil {
 		_ = os.Remove(inputPath)
 		h.respondWorkflowError(c, err)
-		return
-	}
-	if err := h.consumePaperJobAccess(c, userID, job.PaperID, grantID, orderID); err != nil {
-		utils.ErrorResponse(c, http.StatusConflict, "服务授权绑定失败", err.Error())
 		return
 	}
 	log.Printf("[WORKFLOW_FLOW] create upload accepted job=%s paper=%s compiled_template=%s file=%s", job.ID, job.PaperID, job.CompiledTemplateID, inputPath)
@@ -186,6 +208,9 @@ func (h *PaperWorkflowHandler) CreatePaperJob(c *gin.Context) {
 
 func resolveWorkflowFormatTemplateID(raw string, documentType string) (uuid.UUID, error) {
 	if id, err := uuid.Parse(strings.TrimSpace(raw)); err == nil {
+		if id == uuid.Nil {
+			return uuid.Nil, fmt.Errorf("template_id must be a nonzero template UUID")
+		}
 		return id, nil
 	}
 	universityID, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
@@ -193,7 +218,7 @@ func resolveWorkflowFormatTemplateID(raw string, documentType string) (uuid.UUID
 		return uuid.Nil, fmt.Errorf("template_id must be a template UUID or university ID")
 	}
 
-	query := database.DB.Where("university_id = ? AND is_active = ?", universityID, true)
+	query := database.DB.Where("university_id = ? AND is_active = ? AND is_public = ? AND owner_user_id IS NULL", universityID, true, true)
 	if documentType = strings.TrimSpace(documentType); documentType != "" {
 		query = query.Where("document_type = ?", documentType)
 	} else {
@@ -209,7 +234,7 @@ func resolveWorkflowFormatTemplateID(raw string, documentType string) (uuid.UUID
 		}
 	}
 	var templates []model.FormatTemplate
-	if err := database.DB.Where("university_id = ? AND is_active = ?", universityID, true).
+	if err := database.DB.Where("university_id = ? AND is_active = ? AND is_public = ? AND owner_user_id IS NULL", universityID, true, true).
 		Order("updated_at DESC").Find(&templates).Error; err != nil {
 		return uuid.Nil, err
 	}
@@ -322,6 +347,75 @@ func (h *PaperWorkflowHandler) GetJob(c *gin.Context) {
 	utils.SuccessResponse(c, "job found", job)
 }
 
+// GetJobDiff GET /api/v2/jobs/:job_id/diff
+//
+// 返回分页差异明细。为什么必须分页：一次 RunJob 的 rule_audit 是
+// 「规则 × 节点」，真实论文上轻松上千条，整包返回会有几百 KB。
+// ConfirmJob PATCH /api/v2/jobs/:job_id/confirm
+//
+// 前端「我已确认修改内容无误」勾选后调用，仅校验登录+归属，永不收费。
+// 确认后 DownloadJob 才会放行下载修正稿。
+func (h *PaperWorkflowHandler) ConfirmJob(c *gin.Context) {
+	if h == nil || h.svc == nil {
+		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "")
+		return
+	}
+
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		utils.ErrorResponse(c, http.StatusUnauthorized, "user not authenticated", "")
+		return
+	}
+
+	var req struct {
+		Confirmed bool `json:"confirmed"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.ErrorResponse(c, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+
+	job, err := h.svc.ConfirmJob(c.Param("job_id"), userID, req.Confirmed)
+	if err != nil {
+		h.respondJobLookupError(c, err)
+		return
+	}
+
+	utils.SuccessResponse(c, "job confirmation updated", gin.H{
+		"job":       job,
+		"confirmed": job != nil && job.Confirmed,
+	})
+}
+
+func (h *PaperWorkflowHandler) GetJobDiff(c *gin.Context) {
+	if h == nil || h.svc == nil {
+		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "")
+		return
+	}
+
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		utils.ErrorResponse(c, http.StatusUnauthorized, "user not authenticated", "")
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+
+	diff, err := h.svc.GetJobDiffForUser(c.Param("job_id"), userID, service.WorkflowDiffOptions{
+		Category: strings.TrimSpace(c.Query("category")),
+		Severity: strings.TrimSpace(c.Query("severity")),
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		h.respondJobLookupError(c, err)
+		return
+	}
+
+	utils.SuccessResponse(c, "job diff", diff)
+}
+
 func (h *PaperWorkflowHandler) DownloadJob(c *gin.Context) {
 	log.Printf("[WORKFLOW_FLOW] download request job=%s", c.Param("job_id"))
 	if h == nil || h.svc == nil {
@@ -357,8 +451,139 @@ func (h *PaperWorkflowHandler) DownloadJob(c *gin.Context) {
 		return
 	}
 
+	// 计费闸口：订单 / 卡密 / 免费额度 / 会员 / 管理员。
+	// 同一个 job 只扣一次——重复下载命中已有授权直接放行。
+	//
+	// 没有数据库连接时（仅单元测试会出现）无法判定授权，此时放行并告警：
+	// 生产环境 database.DB 一定已初始化，这条分支不可达。
+	if database.DB == nil {
+		log.Printf("[WORKFLOW_DOWNLOAD] database unavailable; billing check skipped job=%s", c.Param("job_id"))
+		c.FileAttachment(safePath, filepath.Base(safePath))
+		return
+	}
+	access, err := h.accessGuard().Authorize(c.Request.Context(), job.ID, userID)
+	if err != nil {
+		log.Printf("[WORKFLOW_DOWNLOAD] access check failed job=%s err=%v", c.Param("job_id"), err)
+		utils.ErrorResponse(c, http.StatusInternalServerError, "download access check failed", err.Error())
+		return
+	}
+	if !access.Granted {
+		// 402 带上价格与可用方式，前端据此弹支付/卡密/免费额度入口。
+		c.JSON(http.StatusPaymentRequired, gin.H{
+			"code":           http.StatusPaymentRequired,
+			"msg":            access.Reason,
+			"error":          "payment_required",
+			"service_type":   "paper_download",
+			"price":          access.Price,
+			"job_id":         job.ID.String(),
+			"free_remaining": h.freeChecksRemaining(userID),
+			"accepts":        []string{"promo_code", "wechat", "alipay", "free_quota"},
+		})
+		return
+	}
+	log.Printf("[WORKFLOW_DOWNLOAD] access granted job=%s source=%s idempotent=%t", c.Param("job_id"), access.Source, access.Idempotent)
+
 	c.FileAttachment(safePath, filepath.Base(safePath))
 	log.Printf("[WORKFLOW_FLOW] download served job=%s path=%s", c.Param("job_id"), safePath)
+}
+
+// PreviewJob GET /api/v2/jobs/:job_id/preview?side=original|corrected
+//
+// 预览只校验「登录 + 归属」，永不收费；下载才走计费闸口。
+// 与 DownloadJob 的关键差异：
+//   - Content-Disposition 用 inline（不是 attachment），浏览器直接渲染
+//   - 不加 Cache-Control: public，避免修正稿被中间缓存
+func (h *PaperWorkflowHandler) PreviewJob(c *gin.Context) {
+	if h == nil || h.svc == nil {
+		utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "")
+		return
+	}
+
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		utils.ErrorResponse(c, http.StatusUnauthorized, "user not authenticated", "")
+		return
+	}
+
+	job, err := h.svc.GetJobForUser(c.Param("job_id"), userID)
+	if err != nil {
+		h.respondJobLookupError(c, err)
+		return
+	}
+	if job == nil {
+		utils.ErrorResponse(c, http.StatusNotFound, "job not found", "")
+		return
+	}
+
+	side := strings.ToLower(strings.TrimSpace(c.DefaultQuery("side", "original")))
+	var sourcePath string
+	switch side {
+	case "original":
+		// 原稿路径不在 job 视图里，回查 paper 表。
+		sourcePath, err = h.originalPaperPath(job.PaperID)
+		if err != nil {
+			utils.ErrorResponse(c, http.StatusNotFound, "original paper not found", err.Error())
+			return
+		}
+	case "corrected":
+		if !jobDownloadReady(job) {
+			utils.ErrorResponse(c, http.StatusConflict, paperWorkflowDownloadNotReadyMessage, "corrected file is not ready")
+			return
+		}
+		sourcePath = job.DownloadPath
+	default:
+		utils.ErrorResponse(c, http.StatusBadRequest, "invalid side", "side must be original or corrected")
+		return
+	}
+
+	safePath, ok := h.safePreviewPath(sourcePath)
+	if !ok {
+		utils.ErrorResponse(c, http.StatusNotFound, "preview file not found", "")
+		return
+	}
+
+	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=\"%s\"", filepath.Base(safePath)))
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+	c.Header("Cache-Control", "private, no-store")
+	c.File(safePath)
+	log.Printf("[WORKFLOW_PREVIEW] served job=%s side=%s path=%s", c.Param("job_id"), side, safePath)
+}
+
+// originalPaperPath 只读 paper 表拿原稿路径，不做任何写操作。
+func (h *PaperWorkflowHandler) originalPaperPath(paperID uuid.UUID) (string, error) {
+	var paper model.Paper
+	if err := database.DB.Select("id", "file_path").First(&paper, "id = ?", paperID).Error; err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(paper.FilePath) == "" {
+		return "", errors.New("paper has no source file")
+	}
+	return paper.FilePath, nil
+}
+
+// safePreviewPath 允许原稿位于 uploads/workflow_inputs，因此不能复用只认
+// workflow_outputs 的 safeDownloadPath；这里改为「必须是 .docx 且位于 uploads 下」。
+func (h *PaperWorkflowHandler) safePreviewPath(sourcePath string) (string, bool) {
+	cleaned := strings.TrimSpace(sourcePath)
+	if cleaned == "" || !strings.EqualFold(filepath.Ext(cleaned), ".docx") {
+		return "", false
+	}
+	candidate, err := filepath.Abs(filepath.Clean(cleaned))
+	if err != nil {
+		return "", false
+	}
+	uploadsRoot, err := filepath.Abs("uploads")
+	if err != nil {
+		return "", false
+	}
+	if !pathWithinRoot(candidate, uploadsRoot) {
+		return "", false
+	}
+	info, err := os.Lstat(candidate)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", false
+	}
+	return candidate, true
 }
 
 func jobDownloadReady(job *service.WorkflowJobView) bool {
@@ -376,6 +601,8 @@ func (h *PaperWorkflowHandler) respondJobLookupError(c *gin.Context, err error) 
 
 func (h *PaperWorkflowHandler) respondWorkflowError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, service.ErrWorkflowInputsChanged):
+		utils.ErrorResponse(c, http.StatusConflict, "源稿或模板与任务绑定不一致，请使用预期文件新建任务", "")
 	case errors.Is(err, service.ErrInvalidJobID):
 		utils.ErrorResponse(c, http.StatusBadRequest, "invalid job id", err.Error())
 	case errors.Is(err, service.ErrInvalidPaperUpload):

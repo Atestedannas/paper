@@ -68,6 +68,19 @@ type SettingsPropertiesSpec struct {
 }
 
 type ParagraphPropertiesSpec struct {
+	LeftTwips       int
+	LeftTwipsSet    bool
+	RightTwips      int
+	RightTwipsSet   bool
+	LeftChars       int
+	LeftCharsSet    bool
+	RightChars      int
+	RightCharsSet   bool
+	HangingTwips    int
+	HangingTwipsSet bool
+	HangingChars    int
+	HangingCharsSet bool
+
 	StyleID            string
 	OutlineLevel       int
 	OutlineLevelSet    bool
@@ -261,45 +274,55 @@ func insertUpdateFieldsInSchemaOrder(settingsXML string) string {
 }
 
 func ApplyParagraphProperties(paragraphXML string, spec ParagraphPropertiesSpec) (string, bool) {
-	pPr := firstElement(paragraphXML, paragraphPropertiesElement)
-	if pPr == "" {
-		pPr = `<w:pPr/>`
+	if !validWordContainer(paragraphXML, "p") {
+		return paragraphXML, false
+	}
+	body := elementBody(paragraphXML)
+	start, end, valid := directPropertyRange(body, "w:pPr")
+	if !valid {
+		return paragraphXML, false
+	}
+	pPr := `<w:pPr/>`
+	if start >= 0 {
+		pPr = body[start:end]
 	}
 	updatedPPr := replaceElementBody(pPr, updateParagraphPropertiesBody(elementBody(pPr), spec), "w:pPr")
 	if ordered, _, err := ooxmlpkg.RepairPropertyBlock([]byte(updatedPPr), "pPr"); err == nil {
 		updatedPPr = string(ordered)
 	}
-	if pPr == updatedPPr && strings.Contains(paragraphXML, pPr) {
-		return paragraphXML, false
+	if start >= 0 {
+		body = body[:start] + updatedPPr + body[end:]
+	} else {
+		body = updatedPPr + body
 	}
-	if paragraphPropertiesElement.MatchString(paragraphXML) {
-		return paragraphPropertiesElement.ReplaceAllString(paragraphXML, updatedPPr), true
-	}
-	if idx := strings.Index(paragraphXML, ">"); idx >= 0 {
-		return paragraphXML[:idx+1] + updatedPPr + paragraphXML[idx+1:], true
-	}
-	return updatedPPr + paragraphXML, true
+	updated := replaceElementBody(paragraphXML, body, "w:p")
+	return updated, updated != paragraphXML
 }
 
 func ApplyRunProperties(runXML string, spec RunPropertiesSpec) (string, bool) {
-	rPr := firstElement(runXML, runPropertiesElement)
-	if rPr == "" {
-		rPr = `<w:rPr/>`
+	if !validWordContainer(runXML, "r") {
+		return runXML, false
+	}
+	body := elementBody(runXML)
+	start, end, valid := directPropertyRange(body, "w:rPr")
+	if !valid {
+		return runXML, false
+	}
+	rPr := `<w:rPr/>`
+	if start >= 0 {
+		rPr = body[start:end]
 	}
 	updatedRPr := replaceElementBody(rPr, updateRunPropertiesBody(elementBody(rPr), spec), "w:rPr")
 	if ordered, _, err := ooxmlpkg.RepairPropertyBlock([]byte(updatedRPr), "rPr"); err == nil {
 		updatedRPr = string(ordered)
 	}
-	if rPr == updatedRPr && strings.Contains(runXML, rPr) {
-		return runXML, false
+	if start >= 0 {
+		body = body[:start] + updatedRPr + body[end:]
+	} else {
+		body = updatedRPr + body
 	}
-	if runPropertiesElement.MatchString(runXML) {
-		return runPropertiesElement.ReplaceAllString(runXML, updatedRPr), true
-	}
-	if idx := strings.Index(runXML, ">"); idx >= 0 {
-		return runXML[:idx+1] + updatedRPr + runXML[idx+1:], true
-	}
-	return updatedRPr + runXML, true
+	updated := replaceElementBody(runXML, body, "w:r")
+	return updated, updated != runXML
 }
 
 func ApplyThreeLineTableBorders(tableXML string, spec TableBordersSpec) (string, bool) {
@@ -379,7 +402,9 @@ func updateParagraphPropertiesBody(body string, spec ParagraphPropertiesSpec) st
 	if spec.OutlineLevelSet {
 		body = upsertPropertyElement(body, outlineLevelElement, "w:outlineLvl", []xmlAttributeUpdate{{"w:val", strconv.Itoa(spec.OutlineLevel)}}, nil)
 	} else if spec.RemoveOutlineLevel {
-		body = outlineLevelElement.ReplaceAllString(body, "")
+		if start, end, valid := directPropertyRange(body, "w:outlineLvl"); valid && start >= 0 {
+			body = body[:start] + body[end:]
+		}
 	}
 	if spec.Alignment != "" {
 		body = upsertPropertyElement(body, jcElement, "w:jc", []xmlAttributeUpdate{{"w:val", spec.Alignment}}, nil)
@@ -427,6 +452,45 @@ func updateParagraphPropertiesBody(body string, spec ParagraphPropertiesSpec) st
 		body = upsertPropertyElement(body, indentElement, "w:ind", updates, []string{"w:hanging", "w:hangingChars"})
 	} else if spec.FirstLineTwips > 0 || spec.FirstLineTwipsSet {
 		body = upsertPropertyElement(body, indentElement, "w:ind", []xmlAttributeUpdate{{"w:firstLine", strconv.Itoa(spec.FirstLineTwips)}}, []string{"w:hanging", "w:hangingChars", "w:firstLineChars"})
+	}
+	if spec.LeftCharsSet || spec.LeftTwipsSet {
+		updates := []xmlAttributeUpdate{}
+		remove := []string{}
+		if spec.LeftCharsSet {
+			updates = append(updates, xmlAttributeUpdate{"w:leftChars", strconv.Itoa(spec.LeftChars)})
+		} else {
+			remove = append(remove, "w:leftChars")
+		}
+		if spec.LeftTwipsSet {
+			updates = append(updates, xmlAttributeUpdate{"w:left", strconv.Itoa(spec.LeftTwips)})
+		}
+		body = upsertPropertyElement(body, indentElement, "w:ind", updates, remove)
+	}
+	if spec.RightCharsSet || spec.RightTwipsSet {
+		updates := []xmlAttributeUpdate{}
+		remove := []string{}
+		if spec.RightCharsSet {
+			updates = append(updates, xmlAttributeUpdate{"w:rightChars", strconv.Itoa(spec.RightChars)})
+		} else {
+			remove = append(remove, "w:rightChars")
+		}
+		if spec.RightTwipsSet {
+			updates = append(updates, xmlAttributeUpdate{"w:right", strconv.Itoa(spec.RightTwips)})
+		}
+		body = upsertPropertyElement(body, indentElement, "w:ind", updates, remove)
+	}
+	if spec.HangingCharsSet || spec.HangingTwipsSet {
+		updates := []xmlAttributeUpdate{}
+		remove := []string{"w:firstLine", "w:firstLineChars"}
+		if spec.HangingCharsSet {
+			updates = append(updates, xmlAttributeUpdate{"w:hangingChars", strconv.Itoa(spec.HangingChars)})
+		} else {
+			remove = append(remove, "w:hangingChars")
+		}
+		if spec.HangingTwipsSet {
+			updates = append(updates, xmlAttributeUpdate{"w:hanging", strconv.Itoa(spec.HangingTwips)})
+		}
+		body = upsertPropertyElement(body, indentElement, "w:ind", updates, remove)
 	}
 	if spec.PageBreakBefore {
 		body = upsertOnOffProperty(body, pageBreakBeforeElement, "w:pageBreakBefore", true)
@@ -662,15 +726,19 @@ func hasRunPropertiesRequest(spec RunPropertiesSpec) bool {
 }
 
 func updateNestedRunProperties(body string, spec RunPropertiesSpec) string {
-	current := runPropertiesElement.FindString(body)
-	if current == "" {
+	start, end, valid := directPropertyRange(body, "w:rPr")
+	if !valid {
+		return body
+	}
+	if start < 0 {
 		return buildRunProperties(spec) + body
 	}
+	current := body[start:end]
 	updated := replaceElementBody(current, updateRunPropertiesBody(elementBody(current), spec), "w:rPr")
 	if ordered, _, err := ooxmlpkg.RepairPropertyBlock([]byte(updated), "rPr"); err == nil {
 		updated = string(ordered)
 	}
-	return strings.Replace(body, current, updated, 1)
+	return body[:start] + updated + body[end:]
 }
 
 func upsertOnOffProperty(body string, pattern *regexp.Regexp, name string, enabled bool) string {
@@ -682,13 +750,16 @@ func upsertOnOffProperty(body string, pattern *regexp.Regexp, name string, enabl
 
 func upsertPropertyElement(
 	body string,
-	pattern *regexp.Regexp,
+	_ *regexp.Regexp,
 	name string,
 	updates []xmlAttributeUpdate,
 	removeAttributes []string,
 ) string {
-	current := pattern.FindString(body)
-	if current == "" {
+	start, end, valid := directPropertyRange(body, name)
+	if !valid {
+		return body
+	}
+	if start < 0 {
 		var builder strings.Builder
 		builder.WriteString("<")
 		builder.WriteString(name)
@@ -703,6 +774,7 @@ func upsertPropertyElement(
 		return builder.String() + body
 	}
 
+	current := body[start:end]
 	updated := current
 	for _, attribute := range removeAttributes {
 		updated = removeXMLAttribute(updated, attribute)
@@ -710,25 +782,80 @@ func upsertPropertyElement(
 	for _, update := range updates {
 		updated = setXMLAttribute(updated, update.name, update.value)
 	}
-	return strings.Replace(body, current, updated, 1)
+	return body[:start] + updated + body[end:]
 }
 
 func removeXMLAttribute(element, name string) string {
-	pattern := regexp.MustCompile(`(?i)\s+` + regexp.QuoteMeta(name) + `\s*=\s*("[^"]*"|'[^']*')`)
-	return pattern.ReplaceAllString(element, "")
+	start, end, _, _ := openingAttributeRange(element, name)
+	if start < 0 {
+		return element
+	}
+	return element[:start] + element[end:]
 }
 
 func setXMLAttribute(element, name, value string) string {
-	pattern := regexp.MustCompile(`(?i)(\s+` + regexp.QuoteMeta(name) + `\s*=\s*)("[^"]*"|'[^']*')`)
-	if match := pattern.FindStringSubmatchIndex(element); match != nil {
-		replacement := element[match[2]:match[3]] + `"` + escapeXMLAttribute(value) + `"`
-		return element[:match[0]] + replacement + element[match[1]:]
-	}
-	insertAt := strings.LastIndex(element, "/>")
-	if insertAt < 0 {
+	openingEnd := tagEndIndex(element)
+	if openingEnd < 0 {
 		return element
 	}
+	if _, _, valueStart, valueEnd := openingAttributeRange(element, name); valueStart >= 0 {
+		return element[:valueStart-1] + `"` + escapeXMLAttribute(value) + `"` + element[valueEnd+1:]
+	}
+	insertAt := openingEnd
+	if insertAt > 0 && element[insertAt-1] == '/' {
+		insertAt--
+	}
 	return element[:insertAt] + " " + name + `="` + escapeXMLAttribute(value) + `"` + element[insertAt:]
+}
+
+// Attribute-looking text inside a quoted extension value is not an attribute.
+// Keep byte offsets so unrelated attributes and paired-element children survive.
+func openingAttributeRange(element, name string) (start, end, valueStart, valueEnd int) {
+	limit := tagEndIndex(element)
+	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' }
+	i := 1
+	for i < limit && !space(element[i]) && element[i] != '/' {
+		i++
+	}
+	for i < limit {
+		start = i
+		for i < limit && space(element[i]) {
+			i++
+		}
+		nameStart := i
+		for i < limit && !space(element[i]) && element[i] != '=' && element[i] != '/' {
+			i++
+		}
+		attribute := element[nameStart:i]
+		for i < limit && space(element[i]) {
+			i++
+		}
+		if i >= limit || element[i] != '=' {
+			break
+		}
+		i++
+		for i < limit && space(element[i]) {
+			i++
+		}
+		if i >= limit || (element[i] != '\'' && element[i] != '"') {
+			break
+		}
+		quote := element[i]
+		i++
+		valueStart = i
+		for i < limit && element[i] != quote {
+			i++
+		}
+		if i >= limit {
+			break
+		}
+		valueEnd, end = i, i+1
+		i++
+		if attribute == name {
+			return start, end, valueStart, valueEnd
+		}
+	}
+	return -1, -1, -1, -1
 }
 
 func escapeXMLAttribute(value string) string {
@@ -783,8 +910,11 @@ func elementBody(element string) string {
 
 func replaceElementBody(element, body, name string) string {
 	start := tagEndIndex(element)
-	if start < 0 || strings.HasSuffix(element, "/>") {
+	if start < 0 {
 		return "<" + name + ">" + body + "</" + name + ">"
+	}
+	if start > 0 && element[start-1] == '/' {
+		return element[:start-1] + ">" + body + "</" + name + ">"
 	}
 	opening := element[:start+1]
 	return opening + body + "</" + name + ">"

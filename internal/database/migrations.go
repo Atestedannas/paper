@@ -85,25 +85,32 @@ func RunMigrations() error {
 		&Migration20260713AdminPaperListIndexes{},
 		&Migration20260815FixCQIEPageSetup{},
 		&Migration20260821RequireCQIEOriginalityDeclaration{},
+		// v2 闭环产物回写 paper 层 + 修正统计聚合列
+		&Migration20261019V2PaperWriteback{},
+		// 下载授权幂等表：同一 job 只扣一次
+		&Migration20261019DownloadGrants{},
 	}
 
-	// 按顺序执行迁移（单个失败不阻止后续，仅记录 warning）
-	var firstErr error
+	// 按顺序执行迁移。单个迁移失败不阻止后续，也不阻断启动：
+	// 这些历史迁移大量硬编码依赖 check_results / format_templates 等表，
+	// 而它们跑在 AutoMigrate 之前（见 PerformMigration），空库上必然失败。
+	// 真正的建表由随后的 AutoMigrate 完成，因此这里只记录失败清单。
+	var failed []string
 	for _, migration := range migrations {
 		if err := runMigration(migration); err != nil {
 			log.Printf("⚠️  Migration %s failed (non-fatal, continuing): %v", migration.Name(), err)
-			if firstErr == nil {
-				firstErr = err
-			}
+			failed = append(failed, migration.Name())
 		}
 	}
 
-	if firstErr != nil {
-		log.Printf("All migrations finished with at least one error: %v", firstErr)
+	if len(failed) > 0 {
+		log.Printf("Migrations finished with %d non-fatal failure(s): %v", len(failed), failed)
 	} else {
 		log.Println("All migrations completed successfully")
 	}
-	return firstErr
+	// 迁移失败不再向上返回错误：表结构由 PerformMigration 里的 AutoMigrate 兜底。
+	// 若这里返回 error，main.go 会 log.Fatalf 直接退出，全新环境永远起不来。
+	return nil
 }
 
 // runMigration 运行单个迁移

@@ -3,12 +3,13 @@ package renderverify
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
 
 func TestCheckSamePageRulePasses(t *testing.T) {
-	result, err := Check(context.Background(), "paper.docx", Options{
+	result, err := Check(context.Background(), renderSource(t), Options{
 		Enabled:       true,
 		Strict:        true,
 		Renderer:      fakeRenderer{},
@@ -27,7 +28,7 @@ func TestCheckSamePageRulePasses(t *testing.T) {
 }
 
 func TestCheckSamePageRulePassesWhenEarlierPageHasDuplicateLeftText(t *testing.T) {
-	result, err := Check(context.Background(), "paper.docx", Options{
+	result, err := Check(context.Background(), renderSource(t), Options{
 		Enabled:       true,
 		Strict:        true,
 		Renderer:      fakeRenderer{},
@@ -43,7 +44,7 @@ func TestCheckSamePageRulePassesWhenEarlierPageHasDuplicateLeftText(t *testing.T
 }
 
 func TestCheckSamePageRuleFails(t *testing.T) {
-	result, err := Check(context.Background(), "paper.docx", Options{
+	result, err := Check(context.Background(), renderSource(t), Options{
 		Enabled:       true,
 		Strict:        true,
 		Renderer:      fakeRenderer{},
@@ -62,7 +63,7 @@ func TestCheckSamePageRuleFails(t *testing.T) {
 }
 
 func TestCheckStrictRenderFailureIsFatal(t *testing.T) {
-	result, err := Check(context.Background(), "paper.docx", Options{
+	result, err := Check(context.Background(), renderSource(t), Options{
 		Enabled:  true,
 		Strict:   true,
 		Renderer: fakeRenderer{err: errors.New("no renderer")},
@@ -79,7 +80,7 @@ func TestCheckStrictRenderFailureIsFatal(t *testing.T) {
 }
 
 func TestCheckStoresRenderedPNGPaths(t *testing.T) {
-	result, err := Check(context.Background(), "paper.docx", Options{
+	result, err := Check(context.Background(), renderSource(t), Options{
 		Enabled:       true,
 		Strict:        true,
 		Renderer:      fakeRenderer{},
@@ -99,7 +100,7 @@ func TestCheckStoresRenderedPNGPaths(t *testing.T) {
 }
 
 func TestCheckChineseTotalFooterMismatchFails(t *testing.T) {
-	result, err := Check(context.Background(), "paper.docx", Options{
+	result, err := Check(context.Background(), renderSource(t), Options{
 		Enabled:         true,
 		Strict:          true,
 		Renderer:        fakeRenderer{},
@@ -118,7 +119,7 @@ func TestCheckChineseTotalFooterMismatchFails(t *testing.T) {
 }
 
 func TestCheckValidatesRenderedTextStyle(t *testing.T) {
-	result, err := Check(context.Background(), "paper.docx", Options{
+	result, err := Check(context.Background(), renderSource(t), Options{
 		Enabled:  true,
 		Strict:   true,
 		Renderer: fakeRenderer{},
@@ -137,7 +138,7 @@ func TestCheckValidatesRenderedTextStyle(t *testing.T) {
 }
 
 func TestCheckRejectsRenderedFontSizeMismatch(t *testing.T) {
-	result, err := Check(context.Background(), "paper.docx", Options{
+	result, err := Check(context.Background(), renderSource(t), Options{
 		Enabled:        true,
 		Strict:         true,
 		Renderer:       fakeRenderer{},
@@ -166,11 +167,15 @@ type fakeRenderer struct {
 	err error
 }
 
-func (r fakeRenderer) RenderPDF(context.Context, string, string) (PDFArtifact, error) {
+func (r fakeRenderer) RenderPDF(_ context.Context, _ string, outputDir string) (PDFArtifact, error) {
 	if r.err != nil {
 		return PDFArtifact{}, r.err
 	}
-	return PDFArtifact{Path: filepath.Join("rendered", "paper.pdf")}, nil
+	path := filepath.Join(outputDir, "paper.pdf")
+	if err := os.WriteFile(path, minimalPDFBytes(), 0600); err != nil {
+		return PDFArtifact{}, err
+	}
+	return PDFArtifact{Path: path}, nil
 }
 
 type fakeRasterizer struct {

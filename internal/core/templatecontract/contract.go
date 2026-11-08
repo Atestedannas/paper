@@ -65,6 +65,21 @@ func Build(profile *templateprofile.Profile) RuleSet {
 	rules.Confidence = profile.Confidence
 	rules.Sections = cloneSections(profile.Sections)
 	rules.Styles = cloneStyles(profile.Styles)
+	for _, key := range []string{"figure_caption_cn", "figure_caption_en"} {
+		if style, exists := rules.Styles[key]; exists {
+			rules.Styles[key] = templateprofile.CaptionLanguageStyle(rules.Styles["figure_caption"], style, key)
+		}
+	}
+	for level := 2; level <= 9; level++ {
+		key := fmt.Sprintf("toc_entry_%d", level)
+		if _, exists := rules.Styles[key]; exists {
+			continue
+		}
+		if rule, ok := templateprofile.ExplicitUniformTOCFonts(rules.Styles["toc_entry"], key); ok {
+			rules.Styles[key] = rule
+			rules.Evidence["style."+key] = "derived_from: toc_entry; " + rule.SelectionEvidence
+		}
+	}
 	rules.PageSetup = profile.PageSetup
 	rules.RulePack = profile.RulePack
 	rules.Header = profile.Header

@@ -107,6 +107,13 @@ type textRule struct {
 }
 
 type paragraphStyle struct {
+	leftTwips    *int
+	rightTwips   *int
+	leftChars    *int
+	rightChars   *int
+	hangingTwips *int
+	hangingChars *int
+
 	ruleID          string
 	message         string
 	eastAsiaFont    string
@@ -249,6 +256,24 @@ func profileRuleToParagraphStyle(pr *templateprofile.StyleRule, defaults paragra
 	}
 	if pr.AfterLines != "" {
 		ps.afterLines = parseStyleInt(pr.AfterLines)
+	}
+	if pr.LeftTwips != "" {
+		ps.leftTwips = parseStyleInt(pr.LeftTwips)
+	}
+	if pr.RightTwips != "" {
+		ps.rightTwips = parseStyleInt(pr.RightTwips)
+	}
+	if pr.LeftChars != "" {
+		ps.leftChars = parseStyleInt(pr.LeftChars)
+	}
+	if pr.RightChars != "" {
+		ps.rightChars = parseStyleInt(pr.RightChars)
+	}
+	if pr.HangingTwips != "" {
+		ps.hangingTwips = parseStyleInt(pr.HangingTwips)
+	}
+	if pr.HangingChars != "" {
+		ps.hangingChars = parseStyleInt(pr.HangingChars)
 	}
 	if pr.FirstLineTwips != "" {
 		ps.firstLineTwips = parseStyleInt(pr.FirstLineTwips)
@@ -2292,6 +2317,13 @@ func allowContentNormalization() bool {
 }
 
 func applyParagraphStyle(paragraph string, style paragraphStyle) string {
+	start, end, valid := ooxmlpkg.LegacyParagraphTargetRange(paragraph)
+	if !valid {
+		return paragraph
+	}
+	if start != 0 || end != len(paragraph) {
+		return paragraph[:start] + applyParagraphStyle(paragraph[start:end], style) + paragraph[end:]
+	}
 	if style.ruleID == "cqrwst-references-title-style" {
 		paragraph = removeParagraphPropertyRunProperties(paragraph)
 	}
@@ -2326,7 +2358,7 @@ func removeParagraphPropertyRunProperties(paragraph string) string {
 }
 
 func applyParagraphProperties(paragraph string, style paragraphStyle) string {
-	updated, _ := ooxmlpatch.ApplyParagraphProperties(paragraph, paragraphStyleToPatchSpec(style))
+	updated, _ := applyLegacyParagraphSpec(paragraph, paragraphStyleToPatchSpec(style))
 	return updated
 }
 
@@ -2356,8 +2388,27 @@ func buildParagraphProperties(style paragraphStyle) string {
 		}
 		builder.WriteString(`/>`)
 	}
-	if style.firstLineChars != nil || style.firstLineTwips != nil {
+	if style.leftTwips != nil || style.rightTwips != nil || style.leftChars != nil || style.rightChars != nil || style.hangingTwips != nil || style.hangingChars != nil || style.firstLineChars != nil || style.firstLineTwips != nil {
 		builder.WriteString(`<w:ind`)
+		if style.leftTwips != nil {
+			builder.WriteString(fmt.Sprintf(` w:left="%d"`, *style.leftTwips))
+		}
+		if style.rightTwips != nil {
+			builder.WriteString(fmt.Sprintf(` w:right="%d"`, *style.rightTwips))
+		}
+		if style.leftChars != nil {
+			builder.WriteString(fmt.Sprintf(` w:leftChars="%d"`, *style.leftChars))
+		}
+		if style.rightChars != nil {
+			builder.WriteString(fmt.Sprintf(` w:rightChars="%d"`, *style.rightChars))
+		}
+		if style.hangingTwips != nil {
+			builder.WriteString(fmt.Sprintf(` w:hanging="%d"`, *style.hangingTwips))
+		}
+		if style.hangingChars != nil {
+			builder.WriteString(fmt.Sprintf(` w:hangingChars="%d"`, *style.hangingChars))
+		}
+
 		if style.firstLineChars != nil {
 			builder.WriteString(fmt.Sprintf(` w:firstLineChars="%d"`, *style.firstLineChars))
 		}
@@ -2380,6 +2431,13 @@ func applyRunProperties(run string, style paragraphStyle) string {
 
 func paragraphStyleToPatchSpec(style paragraphStyle) ooxmlpatch.ParagraphPropertiesSpec {
 	spec := ooxmlpatch.ParagraphPropertiesSpec{
+		LeftTwips: intPointerValue(style.leftTwips), LeftTwipsSet: style.leftTwips != nil,
+		RightTwips: intPointerValue(style.rightTwips), RightTwipsSet: style.rightTwips != nil,
+		LeftChars: intPointerValue(style.leftChars), LeftCharsSet: style.leftChars != nil,
+		RightChars: intPointerValue(style.rightChars), RightCharsSet: style.rightChars != nil,
+		HangingTwips: intPointerValue(style.hangingTwips), HangingTwipsSet: style.hangingTwips != nil,
+		HangingChars: intPointerValue(style.hangingChars), HangingCharsSet: style.hangingChars != nil,
+
 		Alignment:         style.alignment,
 		LineRule:          style.lineRule,
 		BeforeTwips:       intPointerValue(style.beforeTwips),

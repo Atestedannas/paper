@@ -17,17 +17,24 @@ import (
 // PaymentHandler 支付处理器
 type PaymentHandler struct {
 	paymentService service.PaymentService
+	orderService   service.OrderService
 }
 
 // NewPaymentHandler 创建支付处理器实例
 func NewPaymentHandler(config *config.Config) *PaymentHandler {
 	return &PaymentHandler{
 		paymentService: service.NewPaymentService(config),
+		orderService:   service.NewOrderService(),
 	}
 }
 
 // CreatePayment 创建支付记录
 func (h *PaymentHandler) CreatePayment(c *gin.Context) {
+	userID, ok := authenticatedUserID(c)
+	if !ok || userID == uuid.Nil {
+		utils.Unauthorized(c, "user not authenticated")
+		return
+	}
 	// 解析请求数据
 	var req struct {
 		OrderID       uuid.UUID `json:"order_id" binding:"required"`
@@ -37,6 +44,11 @@ func (h *PaymentHandler) CreatePayment(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		utils.BadRequest(c, err.Error())
+		return
+	}
+	order, err := h.orderService.GetOrderByID(req.OrderID)
+	if err != nil || order == nil || order.UserID != userID {
+		utils.NotFound(c, "订单不存在")
 		return
 	}
 

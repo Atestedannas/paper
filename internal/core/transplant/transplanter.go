@@ -1768,6 +1768,11 @@ func applyThreeLineTableBorders(tableXML string) string {
 
 func allowTableRowsToSplitAndRepeatHeader(tableXML string) string {
 	tableXML = tableRowCantSplitPattern.ReplaceAllString(tableXML, "")
+	// A single row can be a whole code listing or layout container. Making it
+	// a repeating header prevents its content from flowing across page breaks.
+	if len(tableRowPattern.FindAllStringIndex(tableXML, 2)) < 2 {
+		return tableXML
+	}
 	firstRow := tableRowPattern.FindString(tableXML)
 	if firstRow == "" || strings.Contains(firstRow, "<w:tblHeader") {
 		return tableXML

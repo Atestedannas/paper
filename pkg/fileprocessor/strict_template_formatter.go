@@ -2046,6 +2046,7 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 		string(templateEntries["word/document.xml"]),
 		templateVisibleHeaderRoles(templateEntries),
 	)
+	pageNumberSources := templatePageNumberSources(outputEntries, templateEntries, outputSections, templateSectionRefs)
 	// Declared template slots are authoritative. Keep student-only slots
 	// where the template supplies no rule, and preserve their package closure.
 	mixedSectionRefs, requiredRelationshipIDs, retainIDs, guardedParts :=
@@ -2063,7 +2064,13 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 		return err
 	}
 	mergeCopiedPartContentTypes(outputEntries, templateEntries, copiedParts)
-	materializeCopiedPageNumbers(outputEntries, copiedParts)
+	pageNumberTargets := map[string]bool{}
+	for source, destination := range copiedParts {
+		if pageNumberSources[source] {
+			pageNumberTargets[destination] = true
+		}
+	}
+	materializeCopiedPageNumbers(outputEntries, pageNumberTargets)
 	mergeDocumentSectionHeaderFooterRefsWithPlan(outputEntries, mixedSectionRefs, relationshipIDs)
 	if len(copiedParts) > 0 {
 		// The package-level even/odd switch follows the template only when
@@ -2078,6 +2085,310 @@ func copyTemplateHeaderFooterPackage(templatePath, outputPath string) error {
 	}
 
 	return writeDocxEntries(outputPath, outputEntries)
+}
+
+// A numeric template footer is a page sample only when every section using it
+// replaces an existing PAGE-only footer in the same slot.
+func templatePageNumberSources(output, template map[string][]byte, sections []strictSectionDescriptor, templateRefs [][]string) map[string]bool {
+	sections = inheritDefaultFooterReferences(sections)
+	eligible := map[string]bool{}
+	for index, refs := range templateRefs {
+		if index >= len(sections) {
+			break
+		}
+		for _, ref := range refs {
+			if headerFooterReferenceKind(ref) != "footer" {
+				continue
+			}
+			targets := resolveDocumentHeaderFooterPartNames(template, []string{ref})
+			if len(targets) != 1 {
+				continue
+			}
+			allowed := false
+			for _, original := range sections[index].Refs {
+				if headerFooterReferenceKey(original) != headerFooterReferenceKey(ref) {
+					continue
+				}
+				parts := resolveDocumentHeaderFooterPartNames(output, []string{original})
+				allowed = len(parts) == 1 && footerContainsOnlyPageFields(output[parts[0]])
+				break
+			}
+			if previous, seen := eligible[targets[0]]; seen {
+				allowed = previous && allowed
+			}
+			eligible[targets[0]] = allowed
+		}
+	}
+	return eligible
+}
+
+func footerContainsOnlyPageFields(content []byte) bool {
+	const wordNamespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+	const alternateNamespace = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+	decoder := xml.NewDecoder(bytes.NewReader(content))
+	// Other running-field parsers only collect instructions. Here both the
+	// complete field and every visible cache must prove PAGE-only content.
+	type pageField struct {
+		instruction strings.Builder
+		cache       strings.Builder
+		simple      bool
+		result      bool
+		depth       int
+	}
+	type scope struct {
+		depth, fields int
+		textbox       bool
+		transparent   bool
+		painted       bool
+	}
+	var active *pageField
+	var drawings, branches []scope
+	depth, fields := 0, 0
+	fillDepth, transparentFill := 0, false
+	seenRoot := false
+	attribute := func(element xml.StartElement, local string) (string, bool) {
+		value, count := "", 0
+		for _, attr := range element.Attr {
+			if attr.Name.Space == wordNamespace && attr.Name.Local == local {
+				value, count = attr.Value, count+1
+			}
+		}
+		return value, count == 1
+	}
+	readText := func(start xml.StartElement) (string, bool) {
+		var value strings.Builder
+		for {
+			token, err := decoder.Token()
+			if err != nil {
+				return "", false
+			}
+			switch token := token.(type) {
+			case xml.CharData:
+				value.Write(token)
+			case xml.EndElement:
+				return value.String(), token.Name == start.Name
+			default:
+				return "", false // Text/instruction elements cannot contain objects or nested markup.
+			}
+		}
+	}
+	complete := func() bool {
+		return active != nil && active.result && strings.EqualFold(strings.TrimSpace(active.instruction.String()), "PAGE") &&
+			strings.TrimSpace(active.cache.String()) != "" && pageFrameNumber.MatchString(active.cache.String())
+	}
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return seenRoot && depth == 0 && active == nil && len(drawings) == 0 && len(branches) == 0 && fields > 0
+		}
+		if err != nil {
+			return false
+		}
+		switch element := token.(type) {
+		case xml.StartElement:
+			depth++
+			space, name := element.Name.Space, element.Name.Local
+			if depth == 1 {
+				if seenRoot || space != wordNamespace || name != "ftr" {
+					return false
+				}
+				seenRoot = true
+			}
+			for _, attr := range element.Attr {
+				if attr.Name.Space == "http://schemas.openxmlformats.org/officeDocument/2006/relationships" && strings.TrimSpace(attr.Value) != "" {
+					return false // A pure PAGE textbox has no linked image, object or external content.
+				}
+			}
+			if space == "http://schemas.openxmlformats.org/drawingml/2006/picture" ||
+				space == "http://schemas.openxmlformats.org/drawingml/2006/main" && (name == "blip" || name == "blipFill" || name == "audioFile" || name == "videoFile") ||
+				space == "urn:schemas-microsoft-com:vml" && (name == "imagedata" || name == "image") {
+				return false
+			}
+			visual := space == wordNamespace && (name == "drawing" || name == "pict") ||
+				space == "urn:schemas-microsoft-com:vml" && (name == "shape" || name == "rect" || name == "roundrect" || name == "oval" || name == "line" || name == "group") ||
+				space == "http://schemas.microsoft.com/office/word/2010/wordprocessingShape" && name == "wsp"
+			if visual {
+				if active != nil {
+					return false
+				}
+				drawings = append(drawings, scope{depth: depth, fields: fields})
+			}
+			if space == "http://schemas.openxmlformats.org/drawingml/2006/main" {
+				switch name {
+				case "solidFill":
+					if fillDepth != 0 {
+						return false
+					}
+					fillDepth, transparentFill = depth, false
+				case "alpha":
+					if fillDepth != 0 {
+						for _, attr := range element.Attr {
+							if attr.Name.Space == "" && attr.Name.Local == "val" {
+								transparentFill = attr.Value == "0"
+							}
+						}
+					}
+				case "ln", "gradFill", "pattFill":
+					for i := range drawings {
+						drawings[i].painted = true
+					}
+				default:
+					if fillDepth != 0 && strings.HasPrefix(name, "alpha") {
+						return false
+					}
+				}
+			}
+			if space == "urn:schemas-microsoft-com:vml" && name == "fill" {
+				transparent := false
+				for _, attr := range element.Attr {
+					if attr.Name.Space == "" && attr.Name.Local == "opacity" {
+						transparent = attr.Value == "0" || attr.Value == "0f" || attr.Value == "0%"
+					}
+				}
+				for i := range drawings {
+					drawings[i].transparent = drawings[i].transparent || transparent
+					drawings[i].painted = drawings[i].painted || !transparent
+				}
+			}
+			if space == alternateNamespace && (name == "Choice" || name == "Fallback") {
+				if active != nil {
+					return false
+				}
+				branches = append(branches, scope{depth: depth, fields: fields})
+			}
+			if space == "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" && (name == "align" || name == "posOffset") {
+				// Frame positioning is not visible footer text. Read only these
+				// schema-bound values; other DrawingML text remains unsupported.
+				value, ok := readText(element)
+				depth--
+				if !ok || active != nil || len(drawings) == 0 {
+					return false
+				}
+				value = strings.TrimSpace(value)
+				if name == "posOffset" {
+					if _, err := strconv.ParseInt(value, 10, 32); err != nil {
+						return false
+					}
+				} else {
+					switch value {
+					case "left", "center", "right", "inside", "outside", "top", "bottom":
+					default:
+						return false
+					}
+				}
+				continue
+			}
+			if space != wordNamespace {
+				continue
+			}
+			switch name {
+			case "object", "control", "altChunk", "contentPart", "subDoc", "sdt", "ins", "del", "moveFrom", "moveTo", "delText", "sym", "footnoteReference", "endnoteReference":
+				return false
+			case "txbxContent":
+				if len(drawings) == 0 {
+					return false
+				}
+				for i := range drawings {
+					drawings[i].textbox = true
+				}
+			case "fldSimple":
+				instruction, ok := attribute(element, "instr")
+				if active != nil || !ok || !strings.EqualFold(strings.TrimSpace(instruction), "PAGE") {
+					return false
+				}
+				active = &pageField{simple: true, result: true, depth: depth}
+				active.instruction.WriteString(instruction)
+			case "fldChar":
+				kind, ok := attribute(element, "fldCharType")
+				if !ok {
+					return false
+				}
+				switch kind {
+				case "begin":
+					if active != nil {
+						return false
+					}
+					active = &pageField{}
+				case "separate":
+					if active == nil || active.simple || active.result || !strings.EqualFold(strings.TrimSpace(active.instruction.String()), "PAGE") {
+						return false
+					}
+					active.result = true
+				case "end":
+					if active == nil || active.simple || !complete() {
+						return false
+					}
+					active = nil
+					fields++
+				default:
+					return false
+				}
+			case "instrText", "t":
+				value, ok := readText(element)
+				depth-- // readText consumed the matching end element.
+				if !ok {
+					return false
+				}
+				if name == "instrText" {
+					if active == nil || active.simple || active.result {
+						return false
+					}
+					active.instruction.WriteString(value)
+				} else if strings.TrimSpace(value) != "" {
+					if active == nil || !active.result || !pageFrameNumber.MatchString(value) {
+						return false
+					}
+					active.cache.WriteString(value)
+				}
+			}
+		case xml.EndElement:
+			if fillDepth == depth {
+				for i := range drawings {
+					drawings[i].transparent = drawings[i].transparent || transparentFill
+					drawings[i].painted = drawings[i].painted || !transparentFill
+				}
+				fillDepth = 0
+			}
+			if element.Name.Space == wordNamespace {
+				if element.Name.Local == "fldSimple" {
+					if active == nil || !active.simple || active.depth != depth || !complete() {
+						return false
+					}
+					active = nil
+					fields++
+				} else if element.Name.Local == "p" && active != nil {
+					return false // A PAGE cache split across paragraphs is not a supported proof.
+				}
+			}
+			if len(drawings) > 0 && drawings[len(drawings)-1].depth == depth {
+				frame := drawings[len(drawings)-1]
+				emptyTransparent := fields == frame.fields && frame.transparent && !frame.painted
+				if active != nil || !frame.textbox || fields == frame.fields && !emptyTransparent {
+					return false
+				}
+				// Word leaves fully transparent empty textbox placeholders beside
+				// page-number frames. They carry no text or linked object.
+				if emptyTransparent && len(drawings) == 1 && len(branches) > 0 {
+					branches[len(branches)-1].textbox = true
+				}
+				drawings = drawings[:len(drawings)-1]
+			}
+			if len(branches) > 0 && branches[len(branches)-1].depth == depth {
+				branch := branches[len(branches)-1]
+				if active != nil || fields == branch.fields && !branch.textbox {
+					return false
+				}
+				branches = branches[:len(branches)-1]
+			}
+			depth--
+		case xml.CharData:
+			if strings.TrimSpace(string(element)) != "" {
+				return false
+			}
+		case xml.Directive:
+			return false
+		}
+	}
 }
 
 // resolveDocumentHeaderFooterPartNames resolves header/footer reference tags to
@@ -2275,6 +2586,11 @@ func copyAndMaterializeTemplateHeaderFooter(templatePath, outputPath string, cov
 	if err != nil {
 		return err
 	}
+	outputSamples, err := runningHeaderSamples(entries)
+	if err != nil {
+		return err
+	}
+	supplementTemplateChapterHeaderSamples(samples, outputSamples, string(templateEntries["word/document.xml"]), string(entries["word/document.xml"]))
 	changed := false
 	for name, content := range entries {
 		if !strings.HasPrefix(name, "word/header") || !strings.HasSuffix(name, ".xml") {
@@ -2918,6 +3234,10 @@ func copyTemplatePartClosure(
 	sourceContent, ok := templateEntries[sourcePart]
 	if !ok {
 		return "", fmt.Errorf("missing relationship target %s", sourcePart)
+	}
+	sourceContent, err := stripCopiedHeaderFooterFormatNotes(sourcePart, sourceContent)
+	if err != nil {
+		return "", err
 	}
 
 	visiting[sourcePart] = true
@@ -4096,6 +4416,7 @@ const (
 	strictSectionAbstractCN   strictSectionRole = "abstract_cn"
 	strictSectionAbstractEN   strictSectionRole = "abstract_en"
 	strictSectionTOC          strictSectionRole = "toc"
+	strictSectionFrontList    strictSectionRole = "frontmatter_list"
 	strictSectionBody         strictSectionRole = "body"
 	strictSectionReferences   strictSectionRole = "references"
 	strictSectionAcknowledged strictSectionRole = "acknowledgements"
@@ -4103,8 +4424,10 @@ const (
 )
 
 type strictSectionDescriptor struct {
-	Role strictSectionRole
-	Refs []string
+	Role         strictSectionRole
+	Refs         []string
+	BodyStart    bool
+	OpeningTitle string
 }
 
 func mapTemplateSectionHeaderFooterRefs(outputXML, templateXML string) [][]string {
@@ -4116,18 +4439,29 @@ func mapTemplateSectionHeaderFooterRefs(outputXML, templateXML string) [][]strin
 // header when a visible header exists for the same semantic section.
 func mapTemplateSectionHeaderFooterRefsWithVisibleHeaders(outputXML, templateXML string, visibleHeaders map[string]strictSectionRole) [][]string {
 	outputSections := describeStrictSections(outputXML)
-	templateSections := describeStrictSections(templateXML)
+	templateSections := inheritDefaultFooterReferences(describeStrictSections(templateXML))
 	if len(outputSections) == 0 || len(templateSections) == 0 {
 		return nil
 	}
 
 	firstByRole := make(map[strictSectionRole]int)
 	firstVisibleByRole := make(map[strictSectionRole]int)
+	firstByFrontList := make(map[string]int)
 	for index, section := range templateSections {
+		if section.Role == strictSectionFrontList {
+			if key := strictFrontMatterListKey(section.OpeningTitle); key != "" {
+				if _, exists := firstByFrontList[key]; !exists {
+					firstByFrontList[key] = index
+				}
+			}
+		}
 		if _, exists := firstByRole[section.Role]; !exists && section.Role != strictSectionUnknown {
 			firstByRole[section.Role] = index
 		}
 		for _, role := range []strictSectionRole{strictSectionAbstractCN, strictSectionAbstractEN, strictSectionTOC, strictSectionBody, strictSectionReferences, strictSectionAcknowledged, strictSectionAppendix} {
+			if role == strictSectionBody && section.Role != strictSectionBody {
+				continue
+			}
 			if _, exists := firstVisibleByRole[role]; !exists && sectionHasHeaderRole(section, visibleHeaders, role) {
 				firstVisibleByRole[role] = index
 			}
@@ -4176,7 +4510,17 @@ func mapTemplateSectionHeaderFooterRefsWithVisibleHeaders(outputXML, templateXML
 
 	result := make([][]string, len(outputSections))
 	frontMatterStage := 0
+	bodyStarted := false
 	for index, section := range outputSections {
+		bodyStarted = bodyStarted || section.BodyStart
+		// Different lists have different headers. Without the matching list,
+		// leave the student's slots to the per-slot retention policy.
+		if section.Role == strictSectionFrontList {
+			if candidate, ok := firstByFrontList[strictFrontMatterListKey(section.OpeningTitle)]; ok {
+				result[index] = append([]string(nil), templateSections[candidate].Refs...)
+			}
+			continue
+		}
 		templateIndex, found := firstByRole[section.Role]
 		if visibleIndex, ok := firstVisibleByRole[section.Role]; ok && section.Role != strictSectionCover {
 			templateIndex, found = visibleIndex, true
@@ -4186,14 +4530,14 @@ func mapTemplateSectionHeaderFooterRefsWithVisibleHeaders(outputXML, templateXML
 		// and classify the Chinese abstract block as generic body because it
 		// contains dates/numbers.  Consume front matter in semantic order
 		// before falling back to the template's generic body sample.
-		if index > 0 && frontMatterStage == 0 && section.Role == strictSectionBody &&
+		if !bodyStarted && index > 0 && frontMatterStage == 0 && section.Role == strictSectionBody &&
 			(outputTOCIndex < 0 || index < outputTOCIndex) {
 			if candidate, ok := firstByRole[strictSectionAbstractCN]; ok {
 				templateIndex, found = candidate, true
 				frontMatterStage = 1
 				semanticFrontMatter = true
 			}
-		} else if frontMatterStage == 1 && section.Role == strictSectionAbstractCN {
+		} else if !bodyStarted && frontMatterStage == 1 && section.Role == strictSectionAbstractCN {
 			if candidate, ok := firstByRole[strictSectionAbstractEN]; ok {
 				templateIndex, found = candidate, true
 				frontMatterStage = 2
@@ -4203,7 +4547,7 @@ func mapTemplateSectionHeaderFooterRefsWithVisibleHeaders(outputXML, templateXML
 		if !semanticFrontMatter && (section.Role == strictSectionBody || section.Role == strictSectionUnknown) {
 			// Before the output TOC, preserve front-matter/cover conventions;
 			// after it, use the template's first real body section.
-			if outputTOCIndex >= 0 && index > outputTOCIndex {
+			if bodyStarted || outputTOCIndex >= 0 && index > outputTOCIndex {
 				templateIndex, found = mainBodyIndex, hasMainBody
 			} else {
 				templateIndex, found = frontMatterBodyIndex, hasFrontMatterBody
@@ -4229,6 +4573,28 @@ func mapTemplateSectionHeaderFooterRefsWithVisibleHeaders(outputXML, templateXML
 		result[index] = append([]string(nil), templateSections[templateIndex].Refs...)
 	}
 	return result
+}
+
+// An omitted default footer links to the previous section; an explicit empty
+// footer part deliberately stops that inheritance and remains authoritative.
+func inheritDefaultFooterReferences(sections []strictSectionDescriptor) []strictSectionDescriptor {
+	sections = append([]strictSectionDescriptor(nil), sections...)
+	var previous string
+	for index := range sections {
+		current := ""
+		for _, ref := range sections[index].Refs {
+			if headerFooterReferenceKey(ref) == "footer:default" {
+				current = ref
+				break
+			}
+		}
+		if current != "" {
+			previous = current
+		} else if previous != "" {
+			sections[index].Refs = append(append([]string(nil), sections[index].Refs...), previous)
+		}
+	}
+	return sections
 }
 
 func sectionHasHeaderRole(section strictSectionDescriptor, headerRoles map[string]strictSectionRole, want strictSectionRole) bool {
@@ -4272,6 +4638,8 @@ func templateVisibleHeaderRoles(entries map[string][]byte) map[string]strictSect
 func classifyTemplateHeaderRole(text string) strictSectionRole {
 	compact := strings.ToLower(strings.Join(strings.Fields(text), ""))
 	switch {
+	case isStrictFrontMatterListLabel(compact):
+		return strictSectionFrontList
 	case strings.Contains(compact, "目录") || strings.Contains(compact, "contents"):
 		return strictSectionTOC
 	case strings.Contains(compact, "摘要"):
@@ -4313,9 +4681,18 @@ func describeStrictSections(documentXML string) []strictSectionDescriptor {
 		contextXML := documentXML[previousEnd:contentEnd]
 		visibleText := strings.Join(extractDocxTextNodes(contextXML), " ")
 		sectPr := documentXML[match[0]:match[1]]
+		role := classifyStrictSectionRole(visibleText, index)
+		bodyStart := index > 0 && strictSectionStartsBody(contextXML)
+		bodyTitle := strings.TrimSpace(strings.Join(extractDocxTextNodes(strictSectionOpeningParagraph(contextXML)), ""))
+		if bodyStart {
+			role = strictSectionBody
+			bodyTitle = strings.TrimSpace(strings.Join(extractDocxTextNodes(strictSectionOpeningParagraph(contextXML)), ""))
+		}
 		sections = append(sections, strictSectionDescriptor{
-			Role: classifyStrictSectionRole(visibleText, index),
-			Refs: extractHeaderFooterReferenceTags(sectPr),
+			Role:         role,
+			Refs:         extractHeaderFooterReferenceTags(sectPr),
+			BodyStart:    bodyStart,
+			OpeningTitle: bodyTitle,
 		})
 		previousEnd = sectionEnd
 	}
@@ -4338,6 +4715,11 @@ func classifyStrictSectionRole(text string, index int) strictSectionRole {
 		return strictSectionCover
 	}
 	normalized := strings.ToLower(strings.Join(strings.Fields(text), " "))
+	for _, label := range strictFrontMatterListLabels {
+		if normalized == label || strings.HasPrefix(normalized, label+" ") {
+			return strictSectionFrontList
+		}
+	}
 	// A section may contain an English reference title or the word "abstract"
 	// many pages after its opening heading.  Section identity belongs to its
 	// opening title, not to arbitrary later body text.

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -101,6 +102,58 @@ func TestResolveCorrectedPaperFileFindsV2CorrectedPath(t *testing.T) {
 	}
 }
 
+// v2 论文（latest_job_id 非空）在 corrected_file_path 缺失时必须直接 404，
+// 不能回退到 corrected/<name>_v2_corrected.docx —— 那是 v1 引擎的旧产物，
+// 拿它冒充 v2 结果会把效果很差的 v1 稿子展示给学生。
+func TestResolveCorrectedPaperFileRefusesLegacyFallbackForV2Paper(t *testing.T) {
+	db := openPaperServiceTestDB(t)
+	previousDB := database.DB
+	database.DB = db
+	t.Cleanup(func() { database.DB = previousDB })
+
+	dir := t.TempDir()
+	userID := uuid.New()
+	paperID := uuid.New()
+	jobID := uuid.New()
+
+	// 磁盘上确实存在一份 v1 旧产物，诱使旧逻辑命中它。
+	correctedDir := filepath.Join(dir, "corrected")
+	if err := os.MkdirAll(correctedDir, 0755); err != nil {
+		t.Fatalf("mkdir corrected: %v", err)
+	}
+	legacyPath := filepath.Join(correctedDir, "paper_v2_corrected.docx")
+	if err := os.WriteFile(legacyPath, []byte("legacy v1 output"), 0644); err != nil {
+		t.Fatalf("write legacy corrected file: %v", err)
+	}
+
+	paper := model.Paper{
+		ID:          paperID,
+		UserID:      userID,
+		Title:       "paper",
+		FilePath:    filepath.Join(dir, "paper.docx"),
+		FileName:    "paper.docx",
+		FileSize:    1,
+		FileType:    "docx",
+		Status:      "verified_pass",
+		LatestJobID: &jobID,
+		// CorrectedFilePath 故意留空：模拟 v2 产物被删除/未回写
+	}
+	if err := db.Create(&paper).Error; err != nil {
+		t.Fatalf("create paper: %v", err)
+	}
+
+	got, err := (PaperService{}).ResolveCorrectedPaperFile(userID, paperID)
+	if err == nil {
+		t.Fatalf("expected ErrCorrectedFileNotFound, got path %q", got)
+	}
+	if !errors.Is(err, ErrCorrectedFileNotFound) {
+		t.Fatalf("error = %v, want ErrCorrectedFileNotFound", err)
+	}
+	if got != "" {
+		t.Fatalf("path = %q, want empty", got)
+	}
+}
+
 func openPaperServiceTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
@@ -119,6 +172,7 @@ func openPaperServiceTestDB(t *testing.T) *gorm.DB {
 			file_size integer NOT NULL,
 			file_type text NOT NULL,
 			selected_template_id text,
+			latest_job_id text,
 			status text,
 			corrected_file_path text,
 			parsed_info text,

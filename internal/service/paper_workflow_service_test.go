@@ -302,8 +302,8 @@ func TestPaperWorkflowServiceUsesSelectedFormatTemplateFromCreationThroughOutput
 	if compiledFromCache.SourceFilePath != templatePath {
 		t.Fatalf("cached Profile changed skeleton to %q, want %q", compiledFromCache.SourceFilePath, templatePath)
 	}
-	// Change the DOCX after creating both jobs. Execution must read these new
-	// bytes rather than either the school rules or the per-job snapshot.
+	// An existing job must not silently switch template bytes. A new job binds
+	// the changed DOCX rather than using database rules or a cached profile.
 	pkg, err := ooxmlpkg.Open(templatePath)
 	if err != nil {
 		t.Fatal(err)
@@ -319,6 +319,13 @@ func TestPaperWorkflowServiceUsesSelectedFormatTemplateFromCreationThroughOutput
 		t.Fatal(err)
 	}
 
+	if _, err := svc.RunJob(context.Background(), created.ID.String(), userID); !errors.Is(err, ErrWorkflowInputsChanged) {
+		t.Fatalf("RunJob(changed template) error=%v, want ErrWorkflowInputsChanged", err)
+	}
+	created, err = svc.CreatePaperJob(context.Background(), CreatePaperJobInput{UserID: userID, FormatTemplateID: templateID, FilePath: inputPath, FileName: "paper.docx", FileType: "docx"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	view, err := svc.RunJob(context.Background(), created.ID.String(), userID)
 	if err != nil {
 		t.Fatalf("RunJob() error = %v", err)
@@ -329,6 +336,9 @@ func TestPaperWorkflowServiceUsesSelectedFormatTemplateFromCreationThroughOutput
 	}
 	if documentXML := readWorkflowDocumentXML(t, outputPath); strings.Contains(documentXML, `w:eastAsia="AdminFont"`) || !strings.Contains(documentXML, `w:eastAsia="FreshSourceFont"`) {
 		t.Fatalf("output used database rules instead of the source DOCX: %s", documentXML)
+	}
+	if view.FormatCompliance == nil || view.FormatCompliance.Phase != "post_format" || view.FormatCompliance.Output.SHA256 == "" || view.FormatCompliance.Accepted || len(view.FormatCompliance.Checks[3].Evidence) == 0 {
+		t.Fatalf("RunJob() format diagnosis=%+v, want final artifact-bound partial evidence without acceptance", view.FormatCompliance)
 	}
 }
 
@@ -747,7 +757,7 @@ func TestRepairRenderedPageFooterTotalUpdatesMaterializedBodyTotal(t *testing.T)
 	}
 }
 
-func TestRepairRenderedTOCPageNumbersMaterializesCachedEntries(t *testing.T) {
+func TestLocalTOCRefreshPreservesUnboundManualCache(t *testing.T) {
 	tmpDir := t.TempDir()
 	docxPath := filepath.Join(tmpDir, "paper.docx")
 	writeWorkflowDocxPackage(t, docxPath, map[string]string{
@@ -760,23 +770,20 @@ func TestRepairRenderedTOCPageNumbersMaterializesCachedEntries(t *testing.T) {
 			`</w:body></w:document>`,
 	})
 
-	repaired, err := repairRenderedTOCPageNumbers(docxPath, verify.Result{
-		RenderResult: &renderverify.Result{PageTexts: []string{
-			"\u76ee\u5f55",
-			"1 1 \u7eea\u8bba\n1.1 1.1 \u7814\u7a76\u80cc\u666f\n\u7b2c1\u9875 \u517119\u9875",
-		}},
-	})
+	before, err := os.ReadFile(docxPath)
 	if err != nil {
-		t.Fatalf("repairRenderedTOCPageNumbers() error = %v", err)
+		t.Fatal(err)
 	}
-	if !repaired {
-		t.Fatal("repairRenderedTOCPageNumbers() repaired = false")
+	report, err := refreshLocalTOCWithOptions(context.Background(), docxPath, renderverify.Options{Enabled: true})
+	if err != nil || report.Changed || report.Reason == "" {
+		t.Fatalf("unbound manual TOC refresh=%+v, %v, want unchanged and review", report, err)
 	}
-	documentXML := readWorkflowDocxEntry(t, docxPath, "word/document.xml")
-	for _, want := range []string{"1 \u7eea\u8bba", "1.1 \u7814\u7a76\u80cc\u666f", "<w:tab/>", ">1<"} {
-		if !strings.Contains(documentXML, want) {
-			t.Fatalf("TOC cache missing %q: %s", want, documentXML)
-		}
+	after, err := os.ReadFile(docxPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("unbound manual TOC cache changed without stable linked targets")
 	}
 }
 
@@ -1299,6 +1306,109 @@ func TestPaperWorkflowServiceGetJobReturnsView(t *testing.T) {
 	}
 }
 
+// 对比页需要标题/大小/学校模板名/页数，且差异明细走独立分页接口。
+// 轮询用的 job 视图只带聚合 summary，绝不返回几百 KB 的 verify_result 原文。
+func TestPaperWorkflowServiceGetJobViewCarriesDisplayFieldsAndSummary(t *testing.T) {
+	db := openPaperWorkflowServiceTestDB(t)
+	jobID := uuid.New()
+	userID := uuid.New()
+	paperID := uuid.New()
+	templateID := uuid.New()
+
+	paper := model.Paper{
+		ID:       paperID,
+		UserID:   userID,
+		Title:    "基于深度学习的图像分类研究",
+		FilePath: "uploads/workflow_inputs/u/p.docx",
+		FileName: "论文终稿.docx",
+		FileSize: 123456,
+		FileType: "docx",
+		Status:   "verified_pass",
+	}
+	if err := db.Create(&paper).Error; err != nil {
+		t.Fatalf("create paper: %v", err)
+	}
+	compiled := model.CompiledTemplate{
+		ID:                    templateID,
+		SchoolID:              "CQIE",
+		TemplateName:          "重庆工程学院本科论文",
+		TemplateVersion:       "2026",
+		SourceFilePath:        "uploads/templates/t.docx",
+		SkeletonPath:          "uploads/templates/t.docx",
+		ManifestJSON:          "{}",
+		BlockCatalogJSON:      "[]",
+		StyleProfilesJSON:     "{}",
+		MappingContractJSON:   "{}",
+		VerificationRulesJSON: "{}",
+		PatchTargetsJSON:      "[]",
+		Status:                "compiled",
+	}
+	if err := db.Create(&compiled).Error; err != nil {
+		t.Fatalf("create compiled template: %v", err)
+	}
+	// download_ready 依赖产物真实存在，这里落一个真实 docx 路径。
+	outputPath := filepath.Join(t.TempDir(), "final.docx")
+	if err := os.WriteFile(outputPath, []byte("PK"), 0644); err != nil {
+		t.Fatalf("write output docx: %v", err)
+	}
+	job := model.PaperWorkflowJob{
+		ID:                 jobID,
+		PaperID:            paperID,
+		UserID:             userID,
+		CompiledTemplateID: templateID,
+		Status:             string(workflow.StatusVerifiedPass),
+		Stage:              workflow.StageVerified,
+		DownloadPath:       outputPath,
+		VerifyResultJSON:   "{}",
+		ResultSummaryJSON:  `{"total_changes":23,"rules_checked":47,"rules_passed":40,"rules_review":7,"rules_failed":0,"passed":true,"compliance_status":"pass","page_count":18,"by_category":{"font":9,"paragraph":8,"header_footer":6}}`,
+	}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	view, err := NewPaperWorkflowService(db).GetJob(jobID.String())
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+
+	if view.PaperTitle != "基于深度学习的图像分类研究" {
+		t.Fatalf("PaperTitle = %q", view.PaperTitle)
+	}
+	if view.FileName != "论文终稿.docx" {
+		t.Fatalf("FileName = %q", view.FileName)
+	}
+	if view.FileSize != 123456 {
+		t.Fatalf("FileSize = %d", view.FileSize)
+	}
+	if view.TemplateName != "重庆工程学院本科论文" {
+		t.Fatalf("TemplateName = %q", view.TemplateName)
+	}
+	if view.SchoolName != "CQIE" {
+		t.Fatalf("SchoolName = %q", view.SchoolName)
+	}
+	if view.PageCount != 18 {
+		t.Fatalf("PageCount = %d, want 18", view.PageCount)
+	}
+	if view.Summary == nil {
+		t.Fatal("Summary is nil, want aggregated stats")
+	}
+	if view.Summary.TotalChanges != 23 || view.Summary.RulesChecked != 47 {
+		t.Fatalf("Summary = %+v", *view.Summary)
+	}
+	if view.Summary.ByCategory["font"] != 9 {
+		t.Fatalf("ByCategory = %+v", view.Summary.ByCategory)
+	}
+	if !view.VerifyPass {
+		t.Fatal("VerifyPass = false, want true")
+	}
+	if view.PreviewURL != "/api/v2/jobs/"+jobID.String()+"/preview?side=original" {
+		t.Fatalf("PreviewURL = %q", view.PreviewURL)
+	}
+	if view.PreviewCorrectedURL == "" {
+		t.Fatal("PreviewCorrectedURL is empty, want corrected preview URL")
+	}
+}
+
 func TestPaperWorkflowServiceCompileTemplatePersistsRecord(t *testing.T) {
 	db := openPaperWorkflowServiceTestDB(t)
 	templatePath := filepath.Join(t.TempDir(), "template.docx")
@@ -1417,6 +1527,7 @@ func openPaperWorkflowServiceTestDB(t *testing.T) *gorm.DB {
 			file_size integer NOT NULL,
 			file_type text NOT NULL,
 			selected_template_id text,
+			latest_job_id text,
 			corrected_file_path text,
 			parsed_info text,
 			auto_detected_templates text,
@@ -1459,6 +1570,8 @@ func openPaperWorkflowServiceTestDB(t *testing.T) *gorm.DB {
 			stage text NOT NULL,
 			download_path text,
 			verify_result_json text NOT NULL,
+			result_summary_json text NOT NULL DEFAULT '{}',
+			confirmed integer NOT NULL DEFAULT 0,
 			created_at datetime,
 			updated_at datetime
 		)

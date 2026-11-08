@@ -206,6 +206,8 @@ func migrateDatabase() error {
 		&model.PaymentRecord{},
 		&model.PromoCode{},
 		&model.PromoCodeGrant{},
+		// 下载授权幂等凭证（同一 job 只扣一次）
+		&model.DownloadGrant{},
 
 		// 系统设置
 		&model.SystemSetting{},
